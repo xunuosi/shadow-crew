@@ -1,6 +1,6 @@
 {
   "name": "Buzz ACP Agent Hub",
-  "description": "Desktop multi-agent team collaboration platform modeled after Block Buzz, pulling Agents via Agent Client Protocol (ACP) with full workspace, skills, and memory integration.",
+  "description": "Desktop multi-agent team collaboration platform with Shinobi ninja alter-ego agents, pulling Agents via Agent Client Protocol (ACP) with full workspace, skills, and memory integration.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

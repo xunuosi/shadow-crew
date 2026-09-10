@@ -20,6 +20,7 @@ import {
   Server,
   Monitor
 } from 'lucide-react';
+import { NinjaIcon } from './NinjaIcon';
 import { RUST_TAURI_WORKSPACE_FILES, RustSourceFile } from '../data/rustTauriSourceCode';
 
 interface RustTauriArchitectureHubProps {
@@ -39,9 +40,9 @@ export const RustTauriArchitectureHub: React.FC<RustTauriArchitectureHubProps> =
   // IPC Simulator interactive states
   const [isSimulating, setIsSimulating] = useState<boolean>(false);
   const [simLogs, setSimLogs] = useState<Array<{ timestamp: string; level: string; tag: string; message: string }>>([
-    { timestamp: '19:24:02.110', level: 'INFO', tag: 'buzz_server::main', message: '🚀 Axum Nostr Relay listening on ws://0.0.0.0:8080/relay' },
-    { timestamp: '19:24:02.340', level: 'INFO', tag: 'buzz_desktop::tauri', message: 'Tauri v2 runtime initialized. Window bound: 1400x900. Memory footprint: 34.2 MB' },
-    { timestamp: '19:24:02.490', level: 'INFO', tag: 'buzz_desktop::acp', message: 'Ready to spawn local ACP agents via tokio::process::Command stdio pipes' },
+    { timestamp: '19:24:02.110', level: 'INFO', tag: 'shinobi_server::main', message: '🥷 Axum Nostr Relay listening on ws://0.0.0.0:8080/relay' },
+    { timestamp: '19:24:02.340', level: 'INFO', tag: 'shinobi_desktop::tauri', message: 'Tauri v2 runtime initialized. Window bound: 1400x900. Memory footprint: 34.2 MB' },
+    { timestamp: '19:24:02.490', level: 'INFO', tag: 'shinobi_desktop::acp', message: 'Ready to spawn local ACP agents via tokio::process::Command stdio pipes' },
   ]);
   const [simMetrics, setSimMetrics] = useState({
     tauriMemory: '34.8 MB',
@@ -67,27 +68,27 @@ export const RustTauriArchitectureHub: React.FC<RustTauriArchitectureHubProps> =
       if (testType === 'spawn') {
         setSimLogs(prev => [
           ...prev,
-          { timestamp: now, level: 'INFO', tag: 'buzz_desktop::acp_manager', message: 'tokio::process::Command spawning "cargo run --bin buzz-agent" in cwd: /workspace/buzz' },
-          { timestamp: now, level: 'INFO', tag: 'buzz_agent::init', message: 'ACP agent online (PID: 41982). Stdio piped. Attached SQLite memory bank.' },
+          { timestamp: now, level: 'INFO', tag: 'shinobi_desktop::acp_manager', message: 'tokio::process::Command spawning "cargo run --bin shinobi-agent" in cwd: /workspace/shinobi' },
+          { timestamp: now, level: 'INFO', tag: 'shinobi_agent::init', message: 'ACP agent online (PID: 41982). Stdio piped. Attached SQLite memory bank.' },
         ]);
         setSimMetrics(prev => ({ ...prev, activeSubprocesses: prev.activeSubprocesses + 1 }));
       } else if (testType === 'ipc') {
         setSimLogs(prev => [
           ...prev,
-          { timestamp: now, level: 'DEBUG', tag: 'tauri::ipc::Channel', message: 'Zero-copy IPC buffer dispatched: acp:stream:agent-buzz (payload size: 1.8KB, latency: 0.11ms)' },
-          { timestamp: now, level: 'INFO', tag: 'buzz_frontend::react', message: 'React UI updated with streaming typewriter chunk without re-render lag' },
+          { timestamp: now, level: 'DEBUG', tag: 'tauri::ipc::Channel', message: 'Zero-copy IPC buffer dispatched: acp:stream:agent-shinobi (payload size: 1.8KB, latency: 0.11ms)' },
+          { timestamp: now, level: 'INFO', tag: 'shinobi_frontend::react', message: 'React UI updated with streaming typewriter chunk without re-render lag' },
         ]);
       } else if (testType === 'memory') {
         setSimLogs(prev => [
           ...prev,
-          { timestamp: now, level: 'INFO', tag: 'buzz_agent::memory', message: 'rusqlite query: "SELECT * FROM acp_memories WHERE key LIKE \'%branch%\'"' },
-          { timestamp: now, level: 'INFO', tag: 'buzz_agent::memory', message: 'Hit cached pattern [git_branch_convention] (0.3ms). Injected into ACP session prompt.' },
+          { timestamp: now, level: 'INFO', tag: 'shinobi_agent::memory', message: 'rusqlite query: "SELECT * FROM acp_memories WHERE key LIKE \'%branch%\'"' },
+          { timestamp: now, level: 'INFO', tag: 'shinobi_agent::memory', message: 'Hit cached pattern [git_branch_convention] (0.3ms). Injected into ACP session prompt.' },
         ]);
       } else if (testType === 'relay') {
         setSimLogs(prev => [
           ...prev,
-          { timestamp: now, level: 'INFO', tag: 'buzz_desktop::nostr', message: 'Signed Kind 42 Event (sha256: 7f8c92...) using secp256k1 keypair' },
-          { timestamp: now, level: 'INFO', tag: 'buzz_server::relay', message: 'Axum ws broadcasted Nostr event to room [#buzz-acp-core] (3 peers)' },
+          { timestamp: now, level: 'INFO', tag: 'shinobi_desktop::nostr', message: 'Signed Kind 42 Event (sha256: 7f8c92...) using secp256k1 keypair' },
+          { timestamp: now, level: 'INFO', tag: 'shinobi_server::relay', message: 'Axum ws broadcasted Nostr event to room [#shinobi-acp-core] (3 peers)' },
         ]);
         setSimMetrics(prev => ({ ...prev, relayEventCount: prev.relayEventCount + 1 }));
       }
@@ -101,13 +102,15 @@ export const RustTauriArchitectureHub: React.FC<RustTauriArchitectureHubProps> =
         {/* Modal Header */}
         <div className="p-4 border-b border-[#1f2838] flex items-center justify-between bg-[#10141d] shrink-0">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-orange-950/80 border border-orange-700/50 flex items-center justify-center text-orange-400 font-bold text-lg">
-              🦀
+            <div className="w-10 h-10 rounded-lg bg-cyan-950/80 border border-cyan-700/50 flex items-center justify-center text-cyan-400 p-1.5 shadow-xs">
+              <NinjaIcon className="w-full h-full" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="font-bold text-base text-gray-100">
-                  Buzz 技术架构落地方案：服务端 Rust + 桌面端 Tauri
+                <h2 className="font-bold text-base text-gray-100 flex items-center gap-1.5">
+                  <span>Shinobi 技术架构方案</span>
+                  <span className="text-gray-500 font-normal text-xs">|</span>
+                  <span className="text-orange-300 font-medium text-xs">Rust + Tauri (AI 影替身)</span>
                 </h2>
                 <span className="text-[10px] px-2 py-0.5 rounded bg-orange-950 text-orange-400 border border-orange-800/40 font-mono">
                   Rust 2021 + Tauri v2 + Axum

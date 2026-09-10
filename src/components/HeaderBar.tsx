@@ -1,5 +1,6 @@
 import React from 'react';
 import { Radio, Terminal, BookOpen, Plus, ShieldCheck, Activity, Cpu } from 'lucide-react';
+import { NinjaIcon } from './NinjaIcon';
 
 interface HeaderBarProps {
   currentWorkspace: string;
@@ -35,11 +36,12 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         </div>
 
         <div className="flex items-center gap-2 font-semibold text-gray-200">
-          <span className="text-emerald-400 font-bold tracking-wider flex items-center gap-1">
-            <span className="text-base">🐝</span> BUZZ
+          <span className="text-cyan-400 font-bold tracking-wider flex items-center gap-1.5 bg-cyan-950/40 px-2 py-0.5 rounded border border-cyan-800/40 shadow-xs">
+            <NinjaIcon className="w-4 h-4 text-cyan-400" />
+            <span className="text-white tracking-widest text-xs">SHINOBI</span>
           </span>
           <span className="text-gray-600">/</span>
-          <span className="text-gray-400">Hivemind ACP Client</span>
+          <span className="text-gray-300">ACP 替身工作台</span>
           <span className="text-gray-600">/</span>
           <span className="text-amber-400/90 font-mono">#{activeRoomName}</span>
         </div>

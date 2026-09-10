@@ -1,6 +1,6 @@
 /**
  * Production-ready Rust + Tauri codebase and architecture definitions
- * for the Buzz ACP Multi-Agent Desktop Platform.
+ * for the Shinobi ACP Multi-Agent Desktop Platform (Ninja Alter-Ego).
  */
 
 export interface RustSourceFile {
@@ -17,15 +17,15 @@ export const RUST_TAURI_WORKSPACE_FILES: RustSourceFile[] = [
     path: 'README.md',
     crate: 'workspace',
     category: 'workspace',
-    description: '项目全景架构白皮书与 ACP 数字替身 (Alter-Ego) 远景文档',
+    description: '项目全景架构白皮书与 ACP 影替身 (Ninja Alter-Ego) 远景文档',
     language: 'markdown',
-    code: `# 🐝 Buzz: 基于 ACP 的多 Agent 协作工作台 (Multi-Agent Hivemind Workspace)
+    code: `# 🥷 Shinobi: 基于 ACP 的多 Agent 替身协作工作台 (Shinobi Workspace)
 
-> **“在未来的团队协作中，每个开发者进入房间时，不仅仅带上自己，更带上由 ACP 赋能的专属 AI 替身——它沉淀了你的思考模式、熟悉你的工程规范，并携带着独属于你的私有记忆与强大技能。”**
+> **“在未来的团队协作中，每个开发者进入房间时，不仅仅带上自己，更带上由 ACP 赋能的专属 AI 影替身——它沉淀了你的思考模式、熟悉你的工程规范，并携带着独属于你的私有记忆与强大技能。”**
 
 ---
 
-## 🌟 核心愿景：AI 替身 (The Digital Alter-Ego)
+## 🌟 核心远景：AI 影替身 (The Ninja Alter-Ego)
 
 通过 **ACP (Agent Client Protocol)** 标准化接入：
 * **私有记忆伴随 (Portable Memory Bank)**：每个人的 Agent 在长期的单人编程中积累了专属的记忆库（技术偏好、代码风格、历史踩坑总结、业务暗语）。进入公共房间时，Agent 自动带入这些知识资产。
@@ -51,17 +51,17 @@ export const RUST_TAURI_WORKSPACE_FILES: RustSourceFile[] = [
     code: `[workspace]
 resolver = "2"
 members = [
-    "crates/buzz-protocol",
-    "crates/buzz-server",
-    "crates/buzz-desktop/src-tauri",
-    "crates/buzz-agent",
-    "crates/buzz-dev-mcp"
+    "crates/shinobi-protocol",
+    "crates/shinobi-server",
+    "crates/shinobi-desktop/src-tauri",
+    "crates/shinobi-agent",
+    "crates/shinobi-dev-mcp"
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Block Buzz Team", "AI Studio"]
+authors = ["Shinobi Team", "AI Studio"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
@@ -92,8 +92,8 @@ thiserror = "2.0"
 `
   },
   {
-    path: 'crates/buzz-protocol/src/acp.rs',
-    crate: 'buzz-protocol',
+    path: 'crates/shinobi-protocol/src/acp.rs',
+    crate: 'shinobi-protocol',
     category: 'protocol',
     description: 'ACP (Agent Client Protocol) 核心协议报文结构与 JSON-RPC 2.0 序列化定义',
     language: 'rust',
@@ -196,8 +196,8 @@ pub struct McpCallTrace {
 `
   },
   {
-    path: 'crates/buzz-desktop/src-tauri/src/main.rs',
-    crate: 'buzz-desktop',
+    path: 'crates/shinobi-desktop/src-tauri/src/main.rs',
+    crate: 'shinobi-desktop',
     category: 'desktop',
     description: 'Tauri v2 桌面宿主入口，注册异步命令、初始化状态与 IPC 通信',
     language: 'rust',
@@ -292,13 +292,13 @@ async fn main() {
             read_workspace_file_sandboxed,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running buzz tauri desktop application");
+        .expect("error while running shinobi tauri desktop application");
 }
 `
   },
   {
-    path: 'crates/buzz-desktop/src-tauri/src/acp_manager.rs',
-    crate: 'buzz-desktop',
+    path: 'crates/shinobi-desktop/src-tauri/src/acp_manager.rs',
+    crate: 'shinobi-desktop',
     category: 'desktop',
     description: 'Tokio 异步子进程守护器：管理 stdio 管道并转发流式日志至前端 Channel',
     language: 'rust',
@@ -417,16 +417,16 @@ impl AcpProcessManager {
 `
   },
   {
-    path: 'crates/buzz-desktop/src-tauri/tauri.conf.json',
-    crate: 'buzz-desktop',
+    path: 'crates/shinobi-desktop/src-tauri/tauri.conf.json',
+    crate: 'shinobi-desktop',
     category: 'desktop',
     description: 'Tauri v2 生产级配置：窗口定制、沙盒安全与构建产物配置',
     language: 'json',
     code: `{
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/tooling/cli/schema.json",
-  "productName": "Buzz",
+  "productName": "Shinobi",
   "version": "1.0.0",
-  "identifier": "com.block.buzz.desktop",
+  "identifier": "com.shinobi.workspace.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:3000",
@@ -436,7 +436,7 @@ impl AcpProcessManager {
   "app": {
     "windows": [
       {
-        "title": "Buzz - Multi-Agent Hivemind Workspace",
+        "title": "Shinobi - Multi-Agent Stand-in Workspace",
         "width": 1400,
         "height": 900,
         "minWidth": 960,
@@ -463,8 +463,8 @@ impl AcpProcessManager {
 }`
   },
   {
-    path: 'crates/buzz-server/src/main.rs',
-    crate: 'buzz-server',
+    path: 'crates/shinobi-server/src/main.rs',
+    crate: 'shinobi-server',
     category: 'server',
     description: 'Axum + Tokio 高性能服务端入口，启动 WebSocket Nostr Relay 与房间分发',
     language: 'rust',
@@ -491,14 +491,14 @@ async fn main() -> anyhow::Result<()> {
 
     // 路由定义：包括基础状态探针与 WebSocket Nostr Relay
     let app = Router::new()
-        .route("/health", get(|| async { "Buzz Relay Online (Rust Axum)" }))
+        .route("/health", get(|| async { "Shinobi Relay Online (Rust Axum)" }))
         .route("/relay", get(relay::ws_relay_handler))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(relay_state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-    tracing::info!("🚀 Buzz Rust Nostr Relay listening on ws://{}", addr);
+    tracing::info!("🥷 Shinobi Rust Nostr Relay listening on ws://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
@@ -508,8 +508,8 @@ async fn main() -> anyhow::Result<()> {
 `
   },
   {
-    path: 'crates/buzz-server/src/relay.rs',
-    crate: 'buzz-server',
+    path: 'crates/shinobi-server/src/relay.rs',
+    crate: 'shinobi-server',
     category: 'server',
     description: 'Nostr Relay 事件发布订阅引擎：支持房间隔离、secp256k1 验证与广播',
     language: 'rust',
@@ -602,8 +602,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<RelayState>) {
 `
   },
   {
-    path: 'crates/buzz-agent/src/memory.rs',
-    crate: 'buzz-agent',
+    path: 'crates/shinobi-agent/src/memory.rs',
+    crate: 'shinobi-agent',
     category: 'agent',
     description: 'Agent 私有持久记忆引擎：使用本地 SQLite 存储跨会话核心偏好与架构规范',
     language: 'rust',
@@ -689,7 +689,7 @@ impl AgentMemoryStore {
     code: `#!/usr/bin/env bash
 set -e
 
-echo "=== 🐝 Initializing Buzz Multi-Agent Platform (Rust + Tauri) ==="
+echo "=== 🥷 Initializing Shinobi Multi-Agent Platform (Rust + Tauri) ==="
 
 # 1. 检查 Rust 与 Cargo 环境
 if ! command -v cargo &> /dev/null; then
@@ -704,10 +704,10 @@ if ! command -v npm &> /dev/null; then
 fi
 
 echo "-> Building shared protocol library..."
-cargo build -p buzz-protocol
+cargo build -p shinobi-protocol
 
-echo "-> Starting Buzz Rust Nostr Relay in background (port 8080)..."
-cargo run -p buzz-server &
+echo "-> Starting Shinobi Rust Nostr Relay in background (port 8080)..."
+cargo run -p shinobi-server &
 SERVER_PID=$!
 echo "Relay PID: $SERVER_PID"
 
@@ -717,7 +717,7 @@ npm run tauri dev
 
 # Clean up background server on exit
 kill $SERVER_PID 2>/dev/null || true
-echo "=== Buzz dev session closed. ==="
+echo "=== Shinobi dev session closed. ==="
 `
   }
 ];
