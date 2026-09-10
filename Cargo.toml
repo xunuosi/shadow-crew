@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/shinobi-protocol",
+    "crates/shinobi-server",
+    "crates/shinobi-desktop/src-tauri",
+    "crates/shinobi-agent",
+    "crates/shinobi-dev-mcp"
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Shinobi Team", "AI Studio"]
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# 异步运行时 & 网络
+tokio = { version = "1.43", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+futures-util = "0.3"
+
+# 序列化 & 协议
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 加解密与 Nostr
+secp256k1 = { version = "0.30", features = ["global-context", "rand-std"] }
+nostr-sdk = "0.38"
+sha2 = "0.10"
+
+# 数据库与持久化
+rusqlite = { version = "0.33", features = ["bundled"] }
+
+# 日志 & 追踪
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+thiserror = "2.0"
