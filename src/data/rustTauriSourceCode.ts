@@ -8,11 +8,40 @@ export interface RustSourceFile {
   crate: string;
   category: 'workspace' | 'protocol' | 'desktop' | 'server' | 'agent' | 'scripts';
   description: string;
-  language: 'rust' | 'toml' | 'json' | 'bash';
+  language: 'rust' | 'toml' | 'json' | 'bash' | 'markdown';
   code: string;
 }
 
 export const RUST_TAURI_WORKSPACE_FILES: RustSourceFile[] = [
+  {
+    path: 'README.md',
+    crate: 'workspace',
+    category: 'workspace',
+    description: '项目全景架构白皮书与 ACP 数字替身 (Alter-Ego) 远景文档',
+    language: 'markdown',
+    code: `# 🐝 Buzz: 基于 ACP 的多 Agent 协作工作台 (Multi-Agent Hivemind Workspace)
+
+> **“在未来的团队协作中，每个开发者进入房间时，不仅仅带上自己，更带上由 ACP 赋能的专属 AI 替身——它沉淀了你的思考模式、熟悉你的工程规范，并携带着独属于你的私有记忆与强大技能。”**
+
+---
+
+## 🌟 核心愿景：AI 替身 (The Digital Alter-Ego)
+
+通过 **ACP (Agent Client Protocol)** 标准化接入：
+* **私有记忆伴随 (Portable Memory Bank)**：每个人的 Agent 在长期的单人编程中积累了专属的记忆库（技术偏好、代码风格、历史踩坑总结、业务暗语）。进入公共房间时，Agent 自动带入这些知识资产。
+* **个人技能复用 (Custom Skillset & MCP)**：Agent 随身挂载了个人的专属工具链（特定的部署脚本、数据查询权限、代码分析插件），在多 Agent 会议室中协同调度。
+* **替身自主协作 (Autonomous Stand-in Interaction)**：当你离线或专注编码时，你的 Agent 可以在群聊中代表你审查 PR、解答队友关于你负责模块的疑问，并在达成共识后生成改动提案等你确认。
+
+---
+
+## 🏛️ 全栈架构设计 (Full-Stack Rust + Tauri)
+
+* **桌面宿主**: Tauri v2 (Rust Core + React/Tailwind WebView) - 待机内存 ~35MB，相比 Electron 节省 >90%。
+* **异步管道**: Tokio 子进程守护接管 Agent 标准输入输出 (stdio)，以 Zero-Copy Channel 逐字流式打字。
+* **服务端**: Rust Axum + Nostr Relay - secp256k1 签名事件总线，微秒级跨房间广播。
+* **协议栈**: ACP (Agent Client Protocol) + MCP (Model Context Protocol)。
+`
+  },
   {
     path: 'Cargo.toml',
     crate: 'workspace',
