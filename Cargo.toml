@@ -1,9 +1,10 @@
 [workspace]
 resolver = "2"
+default-members = ["src-tauri"]
 members = [
     "crates/shinobi-protocol",
     "crates/shinobi-server",
-    "crates/shinobi-desktop/src-tauri",
+    "src-tauri",
     "crates/shinobi-agent",
     "crates/shinobi-dev-mcp"
 ]

@@ -9,7 +9,7 @@ license.workspace = true
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
-shinobi-protocol = { path = "../../shinobi-protocol" }
+shinobi-protocol = { path = "../crates/shinobi-protocol" }
 tauri = { version = "2.0", features = [] }
 tauri-plugin-shell = "2.0"
 tauri-plugin-fs = "2.0"
