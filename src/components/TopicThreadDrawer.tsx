@@ -192,7 +192,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       }
     }
 
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       handleSend();
     }
@@ -463,7 +463,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             value={replyContent}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
-            placeholder="在当前议题中回复或输入 @ 召唤 Agent 继续推演..."
+            placeholder="在当前议题中回复或输入 @ 召唤 Agent 继续推演... (⌘ + Enter 发送)"
             rows={2}
             className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none leading-relaxed"
           />
@@ -491,13 +491,14 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               >
                 <AtSign className="w-3.5 h-3.5 text-accent" />
               </button>
-              <span className="text-[10px] text-fg-muted font-mono">Shift+Enter 换行</span>
+              <span className="text-[10px] text-fg-muted font-mono">⌘ + Enter 发送</span>
             </div>
 
             <button
               onClick={handleSend}
               disabled={!replyContent.trim()}
               className="p-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white transition-all cursor-pointer shadow-xs"
+              title="发送回复 (⌘ + Enter)"
             >
               <Send className="w-3 h-3" />
             </button>

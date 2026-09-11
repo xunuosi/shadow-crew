@@ -45,6 +45,7 @@ export async function sendPromptToAcpAgent(
         prompt,
         command: agent.acpCommandOrUrl || './target/debug/shinobi-agent',
         cwd: agent.workspace?.rootPath || '.',
+        envVars: agent.envVars || [],
       });
 
       const durationMs = Date.now() - startTime;
@@ -72,10 +73,22 @@ export async function sendPromptToAcpAgent(
           raw: response,
         };
       } else if (response && (response.status === 'timeout' || response.status === 'closed' || response.error)) {
-        const errorDetail = response.error?.message || (typeof response.error === 'string' ? response.error : JSON.stringify(response.error)) || (response.status === 'timeout' ? 'Agent 响应超时 (90s)' : 'Agent 进程异常关闭');
+        const rawErrMsg = response.error?.message || (typeof response.error === 'string' ? response.error : JSON.stringify(response.error)) || (response.status === 'timeout' ? 'Agent 响应超时 (90s)' : 'Agent 进程异常关闭');
         console.warn('[ACP Client] Process returned status error:', response);
+
+        let formattedHelp = '';
+        if (rawErrMsg.toLowerCase().includes('authentication required')) {
+          formattedHelp = `\n\n💡 **认证排障指南 (Claude Code ACP)**：\n` +
+            `• **原因**：Anthropic 官方规范限制，第三方客户端集成（如 Shadow Crew）**不支持**复用本机的 \`claude.ai\` 网页/OAuth 订阅，需要提供 \`ANTHROPIC_API_KEY\`。\n` +
+            `• **配置步骤**：\n` +
+            `  1. 点击当前 Agent 卡片右上角【编辑】图标 ✏️；\n` +
+            `  2. 在「环境变量 (ENV)」中填入您的 \`ANTHROPIC_API_KEY\`（格式如 \`sk-ant-api03-...\`）；\n` +
+            `  3. *(可选)* 若使用第三方反代/中转网关，可额外添加 \`ANTHROPIC_BASE_URL\`；\n` +
+            `  4. 保存后重新发送消息或点击「Start」重新拉起即可。`;
+        }
+
         return {
-          textResponse: `⚠️【${agent.name}】ACP 通信告警：${errorDetail}\n\n• **本地日志落盘**：底层原始 stdio 报文已持久化落盘至 \`logs/acp.log\`。\n• **实时跟踪**：可在终端运行 \`tail -f logs/acp.log\` 查看实时流。\n• **关联命令**：\`${agent.acpCommandOrUrl || './target/debug/shinobi-agent'}\`。`,
+          textResponse: `⚠️【${agent.name}】ACP 通信告警：${rawErrMsg}${formattedHelp}\n\n• **本地日志落盘**：底层原始 stdio 报文已持久化落盘至 \`logs/acp.log\`。\n• **实时跟踪**：可在终端运行 \`tail -f logs/acp.log\` 查看实时流。\n• **关联命令**：\`${agent.acpCommandOrUrl || './target/debug/shinobi-agent'}\`。`,
           durationMs,
           isRealProcess: true,
           raw: response,

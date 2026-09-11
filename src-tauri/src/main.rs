@@ -6,7 +6,7 @@ mod agent_discovery;
 
 use acp_manager::AcpProcessManager;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 
 // 共享的全局状态
@@ -28,6 +28,7 @@ async fn spawn_acp_agent(
     agent_id: String,
     command: String,
     cwd: String,
+    env_vars: Option<Vec<acp_manager::AcpEnvVar>>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<u32, String> {
@@ -35,11 +36,40 @@ async fn spawn_acp_agent(
     let mut manager = state.acp_manager.lock().await;
     
     let pid = manager
-        .spawn_agent(&agent_id, &command, &cwd, app_handle)
+        .spawn_agent(&agent_id, &command, &cwd, env_vars, app_handle)
         .await
         .map_err(|e| format!("Failed to spawn agent: {}", e))?;
         
     Ok(pid)
+}
+
+/// Tauri Command: 终止指定 ACP 本地子进程
+#[tauri::command]
+async fn stop_acp_agent(
+    agent_id: String,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    tracing::info!("Stopping ACP agent: {}", agent_id);
+    let mut manager = state.acp_manager.lock().await;
+    manager
+        .stop_agent(&agent_id)
+        .await
+        .map_err(|e| format!("Failed to stop agent: {}", e))?;
+
+    let _ = app_handle.emit("acp:status_change", serde_json::json!({
+        "agent_id": agent_id,
+        "status": "stopped"
+    }));
+
+    Ok(())
+}
+
+/// Tauri Command: 获取当前存活运行的 ACP Agent ID 列表
+#[tauri::command]
+async fn get_running_agent_ids(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let manager = state.acp_manager.lock().await;
+    Ok(manager.get_running_agent_ids())
 }
 
 /// Tauri Command: 发送指令到 ACP Agent (带流式回调与自动拉起)
@@ -50,6 +80,7 @@ async fn send_prompt_to_agent(
     prompt: String,
     command: Option<String>,
     cwd: Option<String>,
+    env_vars: Option<Vec<acp_manager::AcpEnvVar>>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
@@ -61,7 +92,7 @@ async fn send_prompt_to_agent(
             let working_dir = cwd.unwrap_or_else(|| ".".to_string());
             tracing::info!("Auto-spawning agent {} before dispatching prompt: {}", agent_id, cmd);
             manager
-                .spawn_agent(&agent_id, &cmd, &working_dir, app_handle)
+                .spawn_agent(&agent_id, &cmd, &working_dir, env_vars, app_handle)
                 .await
                 .map_err(|e| format!("Auto-spawn agent failed: {}", e))?;
         } else {
@@ -124,6 +155,8 @@ async fn main() {
         .invoke_handler(tauri::generate_handler![
             discover_local_acp_runtimes,
             spawn_acp_agent,
+            stop_acp_agent,
+            get_running_agent_ids,
             send_prompt_to_agent,
             read_workspace_file_sandboxed,
             get_acp_log_path,

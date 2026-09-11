@@ -10,7 +10,8 @@ import {
   Bot, 
   Sparkles, 
   Zap,
-  Trash2
+  Trash2,
+  Pencil
 } from 'lucide-react';
 import { AgentAvatarArtwork, TeamArtwork } from './AgentAvatarArtwork';
 import { ThemeSwitcher } from './ThemeSwitcher';
@@ -26,6 +27,7 @@ interface AgentDashboardProps {
   onLaunchTeamThread: (team: AgentTeam) => void;
   onStart1on1Chat: (agent: Agent) => void;
   onInspectAgent: (agentId: string) => void;
+  onEditAgent?: (agent: Agent) => void;
   onDeleteAgent?: (agentId: string) => void;
   onDeleteTeam?: (teamId: string) => void;
 }
@@ -41,6 +43,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   onLaunchTeamThread,
   onStart1on1Chat,
   onInspectAgent,
+  onEditAgent,
   onDeleteAgent,
   onDeleteTeam,
 }) => {
@@ -143,24 +146,51 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     )}
                   </div>
 
-                  <div className="relative">
-                    <button
-                      onClick={() => setActiveMenuId(isMenuOpen ? null : agent.id)}
-                      className="p-1 text-fg-muted hover:text-fg rounded-lg hover:bg-surface-hover transition-colors cursor-pointer"
-                    >
-                      <MoreVertical className="w-4 h-4" />
-                    </button>
+                  <div className="flex items-center gap-0.5">
+                    {/* Top-right Quick Edit Entry */}
+                    {onEditAgent && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onEditAgent(agent);
+                        }}
+                        className="p-1 text-fg-muted hover:text-accent rounded-lg hover:bg-surface-hover transition-colors cursor-pointer"
+                        title="编辑 Agent 配置"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                    )}
 
-                    {/* Dropdown Menu */}
-                    {isMenuOpen && (
-                      <div className="absolute right-0 top-7 w-44 bg-surface border border-border rounded-2xl shadow-2xl py-1.5 z-30 text-xs animate-in fade-in zoom-in-95 duration-100">
-                        <button
-                          onClick={() => {
-                            onStart1on1Chat(agent);
-                            setActiveMenuId(null);
-                          }}
-                          className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-fg flex items-center gap-2 cursor-pointer"
-                        >
+                    <div className="relative">
+                      <button
+                        onClick={() => setActiveMenuId(isMenuOpen ? null : agent.id)}
+                        className="p-1 text-fg-muted hover:text-fg rounded-lg hover:bg-surface-hover transition-colors cursor-pointer"
+                      >
+                        <MoreVertical className="w-4 h-4" />
+                      </button>
+
+                      {/* Dropdown Menu */}
+                      {isMenuOpen && (
+                        <div className="absolute right-0 top-7 w-44 bg-surface border border-border rounded-2xl shadow-2xl py-1.5 z-30 text-xs animate-in fade-in zoom-in-95 duration-100">
+                          {onEditAgent && (
+                            <button
+                              onClick={() => {
+                                onEditAgent(agent);
+                                setActiveMenuId(null);
+                              }}
+                              className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-fg flex items-center gap-2 cursor-pointer font-medium"
+                            >
+                              <Pencil className="w-3.5 h-3.5 text-accent" />
+                              <span>编辑 Agent 配置</span>
+                            </button>
+                          )}
+                          <button
+                            onClick={() => {
+                              onStart1on1Chat(agent);
+                              setActiveMenuId(null);
+                            }}
+                            className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-fg flex items-center gap-2 cursor-pointer"
+                          >
                           <Bot className="w-3.5 h-3.5 text-accent" />
                           <span>发起 1-on-1 私信</span>
                         </button>
@@ -209,6 +239,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     )}
                   </div>
                 </div>
+              </div>
 
                 {/* Center: 3D Artwork Avatar with Status Capsule (Matching Screenshot) */}
                 <div className="flex flex-col items-center justify-center my-auto relative">

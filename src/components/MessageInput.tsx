@@ -135,7 +135,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       }
     }
 
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       handleSend();
     }
@@ -254,7 +254,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             value={content}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
-            placeholder={`在 #${channelName} 发起讨论或输入 @ 召唤 Agent 执行推演...`}
+            placeholder={`在 #${channelName} 发起讨论或输入 @ 召唤 Agent 执行推演... (⌘ + Enter 发送)`}
             rows={2}
             className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none leading-relaxed"
           />
@@ -344,19 +344,22 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               </button>
             </div>
 
-            {/* Right Circular Send Button (Identical to Screenshot) */}
-            <button
-              onClick={handleSend}
-              disabled={!content.trim() || isGenerating}
-              className={`w-7 h-7 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-md shrink-0 ${
-                content.trim() && !isGenerating
-                  ? 'bg-accent text-accent-fg hover:opacity-95 hover:scale-105 active:scale-95'
-                  : 'bg-surface border border-border text-fg-muted cursor-not-allowed'
-              }`}
-              title="发送消息 (Enter)"
-            >
-              <ArrowUp className="w-4 h-4 stroke-[2.5]" />
-            </button>
+            {/* Right Circular Send Button with ⌘ + Enter hint */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="hidden sm:inline text-[10px] font-mono text-fg-muted select-none">⌘ + Enter</span>
+              <button
+                onClick={handleSend}
+                disabled={!content.trim() || isGenerating}
+                className={`w-7 h-7 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-md shrink-0 ${
+                  content.trim() && !isGenerating
+                    ? 'bg-accent text-accent-fg hover:opacity-95 hover:scale-105 active:scale-95'
+                    : 'bg-surface border border-border text-fg-muted cursor-not-allowed'
+                }`}
+                title="发送消息 (⌘ + Enter)"
+              >
+                <ArrowUp className="w-4 h-4 stroke-[2.5]" />
+              </button>
+            </div>
           </div>
         </div>
       </div>

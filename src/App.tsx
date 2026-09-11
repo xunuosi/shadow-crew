@@ -3,7 +3,7 @@
  * Fusing Block Buzz, Codex, and Google Antigravity
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Project,
   Agent, 
@@ -70,11 +70,18 @@ export default function App() {
                 a.id !== 'agent-devops'
             )
             .map((a: any) => {
+              let updatedWorkspace = a.workspace;
+              if (updatedWorkspace?.rootPath?.includes('/home/norris')) {
+                updatedWorkspace = {
+                  ...updatedWorkspace,
+                  rootPath: '/Users/xunuosi/Code/Lx/AI/shadow-crew',
+                };
+              }
               if (a.id === 'agent-shinobi-core') {
                 return {
                   ...a,
                   acpCommandOrUrl: './target/debug/shinobi-agent',
-                  workspace: {
+                  workspace: updatedWorkspace || {
                     rootPath: '/Users/xunuosi/Code/Lx/AI/shadow-crew',
                     repoName: 'shadow-crew',
                     gitBranch: 'main',
@@ -83,7 +90,7 @@ export default function App() {
                   },
                 };
               }
-              return a;
+              return updatedWorkspace ? { ...a, workspace: updatedWorkspace } : a;
             });
           filtered.sort((a: any, b: any) => (a.id === 'agent-shinobi-core' ? -1 : b.id === 'agent-shinobi-core' ? 1 : 0));
           if (filtered.length > 0) return filtered;
@@ -317,6 +324,7 @@ export default function App() {
   const [isDeleteChannelModalOpen, setIsDeleteChannelModalOpen] = useState<boolean>(false);
   const [modalChannelId, setModalChannelId] = useState<string | null>(null);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState<boolean>(false);
+  const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [isRustTauriHubOpen, setIsRustTauriHubOpen] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
 
@@ -353,6 +361,59 @@ export default function App() {
       setActiveThreadId('');
     }
   }, [activeThread?.id]);
+
+  // Synchronize Agent running status with Tauri backend process manager
+  const syncRunningAgentsWithBackend = useCallback(async () => {
+    if (typeof window === 'undefined') return;
+    const tauriInvoke =
+      (window as any).__TAURI_INTERNALS__?.invoke ||
+      (window as any).__TAURI__?.core?.invoke;
+    if (!tauriInvoke) return;
+
+    try {
+      const runningIds: string[] = await tauriInvoke('get_running_agent_ids');
+      if (Array.isArray(runningIds)) {
+        setAgents((prev) =>
+          prev.map((a) => {
+            const isAlive = runningIds.includes(a.id);
+            if (isAlive) {
+              if (a.status === 'idle') {
+                return { ...a, status: 'running' };
+              }
+              return a;
+            } else {
+              if (a.status === 'running') {
+                return { ...a, status: 'idle' };
+              }
+              return a;
+            }
+          })
+        );
+      }
+    } catch (err) {
+      console.warn('[Sync ACP] Failed to query running agents:', err);
+    }
+  }, []);
+
+  // Sync on initial mount
+  useEffect(() => {
+    syncRunningAgentsWithBackend();
+  }, [syncRunningAgentsWithBackend]);
+
+  // Sync when switching views (e.g. chat -> agents)
+  useEffect(() => {
+    if (mainView === 'agents') {
+      syncRunningAgentsWithBackend();
+    }
+  }, [mainView, syncRunningAgentsWithBackend]);
+
+  // Periodic polling every 3 seconds to keep UI in lockstep with OS processes
+  useEffect(() => {
+    const timer = setInterval(() => {
+      syncRunningAgentsWithBackend();
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [syncRunningAgentsWithBackend]);
 
   // Helper callbacks to open modals for specific channel or active channel
   const handleOpenMembersModal = (channelId?: string) => {
@@ -1085,7 +1146,8 @@ export default function App() {
           [activeThread.id]: [...(prev[activeThread.id] || []), agentReply],
         }));
 
-        setAgents((prev) => prev.map((a) => (a.id === primaryResponder.id ? { ...a, status: 'idle' } : a)));
+        setAgents((prev) => prev.map((a) => (a.id === primaryResponder.id ? { ...a, status: 'running' } : a)));
+        syncRunningAgentsWithBackend();
         setIsGenerating(false);
 
         logRpc(primaryResponder.name, 'agent_to_client', 'session/prompt:result', {
@@ -1114,6 +1176,7 @@ export default function App() {
           [activeThread.id]: [...(prev[activeThread.id] || []), errorReply],
         }));
         setAgents((prev) => prev.map((a) => (a.id === primaryResponder.id ? { ...a, status: 'idle' } : a)));
+        syncRunningAgentsWithBackend();
         setIsGenerating(false);
       });
   };
@@ -1236,30 +1299,62 @@ export default function App() {
           agents={agents}
           teams={teams}
           channels={channels}
-          onOpenConnectAgentModal={() => setIsConnectModalOpen(true)}
+          onOpenConnectAgentModal={() => {
+            setEditingAgent(null);
+            setIsConnectModalOpen(true);
+          }}
           onOpenCreateTeamModal={() => setIsCreateTeamModalOpen(true)}
           onOpenAgentDefaultsModal={() => setIsAgentDefaultsModalOpen(true)}
+          onEditAgent={(agent) => {
+            setEditingAgent(agent);
+            setIsConnectModalOpen(true);
+          }}
           onToggleAgentStatus={(agentId) => {
-            setAgents((prev) =>
-              prev.map((a) => {
-                if (a.id === agentId) {
-                  const nextStatus = a.status === 'idle' ? 'thinking' : 'idle';
-                  if (nextStatus === 'thinking') {
-                    if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke) {
-                      (window as any).__TAURI_INTERNALS__.invoke('spawn_acp_agent', {
-                        agentId: a.id,
-                        command: a.acpCommandOrUrl,
-                        cwd: a.workspace?.rootPath || '.',
-                      }).catch((err: any) => {
-                        console.warn('Spawn agent info:', err);
-                      });
-                    }
-                  }
-                  return { ...a, status: nextStatus };
-                }
-                return a;
-              })
-            );
+            const currentAgent = agents.find((a) => a.id === agentId);
+            if (!currentAgent) return;
+            const isCurrentlyRunning = currentAgent.status !== 'idle';
+
+            if (!isCurrentlyRunning) {
+              // 启动 Agent 进程
+              setAgents((prev) =>
+                prev.map((a) =>
+                  a.id === agentId ? { ...a, status: 'running' } : a
+                )
+              );
+              if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke) {
+                (window as any).__TAURI_INTERNALS__.invoke('spawn_acp_agent', {
+                  agentId: currentAgent.id,
+                  command: currentAgent.acpCommandOrUrl,
+                  cwd: currentAgent.workspace?.rootPath || activeProject?.localWorkspaceRoot || '.',
+                  envVars: currentAgent.envVars || [],
+                }).then(() => {
+                  syncRunningAgentsWithBackend();
+                }).catch((err: any) => {
+                  console.warn('Spawn agent error:', err);
+                  setAgents((prev) =>
+                    prev.map((a) =>
+                      a.id === agentId ? { ...a, status: 'idle' } : a
+                    )
+                  );
+                });
+              }
+            } else {
+              // 终止 Agent 进程
+              setAgents((prev) =>
+                prev.map((a) =>
+                  a.id === agentId ? { ...a, status: 'idle' } : a
+                )
+              );
+              if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke) {
+                (window as any).__TAURI_INTERNALS__.invoke('stop_acp_agent', {
+                  agentId: currentAgent.id,
+                }).then(() => {
+                  syncRunningAgentsWithBackend();
+                }).catch((err: any) => {
+                  console.warn('Stop agent error:', err);
+                });
+              }
+            }
           }}
           onLaunchTeamThread={(team) => {
             handleLaunchTeamThread(team);
@@ -1409,6 +1504,10 @@ export default function App() {
             }
           }}
           onOpenRustTauriHub={() => setIsRustTauriHubOpen(true)}
+          onEditAgent={(agent) => {
+            setEditingAgent(agent);
+            setIsConnectModalOpen(true);
+          }}
           onClose={() => setIsAcpInspectorOpen(false)}
         />
       )}
@@ -1483,10 +1582,39 @@ export default function App() {
         />
       )}
 
-      {/* 9. Connect New ACP Agent Modal */}
+      {/* 9. Connect / Edit ACP Agent Modal */}
       <ConnectAgentModal
         isOpen={isConnectModalOpen}
-        onClose={() => setIsConnectModalOpen(false)}
+        onClose={() => {
+          setIsConnectModalOpen(false);
+          setEditingAgent(null);
+        }}
+        initialAgent={editingAgent}
+        defaultWorkspaceRoot={activeProject?.localWorkspaceRoot || '.'}
+        onUpdateAgent={(agentId, updatedData) => {
+          setAgents((prev) =>
+            prev.map((a) => {
+              if (a.id === agentId) {
+                return {
+                  ...a,
+                  ...updatedData,
+                  status: 'idle',
+                  workspace: {
+                    ...a.workspace,
+                    ...(updatedData.workspace || {}),
+                  },
+                };
+              }
+              return a;
+            })
+          );
+          // 若底层正在运行旧进程，主动停止以确保后续以更新后的配置/环境变量重新拉起
+          if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke) {
+            (window as any).__TAURI_INTERNALS__.invoke('stop_acp_agent', { agentId })
+              .then(() => syncRunningAgentsWithBackend())
+              .catch(() => {});
+          }
+        }}
         onConnectAgent={(agentData) => {
           const newAg: Agent = {
             id: `agent-${Date.now()}`,
@@ -1512,7 +1640,7 @@ export default function App() {
               supportsStreaming: true,
             },
             workspace: {
-              rootPath: agentData.workspace?.rootPath || '/home/norris/workspace/shadow-crew',
+              rootPath: agentData.workspace?.rootPath || activeProject?.localWorkspaceRoot || '.',
               repoName: 'shadow-crew',
               gitBranch: 'main',
               permissionMode: 'full_read_write',

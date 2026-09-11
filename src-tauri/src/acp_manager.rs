@@ -47,9 +47,26 @@ pub fn read_recent_acp_logs(lines_count: usize) -> String {
     }
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum AcpEnvVar {
+    Pair(String, String),
+    Object { key: String, value: String },
+}
+
+impl AcpEnvVar {
+    pub fn into_pair(self) -> (String, String) {
+        match self {
+            AcpEnvVar::Pair(k, v) => (k, v),
+            AcpEnvVar::Object { key, value } => (key, value),
+        }
+    }
+}
+
 pub struct RunningAgent {
     #[allow(dead_code)]
     pub pid: u32,
+    pub child: Arc<TokioMutex<Option<Child>>>,
     pub stdin_tx: mpsc::Sender<String>,
     pub pending_requests: Arc<TokioMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
     #[allow(dead_code)]
@@ -80,12 +97,35 @@ impl AcpProcessManager {
             .unwrap_or(false)
     }
 
+    /// 获取当前所有正在运行的 Agent ID 列表
+    pub fn get_running_agent_ids(&self) -> Vec<String> {
+        self.agents
+            .iter()
+            .filter(|(_, a)| a.is_alive.load(Ordering::SeqCst))
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// 终止指定 Agent 进程并释放资源
+    pub async fn stop_agent(&mut self, agent_id: &str) -> Result<()> {
+        if let Some(agent) = self.agents.remove(agent_id) {
+            agent.is_alive.store(false, Ordering::SeqCst);
+            drop(agent.stdin_tx);
+            if let Some(mut child) = agent.child.lock().await.take() {
+                let _ = child.kill().await;
+            }
+            log_acp_event(agent_id, "STOPPED", "Agent process terminated by user");
+        }
+        Ok(())
+    }
+
     /// 启动子进程并接管 stdin/stdout
     pub async fn spawn_agent(
         &mut self,
         agent_id: &str,
         command_line: &str,
         cwd: &str,
+        env_vars: Option<Vec<AcpEnvVar>>,
         app_handle: AppHandle,
     ) -> Result<u32> {
         let mut actual_cmd = command_line.to_string();
@@ -127,19 +167,46 @@ impl AcpProcessManager {
         let program = parts[0];
         let args = &parts[1..];
 
-        let mut child: Child = Command::new(program)
-            .args(args)
+        let mut cmd = Command::new(program);
+        cmd.args(args)
             .current_dir(cwd)
             .env("PATH", &extra_paths)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        // 注入用户配置的环境变量 (如 ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL 等)
+        if let Some(vars) = env_vars {
+            for item in vars {
+                let (k, v) = item.into_pair();
+                let trimmed_k = k.trim();
+                let trimmed_v = v.trim();
+                if !trimmed_k.is_empty() && !trimmed_v.is_empty() {
+                    cmd.env(trimmed_k, trimmed_v);
+                    let display_val = if trimmed_k.to_uppercase().contains("KEY")
+                        || trimmed_k.to_uppercase().contains("TOKEN")
+                        || trimmed_k.to_uppercase().contains("SECRET")
+                    {
+                        "***"
+                    } else {
+                        trimmed_v
+                    };
+                    tracing::info!("[Agent {}] Injected ENV: {} = {}", agent_id, trimmed_k, display_val);
+                    log_acp_event(agent_id, "ENV", &format!("Injected: {} = {}", trimmed_k, display_val));
+                }
+            }
+        }
+
+        let mut child: Child = cmd
             .spawn()
             .with_context(|| format!("Failed to spawn command '{}' (resolved from '{}')", actual_cmd, command_line))?;
 
         let pid = child.id().unwrap_or(0);
         let stdin = child.stdin.take().expect("Failed to open stdin");
         let stdout = child.stdout.take().expect("Failed to open stdout");
+        let stderr_opt = child.stderr.take();
+        let child_arc = Arc::new(TokioMutex::new(Some(child)));
 
         log_acp_event(
             agent_id,
@@ -148,7 +215,7 @@ impl AcpProcessManager {
         );
 
         // 异步任务: 监听并排空 stderr 避免管道缓冲区阻塞，并落盘
-        if let Some(stderr) = child.stderr.take() {
+        if let Some(stderr) = stderr_opt {
             let agent_id_err = agent_id.to_string();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stderr).lines();
@@ -285,6 +352,13 @@ impl AcpProcessManager {
             // 当 stdout 到达 EOF 时，标记子进程退出并通知所有挂起的请求
             is_alive_clone.store(false, Ordering::SeqCst);
             log_acp_event(&agent_id_clone, "EXIT", "Agent process stdout EOF reached");
+            let _ = app_handle_clone.emit(
+                "acp:status_change",
+                serde_json::json!({
+                    "agent_id": &agent_id_clone,
+                    "status": "stopped"
+                }),
+            );
             let mut map = pending_requests_clone.lock().await;
             for (_, tx) in map.drain() {
                 let _ = tx.send(serde_json::json!({
@@ -298,6 +372,7 @@ impl AcpProcessManager {
             agent_id.to_string(),
             RunningAgent {
                 pid,
+                child: child_arc,
                 stdin_tx,
                 pending_requests,
                 active_chunks,
@@ -307,6 +382,15 @@ impl AcpProcessManager {
                 session_ids,
                 cwd: cwd.to_string(),
             },
+        );
+
+        let _ = app_handle.emit(
+            "acp:status_change",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "status": "running",
+                "pid": pid
+            }),
         );
 
         Ok(pid)

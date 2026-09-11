@@ -39,7 +39,7 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       handleSend();
     }
@@ -114,16 +114,17 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
             value={replyContent}
             onChange={(e) => setReplyContent(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="在子话题中回复..."
+            placeholder="在子话题中回复... (⌘ + Enter 发送)"
             rows={2}
             className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none"
           />
           <div className="flex items-center justify-between pt-1 border-t border-border mt-1">
-            <span className="text-[10px] text-fg-muted font-mono">Shift+Enter 换行</span>
+            <span className="text-[10px] text-fg-muted font-mono">⌘ + Enter 发送</span>
             <button
               onClick={handleSend}
               disabled={!replyContent.trim()}
               className="p-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white transition-all cursor-pointer"
+              title="发送回复 (⌘ + Enter)"
             >
               <Send className="w-3 h-3" />
             </button>

@@ -59,7 +59,7 @@ export interface Agent {
   role: string;
   description: string;
   color: string;
-  status: 'idle' | 'thinking' | 'using_skill' | 'accessing_workspace' | 'querying_memory';
+  status: 'idle' | 'running' | 'thinking' | 'using_skill' | 'accessing_workspace' | 'querying_memory';
   statusDetail?: string;
   modelBadge?: string; // e.g., 'DeepSeek V3', 'Claude 3.7 Sonnet', 'Gemini 2.5 Pro'
   isManagedByYou?: boolean;

@@ -15,7 +15,8 @@ import {
   Cpu,
   Layers,
   ArrowRight,
-  Server
+  Server,
+  Pencil
 } from 'lucide-react';
 
 interface AcpInspectorProps {
@@ -25,6 +26,7 @@ interface AcpInspectorProps {
   onAddAgentMemoryItem: (agentId: string, category: any, key: string, content: string) => void;
   onRunAgentSkill: (agentId: string, skillId: string) => void;
   onOpenRustTauriHub?: () => void;
+  onEditAgent?: (agent: Agent) => void;
   onClose: () => void;
 }
 
@@ -35,6 +37,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
   onAddAgentMemoryItem,
   onRunAgentSkill,
   onOpenRustTauriHub,
+  onEditAgent,
   onClose,
 }) => {
   const [activeTab, setActiveTab] = useState<'architecture' | 'rust_tauri' | 'memory' | 'workspace' | 'skills' | 'rpc_logs'>('rust_tauri');
@@ -101,6 +104,15 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
           <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
             {selectedAgent.name}
           </span>
+          {onEditAgent && (
+            <button
+              onClick={() => onEditAgent(selectedAgent)}
+              className="p-1 text-fg-muted hover:text-accent rounded hover:bg-surface transition-colors cursor-pointer"
+              title="编辑 Agent 配置"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+          )}
           <button
             onClick={onClose}
             className="text-fg-muted hover:text-fg px-1 text-sm cursor-pointer"

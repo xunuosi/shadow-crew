@@ -21,6 +21,9 @@ interface ConnectAgentModalProps {
   isOpen: boolean;
   onClose: () => void;
   onConnectAgent: (newAgent: Partial<Agent>) => void;
+  defaultWorkspaceRoot?: string;
+  initialAgent?: Agent | null;
+  onUpdateAgent?: (agentId: string, updatedData: Partial<Agent>) => void;
 }
 
 interface EnvVarItem {
@@ -42,6 +45,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   isOpen,
   onClose,
   onConnectAgent,
+  defaultWorkspaceRoot,
+  initialAgent,
+  onUpdateAgent,
 }) => {
   if (!isOpen) return null;
 
@@ -51,6 +57,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     'Local ultra-fast native agent runtime with private SQLite memory bank.'
   );
   const [selectedIconId, setSelectedIconId] = useState('shinobi');
+  const [customCommand, setCustomCommand] = useState('');
   const [isPickingIcon, setIsPickingIcon] = useState(false);
 
   // Local ACP Runtimes & Discovery
@@ -68,6 +75,63 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   // Visual Theme support
   const [isLightMode, setIsLightMode] = useState(true);
 
+  // Initialize or reset form based on initialAgent
+  useEffect(() => {
+    if (initialAgent) {
+      setName(initialAgent.name || '');
+      setDescription(initialAgent.description || initialAgent.role || '');
+      setCustomCommand(initialAgent.acpCommandOrUrl || '');
+
+      // Map icon from avatar or name
+      if (initialAgent.avatar === '🥷' || initialAgent.name.toLowerCase().includes('shinobi')) {
+        setSelectedIconId('shinobi');
+      } else if (initialAgent.avatar === '🪷' || initialAgent.name.toLowerCase().includes('claude')) {
+        setSelectedIconId('claudecode');
+      } else if (initialAgent.avatar === '🦗' || initialAgent.name.toLowerCase().includes('openclaw')) {
+        setSelectedIconId('openclaw');
+      } else if (initialAgent.avatar === '🐞' || initialAgent.name.toLowerCase().includes('deepseek')) {
+        setSelectedIconId('alien');
+      } else if (initialAgent.avatar === '🧭' || initialAgent.name.toLowerCase().includes('astra')) {
+        setSelectedIconId('astra');
+      } else {
+        setSelectedIconId('palette');
+      }
+
+      // Map envVars
+      if (initialAgent.envVars && initialAgent.envVars.length > 0) {
+        setEnvVars(
+          initialAgent.envVars.map((v, idx) => ({
+            id: `env-${idx}-${Date.now()}`,
+            key: v.key,
+            value: v.value,
+          }))
+        );
+      } else {
+        setEnvVars([]);
+      }
+
+      // Map ACP runtime
+      const matched = runtimes.find(
+        (r) =>
+          r.name.toLowerCase() === initialAgent.localAcpProfile?.toLowerCase() ||
+          r.command === initialAgent.acpCommandOrUrl
+      );
+      if (matched) {
+        setSelectedAcpId(matched.id);
+      }
+    } else {
+      setName('Shinobi Native Agent');
+      setDescription('Local ultra-fast native agent runtime with private SQLite memory bank.');
+      setSelectedIconId('shinobi');
+      setSelectedAcpId('shinobi_core');
+      setCustomCommand('./target/debug/shinobi-agent');
+      setEnvVars([
+        { id: '1', key: 'SHINOBI_LOG', value: 'debug' },
+        { id: '2', key: 'MEMORY_STORE', value: 'sqlite' },
+      ]);
+    }
+  }, [initialAgent, isOpen, runtimes]);
+
   // Fetch / probe local ACP agents
   const fetchRuntimes = async () => {
     setIsLoadingRuntimes(true);
@@ -80,6 +144,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         const firstAvailable = list.find((r) => r.availability === 'available') || list[0];
         if (firstAvailable) {
           setSelectedAcpId(firstAvailable.id);
+          if (!customCommand) setCustomCommand(firstAvailable.command);
         }
       }
     } catch (e) {
@@ -102,19 +167,23 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     setSelectedAcpId(option.id);
     setIsAcpDropdownOpen(false);
 
-    // Auto update Name and Description if using default
-    const cleanName = option.name.split(' (')[0];
-    setName(cleanName);
-    setDescription(option.description);
+    // Auto update Name and Description if creating new
+    if (!initialAgent) {
+      const cleanName = option.name.split(' (')[0];
+      setName(cleanName);
+      setDescription(option.description);
 
-    // Map icon if available
-    if (option.id === 'claude_code') setSelectedIconId('claudecode');
-    else if (option.id === 'openclaw') setSelectedIconId('openclaw');
-    else if (option.id === 'shinobi_core') setSelectedIconId('shinobi');
-    else setSelectedIconId('palette');
+      // Map icon if available
+      if (option.id === 'claude_code') setSelectedIconId('claudecode');
+      else if (option.id === 'openclaw') setSelectedIconId('openclaw');
+      else if (option.id === 'shinobi_core') setSelectedIconId('shinobi');
+      else setSelectedIconId('palette');
+    }
 
-    // Auto populate recommended ENV vars
-    if (option.recommended_env && option.recommended_env.length > 0) {
+    setCustomCommand(option.command);
+
+    // Auto populate recommended ENV vars if empty or creating
+    if (option.recommended_env && option.recommended_env.length > 0 && (!initialAgent || envVars.length === 0)) {
       setEnvVars(
         option.recommended_env.map(([key, value], idx) => ({
           id: `env-${Date.now()}-${idx}`,
@@ -144,56 +213,74 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !isReady) return;
+    if (!name.trim()) return;
+    if (!initialAgent && !isReady) return;
 
     const chosenIcon = PRESET_ICONS.find((i) => i.id === selectedIconId);
+    const resolvedCommand = customCommand.trim() || selectedAcp.command;
 
-    onConnectAgent({
-      name: name.trim(),
-      handle: `@${name.trim().toLowerCase().replace(/\s+/g, '-')}`,
-      avatar: chosenIcon?.icon || '🤖',
-      role: selectedAcp.name,
-      description: description.trim() || selectedAcp.description,
-      localAcpProfile: selectedAcp.name,
-      envVars: envVars
-        .filter((v) => v.key.trim().length > 0)
-        .map((v) => ({ key: v.key.trim(), value: v.value })),
-      color: '#3b82f6',
-      status: 'idle',
-      modelBadge: selectedAcp.id === 'claude_code' 
-        ? 'Claude 3.7 Sonnet' 
-        : selectedAcp.id === 'kimi_code'
-        ? 'Kimi 2.5'
-        : 'Local ACP',
-      isManagedByYou: true,
-      acpTransport: selectedAcp.transport,
-      acpCommandOrUrl: selectedAcp.command,
-      protocolVersion: '2025-01-01 (ACP v1.0.4)',
-      capabilities: {
-        canUseInternalMemory: true,
-        canAccessWorkspaceFiles: true,
-        canExecuteSkills: true,
-        canDelegateToSubAgents: true,
-        supportsStreaming: true,
-      },
-      workspace: {
-        rootPath: '/home/norris/workspace/shadow-crew',
-        repoName: 'shadow-crew',
-        gitBranch: 'main',
-        permissionMode: 'full_read_write',
-        activeFiles: ['src/App.tsx'],
-      },
-      skills: [],
-      memory: {
-        internalMemoryPath: `~/.local/share/shinobi/${name
-          .toLowerCase()
-          .replace(/\s+/g, '_')}_memory.sqlite`,
-        persistentType: 'sqlite',
-        persistentItems: [],
-        sessionCacheCount: 0,
-      },
-      isJoinedCurrentRoom: true,
-    });
+    if (initialAgent && onUpdateAgent) {
+      onUpdateAgent(initialAgent.id, {
+        name: name.trim(),
+        handle: initialAgent.handle || `@${name.trim().toLowerCase().replace(/\s+/g, '-')}`,
+        avatar: chosenIcon?.icon || initialAgent.avatar || '🤖',
+        role: selectedAcp.name,
+        description: description.trim() || selectedAcp.description,
+        localAcpProfile: selectedAcp.name,
+        envVars: envVars
+          .filter((v) => v.key.trim().length > 0)
+          .map((v) => ({ key: v.key.trim(), value: v.value })),
+        acpTransport: selectedAcp.transport,
+        acpCommandOrUrl: resolvedCommand,
+      });
+    } else {
+      onConnectAgent({
+        name: name.trim(),
+        handle: `@${name.trim().toLowerCase().replace(/\s+/g, '-')}`,
+        avatar: chosenIcon?.icon || '🤖',
+        role: selectedAcp.name,
+        description: description.trim() || selectedAcp.description,
+        localAcpProfile: selectedAcp.name,
+        envVars: envVars
+          .filter((v) => v.key.trim().length > 0)
+          .map((v) => ({ key: v.key.trim(), value: v.value })),
+        color: '#3b82f6',
+        status: 'idle',
+        modelBadge: selectedAcp.id === 'claude_code' 
+          ? 'Claude 3.7 Sonnet' 
+          : selectedAcp.id === 'kimi_code'
+          ? 'Kimi 2.5'
+          : 'Local ACP',
+        isManagedByYou: true,
+        acpTransport: selectedAcp.transport,
+        acpCommandOrUrl: resolvedCommand,
+        protocolVersion: '2025-01-01 (ACP v1.0.4)',
+        capabilities: {
+          canUseInternalMemory: true,
+          canAccessWorkspaceFiles: true,
+          canExecuteSkills: true,
+          canDelegateToSubAgents: true,
+          supportsStreaming: true,
+        },
+        workspace: {
+          rootPath: defaultWorkspaceRoot || '.',
+          repoName: 'shadow-crew',
+          gitBranch: 'main',
+          permissionMode: 'full_read_write',
+          activeFiles: ['src/App.tsx'],
+        },
+        skills: [],
+        memory: {
+          internalMemoryPath: `~/.local/share/shinobi/${name
+            .toLowerCase()
+            .replace(/\s+/g, '_')}_memory.sqlite`,
+          persistentType: 'sqlite',
+          persistentItems: [],
+          sessionCacheCount: 0,
+        },
+        isJoinedCurrentRoom: true,
+      });
+    }
 
     onClose();
   };
@@ -240,7 +327,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       >
         {/* Modal Header */}
         <div className={`px-6 py-4 border-b flex items-center justify-between ${isLightMode ? 'border-gray-100' : 'border-[#1b2536]'}`}>
-          <h2 className="font-bold text-lg tracking-tight">Create New Agent</h2>
+          <h2 className="font-bold text-lg tracking-tight">
+            {initialAgent ? `Edit Agent: ${initialAgent.name}` : 'Create New Agent'}
+          </h2>
 
           <div className="flex items-center gap-2">
             {/* Theme Toggle Button */}
@@ -491,6 +580,23 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                 </div>
               </div>
             )}
+
+            {/* Custom Command Input */}
+            <div className="mt-3">
+              <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                CLI Command / Executable
+              </label>
+              <input
+                type="text"
+                value={customCommand}
+                onChange={(e) => setCustomCommand(e.target.value)}
+                placeholder={selectedAcp.command}
+                className={`w-full rounded-xl px-3.5 py-2 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
+              />
+              <p className="text-[10px] text-gray-400 mt-1">
+                实际拉起该 Agent 的命令行。支持自定义启动参数。
+              </p>
+            </div>
           </div>
 
           {/* Bottom Section: Environment Variables (ENV) */}
@@ -500,6 +606,20 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                 Environment Variables (ENV)
               </label>
             </div>
+
+            {/* Claude Auth Notice */}
+            {(selectedAcp.id === 'claude_code' || name.toLowerCase().includes('claude')) && (
+              <div className={`p-2.5 rounded-xl border text-[11px] leading-relaxed flex items-start gap-2 ${
+                isLightMode 
+                  ? 'bg-amber-50/80 border-amber-200 text-amber-900' 
+                  : 'bg-amber-950/20 border-amber-800/40 text-amber-200/90'
+              }`}>
+                <span className="text-amber-500 font-bold shrink-0">⚠️ 认证提示:</span>
+                <span>
+                  Anthropic 官方规定，第三方客户端 ACP 模式<strong>无法直接复用</strong>终端的网页版个人订阅 OAuth 凭证。必须在此环境变量中配置 <code>ANTHROPIC_API_KEY</code>（形如 <code>sk-ant-api03-...</code>），或配合 <code>ANTHROPIC_BASE_URL</code> 转发中转。
+                </span>
+              </div>
+            )}
 
             {/* Key-Value Header */}
             <div className="grid grid-cols-12 gap-3 px-1 text-[11px] font-medium text-gray-400">
@@ -527,7 +647,13 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                   <div className="col-span-6">
                     <input
                       type="text"
-                      placeholder="value"
+                      placeholder={
+                        item.key === 'ANTHROPIC_API_KEY'
+                          ? 'sk-ant-api03-... (必填)'
+                          : item.key === 'ANTHROPIC_BASE_URL'
+                          ? 'https://api.anthropic.com'
+                          : 'value'
+                      }
                       value={item.value}
                       onChange={(e) => handleUpdateVariable(item.id, 'value', e.target.value)}
                       className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
@@ -577,7 +703,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
             }`}
           >
             <div>
-              {!isReady && (
+              {!isReady && !initialAgent && (
                 <span className="text-[11px] text-amber-600 dark:text-amber-400 font-medium">
                   * 需完成本地安装/适配后方可创建
                 </span>
@@ -598,16 +724,18 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
               </button>
               <button
                 type="submit"
-                disabled={!name.trim() || !isReady}
+                disabled={!name.trim() || (!initialAgent && !isReady)}
                 className={`px-5 py-2 rounded-xl text-xs font-semibold text-white transition-all shadow-md ${
-                  name.trim() && isReady
+                  name.trim() && (initialAgent || isReady)
                     ? isLightMode
                       ? 'bg-[#2563eb] hover:bg-[#1d4ed8] cursor-pointer'
                       : 'bg-cyan-600 hover:bg-cyan-500 cursor-pointer'
                     : 'bg-gray-300 dark:bg-zinc-800 text-gray-500 dark:text-zinc-500 cursor-not-allowed shadow-none'
                 }`}
               >
-                {selectedAcp.availability === 'not_adapted'
+                {initialAgent
+                  ? '保存修改 (Save Changes)'
+                  : selectedAcp.availability === 'not_adapted'
                   ? 'Adapter Required'
                   : selectedAcp.availability === 'not_installed'
                   ? 'Not Installed'
