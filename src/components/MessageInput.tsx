@@ -1,26 +1,41 @@
 import React, { useState } from 'react';
 import { Agent } from '../types';
-import { Send, AtSign, Sparkles, Terminal, Database, FolderGit2, Wrench, Command } from 'lucide-react';
+import { 
+  Send, 
+  AtSign, 
+  Paperclip, 
+  Mic, 
+  Smile, 
+  Type, 
+  Bot, 
+  Sparkles,
+  ArrowUp,
+  GitBranch,
+  Plus
+} from 'lucide-react';
 
 interface MessageInputProps {
   onSendMessage: (content: string, targetAgentId?: string) => void;
   activeAgents: Agent[];
-  isGenerating: boolean;
+  isGenerating?: boolean;
+  channelName?: string;
+  onOpenNewTopicModal?: () => void;
 }
 
 export const MessageInput: React.FC<MessageInputProps> = ({
   onSendMessage,
   activeAgents,
-  isGenerating,
+  isGenerating = false,
+  channelName = 'TestChannel',
+  onOpenNewTopicModal,
 }) => {
   const [content, setContent] = useState('');
-  const [selectedMention, setSelectedMention] = useState<string | null>(null);
+  const [selectedModel, setSelectedModel] = useState<'claude' | 'deepseek' | 'openai' | 'shinobi'>('claude');
 
   const handleSend = () => {
     if (!content.trim() || isGenerating) return;
-    onSendMessage(content, selectedMention || undefined);
+    onSendMessage(content);
     setContent('');
-    setSelectedMention(null);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -30,133 +45,159 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     }
   };
 
-  const applyPresetPrompt = (preset: string, targetAgentHandle?: string) => {
-    setContent(preset);
-    if (targetAgentHandle) {
-      setSelectedMention(targetAgentHandle);
-    }
+  const addMention = (handle: string) => {
+    setContent((prev) => {
+      if (prev.includes(handle)) return prev;
+      return `${handle} ${prev}`.trim() + ' ';
+    });
   };
 
   return (
     <div 
-      id="buzz-message-input-area"
-      className="p-3 bg-[#0d1017] border-t border-[#1a212f] select-none text-xs"
+      id="shinobi-composer-pane"
+      className="p-3.5 bg-surface border-t border-border select-none text-xs transition-colors duration-150"
     >
-      {/* Quick Mention Chips & Test Scenarios Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-1.5 mb-2">
-        {/* Mentions */}
-        <div className="flex items-center gap-1 overflow-x-auto pb-1 text-[11px]">
-          <span className="text-gray-500 font-mono text-[10px] flex items-center gap-0.5">
-            <AtSign className="w-3 h-3" /> @召唤:
-          </span>
+      <div className="max-w-3xl mx-auto space-y-2">
+        {/* 1. Top Quick-Mention Agent Pills + New Topic Trigger */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 text-[11px]">
+          {onOpenNewTopicModal && (
+            <button
+              onClick={onOpenNewTopicModal}
+              className="px-2.5 py-1 rounded-full bg-purple-500/15 hover:bg-purple-500/25 text-purple-600 dark:text-purple-300 border border-purple-500/40 text-[11px] font-semibold transition-all flex items-center gap-1 cursor-pointer shrink-0 shadow-2xs"
+              title="新建议题 (开启独立单层推演)"
+            >
+              <GitBranch className="w-3.5 h-3.5 text-purple-500" />
+              <span>+ 新建议题</span>
+            </button>
+          )}
+
           {activeAgents.map((agent) => (
             <button
               key={agent.id}
-              onClick={() => {
-                setContent((prev) => `${agent.handle} ${prev.replace(agent.handle, '')}`.trim() + ' ');
-                setSelectedMention(agent.id);
-              }}
-              className="px-2 py-0.5 rounded-full bg-[#151c2a] hover:bg-[#1f2a3f] text-gray-300 border border-[#232f45] transition-colors flex items-center gap-1 cursor-pointer"
+              onClick={() => addMention(agent.handle)}
+              className="px-2.5 py-1 rounded-full bg-surface-subtle hover:bg-surface-hover text-fg-secondary hover:text-fg border border-border hover:border-accent/40 transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+              title={`点击召唤 ${agent.name}`}
             >
-              <span>{agent.avatar}</span>
-              <span className="font-mono text-[10px] text-emerald-400">{agent.handle}</span>
+              <span className="text-xs">{agent.avatar}</span>
+              <span className="font-semibold text-xs text-fg">{agent.name}</span>
             </button>
           ))}
           <button
-            onClick={() => {
-              setContent((prev) => `@all ${prev.replace('@all', '')}`.trim() + ' ');
-            }}
-            className="px-2 py-0.5 rounded-full bg-[#1c2333] hover:bg-[#253047] text-gray-300 border border-[#2a374f] font-mono text-[10px] cursor-pointer"
+            onClick={() => addMention('@all')}
+            className="px-2.5 py-1 rounded-full bg-surface-subtle hover:bg-surface-hover text-fg-muted hover:text-fg border border-border font-mono text-[10px] cursor-pointer shrink-0"
           >
-            @all (全员讨论)
+            @all 全员
           </button>
         </div>
 
-        {/* Quick Question Verification Presets */}
-        <div className="flex items-center gap-1 overflow-x-auto text-[10px] text-gray-400">
-          <span className="text-gray-500">验证三要素:</span>
-          <button
-            onClick={() => applyPresetPrompt('@buzz-agent 请检索你的本地私有数据库记忆，关于 ACP 协议的历史处理规则是什么？', 'agent-buzz')}
-            className="px-1.5 py-0.5 rounded bg-[#131b28] hover:bg-[#1a2538] border border-emerald-800/40 text-emerald-300 transition-colors flex items-center gap-1 cursor-pointer"
-            title="测试 Agent 是否能使用自身私有 Memory"
-          >
-            <Database className="w-2.5 h-2.5 text-emerald-400" />
-            <span>测试私有Memory</span>
-          </button>
+        {/* 2. Main Textarea Box */}
+        <div className="relative bg-surface-subtle border border-border rounded-2xl p-3 focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/20 transition-all">
+          <textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={`在 #${channelName} 发起讨论或 @Agent 执行任务...`}
+            rows={2}
+            className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none leading-relaxed"
+          />
 
-          <button
-            onClick={() => applyPresetPrompt('@buzz-agent 请读取工作空间文件 crates/buzz-acp/src/client.rs 并分析其 Session 结构体', 'agent-buzz')}
-            className="px-1.5 py-0.5 rounded bg-[#131b28] hover:bg-[#1a2538] border border-blue-800/40 text-blue-300 transition-colors flex items-center gap-1 cursor-pointer"
-            title="测试 Agent 是否能操作挂载的工作区 Workspace"
-          >
-            <FolderGit2 className="w-2.5 h-2.5 text-blue-400" />
-            <span>测试工作区Workspace</span>
-          </button>
+          {/* 3. Bottom Toolbar with Models & Actions */}
+          <div className="flex items-center justify-between pt-2 border-t border-border mt-1 select-none">
+            {/* Left Action Icons */}
+            <div className="flex items-center gap-1 text-fg-muted">
+              <button 
+                onClick={() => addMention('@')}
+                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer"
+                title="提及 Agent"
+              >
+                <AtSign className="w-3.5 h-3.5" />
+              </button>
 
-          <button
-            onClick={() => applyPresetPrompt('@buzz-agent 请通过 buzz-dev-mcp 技能运行 cargo test 并在讨论中汇报测试覆盖情况', 'agent-buzz')}
-            className="px-1.5 py-0.5 rounded bg-[#131b28] hover:bg-[#1a2538] border border-purple-800/40 text-purple-300 transition-colors flex items-center gap-1 cursor-pointer"
-            title="测试 Agent 是否能执行内置与 MCP Skills"
-          >
-            <Wrench className="w-2.5 h-2.5 text-purple-400" />
-            <span>测试Skill与MCP</span>
-          </button>
+              {/* Model Badges Pill Switcher (Matching colorful O M M in screenshot) */}
+              <div className="flex items-center bg-surface rounded-lg p-0.5 border border-border gap-0.5 mx-1">
+                <button
+                  onClick={() => setSelectedModel('openai')}
+                  className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold transition-all cursor-pointer ${
+                    selectedModel === 'openai' ? 'bg-red-500/20 text-red-600 dark:text-red-300 border border-red-500/50' : 'text-fg-muted hover:text-fg'
+                  }`}
+                  title="OpenAI GPT-4o"
+                >
+                  O
+                </button>
+                <button
+                  onClick={() => setSelectedModel('claude')}
+                  className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold transition-all cursor-pointer ${
+                    selectedModel === 'claude' ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/50' : 'text-fg-muted hover:text-fg'
+                  }`}
+                  title="Anthropic Claude 3.7"
+                >
+                  M
+                </button>
+                <button
+                  onClick={() => setSelectedModel('deepseek')}
+                  className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold transition-all cursor-pointer ${
+                    selectedModel === 'deepseek' ? 'bg-blue-500/20 text-blue-600 dark:text-blue-300 border border-blue-500/50' : 'text-fg-muted hover:text-fg'
+                  }`}
+                  title="DeepSeek V3 / R1"
+                >
+                  D
+                </button>
+                <button
+                  onClick={() => setSelectedModel('shinobi')}
+                  className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold transition-all cursor-pointer ${
+                    selectedModel === 'shinobi' ? 'bg-accent/20 text-accent border border-accent/50' : 'text-fg-muted hover:text-fg'
+                  }`}
+                  title="Shinobi Engine"
+                >
+                  🥷
+                </button>
+              </div>
 
-          <button
-            onClick={() => applyPresetPrompt('@all 请 @buzz-agent 和 @claude-code 就如何在 ACP 协议中规范多 Agent 协作工作区锁机制展开讨论', 'agent-buzz')}
-            className="px-1.5 py-0.5 rounded bg-[#241a33] hover:bg-[#322347] border border-indigo-700/40 text-indigo-300 transition-colors flex items-center gap-1 cursor-pointer"
-            title="模拟 Buzz 多 Agent 协同讨论场景"
-          >
-            <Sparkles className="w-2.5 h-2.5 text-amber-400" />
-            <span>协同讨论辩论</span>
-          </button>
-        </div>
-      </div>
+              {/* Attachment */}
+              <button 
+                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer"
+                title="添加工作区文件或 Diff 附件"
+              >
+                <Paperclip className="w-3.5 h-3.5" />
+              </button>
 
-      {/* Input Box */}
-      <div className="relative rounded-lg bg-[#111622] border border-[#222c3d] focus-within:border-emerald-500/70 transition-colors p-2">
-        <textarea
-          id="message-textarea"
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="在 Buzz 团队中发起讨论或通过 @ 调度 ACP Agent (Enter 发送，Shift+Enter 换行)..."
-          rows={3}
-          className="w-full bg-transparent text-gray-200 placeholder-gray-500 focus:outline-none resize-none text-xs font-sans"
-        />
+              {/* Voice */}
+              <button 
+                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer"
+                title="语音输入"
+              >
+                <Mic className="w-3.5 h-3.5" />
+              </button>
 
-        <div className="flex items-center justify-between pt-1 border-t border-[#1a2333] mt-1 text-[11px] text-gray-500 font-mono">
-          <div className="flex items-center gap-2">
-            <span className="flex items-center gap-1 text-gray-400">
-              <Command className="w-3 h-3 text-gray-500" />
-              <span>支持 Nostr 签名广播</span>
-            </span>
-            <span className="text-gray-600">|</span>
-            <span className="text-emerald-400/80">ACP JSON-RPC 2.0 桥接</span>
-          </div>
+              {/* Emoji */}
+              <button 
+                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer"
+                title="插入表情"
+              >
+                <Smile className="w-3.5 h-3.5" />
+              </button>
 
-          <div className="flex items-center gap-2">
+              {/* Typography / AA */}
+              <button 
+                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer"
+                title="富文本格式"
+              >
+                <span className="text-[10px] font-bold">AA</span>
+              </button>
+            </div>
+
+            {/* Right Circular Send Button (Identical to Screenshot) */}
             <button
-              id="btn-send-message"
               onClick={handleSend}
               disabled={!content.trim() || isGenerating}
-              className={`px-3 py-1.5 rounded flex items-center gap-1.5 text-xs font-sans font-medium transition-all cursor-pointer ${
+              className={`w-7 h-7 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-md ${
                 content.trim() && !isGenerating
-                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm'
-                  : 'bg-[#182130] text-gray-500 cursor-not-allowed'
+                  ? 'bg-accent text-accent-fg hover:opacity-95 hover:scale-105 active:scale-95'
+                  : 'bg-surface border border-border text-fg-muted cursor-not-allowed'
               }`}
+              title="发送消息 (Enter)"
             >
-              {isGenerating ? (
-                <>
-                  <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>ACP 调度中...</span>
-                </>
-              ) : (
-                <>
-                  <Send className="w-3.5 h-3.5" />
-                  <span>发送广播</span>
-                </>
-              )}
+              <ArrowUp className="w-4 h-4 stroke-[2.5]" />
             </button>
           </div>
         </div>

@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f1422" />
+      <stop offset="50%" stop-color="#090d16" />
+      <stop offset="100%" stop-color="#05070c" />
+    </linearGradient>
+    <linearGradient id="hoodGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="bandGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ef4444" />
+      <stop offset="50%" stop-color="#dc2626" />
+      <stop offset="100%" stop-color="#b91c1c" />
+    </linearGradient>
+    <linearGradient id="metalGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#cbd5e1" />
+      <stop offset="50%" stop-color="#94a3b8" />
+      <stop offset="100%" stop-color="#64748b" />
+    </linearGradient>
+    <linearGradient id="cyanEyeGlow" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#22d3ee" />
+      <stop offset="100%" stop-color="#38bdf8" />
+    </linearGradient>
+    <filter id="eyeGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Background App Rounded Tile -->
+  <rect width="128" height="128" rx="28" fill="url(#bgGrad)" stroke="#334155" stroke-width="2" />
+
+  <!-- Subtle Cybernetic Shuriken Behind Ninja -->
+  <g opacity="0.12" transform="translate(64,64)">
+    <path d="M0 -36 L8 -8 L36 0 L8 8 L0 36 L-8 8 L-36 0 L-8 -8 Z" fill="#38bdf8" />
+    <circle r="6" fill="#0f172a" stroke="#38bdf8" stroke-width="2" />
+  </g>
+
+  <!-- Ninja Hood / Head Outline -->
+  <path d="M34 40 C34 22, 94 22, 94 40 C94 56, 96 74, 98 88 C94 98, 78 104, 64 104 C50 104, 34 98, 30 88 C32 74, 34 56, 34 40 Z" fill="url(#hoodGrad)" stroke="#1e293b" stroke-width="2" />
+
+  <!-- Forehead Ninja Band (Red Ribbon) -->
+  <path d="M32 44 C42 42, 86 42, 96 44 L95 54 C85 52, 43 52, 33 54 Z" fill="url(#bandGrad)" />
+
+  <!-- Metallic Hitai-ate (Forehead Protector Plate) -->
+  <rect x="46" y="43" width="36" height="10" rx="3" fill="url(#metalGrad)" stroke="#475569" stroke-width="1" />
+  <!-- Plate Screws -->
+  <circle cx="49" cy="48" r="1" fill="#334155" />
+  <circle cx="79" cy="48" r="1" fill="#334155" />
+  <!-- Engraved Alter-Ego / ACP Emblem on Plate -->
+  <path d="M60 46 L68 46 L62 50 L66 50" stroke="#1e293b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+
+  <!-- Face Opening (Shadow Slit) -->
+  <path d="M38 58 C46 56, 82 56, 90 58 C88 66, 86 70, 78 72 C68 73, 60 73, 50 72 C42 70, 40 66, 38 58 Z" fill="#090d16" />
+
+  <!-- Ninja Glowing Eyes (Sharp, Cybernetic Alter-Ego Look) -->
+  <path d="M44 63 Q52 62 57 66 Q52 68 44 65 Z" fill="url(#cyanEyeGlow)" filter="url(#eyeGlow)" />
+  <path d="M84 63 Q76 62 71 66 Q76 68 84 65 Z" fill="url(#cyanEyeGlow)" filter="url(#eyeGlow)" />
+  
+  <!-- Lower Face Mask / Scarf Fold -->
+  <path d="M36 71 C46 75, 82 75, 92 71 C93 84, 82 96, 64 97 C46 96, 35 84, 36 71 Z" fill="#111827" stroke="#1f2937" stroke-width="1" />
+  <!-- Scarf Fold Line -->
+  <path d="M48 76 Q64 84 80 76" stroke="#1f2937" stroke-width="1.5" fill="none" stroke-linecap="round" />
+  <path d="M54 84 Q64 89 74 84" stroke="#1f2937" stroke-width="1.2" fill="none" stroke-linecap="round" />
+
+  <!-- Side Ribbons Blowing in Wind -->
+  <path d="M95 48 C104 50, 108 58, 114 62 C109 60, 104 57, 95 53 Z" fill="url(#bandGrad)" opacity="0.9" />
+  <path d="M96 52 C106 58, 112 68, 116 76 C110 70, 103 64, 95 55 Z" fill="url(#bandGrad)" opacity="0.75" />
+</svg>

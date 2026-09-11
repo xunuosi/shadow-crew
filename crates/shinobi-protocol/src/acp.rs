@@ -54,6 +54,12 @@ pub struct ClientCapabilities {
 pub struct AcpSessionPromptParams {
     pub session_id: String,
     pub room_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic_head_id: Option<String>,
     pub user_query: String,
     pub conversation_history: Vec<ConversationMessage>,
     pub workspace_cwd: String,

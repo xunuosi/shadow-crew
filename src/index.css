@@ -1,1 +1,99 @@
 @import "tailwindcss";
+
+/* 1. Base Themes (Light = Buzz White Design, Dark = Shinobi Stealth) */
+:root,
+[data-theme="light"] {
+  --bg-canvas: #f4f6fa;
+  --bg-surface: #ffffff;
+  --bg-surface-hover: #f8fafc;
+  --bg-surface-subtle: #f1f5f9;
+  --bg-surface-active: #e2e8f0;
+
+  --border-default: #e2e8f0;
+  --border-hover: #cbd5e1;
+  --border-dashed: #cbd5e1;
+
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+
+  --card-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05);
+  --modal-overlay: rgba(15, 23, 42, 0.45);
+}
+
+[data-theme="dark"] {
+  --bg-canvas: #080b11;
+  --bg-surface: #111724;
+  --bg-surface-hover: #182233;
+  --bg-surface-subtle: #0d121c;
+  --bg-surface-active: #1e2b40;
+
+  --border-default: #1e293b;
+  --border-hover: #334155;
+  --border-dashed: #24334a;
+
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+
+  --card-shadow: 0 8px 32px -4px rgba(0, 0, 0, 0.4);
+  --modal-overlay: rgba(0, 0, 0, 0.75);
+}
+
+/* 2. Accent Themes (Blue, Cyan, Emerald, Purple) */
+:root,
+[data-accent="blue"] {
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --color-accent-subtle: #eff6ff;
+  --color-accent-text: #ffffff;
+  --color-accent-border: #bfdbfe;
+}
+
+[data-accent="cyan"] {
+  --color-accent: #06b6d4;
+  --color-accent-hover: #0891b2;
+  --color-accent-subtle: rgba(6, 182, 212, 0.15);
+  --color-accent-text: #080b11;
+  --color-accent-border: #67e8f9;
+}
+
+[data-accent="emerald"] {
+  --color-accent: #10b981;
+  --color-accent-hover: #059669;
+  --color-accent-subtle: rgba(16, 185, 129, 0.15);
+  --color-accent-text: #ffffff;
+  --color-accent-border: #a7f3d0;
+}
+
+[data-accent="purple"] {
+  --color-accent: #8b5cf6;
+  --color-accent-hover: #7c3aed;
+  --color-accent-subtle: rgba(139, 92, 246, 0.15);
+  --color-accent-text: #ffffff;
+  --color-accent-border: #c4b5fd;
+}
+
+/* 3. Expose Design Tokens to Tailwind v4 Engine */
+@theme {
+  --color-canvas: var(--bg-canvas);
+  --color-surface: var(--bg-surface);
+  --color-surface-hover: var(--bg-surface-hover);
+  --color-surface-subtle: var(--bg-surface-subtle);
+  --color-surface-active: var(--bg-surface-active);
+
+  --color-border: var(--border-default);
+  --color-border-default: var(--border-default);
+  --color-border-hover: var(--border-hover);
+  --color-border-dashed: var(--border-dashed);
+
+  --color-fg: var(--text-primary);
+  --color-fg-secondary: var(--text-secondary);
+  --color-fg-muted: var(--text-muted);
+
+  --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
+  --color-accent-subtle: var(--color-accent-subtle);
+  --color-accent-text: var(--color-accent-text);
+  --color-accent-border: var(--color-accent-border);
+}

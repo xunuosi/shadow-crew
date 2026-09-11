@@ -1,6 +1,7 @@
 import React from 'react';
 import { Radio, Terminal, BookOpen, Plus, ShieldCheck, Activity, Cpu } from 'lucide-react';
 import { NinjaIcon } from './NinjaIcon';
+import { ThemeSwitcher } from './ThemeSwitcher';
 
 interface HeaderBarProps {
   currentWorkspace: string;
@@ -23,8 +24,8 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 }) => {
   return (
     <header
-      id="buzz-app-header"
-      className="h-12 bg-[#0d1017] border-b border-[#1f2633] flex items-center justify-between px-4 select-none shrink-0 text-gray-300 text-xs font-mono"
+      id="shinobi-app-header"
+      className="h-12 bg-surface border-b border-border flex items-center justify-between px-4 select-none shrink-0 text-fg-secondary text-xs font-mono transition-colors duration-150"
     >
       {/* Left: Window Dots & Title */}
       <div className="flex items-center gap-3">
@@ -35,48 +36,49 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           <div className="w-3 h-3 rounded-full bg-[#27c93f] border border-[#1aab29] cursor-pointer hover:opacity-80" />
         </div>
 
-        <div className="flex items-center gap-2 font-semibold text-gray-200">
-          <span className="text-cyan-400 font-bold tracking-wider flex items-center gap-1.5 bg-cyan-950/40 px-2 py-0.5 rounded border border-cyan-800/40 shadow-xs">
-            <NinjaIcon className="w-4 h-4 text-cyan-400" />
-            <span className="text-white tracking-widest text-xs">SHINOBI</span>
+        <div className="flex items-center gap-2 font-semibold text-fg">
+          <span className="text-accent font-bold tracking-wider flex items-center gap-1.5 bg-accent/15 px-2 py-0.5 rounded border border-accent/30 shadow-xs">
+            <NinjaIcon className="w-4 h-4 text-accent" />
+            <span className="text-fg tracking-widest text-xs font-bold">SHINOBI</span>
           </span>
-          <span className="text-gray-600">/</span>
-          <span className="text-gray-300">ACP 替身工作台</span>
-          <span className="text-gray-600">/</span>
-          <span className="text-amber-400/90 font-mono">#{activeRoomName}</span>
+          <span className="text-fg-muted">/</span>
+          <span className="text-fg-secondary">ACP 替身工作台</span>
+          <span className="text-fg-muted">/</span>
+          <span className="text-accent font-mono">#{activeRoomName}</span>
         </div>
       </div>
 
       {/* Center: Nostr Relay & Workspace Status */}
       <div className="hidden md:flex items-center gap-3">
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#131722] border border-[#232b3b] text-gray-300">
-          <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-surface-subtle border border-border text-fg-secondary">
+          <Radio className="w-3.5 h-3.5 text-emerald-500 animate-pulse" />
           <span>Relay:</span>
-          <span className="text-emerald-400">wss://relay.buzz.local</span>
-          <span className="text-[10px] text-gray-500 font-sans">8ms</span>
+          <span className="text-emerald-500">wss://relay.shinobi.local</span>
+          <span className="text-[10px] text-fg-muted font-sans">8ms</span>
         </div>
 
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#131722] border border-[#232b3b] text-gray-300">
-          <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-surface-subtle border border-border text-fg-secondary">
+          <ShieldCheck className="w-3.5 h-3.5 text-blue-500" />
           <span>Repo:</span>
-          <span className="text-blue-300 font-bold">{currentWorkspace}</span>
-          <span className="text-[10px] px-1 bg-[#1c2436] rounded text-blue-400">main</span>
+          <span className="text-blue-500 font-bold">{currentWorkspace}</span>
+          <span className="text-[10px] px-1 bg-surface rounded text-blue-500 border border-border">main</span>
         </div>
       </div>
 
       {/* Right: Actions */}
       <div className="flex items-center gap-2">
+        <ThemeSwitcher variant="compact" />
+
         {/* Rust + Tauri Architecture Hub Button */}
         <button
           id="btn-open-rust-tauri-hub"
           onClick={onOpenRustTauriHub}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-orange-950/80 border border-orange-700/60 hover:bg-orange-900/80 text-orange-200 transition-colors text-xs font-sans cursor-pointer shadow-xs"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-orange-500/15 border border-orange-500/30 hover:bg-orange-500/25 text-orange-600 dark:text-orange-300 transition-colors text-xs font-sans cursor-pointer shadow-xs"
           title="查看服务端 Rust (Axum/Nostr Relay) + 桌面端 Tauri (Rust+React) 全套技术方案与源码"
         >
           <span className="text-sm leading-none">🦀</span>
-          <span className="font-semibold hidden sm:inline">Rust+Tauri 架构方案</span>
-          <span className="sm:hidden font-semibold">Rust+Tauri</span>
-          <span className="hidden xl:inline text-[9px] px-1 py-0.2 bg-orange-900/90 text-orange-300 rounded font-mono">
+          <span className="font-semibold hidden sm:inline">Rust+Tauri</span>
+          <span className="hidden xl:inline text-[9px] px-1 py-0.2 bg-orange-500/20 text-orange-600 dark:text-orange-300 rounded font-mono">
             v2 + Axum
           </span>
         </button>
@@ -85,10 +87,10 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         <button
           id="btn-open-acp-deepdive"
           onClick={onOpenArchitectureModal}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-indigo-950/70 border border-indigo-700/50 hover:bg-indigo-900/80 text-indigo-200 transition-colors text-xs font-sans cursor-pointer"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-indigo-500/15 border border-indigo-500/30 hover:bg-indigo-500/25 text-indigo-600 dark:text-indigo-300 transition-colors text-xs font-sans cursor-pointer"
           title="深入解答：ACP下Agent的Memory、Workspace与Skill工作原理"
         >
-          <BookOpen className="w-3.5 h-3.5 text-indigo-400" />
+          <BookOpen className="w-3.5 h-3.5 text-indigo-500" />
           <span className="hidden sm:inline font-medium">ACP 原理解答</span>
           <span className="sm:hidden font-medium">原理解答</span>
         </button>
@@ -97,10 +99,10 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         <button
           id="btn-connect-agent"
           onClick={onOpenConnectModal}
-          className="flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-600/90 hover:bg-emerald-500 text-white transition-colors text-xs font-sans font-medium cursor-pointer shadow-sm"
+          className="flex items-center gap-1 px-2.5 py-1 rounded bg-accent text-accent-fg hover:opacity-90 transition-colors text-xs font-sans font-medium cursor-pointer shadow-xs"
         >
           <Plus className="w-3.5 h-3.5" />
-          <span>接入 Agent (ACP)</span>
+          <span>接入 Agent</span>
         </button>
 
         {/* Toggle ACP Inspector */}
@@ -109,13 +111,13 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           onClick={onToggleInspector}
           className={`flex items-center gap-1.5 px-2.5 py-1 rounded border transition-colors text-xs font-sans cursor-pointer ${
             isInspectorOpen
-              ? 'bg-[#1e2638] border-emerald-500/50 text-emerald-300'
-              : 'bg-[#131722] border-[#232b3b] text-gray-400 hover:text-gray-200'
+              ? 'bg-accent/15 border-accent text-accent font-semibold'
+              : 'bg-surface-subtle border-border text-fg-muted hover:text-fg'
           }`}
           title="切换 ACP 诊断控制台与 Workspace/Memory 检查器"
         >
           <Terminal className="w-3.5 h-3.5" />
-          <span className="hidden lg:inline">ACP 协议检查器</span>
+          <span className="hidden lg:inline">ACP 检查器</span>
         </button>
       </div>
     </header>

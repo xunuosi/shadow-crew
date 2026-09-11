@@ -97,26 +97,26 @@ export const RustTauriArchitectureHub: React.FC<RustTauriArchitectureHubProps> =
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-[#0b0e14] border border-[#232d3f] rounded-xl w-full max-w-6xl text-gray-200 overflow-hidden shadow-2xl flex flex-col h-[94vh]">
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-surface border border-border rounded-2xl w-full max-w-6xl text-fg overflow-hidden shadow-2xl flex flex-col h-[94vh]">
         {/* Modal Header */}
-        <div className="p-4 border-b border-[#1f2838] flex items-center justify-between bg-[#10141d] shrink-0">
+        <div className="p-4 border-b border-border flex items-center justify-between bg-surface-subtle shrink-0">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-cyan-950/80 border border-cyan-700/50 flex items-center justify-center text-cyan-400 p-1.5 shadow-xs">
+            <div className="w-10 h-10 rounded-lg bg-accent/15 border border-accent/30 flex items-center justify-center text-accent p-1.5 shadow-xs">
               <NinjaIcon className="w-full h-full" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="font-bold text-base text-gray-100 flex items-center gap-1.5">
+                <h2 className="font-bold text-base text-fg flex items-center gap-1.5">
                   <span>Shinobi 技术架构方案</span>
-                  <span className="text-gray-500 font-normal text-xs">|</span>
-                  <span className="text-orange-300 font-medium text-xs">Rust + Tauri (AI 影替身)</span>
+                  <span className="text-fg-muted font-normal text-xs">|</span>
+                  <span className="text-orange-500 font-medium text-xs">Rust + Tauri (AI 影替身)</span>
                 </h2>
-                <span className="text-[10px] px-2 py-0.5 rounded bg-orange-950 text-orange-400 border border-orange-800/40 font-mono">
+                <span className="text-[10px] px-2 py-0.5 rounded bg-orange-500/15 text-orange-600 dark:text-orange-400 border border-orange-500/30 font-mono">
                   Rust 2021 + Tauri v2 + Axum
                 </span>
               </div>
-              <p className="text-xs text-gray-400">
+              <p className="text-xs text-fg-muted">
                 双端统一 Rust 强类型契约 · Tokio 异步 stdio 进程守护 · Nostr 分布式 Relay 事件总线
               </p>
             </div>
@@ -125,7 +125,7 @@ export const RustTauriArchitectureHub: React.FC<RustTauriArchitectureHubProps> =
           <div className="flex items-center gap-2">
             <button
               onClick={onClose}
-              className="text-gray-400 hover:text-white transition-colors cursor-pointer p-1.5 rounded hover:bg-[#1c2230]"
+              className="text-fg-muted hover:text-fg transition-colors cursor-pointer p-1.5 rounded hover:bg-surface-hover"
             >
               <X className="w-5 h-5" />
             </button>
@@ -133,13 +133,13 @@ export const RustTauriArchitectureHub: React.FC<RustTauriArchitectureHubProps> =
         </div>
 
         {/* Navigation Tabs */}
-        <div className="flex border-b border-[#1b2230] bg-[#0d111a] px-4 text-xs font-mono shrink-0">
+        <div className="flex border-b border-border bg-surface-subtle px-4 text-xs font-mono shrink-0">
           <button
             onClick={() => setActiveTab('topology')}
             className={`py-2.5 px-4 font-semibold border-b-2 transition-all cursor-pointer flex items-center gap-2 ${
               activeTab === 'topology'
-                ? 'border-orange-500 text-orange-400 bg-[#141926]'
-                : 'border-transparent text-gray-400 hover:text-gray-200'
+                ? 'border-orange-500 text-orange-500 bg-surface'
+                : 'border-transparent text-fg-muted hover:text-fg'
             }`}
           >
             <Layers className="w-3.5 h-3.5" />
@@ -149,13 +149,13 @@ export const RustTauriArchitectureHub: React.FC<RustTauriArchitectureHubProps> =
             onClick={() => setActiveTab('code_explorer')}
             className={`py-2.5 px-4 font-semibold border-b-2 transition-all cursor-pointer flex items-center gap-2 ${
               activeTab === 'code_explorer'
-                ? 'border-blue-500 text-blue-400 bg-[#141926]'
-                : 'border-transparent text-gray-400 hover:text-gray-200'
+                ? 'border-blue-500 text-blue-500 bg-surface'
+                : 'border-transparent text-fg-muted hover:text-fg'
             }`}
           >
             <FileCode className="w-3.5 h-3.5" />
             <span>真实 Rust 源码工作区</span>
-            <span className="text-[10px] px-1.5 py-0.2 rounded bg-blue-950 text-blue-300 font-mono">
+            <span className="text-[10px] px-1.5 py-0.2 rounded bg-blue-500/15 text-blue-500 font-mono">
               {RUST_TAURI_WORKSPACE_FILES.length} 个核心文件
             </span>
           </button>
@@ -163,8 +163,8 @@ export const RustTauriArchitectureHub: React.FC<RustTauriArchitectureHubProps> =
             onClick={() => setActiveTab('ipc_simulator')}
             className={`py-2.5 px-4 font-semibold border-b-2 transition-all cursor-pointer flex items-center gap-2 ${
               activeTab === 'ipc_simulator'
-                ? 'border-emerald-500 text-emerald-400 bg-[#141926]'
-                : 'border-transparent text-gray-400 hover:text-gray-200'
+                ? 'border-emerald-500 text-emerald-500 bg-surface'
+                : 'border-transparent text-fg-muted hover:text-fg'
             }`}
           >
             <Zap className="w-3.5 h-3.5" />
@@ -174,8 +174,8 @@ export const RustTauriArchitectureHub: React.FC<RustTauriArchitectureHubProps> =
             onClick={() => setActiveTab('quickstart')}
             className={`py-2.5 px-4 font-semibold border-b-2 transition-all cursor-pointer flex items-center gap-2 ${
               activeTab === 'quickstart'
-                ? 'border-purple-500 text-purple-400 bg-[#141926]'
-                : 'border-transparent text-gray-400 hover:text-gray-200'
+                ? 'border-purple-500 text-purple-500 bg-surface'
+                : 'border-transparent text-fg-muted hover:text-fg'
             }`}
           >
             <Terminal className="w-3.5 h-3.5" />

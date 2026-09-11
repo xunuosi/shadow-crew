@@ -27,7 +27,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # 加解密与 Nostr
-secp256k1 = { version = "0.30", features = ["global-context", "rand-std"] }
+secp256k1 = { version = "0.30", features = ["global-context", "rand", "std"] }
 nostr-sdk = "0.38"
 sha2 = "0.10"
 

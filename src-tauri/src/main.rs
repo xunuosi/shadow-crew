@@ -2,15 +2,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod acp_manager;
+mod agent_discovery;
 
 use acp_manager::AcpProcessManager;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 
 struct AppState {
     acp_manager: Arc<Mutex<AcpProcessManager>>,
     nostr_relay_url: String,
+}
+
+#[tauri::command]
+async fn discover_local_acp_runtimes() -> Result<Vec<agent_discovery::AcpRuntimeCatalogEntry>, String> {
+    Ok(agent_discovery::discover_presets())
 }
 
 #[tauri::command]
@@ -79,6 +85,7 @@ async fn main() {
     tauri::Builder::default()
         .manage(state)
         .invoke_handler(tauri::generate_handler![
+            discover_local_acp_runtimes,
             spawn_acp_agent,
             send_prompt_to_agent,
             read_workspace_file_sandboxed,
