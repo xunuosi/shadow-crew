@@ -24,12 +24,39 @@ pub fn log_acp_event(agent_id: &str, direction: &str, line: &str) {
         use std::io::Write;
         let _ = file.write_all(formatted.as_bytes());
     }
+
+    // 若当前工作目录为 src-tauri，同时同步落盘至项目根目录 logs/acp.log
+    if let Ok(curr) = std::env::current_dir() {
+        if curr.ends_with("src-tauri") {
+            let _ = std::fs::create_dir_all("../logs");
+            if let Ok(mut root_file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("../logs/acp.log")
+            {
+                use std::io::Write;
+                let _ = root_file.write_all(formatted.as_bytes());
+            }
+        }
+    }
 }
 
 pub fn get_acp_log_path() -> String {
-    std::env::current_dir()
-        .map(|p| p.join("logs/acp.log").to_string_lossy().to_string())
-        .unwrap_or_else(|_| "logs/acp.log".to_string())
+    if let Ok(curr) = std::env::current_dir() {
+        let direct = curr.join("logs/acp.log");
+        if direct.exists() {
+            return direct.to_string_lossy().to_string();
+        }
+        if curr.ends_with("src-tauri") {
+            let parent_log = curr.join("../logs/acp.log");
+            if parent_log.exists() {
+                return parent_log.to_string_lossy().to_string();
+            }
+        }
+        direct.to_string_lossy().to_string()
+    } else {
+        "logs/acp.log".to_string()
+    }
 }
 
 pub fn read_recent_acp_logs(lines_count: usize) -> String {
@@ -128,6 +155,16 @@ impl AcpProcessManager {
         env_vars: Option<Vec<AcpEnvVar>>,
         app_handle: AppHandle,
     ) -> Result<u32> {
+        // 若该 Agent 之前已在运行，先行安全清理旧进程
+        if let Some(old_agent) = self.agents.remove(agent_id) {
+            old_agent.is_alive.store(false, Ordering::SeqCst);
+            drop(old_agent.stdin_tx);
+            if let Some(mut old_child) = old_agent.child.lock().await.take() {
+                let _ = old_child.kill().await;
+            }
+            log_acp_event(agent_id, "REPLACED", "Killed previous instance before respawning");
+        }
+
         let mut actual_cmd = command_line.to_string();
 
         // 智能路径探测: 若是 shinobi-agent 命令，优先直接运行编译后的原生二进制
@@ -260,6 +297,7 @@ impl AcpProcessManager {
         let active_chunks_clone = active_chunks.clone();
         let session_active_req_clone = session_active_req.clone();
         let is_alive_clone = is_alive.clone();
+        let stdin_tx_reader = stdin_tx.clone();
 
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
@@ -286,7 +324,7 @@ impl AcpProcessManager {
                         }),
                     );
 
-                    // 判断是否为 ACP 通知 (Notification 没有 id，但有 method，例如 session/update)
+                    // 判断是否为 ACP 通知或来自 Agent 端的主动请求 (带 method)
                     if let Some(method) = json_val.get("method").and_then(|m| m.as_str()) {
                         if method == "session/update" {
                             if let Some(params) = json_val.get("params") {
@@ -298,10 +336,29 @@ impl AcpProcessManager {
                                 if let Some(update) = params.get("update") {
                                     let update_type = update.get("sessionUpdate").and_then(|u| u.as_str()).unwrap_or_default();
                                     if update_type == "agent_message_chunk" {
-                                        if let Some(text) = update.get("content").and_then(|c| c.get("text")).and_then(|t| t.as_str()) {
+                                        // 智能提取文本内容，兼容 string / object / array 多种结构
+                                        let text_opt = if let Some(text) = update.get("content").and_then(|c| c.get("text")).and_then(|t| t.as_str()) {
+                                            Some(text.to_string())
+                                        } else if let Some(s) = update.get("content").and_then(|c| c.as_str()) {
+                                            Some(s.to_string())
+                                        } else if let Some(arr) = update.get("content").and_then(|c| c.as_array()) {
+                                            let mut combined = String::new();
+                                            for item in arr {
+                                                if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
+                                                    combined.push_str(t);
+                                                } else if let Some(s) = item.as_str() {
+                                                    combined.push_str(s);
+                                                }
+                                            }
+                                            if !combined.is_empty() { Some(combined) } else { None }
+                                        } else {
+                                            None
+                                        };
+
+                                        if let Some(text) = text_opt {
                                             if let Some(req_id) = active_req_id {
                                                 let mut chunks = active_chunks_clone.lock().await;
-                                                chunks.entry(req_id).or_default().push_str(text);
+                                                chunks.entry(req_id).or_default().push_str(&text);
                                             }
                                             // 触发前端细粒度 chunk 事件
                                             let chunk_event = format!("acp:chunk:{}", agent_id_clone);
@@ -317,8 +374,77 @@ impl AcpProcessManager {
                                     }
                                 }
                             }
+                        } else if method == "session/request_permission" {
+                            // Agent 发起工具授权申请 (如 Claude Code 执行 bash 检查或写文件)
+                            if let Some(req_id) = json_val.get("id").cloned() {
+                                let mut chosen_option_id = "allow-once".to_string();
+                                let mut tool_name = "unknown".to_string();
+
+                                if let Some(params) = json_val.get("params") {
+                                    if let Some(tool_call) = params.get("toolCall") {
+                                        if let Some(name) = tool_call.get("name").and_then(|n| n.as_str()) {
+                                            tool_name = name.to_string();
+                                        }
+                                    }
+
+                                    if let Some(options) = params.get("options").and_then(|o| o.as_array()) {
+                                        let mut found = false;
+                                        for opt in options {
+                                            let kind = opt.get("kind").and_then(|k| k.as_str()).unwrap_or_default();
+                                            let opt_id = opt.get("optionId").and_then(|i| i.as_str()).unwrap_or_default();
+                                            if kind == "allow_once" || kind == "allow_always" || opt_id.contains("allow") {
+                                                chosen_option_id = opt_id.to_string();
+                                                found = true;
+                                                break;
+                                            }
+                                        }
+                                        if !found && !options.is_empty() {
+                                            if let Some(first_id) = options[0].get("optionId").and_then(|i| i.as_str()) {
+                                                chosen_option_id = first_id.to_string();
+                                            }
+                                        }
+                                    }
+                                }
+
+                                log_acp_event(
+                                    &agent_id_clone,
+                                    "PERM_APPROVAL",
+                                    &format!("Auto-approving permission for tool '{}' with option '{}' (id: {:?})", tool_name, chosen_option_id, req_id),
+                                );
+
+                                // 构造符合标准 ACP 规范的权限响应
+                                let permission_resp = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": req_id,
+                                    "result": {
+                                        "outcome": {
+                                            "outcome": "selected",
+                                            "optionId": chosen_option_id
+                                        }
+                                    }
+                                });
+
+                                let _ = stdin_tx_reader.send(permission_resp.to_string()).await;
+                            }
+                        } else if let Some(req_id) = json_val.get("id").cloned() {
+                            // Agent 发起了其它未支持的客户端调用，按 JSON-RPC 2.0 规范返回 MethodNotFound 避免 Agent 挂起死等
+                            log_acp_event(
+                                &agent_id_clone,
+                                "UNHANDLED_METHOD",
+                                &format!("Agent sent unsupported method '{}' with id {:?}, responding with MethodNotFound", method, req_id),
+                            );
+                            let not_found_resp = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "error": {
+                                    "code": -32601,
+                                    "message": format!("Method '{}' is not supported by client", method)
+                                }
+                            });
+                            let _ = stdin_tx_reader.send(not_found_resp.to_string()).await;
                         }
-                        // 如果是通知或方法请求，不要作为 request 响应消费
+
+                        // 如果是通知或方法请求，不要作为对 client request 的响应消费
                         continue;
                     }
 
@@ -525,8 +651,8 @@ impl AcpProcessManager {
             anyhow::bail!("Failed to write to agent stdin channel: {}", e);
         }
 
-        // 4. 等待 Agent 响应 (最长等待 90 秒适配大模型推理)
-        let response = match tokio::time::timeout(Duration::from_secs(90), resp_rx).await {
+        // 4. 等待 Agent 响应 (最长等待 180 秒适配多轮工具调用与大模型深度思考)
+        let response = match tokio::time::timeout(Duration::from_secs(180), resp_rx).await {
             Ok(Ok(resp)) => {
                 // 若出现特定 session 错误，清除缓存触发重新 session/new
                 if resp.get("error").is_some() {
@@ -546,7 +672,7 @@ impl AcpProcessManager {
                 active_reqs.remove(&current_session_id);
                 Ok(serde_json::json!({
                     "status": "timeout",
-                    "error": "Agent response timed out after 90s"
+                    "error": "Agent response timed out after 180s"
                 }))
             }
         };
