@@ -29,7 +29,7 @@ import {
   INITIAL_RPC_LOGS, 
   MOCK_WORKSPACE_FILES 
 } from './data/mockData';
-import { PanelLeftOpen } from 'lucide-react';
+import { PanelLeftOpen, Hash, Plus } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
 import { ThreadList } from './components/ThreadList';
 import { ChatTimeline } from './components/ChatTimeline';
@@ -48,6 +48,7 @@ import { CreateTeamModal } from './components/CreateTeamModal';
 import { AgentDefaultsModal } from './components/AgentDefaultsModal';
 import { RustTauriArchitectureHub } from './components/RustTauriArchitectureHub';
 import { AgentDashboard } from './components/AgentDashboard';
+import { sendPromptToAcpAgent } from './services/acpClient';
 
 export default function App() {
   // Main View Navigation ('chat' | 'agents') - Default to chat for PRD Messaging Space
@@ -59,17 +60,33 @@ export default function App() {
       const saved = localStorage.getItem('shinobi_agents');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          // Filter out contaminated mock agent IDs from the bad UI revision
-          const filtered = parsed.filter(
-            (a: any) =>
-              a.id !== 'agent-alex-ego' &&
-              a.id !== 'agent-architect' &&
-              a.id !== 'agent-security' &&
-              a.id !== 'agent-devops'
-          );
+          // Filter out contaminated mock agent IDs from the bad UI revision and fix legacy commands
+          const filtered = parsed
+            .filter(
+              (a: any) =>
+                a.id !== 'agent-alex-ego' &&
+                a.id !== 'agent-architect' &&
+                a.id !== 'agent-security' &&
+                a.id !== 'agent-devops'
+            )
+            .map((a: any) => {
+              if (a.id === 'agent-shinobi-core') {
+                return {
+                  ...a,
+                  acpCommandOrUrl: './target/debug/shinobi-agent',
+                  workspace: {
+                    rootPath: '/Users/xunuosi/Code/Lx/AI/shadow-crew',
+                    repoName: 'shadow-crew',
+                    gitBranch: 'main',
+                    permissionMode: 'full_read_write',
+                    activeFiles: ['crates/shinobi-agent/src/main.rs'],
+                  },
+                };
+              }
+              return a;
+            });
+          filtered.sort((a: any, b: any) => (a.id === 'agent-shinobi-core' ? -1 : b.id === 'agent-shinobi-core' ? 1 : 0));
           if (filtered.length > 0) return filtered;
-        }
       }
     } catch {}
     return INITIAL_AGENTS;
@@ -106,12 +123,29 @@ export default function App() {
   }, [teams]);
 
   // L0 Projects State with Local Storage Persistence
+  // Mock data ID blacklist to purge contaminated cache from previous sessions
+  const MOCK_CHANNEL_IDS = new Set([
+    'channel-acp-dev',
+    'channel-general',
+    'channel-task-fix',
+    'channel-creator-only',
+    'channel-relay-core',
+  ]);
+  const MOCK_THREAD_IDS = new Set([
+    'thread-acp-dev-main',
+    'topic-acp-auth-spec',
+  ]);
+
+  // L0 Projects State with Local Storage Persistence
   const [projects, setProjects] = useState<Project[]>(() => {
     try {
       const saved = localStorage.getItem('shinobi_projects');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const filtered = parsed.filter((p: any) => p.id !== 'project-buzz-mesh');
+          if (filtered.length > 0) return filtered;
+        }
       }
     } catch {}
     return INITIAL_PROJECTS;
@@ -120,7 +154,7 @@ export default function App() {
   const [activeProjectId, setActiveProjectId] = useState<string>(() => {
     try {
       const saved = localStorage.getItem('shinobi_active_project_id');
-      if (saved) return saved;
+      if (saved && saved !== 'project-buzz-mesh') return saved;
     } catch {}
     return INITIAL_PROJECTS[0]?.id || 'project-shadow-crew';
   });
@@ -137,22 +171,130 @@ export default function App() {
     } catch {}
   }, [activeProjectId]);
 
-  const [channels, setChannels] = useState<Channel[]>(INITIAL_CHANNELS);
-  const [activeChannelId, setActiveChannelId] = useState<string>(
-    INITIAL_CHANNELS[0]?.id || 'channel-acp-dev'
-  );
-  const [threads, setThreads] = useState<Thread[]>(INITIAL_THREADS);
-  const [activeThreadId, setActiveThreadId] = useState<string>(
-    INITIAL_THREADS[0]?.id || 'thread-acp-dev-main'
-  );
-  const [messages, setMessages] = useState<Record<string, Message[]>>(INITIAL_MESSAGES);
-  const [subThreads, setSubThreads] = useState<Record<string, SubThread>>(INITIAL_SUB_THREADS);
+  // Channels State with Local Storage Persistence & Mock Cleanup
+  const [channels, setChannels] = useState<Channel[]>(() => {
+    try {
+      const saved = localStorage.getItem('shinobi_channels');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const filtered = parsed.filter(
+            (c: any) => !MOCK_CHANNEL_IDS.has(c.id) && c.status !== 'deleted'
+          );
+          return filtered;
+        }
+      }
+    } catch {}
+    return INITIAL_CHANNELS;
+  });
+
+  const [activeChannelId, setActiveChannelId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('shinobi_active_channel_id');
+      if (saved && !MOCK_CHANNEL_IDS.has(saved)) return saved;
+    } catch {}
+    return '';
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('shinobi_channels', JSON.stringify(channels));
+    } catch {}
+  }, [channels]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('shinobi_active_channel_id', activeChannelId);
+    } catch {}
+  }, [activeChannelId]);
+
+  // Threads State with Local Storage Persistence
+  const [threads, setThreads] = useState<Thread[]>(() => {
+    try {
+      const saved = localStorage.getItem('shinobi_threads');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const filtered = parsed.filter(
+            (t: any) => !MOCK_THREAD_IDS.has(t.id) && !MOCK_CHANNEL_IDS.has(t.channelId)
+          );
+          return filtered;
+        }
+      }
+    } catch {}
+    return INITIAL_THREADS;
+  });
+
+  const [activeThreadId, setActiveThreadId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('shinobi_active_thread_id');
+      if (saved && !MOCK_THREAD_IDS.has(saved)) return saved;
+    } catch {}
+    return '';
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('shinobi_threads', JSON.stringify(threads));
+    } catch {}
+  }, [threads]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('shinobi_active_thread_id', activeThreadId);
+    } catch {}
+  }, [activeThreadId]);
+
+  // Messages State with Local Storage Persistence
+  const [messages, setMessages] = useState<Record<string, Message[]>>(() => {
+    try {
+      const saved = localStorage.getItem('shinobi_messages');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') {
+          for (const k of Object.keys(parsed)) {
+            if (MOCK_THREAD_IDS.has(k) || MOCK_CHANNEL_IDS.has(k)) {
+              delete parsed[k];
+            }
+          }
+          return parsed;
+        }
+      }
+    } catch {}
+    return INITIAL_MESSAGES;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('shinobi_messages', JSON.stringify(messages));
+    } catch {}
+  }, [messages]);
+
+  // SubThreads State with Local Storage Persistence
+  const [subThreads, setSubThreads] = useState<Record<string, SubThread>>(() => {
+    try {
+      const saved = localStorage.getItem('shinobi_sub_threads');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch {}
+    return INITIAL_SUB_THREADS;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('shinobi_sub_threads', JSON.stringify(subThreads));
+    } catch {}
+  }, [subThreads]);
+
   const [rpcLogs, setRpcLogs] = useState<AcpRpcLog[]>(INITIAL_RPC_LOGS);
   const [workspaceFiles] = useState<WorkspaceFile[]>(MOCK_WORKSPACE_FILES);
 
   // Topic States (PRD 三层半扁平拓扑：频道 ➔ Topic 消息卡片 ➔ 独立推演抽屉)
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
   const [isNewTopicModalOpen, setIsNewTopicModalOpen] = useState<boolean>(false);
+  const [quotingMessage, setQuotingMessage] = useState<Message | null>(null);
 
   // Filters & Search
   const [threadFilter, setThreadFilter] = useState<'all' | 'unread' | 'mentions' | 'dms'>('all');
@@ -173,6 +315,7 @@ export default function App() {
   const [isCreateChannelOpen, setIsCreateChannelOpen] = useState<boolean>(false);
   const [isChannelMembersModalOpen, setIsChannelMembersModalOpen] = useState<boolean>(false);
   const [isDeleteChannelModalOpen, setIsDeleteChannelModalOpen] = useState<boolean>(false);
+  const [modalChannelId, setModalChannelId] = useState<string | null>(null);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState<boolean>(false);
   const [isRustTauriHubOpen, setIsRustTauriHubOpen] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
@@ -182,13 +325,69 @@ export default function App() {
   // Computed Context
   const activeProject = projects.find((p) => p.id === activeProjectId) || projects[0];
   const projectChannels = activeProjectId
-    ? channels.filter((c) => !c.projectId || c.projectId === activeProjectId)
-    : channels;
-  const activeChannel = channels.find((c) => c.id === activeChannelId) || projectChannels[0] || channels[0];
-  const activeThread = threads.find((t) => t.id === activeThreadId) || threads.find((t) => t.channelId === activeChannel?.id) || threads[0];
+    ? channels.filter((c) => (!c.projectId || c.projectId === activeProjectId) && c.status !== 'deleted')
+    : channels.filter((c) => c.status !== 'deleted');
+  const activeChannel = channels.find((c) => c.id === activeChannelId && c.status !== 'deleted') || projectChannels[0];
+  const activeThread = 
+    threads.find((t) => t.id === activeThreadId) ||
+    (activeChannel ? threads.find((t) => t.channelId === activeChannel.id) : null) ||
+    threads[0] ||
+    null;
   const activeMessages = activeThread ? messages[activeThread.id] || [] : [];
   const activeSubThread = activeSubThreadId ? subThreads[activeSubThreadId] : null;
   const selectedAgent = agents.find((a) => a.id === selectedAgentId) || agents[0];
+
+  // Auto sync active IDs if state drifted
+  useEffect(() => {
+    if (activeChannel && activeChannel.id !== activeChannelId) {
+      setActiveChannelId(activeChannel.id);
+    } else if (!activeChannel && activeChannelId) {
+      setActiveChannelId('');
+    }
+  }, [activeChannel?.id]);
+
+  useEffect(() => {
+    if (activeThread && activeThread.id !== activeThreadId) {
+      setActiveThreadId(activeThread.id);
+    } else if (!activeThread && activeThreadId) {
+      setActiveThreadId('');
+    }
+  }, [activeThread?.id]);
+
+  // Helper callbacks to open modals for specific channel or active channel
+  const handleOpenMembersModal = (channelId?: string) => {
+    if (channelId) {
+      setModalChannelId(channelId);
+    } else {
+      setModalChannelId(activeChannel?.id || null);
+    }
+    setIsChannelMembersModalOpen(true);
+  };
+
+  const handleOpenDeleteChannelModal = (channelId?: string) => {
+    if (channelId) {
+      setModalChannelId(channelId);
+    } else {
+      setModalChannelId(activeChannel?.id || null);
+    }
+    setIsDeleteChannelModalOpen(true);
+  };
+
+  const targetModalChannel = modalChannelId
+    ? channels.find((c) => c.id === modalChannelId) || activeChannel
+    : activeChannel;
+
+  // Calculate unresolved topics for modal target channel
+  const modalChannelUnresolvedTopics = targetModalChannel
+    ? (Object.values(messages) as Message[][])
+        .flat()
+        .filter(
+          (m) =>
+            m.channelId === targetModalChannel.id &&
+            m.type === 'topic' &&
+            m.topicData?.status !== 'resolved'
+        ).length
+    : 0;
 
   // Calculate unresolved topics for active channel
   const unresolvedTopicsCount = (Object.values(messages) as Message[][])
@@ -239,19 +438,23 @@ export default function App() {
     const channelThreads = threads.filter((t) => t.channelId === channelId);
     if (channelThreads.length > 0) {
       setActiveThreadId(channelThreads[0].id);
+    } else {
+      setActiveThreadId('');
     }
+    setActiveTopicId(null);
+    setQuotingMessage(null);
     setMainView('chat');
   };
 
   // Handle Direct Message Selection
   const handleSelectDirectMessage = (agent: Agent) => {
     // Check if DM thread already exists
-    let dmThread = threads.find((t) => t.type === 'dm' && t.authorId === agent.id);
+    let dmThread = threads.find((t) => t.type === 'dm' && (t.authorId === agent.id || t.id === `thread-dm-${agent.id}`));
     if (!dmThread) {
       dmThread = {
         id: `thread-dm-${agent.id}`,
-        channelId: activeChannelId,
-        channelName: 'Direct messages',
+        channelId: 'direct-messages',
+        channelName: `与 ${agent.name} 私聊`,
         type: 'dm',
         title: `与 ${agent.name} 的私信会话`,
         authorId: agent.id,
@@ -259,16 +462,17 @@ export default function App() {
         authorAvatar: agent.avatar,
         authorHandle: agent.handle,
         timestamp: 'Just now',
-        preview: `已开启与 ${agent.name} (${agent.role}) 的 1-on-1 ACP Stdio 会话。`,
+        preview: `已开启与 ${agent.name} (${agent.role}) 的 1-on-1 私聊会话。`,
         activeAgentIds: [agent.id],
       };
-      setThreads((prev) => [dmThread!, ...prev]);
+      setThreads((prev) => [dmThread!, ...prev.filter((t) => t.id !== dmThread!.id)]);
       setMessages((prev) => ({
         ...prev,
-        [dmThread!.id]: [
+        [dmThread!.id]: prev[dmThread!.id] || [
           {
             id: `msg-${Date.now()}`,
             threadId: dmThread!.id,
+            channelId: 'direct-messages',
             authorId: agent.id,
             authorName: agent.name,
             authorHandle: agent.handle,
@@ -282,6 +486,8 @@ export default function App() {
     }
     setActiveThreadId(dmThread.id);
     setSelectedAgentId(agent.id);
+    setActiveTopicId(null);
+    setQuotingMessage(null);
     setMainView('chat');
   };
 
@@ -290,8 +496,8 @@ export default function App() {
     const threadId = `thread-team-${team.id}-${Date.now()}`;
     const newThread: Thread = {
       id: threadId,
-      channelId: activeChannelId,
-      channelName: activeChannel.name,
+      channelId: activeChannel?.id || 'channel-default',
+      channelName: activeChannel?.name || team.name,
       type: 'thread',
       title: `[${team.name}] 协同攻坚议题`,
       authorId: 'user-norris',
@@ -326,14 +532,20 @@ export default function App() {
   // Handle Project Selection (L0 Project -> L1 Channel)
   const handleSelectProject = (projectId: string) => {
     setActiveProjectId(projectId);
-    const projChannels = channels.filter((c) => !c.projectId || c.projectId === projectId);
+    const projChannels = channels.filter((c) => (!c.projectId || c.projectId === projectId) && c.status !== 'deleted');
     if (projChannels.length > 0) {
       setActiveChannelId(projChannels[0].id);
       const chThreads = threads.filter((t) => t.channelId === projChannels[0].id);
       if (chThreads.length > 0) {
         setActiveThreadId(chThreads[0].id);
+      } else {
+        setActiveThreadId('');
       }
+    } else {
+      setActiveChannelId('');
+      setActiveThreadId('');
     }
+    setActiveTopicId(null);
   };
 
   // Handle Channel Members Update (Invite / Remove Agent or Human)
@@ -350,14 +562,19 @@ export default function App() {
 
     // If active channel was deleted, redirect to first channel of current project or fallback
     if (activeChannelId === channelId) {
-      const projChannels = remaining.filter((c) => !c.projectId || c.projectId === activeProjectId);
+      const projChannels = remaining.filter((c) => (!c.projectId || c.projectId === activeProjectId) && c.status !== 'deleted');
       const fallback = projChannels[0] || remaining[0];
       if (fallback) {
         setActiveChannelId(fallback.id);
         const fbThreads = threads.filter((t) => t.channelId === fallback.id);
         if (fbThreads.length > 0) {
           setActiveThreadId(fbThreads[0].id);
+        } else {
+          setActiveThreadId('');
         }
+      } else {
+        setActiveChannelId('');
+        setActiveThreadId('');
       }
     }
 
@@ -564,47 +781,108 @@ export default function App() {
       };
     });
 
-    const mentioned = agents.filter((a) => content.includes(a.handle));
-    const responder = mentioned.length > 0 ? mentioned[0] : (agents.length > 0 ? agents[0] : null);
+    const mentioned = agents.filter((a) => content.includes(a.handle) || content.includes('@all'));
+    let responder: Agent | null = null;
+    if (mentioned.length > 0) {
+      responder = mentioned[0];
+    } else {
+      const channelAssigned = (activeChannel?.assignedAgentIds || [])
+        .map((id) => agents.find((a) => a.id === id))
+        .filter((a): a is Agent => Boolean(a));
+      if (channelAssigned.length > 0) {
+        responder = channelAssigned[0];
+      } else if (agents.length > 0) {
+        responder = agents[0];
+      }
+    }
 
     if (responder) {
-      setTimeout(() => {
-        const agentReply: Message = {
-          id: `topic-reply-${Date.now()}`,
-          threadId: topicId,
-          authorId: responder.id,
-          authorName: responder.name,
-          authorHandle: responder.handle,
-          authorAvatar: responder.avatar,
-          isAgent: true,
-          agentBadge: `${responder.modelBadge?.split(' ')[0] || 'Local'} · 协作`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `【${responder.name}】推演已反馈：\n针对此议题补充了技术边界考量，代码与中间件配置保持兼容。准备好后可点击下方“达成共识并沉淀结论”。`,
-        };
+      logRpc(responder.name, 'client_to_agent', 'session/prompt', {
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'session/prompt',
+        params: { roomId: topicId, prompt: content, channelId: activeChannel?.id },
+      });
 
-        setMessages((prev) => {
-          const nextTopicMsgs = [...(prev[topicId] || []), agentReply];
-          const updatedChannelMsgs = (prev[activeThread.id] || []).map((m) => {
-            if (m.type === 'topic' && m.topicData?.id === topicId) {
-              return {
-                ...m,
-                topicData: {
-                  ...m.topicData,
-                  repliesCount: nextTopicMsgs.length,
-                  latestReplyPreview: agentReply.content.slice(0, 60),
-                },
-              };
-            }
-            return m;
+      sendPromptToAcpAgent({
+        agent: responder,
+        roomId: topicId,
+        prompt: content,
+        projectId: activeProjectId,
+        channelId: activeChannel?.id,
+      })
+        .then((acpResp) => {
+          const agentReply: Message = {
+            id: `topic-reply-${Date.now()}`,
+            threadId: topicId,
+            channelId: activeChannel?.id,
+            authorId: responder.id,
+            authorName: responder.name,
+            authorHandle: responder.handle,
+            authorAvatar: responder.avatar,
+            isAgent: true,
+            agentBadge: `${responder.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : '协作'}`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: acpResp.textResponse,
+            thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
+              duration: `${acpResp.durationMs}ms`,
+              tokens: Math.round(acpResp.textResponse.length * 1.3),
+              summary: `已检索私有记忆库并完成技术边界考量`,
+              detail: acpResp.memoryActions.map(m => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n')
+            } : undefined,
+            diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
+          };
+
+          setMessages((prev) => {
+            const nextTopicMsgs = [...(prev[topicId] || []), agentReply];
+            const updatedChannelMsgs = (prev[activeThread.id] || []).map((m) => {
+              if (m.type === 'topic' && m.topicData?.id === topicId) {
+                return {
+                  ...m,
+                  topicData: {
+                    ...m.topicData,
+                    repliesCount: nextTopicMsgs.length,
+                    latestReplyPreview: agentReply.content.slice(0, 60),
+                  },
+                };
+              }
+              return m;
+            });
+
+            return {
+              ...prev,
+              [topicId]: nextTopicMsgs,
+              [activeThread.id]: updatedChannelMsgs,
+            };
           });
 
-          return {
-            ...prev,
-            [topicId]: nextTopicMsgs,
-            [activeThread.id]: updatedChannelMsgs,
+          logRpc(responder.name, 'agent_to_client', 'session/prompt:result', {
+            jsonrpc: '2.0',
+            method: 'session/prompt:result',
+            result: acpResp,
+          });
+        })
+        .catch((err) => {
+          console.error('Failed to send topic prompt to agent:', err);
+          const errorReply: Message = {
+            id: `topic-reply-err-${Date.now()}`,
+            threadId: topicId,
+            channelId: activeChannel?.id,
+            authorId: responder.id,
+            authorName: responder.name,
+            authorHandle: responder.handle,
+            authorAvatar: responder.avatar,
+            isAgent: true,
+            agentBadge: 'ACP Error',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `⚠️ **ACP 通信异常**：${err instanceof Error ? err.message : String(err)}\n\n请检查 Agent 命令配置或相关依赖环境。`,
           };
+
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: [...(prev[topicId] || []), errorReply],
+          }));
         });
-      }, 700);
     }
   };
 
@@ -697,9 +975,30 @@ export default function App() {
       [activeThread.id]: [...(prev[activeThread.id] || []), userMsg],
     }));
 
-    // Detect mentioned agents
+    // Detect responding agents with priority fallback:
+    // 1. In a 1-on-1 direct message (DM) thread, the target agent ALWAYS responds
+    // 2. Explicitly @mentioned agents
+    // 3. Agents assigned to the active channel
+    // 4. Fallback to default local agent (Shinobi Core)
     const mentioned = agents.filter((a) => content.includes(a.handle) || content.includes('@all'));
-    const respondingAgents = mentioned.length > 0 ? mentioned : (agents.length > 0 ? [agents[0]] : []);
+    let respondingAgents: Agent[] = [];
+    if (activeThread.type === 'dm') {
+      const dmTarget = agents.find((a) => a.id === activeThread.authorId || activeThread.activeAgentIds?.includes(a.id));
+      if (dmTarget) {
+        respondingAgents = [dmTarget];
+      }
+    } else if (mentioned.length > 0) {
+      respondingAgents = mentioned;
+    } else {
+      const channelAssigned = (activeChannel?.assignedAgentIds || [])
+        .map((id) => agents.find((a) => a.id === id))
+        .filter((a): a is Agent => Boolean(a));
+      if (channelAssigned.length > 0) {
+        respondingAgents = [channelAssigned[0]];
+      } else if (agents.length > 0) {
+        respondingAgents = [agents[0]];
+      }
+    }
 
     if (respondingAgents.length === 0) {
       setTimeout(() => {
@@ -734,47 +1033,89 @@ export default function App() {
       });
     });
 
-    // Handle agent response
-    setTimeout(() => {
-      const primaryResponder = respondingAgents[0];
-      const agentReply: Message = {
-        id: `msg-reply-${Date.now()}`,
-        threadId: activeThread.id,
-        authorId: primaryResponder.id,
-        authorName: primaryResponder.name,
-        authorHandle: primaryResponder.handle,
-        authorAvatar: primaryResponder.avatar,
-        isAgent: true,
-        managedBy: primaryResponder.isManagedByYou ? 'you' : undefined,
-        agentBadge: `${primaryResponder.modelBadge?.split(' ')[0] || 'Local'} · ACP`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: `【${primaryResponder.name}】已通过本地 ACP Stdio 接口就绪：\n收到关于当前会话的指示，已完成状态同步。随时可以接收下一步编码或审查任务。`,
-        acpTrace: {
-          requestId: `acp-${Date.now()}`,
-          method: 'session/prompt',
-          durationMs: 220,
-          workspaceAction: {
-            action: 'read',
-            path: primaryResponder.workspace?.activeFiles?.[0] || 'src/App.tsx',
-            summary: `Target workspace: ${primaryResponder.workspace?.rootPath || '.'}`,
+    // Handle agent response via ACP client (real stdio subprocess or fallback)
+    const primaryResponder = respondingAgents[0];
+    sendPromptToAcpAgent({
+      agent: primaryResponder,
+      roomId: activeThread.id,
+      prompt: content,
+      projectId: activeProjectId,
+      channelId: activeChannel?.id,
+    })
+      .then((acpResp) => {
+        const agentReply: Message = {
+          id: `msg-reply-${Date.now()}`,
+          threadId: activeThread.id,
+          channelId: activeChannel?.id,
+          authorId: primaryResponder.id,
+          authorName: primaryResponder.name,
+          authorHandle: primaryResponder.handle,
+          authorAvatar: primaryResponder.avatar,
+          isAgent: true,
+          managedBy: primaryResponder.isManagedByYou ? 'you' : undefined,
+          agentBadge: `${primaryResponder.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : 'ACP'}`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: acpResp.textResponse,
+          thinkingProcess:
+            acpResp.memoryActions && acpResp.memoryActions.length > 0
+              ? {
+                  duration: `${acpResp.durationMs}ms`,
+                  tokens: Math.round(acpResp.textResponse.length * 1.3),
+                  summary: `已检索私有记忆库并完成技术边界考量`,
+                  detail: acpResp.memoryActions
+                    .map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`)
+                    .join('\n'),
+                }
+              : undefined,
+          diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
+          acpTrace: {
+            requestId: `acp-${Date.now()}`,
+            method: 'session/prompt',
+            durationMs: acpResp.durationMs,
+            workspaceAction: {
+              action: 'read',
+              path: primaryResponder.workspace?.activeFiles?.[0] || 'src/App.tsx',
+              summary: `Target workspace: ${primaryResponder.workspace?.rootPath || '.'}${acpResp.isRealProcess ? ' (Real stdio process)' : ''}`,
+            },
           },
-        },
-      };
+        };
 
-      setMessages((prev) => ({
-        ...prev,
-        [activeThread.id]: [...(prev[activeThread.id] || []), agentReply],
-      }));
+        setMessages((prev) => ({
+          ...prev,
+          [activeThread.id]: [...(prev[activeThread.id] || []), agentReply],
+        }));
 
-      setAgents((prev) => prev.map((a) => (a.id === primaryResponder.id ? { ...a, status: 'idle' } : a)));
-      setIsGenerating(false);
+        setAgents((prev) => prev.map((a) => (a.id === primaryResponder.id ? { ...a, status: 'idle' } : a)));
+        setIsGenerating(false);
 
-      logRpc(primaryResponder.name, 'agent_to_client', 'session/prompt:result', {
-        jsonrpc: '2.0',
-        method: 'session/prompt:result',
-        result: { status: 'completed' },
+        logRpc(primaryResponder.name, 'agent_to_client', 'session/prompt:result', {
+          jsonrpc: '2.0',
+          method: 'session/prompt:result',
+          result: { status: 'completed', isRealProcess: acpResp.isRealProcess },
+        });
+      })
+      .catch((err) => {
+        console.error('Failed to send prompt to agent:', err);
+        const errorReply: Message = {
+          id: `msg-err-${Date.now()}`,
+          threadId: activeThread.id,
+          channelId: activeChannel?.id,
+          authorId: primaryResponder.id,
+          authorName: primaryResponder.name,
+          authorHandle: primaryResponder.handle,
+          authorAvatar: primaryResponder.avatar,
+          isAgent: true,
+          agentBadge: 'ACP Error',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `⚠️ **ACP 通信异常**：${err instanceof Error ? err.message : String(err)}\n\n请检查 Agent 命令配置或相关依赖环境。`,
+        };
+        setMessages((prev) => ({
+          ...prev,
+          [activeThread.id]: [...(prev[activeThread.id] || []), errorReply],
+        }));
+        setAgents((prev) => prev.map((a) => (a.id === primaryResponder.id ? { ...a, status: 'idle' } : a)));
+        setIsGenerating(false);
       });
-    }, 800);
   };
 
   // Add Message to SubThread
@@ -853,7 +1194,7 @@ export default function App() {
   };
 
   return (
-    <div className="h-screen w-screen flex bg-canvas text-fg overflow-hidden font-sans select-none antialiased transition-colors duration-150">
+    <div className="h-full w-full flex bg-canvas text-fg overflow-hidden font-sans select-none antialiased transition-colors duration-150">
       {/* 1. Left Primary Sidebar (Buzz / macOS Navigation) */}
       {!isSidebarCollapsed && (
         <Sidebar
@@ -864,6 +1205,8 @@ export default function App() {
           activeChannelId={activeChannel ? activeChannel.id : ''}
           onSelectChannel={handleSelectChannel}
           onOpenCreateChannel={() => setIsCreateChannelOpen(true)}
+          onOpenMembersModal={handleOpenMembersModal}
+          onOpenDeleteChannelModal={handleOpenDeleteChannelModal}
           agents={agents}
           teams={teams}
           onOpenAgentTeamsModal={() => setIsAgentTeamsModalOpen(true)}
@@ -871,7 +1214,7 @@ export default function App() {
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
           onToggleCollapse={() => setIsSidebarCollapsed(true)}
-          onOpenRustTauriHub={() => setIsRustTauriHubOpen(true)}
+          activeThreadId={activeThreadId}
           currentMainView={mainView}
           onSelectMainView={setMainView}
         />
@@ -940,35 +1283,63 @@ export default function App() {
         <>
           {/* 2. Middle Column: Channel Main Timeline & Composer (PRD Column 2) */}
           <main className="flex-1 flex flex-col min-w-0 bg-canvas border-l border-border relative overflow-hidden transition-colors duration-150">
-            <ChatTimeline
-              messages={activeMessages}
-              activeThread={activeThread}
-              channel={activeChannel}
-              agents={agents}
-              onAddReaction={handleAddReaction}
-              onInspectAgent={(id) => {
-                setSelectedAgentId(id);
-                setIsAcpInspectorOpen(true);
-              }}
-              onOpenTopic={handleOpenTopic}
-              onOpenNewTopicModal={() => setIsNewTopicModalOpen(true)}
-              onOpenSubThread={(subId) => setActiveSubThreadId(subId)}
-              onOpenCodexDiff={(diff) => {
-                setActiveDiff(diff);
-                setIsCodexDiffOpen(true);
-              }}
-              onOpenAcpInspector={() => setIsAcpInspectorOpen(true)}
-              onOpenMembersModal={() => setIsChannelMembersModalOpen(true)}
-              onOpenDeleteChannelModal={() => setIsDeleteChannelModalOpen(true)}
-            />
+            {activeThread && (activeThread.type === 'dm' || activeChannel) ? (
+              <>
+                <ChatTimeline
+                  messages={activeMessages}
+                  activeThread={activeThread}
+                  channel={activeThread.type === 'dm' ? undefined : activeChannel}
+                  agents={agents}
+                  onAddReaction={handleAddReaction}
+                  onInspectAgent={(id) => {
+                    setSelectedAgentId(id);
+                    setIsAcpInspectorOpen(true);
+                  }}
+                  onOpenTopic={handleOpenTopic}
+                  onOpenNewTopicModal={activeThread.type === 'dm' ? undefined : () => setIsNewTopicModalOpen(true)}
+                  onOpenSubThread={(subId) => setActiveSubThreadId(subId)}
+                  onOpenCodexDiff={(diff) => {
+                    setActiveDiff(diff);
+                    setIsCodexDiffOpen(true);
+                  }}
+                  onOpenAcpInspector={() => setIsAcpInspectorOpen(true)}
+                  onOpenMembersModal={activeThread.type === 'dm' ? undefined : () => handleOpenMembersModal(activeChannel?.id)}
+                  onOpenDeleteChannelModal={activeThread.type === 'dm' ? undefined : () => handleOpenDeleteChannelModal(activeChannel?.id)}
+                  onQuoteMessage={(msg) => setQuotingMessage(msg)}
+                />
 
-            <MessageInput
-              onSendMessage={handleSendMessage}
-              activeAgents={agents.filter((a) => activeThread.activeAgentIds?.includes(a.id))}
-              isGenerating={isGenerating}
-              channelName={activeChannel.name}
-              onOpenNewTopicModal={() => setIsNewTopicModalOpen(true)}
-            />
+                <MessageInput
+                  onSendMessage={handleSendMessage}
+                  activeAgents={activeThread.type === 'dm' 
+                    ? agents.filter((a) => a.id === activeThread.authorId || activeThread.activeAgentIds?.includes(a.id))
+                    : agents.filter((a) => activeThread.activeAgentIds?.includes(a.id))}
+                  allAgents={agents}
+                  isGenerating={isGenerating}
+                  channelName={activeThread.type === 'dm' ? (activeThread.authorName || 'Agent') : (activeChannel?.name || 'chat')}
+                  onOpenNewTopicModal={activeThread.type === 'dm' ? undefined : () => setIsNewTopicModalOpen(true)}
+                  quotingMessage={quotingMessage}
+                  onCancelQuote={() => setQuotingMessage(null)}
+                />
+              </>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-canvas text-fg select-none">
+                <div className="w-16 h-16 rounded-2xl bg-surface border border-border flex items-center justify-center text-accent mb-4 shadow-sm">
+                  <Hash className="w-8 h-8 opacity-75" />
+                </div>
+                <h3 className="text-base font-semibold text-fg mb-1.5">当前项目暂无活跃频道</h3>
+                <p className="text-xs text-fg-muted max-w-md mb-6 leading-relaxed">
+                  已清空旧版测试数据。您可以在当前项目（<span className="text-accent font-mono font-medium">{activeProject?.name || '当前工作区'}</span>）下创建需求、功能或任务频道，与专职 Agent 共同推演与开发。
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setIsCreateChannelOpen(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-accent text-accent-fg font-medium rounded-xl hover:opacity-90 transition-all shadow-sm cursor-pointer text-xs"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>创建第一个频道</span>
+                </button>
+              </div>
+            )}
           </main>
 
           {/* 3. Right Column: Topic Thread Drawer (PRD Column 3) */}
@@ -1084,11 +1455,14 @@ export default function App() {
       />
 
       {/* 8.1 Modal: Channel Members & Invites */}
-      {activeChannel && (
+      {targetModalChannel && (
         <ChannelMembersModal
           isOpen={isChannelMembersModalOpen}
-          onClose={() => setIsChannelMembersModalOpen(false)}
-          channel={activeChannel}
+          onClose={() => {
+            setIsChannelMembersModalOpen(false);
+            setModalChannelId(null);
+          }}
+          channel={targetModalChannel}
           agents={agents}
           currentUserId={currentUserId}
           onUpdateMembers={handleUpdateChannelMembers}
@@ -1096,12 +1470,15 @@ export default function App() {
       )}
 
       {/* 8.2 Modal: Delete Channel Confirmation */}
-      {activeChannel && (
+      {targetModalChannel && (
         <DeleteChannelModal
           isOpen={isDeleteChannelModalOpen}
-          onClose={() => setIsDeleteChannelModalOpen(false)}
-          channel={activeChannel}
-          unresolvedTopicsCount={unresolvedTopicsCount}
+          onClose={() => {
+            setIsDeleteChannelModalOpen(false);
+            setModalChannelId(null);
+          }}
+          channel={targetModalChannel}
+          unresolvedTopicsCount={modalChannelUnresolvedTopics}
           onConfirmDelete={handleDeleteChannel}
         />
       )}

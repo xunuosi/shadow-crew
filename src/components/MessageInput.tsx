@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Agent } from '../types';
+import React, { useState, useRef, useEffect } from 'react';
+import { Agent, Message } from '../types';
 import { 
   Send, 
   AtSign, 
@@ -11,37 +11,150 @@ import {
   Sparkles,
   ArrowUp,
   GitBranch,
-  Plus
+  Plus,
+  CornerDownRight,
+  X
 } from 'lucide-react';
+import { MentionSuggestions, MentionItem } from './MentionSuggestions';
 
 interface MessageInputProps {
   onSendMessage: (content: string, targetAgentId?: string) => void;
   activeAgents: Agent[];
+  allAgents?: Agent[];
   isGenerating?: boolean;
   channelName?: string;
   onOpenNewTopicModal?: () => void;
+  quotingMessage?: Message | null;
+  onCancelQuote?: () => void;
 }
 
 export const MessageInput: React.FC<MessageInputProps> = ({
   onSendMessage,
   activeAgents,
+  allAgents = [],
   isGenerating = false,
   channelName = 'TestChannel',
   onOpenNewTopicModal,
+  quotingMessage,
+  onCancelQuote,
 }) => {
   const [content, setContent] = useState('');
   const [selectedModel, setSelectedModel] = useState<'claude' | 'deepseek' | 'openai' | 'shinobi'>('claude');
+  const [isMentionOpen, setIsMentionOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (quotingMessage && textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  }, [quotingMessage]);
+
+  const candidateAgents = allAgents.length > 0 ? allAgents : activeAgents;
+  const filteredCandidates = candidateAgents.filter(
+    (ag) =>
+      mentionQuery === '' ||
+      ag.name.toLowerCase().includes(mentionQuery.toLowerCase()) ||
+      ag.handle.toLowerCase().includes(mentionQuery.toLowerCase()) ||
+      ag.role.toLowerCase().includes(mentionQuery.toLowerCase())
+  );
+  const showSpecialAll = 'all'.includes(mentionQuery.toLowerCase()) || mentionQuery === '';
+  const totalCount = filteredCandidates.length + (showSpecialAll ? 1 : 0);
 
   const handleSend = () => {
     if (!content.trim() || isGenerating) return;
-    onSendMessage(content);
+    let finalContent = content;
+    if (quotingMessage) {
+      const quoteSnippet = quotingMessage.content.trim().split('\n')[0].slice(0, 100);
+      const quoteHeader = `> **@${quotingMessage.authorName}**: ${quoteSnippet}${quotingMessage.content.length > 100 ? '...' : ''}\n\n`;
+      finalContent = quoteHeader + content;
+      onCancelQuote?.();
+    }
+    onSendMessage(finalContent);
     setContent('');
+    setIsMentionOpen(false);
+  };
+
+  const handleSelectMention = (item: { handle: string }) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    const cursor = textarea.selectionStart || content.length;
+    const textBefore = content.slice(0, cursor);
+    const textAfter = content.slice(cursor);
+    const match = textBefore.match(/(?:^|\s)@([a-zA-Z0-9_-]*)$/);
+
+    if (match) {
+      const atStartPos = match.index! + (match[0].startsWith(' ') ? 1 : 0);
+      const newBefore = textBefore.slice(0, atStartPos) + item.handle + ' ';
+      const newContent = newBefore + textAfter;
+      setContent(newContent);
+      setIsMentionOpen(false);
+      setMentionQuery('');
+      setMentionIndex(0);
+
+      setTimeout(() => {
+        textarea.focus();
+        const newCursor = newBefore.length;
+        textarea.setSelectionRange(newCursor, newCursor);
+      }, 0);
+    } else {
+      addMention(item.handle);
+      setIsMentionOpen(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (isMentionOpen && totalCount > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionIndex((prev) => (prev + 1) % totalCount);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionIndex((prev) => (prev - 1 + totalCount) % totalCount);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        const selected =
+          showSpecialAll && mentionIndex === 0
+            ? { handle: '@all' }
+            : filteredCandidates[showSpecialAll ? mentionIndex - 1 : mentionIndex] || filteredCandidates[0];
+        if (selected) {
+          handleSelectMention(selected);
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setIsMentionOpen(false);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setContent(val);
+
+    const cursor = e.target.selectionStart || 0;
+    const textBefore = val.slice(0, cursor);
+    const match = textBefore.match(/(?:^|\s)@([a-zA-Z0-9_-]*)$/);
+
+    if (match) {
+      setMentionQuery(match[1]);
+      setIsMentionOpen(true);
+      setMentionIndex(0);
+    } else {
+      setIsMentionOpen(false);
     }
   };
 
@@ -50,6 +163,23 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       if (prev.includes(handle)) return prev;
       return `${handle} ${prev}`.trim() + ' ';
     });
+    textareaRef.current?.focus();
+  };
+
+  const handleToolbarAtClick = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    const cursor = textarea.selectionStart || content.length;
+    const newContent = content.slice(0, cursor) + '@' + content.slice(cursor);
+    setContent(newContent);
+    setMentionQuery('');
+    setIsMentionOpen(true);
+    setMentionIndex(0);
+    setTimeout(() => {
+      const nextCursor = cursor + 1;
+      textarea.setSelectionRange(nextCursor, nextCursor);
+    }, 0);
   };
 
   return (
@@ -90,13 +220,41 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           </button>
         </div>
 
-        {/* 2. Main Textarea Box */}
+        {/* 2. Main Textarea Box with Floating Mention Suggestions */}
         <div className="relative bg-surface-subtle border border-border rounded-2xl p-3 focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/20 transition-all">
+          <MentionSuggestions
+            isOpen={isMentionOpen}
+            query={mentionQuery}
+            agents={candidateAgents}
+            selectedIndex={mentionIndex}
+            onSelect={handleSelectMention}
+            onClose={() => setIsMentionOpen(false)}
+          />
+
+          {/* Quoting Preview Banner */}
+          {quotingMessage && (
+            <div className="flex items-center justify-between px-2.5 py-1.5 bg-surface border border-accent/40 rounded-xl mb-2 text-xs shadow-xs animate-in fade-in slide-in-from-top-1 select-none">
+              <div className="flex items-center gap-2 min-w-0">
+                <CornerDownRight className="w-3.5 h-3.5 text-accent shrink-0" />
+                <span className="font-bold text-fg text-xs shrink-0">引用 @{quotingMessage.authorName}:</span>
+                <span className="text-fg-muted truncate text-[11px] italic">{quotingMessage.content.slice(0, 70)}</span>
+              </div>
+              <button
+                onClick={onCancelQuote}
+                className="p-1 hover:text-fg text-fg-muted rounded-md transition-colors cursor-pointer shrink-0"
+                title="取消引用"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           <textarea
+            ref={textareaRef}
             value={content}
-            onChange={(e) => setContent(e.target.value)}
+            onChange={handleChange}
             onKeyDown={handleKeyDown}
-            placeholder={`在 #${channelName} 发起讨论或 @Agent 执行任务...`}
+            placeholder={`在 #${channelName} 发起讨论或输入 @ 召唤 Agent 执行推演...`}
             rows={2}
             className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none leading-relaxed"
           />
@@ -104,20 +262,20 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           {/* 3. Bottom Toolbar with Models & Actions */}
           <div className="flex items-center justify-between pt-2 border-t border-border mt-1 select-none">
             {/* Left Action Icons */}
-            <div className="flex items-center gap-1 text-fg-muted">
+            <div className="flex items-center gap-1 text-fg-muted flex-wrap">
               <button 
-                onClick={() => addMention('@')}
-                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer"
-                title="提及 Agent"
+                onClick={handleToolbarAtClick}
+                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
+                title="输入 @ 提及 Agent"
               >
-                <AtSign className="w-3.5 h-3.5" />
+                <AtSign className="w-3.5 h-3.5 text-accent" />
               </button>
 
               {/* Model Badges Pill Switcher (Matching colorful O M M in screenshot) */}
-              <div className="flex items-center bg-surface rounded-lg p-0.5 border border-border gap-0.5 mx-1">
+              <div className="flex items-center bg-surface rounded-lg p-0.5 border border-border gap-0.5 mx-1 shrink-0">
                 <button
                   onClick={() => setSelectedModel('openai')}
-                  className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold transition-all cursor-pointer ${
+                  className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
                     selectedModel === 'openai' ? 'bg-red-500/20 text-red-600 dark:text-red-300 border border-red-500/50' : 'text-fg-muted hover:text-fg'
                   }`}
                   title="OpenAI GPT-4o"
@@ -126,7 +284,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 </button>
                 <button
                   onClick={() => setSelectedModel('claude')}
-                  className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold transition-all cursor-pointer ${
+                  className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
                     selectedModel === 'claude' ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/50' : 'text-fg-muted hover:text-fg'
                   }`}
                   title="Anthropic Claude 3.7"
@@ -135,7 +293,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 </button>
                 <button
                   onClick={() => setSelectedModel('deepseek')}
-                  className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold transition-all cursor-pointer ${
+                  className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
                     selectedModel === 'deepseek' ? 'bg-blue-500/20 text-blue-600 dark:text-blue-300 border border-blue-500/50' : 'text-fg-muted hover:text-fg'
                   }`}
                   title="DeepSeek V3 / R1"
@@ -144,7 +302,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 </button>
                 <button
                   onClick={() => setSelectedModel('shinobi')}
-                  className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold transition-all cursor-pointer ${
+                  className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
                     selectedModel === 'shinobi' ? 'bg-accent/20 text-accent border border-accent/50' : 'text-fg-muted hover:text-fg'
                   }`}
                   title="Shinobi Engine"
@@ -155,7 +313,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
               {/* Attachment */}
               <button 
-                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer"
+                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
                 title="添加工作区文件或 Diff 附件"
               >
                 <Paperclip className="w-3.5 h-3.5" />
@@ -163,7 +321,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
               {/* Voice */}
               <button 
-                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer"
+                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
                 title="语音输入"
               >
                 <Mic className="w-3.5 h-3.5" />
@@ -171,7 +329,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
               {/* Emoji */}
               <button 
-                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer"
+                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
                 title="插入表情"
               >
                 <Smile className="w-3.5 h-3.5" />
@@ -179,7 +337,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
               {/* Typography / AA */}
               <button 
-                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer"
+                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
                 title="富文本格式"
               >
                 <span className="text-[10px] font-bold">AA</span>
@@ -190,7 +348,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             <button
               onClick={handleSend}
               disabled={!content.trim() || isGenerating}
-              className={`w-7 h-7 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-md ${
+              className={`w-7 h-7 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-md shrink-0 ${
                 content.trim() && !isGenerating
                   ? 'bg-accent text-accent-fg hover:opacity-95 hover:scale-105 active:scale-95'
                   : 'bg-surface border border-border text-fg-muted cursor-not-allowed'

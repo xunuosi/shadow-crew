@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' wss: ws: http: https: data:"
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' wss: ws: http: https: data:"
     }
   },
   "bundle": {

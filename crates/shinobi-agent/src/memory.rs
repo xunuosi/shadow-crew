@@ -18,18 +18,36 @@ pub struct AgentMemoryStore {
 impl AgentMemoryStore {
     /// 初始化 Agent 私有 SQLite 数据库
     pub fn new(db_path: &str) -> Result<Self> {
-        let conn = Connection::open(db_path)?;
-        
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS acp_memories (
-                id TEXT PRIMARY KEY,
-                category TEXT NOT NULL,
-                key TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )",
-            [],
-        )?;
+        let conn = match Connection::open(db_path) {
+            Ok(c) => {
+                let _ = c.execute_batch("
+                    PRAGMA journal_mode = WAL;
+                    PRAGMA busy_timeout = 5000;
+                    CREATE TABLE IF NOT EXISTS acp_memories (
+                        id TEXT PRIMARY KEY,
+                        category TEXT NOT NULL,
+                        key TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
+                ");
+                c
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to open SQLite at {}, fallback to in-memory: {}", db_path, e);
+                let c = Connection::open_in_memory()?;
+                let _ = c.execute_batch("
+                    CREATE TABLE IF NOT EXISTS acp_memories (
+                        id TEXT PRIMARY KEY,
+                        category TEXT NOT NULL,
+                        key TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
+                ");
+                c
+            }
+        };
 
         Ok(Self { conn })
     }

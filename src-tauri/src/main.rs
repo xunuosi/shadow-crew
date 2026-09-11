@@ -42,15 +42,33 @@ async fn spawn_acp_agent(
     Ok(pid)
 }
 
-/// Tauri Command: 发送指令到 ACP Agent (带流式回调)
+/// Tauri Command: 发送指令到 ACP Agent (带流式回调与自动拉起)
 #[tauri::command]
 async fn send_prompt_to_agent(
     agent_id: String,
     room_id: String,
     prompt: String,
+    command: Option<String>,
+    cwd: Option<String>,
+    app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let manager = state.acp_manager.lock().await;
+    let mut manager = state.acp_manager.lock().await;
+
+    // 若 Agent 尚未运行且提供了命令，则自动拉起
+    if !manager.is_agent_running(&agent_id) {
+        if let Some(cmd) = command {
+            let working_dir = cwd.unwrap_or_else(|| ".".to_string());
+            tracing::info!("Auto-spawning agent {} before dispatching prompt: {}", agent_id, cmd);
+            manager
+                .spawn_agent(&agent_id, &cmd, &working_dir, app_handle)
+                .await
+                .map_err(|e| format!("Auto-spawn agent failed: {}", e))?;
+        } else {
+            return Err(format!("Agent {} is not running and no command specified", agent_id));
+        }
+    }
+
     let response = manager
         .send_session_prompt(&agent_id, &room_id, &prompt)
         .await
@@ -80,6 +98,18 @@ async fn read_workspace_file_sandboxed(
         .map_err(|e| format!("Failed to read file: {}", e))
 }
 
+/// Tauri Command: 获取 ACP 本地持久化日志文件绝对路径
+#[tauri::command]
+fn get_acp_log_path() -> String {
+    acp_manager::get_acp_log_path()
+}
+
+/// Tauri Command: 读取最近的本地 ACP 日志
+#[tauri::command]
+fn read_recent_acp_logs(lines: Option<usize>) -> String {
+    acp_manager::read_recent_acp_logs(lines.unwrap_or(200))
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -96,6 +126,8 @@ async fn main() {
             spawn_acp_agent,
             send_prompt_to_agent,
             read_workspace_file_sandboxed,
+            get_acp_log_path,
+            read_recent_acp_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shinobi tauri desktop application");

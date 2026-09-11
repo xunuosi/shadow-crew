@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { TopicMessageData, Message, Agent } from '../types';
 import { 
   X, 
@@ -16,8 +16,13 @@ import {
   GitCompare,
   ArrowRight,
   ShieldCheck,
-  RotateCcw
+  RotateCcw,
+  AtSign,
+  Copy,
+  Check
 } from 'lucide-react';
+import { MentionSuggestions } from './MentionSuggestions';
+import { renderFormattedContent } from '../utils/formatMentions';
 
 interface TopicThreadDrawerProps {
   isOpen: boolean;
@@ -51,10 +56,71 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   const [showResolveModal, setShowResolveModal] = useState(false);
   const [solutionDraft, setSolutionDraft] = useState('');
   const [impactedFilesDraft, setImpactedFilesDraft] = useState('src/middleware/auth.ts, src/routes/oauth.ts');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // @ Mention state for topic reply composer
+  const [isMentionOpen, setIsMentionOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    message: Message;
+  } | null>(null);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+
+  // Close context menu on global click or Escape
+  useEffect(() => {
+    const handleGlobalClick = () => setContextMenu(null);
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContextMenu(null);
+    };
+    window.addEventListener('click', handleGlobalClick);
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener('click', handleGlobalClick);
+      window.removeEventListener('keydown', handleGlobalKeyDown);
+    };
+  }, []);
+
+  const handleContextMenu = (e: React.MouseEvent, message: Message) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const menuWidth = 180;
+    const menuHeight = 120;
+    const x = Math.min(e.clientX, window.innerWidth - menuWidth - 10);
+    const y = Math.min(e.clientY, window.innerHeight - menuHeight - 10);
+    setContextMenu({ x, y, message });
+  };
+
+  const handleCopyMessage = (message: Message) => {
+    navigator.clipboard.writeText(message.content);
+    setCopiedMsgId(message.id);
+    setTimeout(() => setCopiedMsgId(null), 2000);
+    setContextMenu(null);
+  };
+
+  const handleQuoteInDrawer = (message: Message) => {
+    const clean = message.content.trim().split('\n')[0].slice(0, 80);
+    setReplyContent((prev) => `> **@${message.authorName}**: ${clean}...\n\n${prev}`);
+    setTimeout(() => textareaRef.current?.focus(), 50);
+    setContextMenu(null);
+  };
 
   if (!isOpen || !topic) return null;
 
   const isResolved = topic.status === 'resolved';
+
+  const candidateAgents = agents;
+  const filteredCandidates = candidateAgents.filter(
+    (ag) =>
+      mentionQuery === '' ||
+      ag.name.toLowerCase().includes(mentionQuery.toLowerCase()) ||
+      ag.handle.toLowerCase().includes(mentionQuery.toLowerCase()) ||
+      ag.role.toLowerCase().includes(mentionQuery.toLowerCase())
+  );
+  const showSpecialAll = 'all'.includes(mentionQuery.toLowerCase()) || mentionQuery === '';
+  const totalCount = filteredCandidates.length + (showSpecialAll ? 1 : 0);
 
   const toggleThinking = (msgId: string) => {
     setExpandedThinking((prev) => ({ ...prev, [msgId]: !prev[msgId] }));
@@ -64,12 +130,88 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     if (!replyContent.trim()) return;
     onSendMessage(topic.id, replyContent);
     setReplyContent('');
+    setIsMentionOpen(false);
+  };
+
+  const handleSelectMention = (item: { handle: string }) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    const cursor = textarea.selectionStart || replyContent.length;
+    const textBefore = replyContent.slice(0, cursor);
+    const textAfter = replyContent.slice(cursor);
+    const match = textBefore.match(/(?:^|\s)@([a-zA-Z0-9_-]*)$/);
+
+    if (match) {
+      const atStartPos = match.index! + (match[0].startsWith(' ') ? 1 : 0);
+      const newBefore = textBefore.slice(0, atStartPos) + item.handle + ' ';
+      const newContent = newBefore + textAfter;
+      setReplyContent(newContent);
+      setIsMentionOpen(false);
+      setMentionQuery('');
+      setMentionIndex(0);
+
+      setTimeout(() => {
+        textarea.focus();
+        const newCursor = newBefore.length;
+        textarea.setSelectionRange(newCursor, newCursor);
+      }, 0);
+    } else {
+      setReplyContent((prev) => (prev.includes(item.handle) ? prev : `${item.handle} ${prev}`.trim() + ' '));
+      setIsMentionOpen(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (isMentionOpen && totalCount > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionIndex((prev) => (prev + 1) % totalCount);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionIndex((prev) => (prev - 1 + totalCount) % totalCount);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        const selected =
+          showSpecialAll && mentionIndex === 0
+            ? { handle: '@all' }
+            : filteredCandidates[showSpecialAll ? mentionIndex - 1 : mentionIndex] || filteredCandidates[0];
+        if (selected) {
+          handleSelectMention(selected);
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setIsMentionOpen(false);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setReplyContent(val);
+
+    const cursor = e.target.selectionStart || 0;
+    const textBefore = val.slice(0, cursor);
+    const match = textBefore.match(/(?:^|\s)@([a-zA-Z0-9_-]*)$/);
+
+    if (match) {
+      setMentionQuery(match[1]);
+      setIsMentionOpen(true);
+      setMentionIndex(0);
+    } else {
+      setIsMentionOpen(false);
     }
   };
 
@@ -96,23 +238,23 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       className="w-full sm:w-[420px] md:w-[460px] lg:w-[480px] bg-surface border-l border-border flex flex-col shrink-0 text-xs text-fg-secondary shadow-2xl z-40 transition-all duration-200"
     >
       {/* 1. Drawer Header */}
-      <div className="h-12 px-4 border-b border-border flex items-center justify-between bg-surface-subtle select-none">
-        <div className="flex items-center gap-2 truncate min-w-0">
+      <div className="min-h-[52px] py-2 px-3 sm:px-4 border-b border-border flex items-center justify-between bg-surface-subtle select-none shrink-0 gap-2">
+        <div className="flex items-center gap-2 truncate min-w-0 flex-1">
           <div className="w-6 h-6 rounded-lg bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-600 dark:text-purple-300 shrink-0">
             <GitBranch className="w-3.5 h-3.5" />
           </div>
-          <div className="truncate">
+          <div className="truncate min-w-0 flex-1">
             <h2 className="font-bold text-fg truncate text-xs sm:text-sm">
               {topic.title}
             </h2>
-            <div className="flex items-center gap-2 text-[10px] text-fg-muted font-mono">
+            <div className="flex items-center gap-2 text-[10px] text-fg-muted font-mono truncate">
               {isResolved ? (
-                <span className="text-emerald-500 font-semibold flex items-center gap-1">
+                <span className="text-emerald-500 font-semibold flex items-center gap-1 shrink-0">
                   <CheckCircle2 className="w-3 h-3" />
                   <span>🟢 已达成共识 (Resolved)</span>
                 </span>
               ) : (
-                <span className="text-purple-500 font-semibold flex items-center gap-1">
+                <span className="text-purple-500 font-semibold flex items-center gap-1 shrink-0">
                   <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
                   <span>🟡 深度推演中 · {participatingAgents.length} 位协作 Agent</span>
                 </span>
@@ -124,7 +266,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         <div className="flex items-center gap-1.5 shrink-0">
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer"
+            className="p-1.5 rounded-lg text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
             title="关闭抽屉 (Esc)"
           >
             <X className="w-4 h-4" />
@@ -152,17 +294,22 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       <div className="flex-1 overflow-y-auto p-4 space-y-4 font-sans">
         {messages.length === 0 ? (
           <div className="text-center py-10 text-fg-muted">
-            <Bot className="w-8 h-8 mx-auto mb-2 opacity-40" />
-            <p className="text-xs">暂无论证记录，可在下方输入指令开始协同推演。</p>
+            <div className="text-2xl mb-2">💬</div>
+            <div className="font-semibold text-fg text-xs">暂无议题深入讨论</div>
+            <div className="text-[11px] text-fg-muted mt-1">
+              在下方输入框召唤 Agent 开始独立多轮架构论证
+            </div>
           </div>
         ) : (
           messages.map((msg) => {
             const isThinkingOpen = expandedThinking[msg.id] ?? true;
+            const isAgent = msg.agentBadge || msg.authorName.includes('Agent') || msg.authorName.includes('Reviewer');
 
             return (
               <div
                 key={msg.id}
-                className="p-3 rounded-xl bg-surface-subtle border border-border space-y-2.5 transition-all"
+                onContextMenu={(e) => handleContextMenu(e, msg)}
+                className="space-y-2 p-3 rounded-2xl bg-surface border border-border transition-all hover:border-purple-500/40 group relative"
               >
                 {/* Message Header */}
                 <div className="flex items-center justify-between">
@@ -173,13 +320,35 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     <div className="flex items-center gap-1.5">
                       <span className="font-bold text-fg text-xs">{msg.authorName}</span>
                       {msg.agentBadge && (
-                        <span className="text-[9px] px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-600 dark:text-purple-300 font-mono border border-purple-500/30">
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-600 dark:text-purple-300 font-mono border border-purple-500/30 shrink-0">
                           {msg.agentBadge}
                         </span>
                       )}
                     </div>
                   </div>
-                  <span className="text-[10px] text-fg-muted font-mono">{msg.timestamp}</span>
+                  <div className="flex items-center gap-1.5">
+                    <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 mr-1">
+                      <button
+                        onClick={() => handleCopyMessage(msg)}
+                        className="p-1 hover:text-fg hover:bg-surface-hover rounded transition-colors cursor-pointer"
+                        title="复制内容 (右键亦可)"
+                      >
+                        {copiedMsgId === msg.id ? (
+                          <Check className="w-3 h-3 text-emerald-500" />
+                        ) : (
+                          <Copy className="w-3 h-3 text-fg-muted" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => handleQuoteInDrawer(msg)}
+                        className="p-1 hover:text-accent hover:bg-accent/10 rounded transition-colors cursor-pointer"
+                        title="引用回复 (右键亦可)"
+                      >
+                        <CornerDownRight className="w-3 h-3 text-fg-muted hover:text-accent" />
+                      </button>
+                    </div>
+                    <span className="text-[10px] text-fg-muted font-mono shrink-0">{msg.timestamp}</span>
+                  </div>
                 </div>
 
                 {/* Thinking Process Accordion */}
@@ -208,8 +377,8 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 )}
 
                 {/* Message Content */}
-                <div className="text-xs text-fg leading-relaxed whitespace-pre-wrap">
-                  {msg.content}
+                <div className="text-xs text-fg leading-relaxed whitespace-pre-wrap font-sans">
+                  {renderFormattedContent(msg.content)}
                 </div>
 
                 {/* Unified Diff View */}
@@ -225,7 +394,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                         <span className="text-red-500 font-bold">-{msg.diffView.deletions}</span>
                         <button
                           onClick={() => onOpenCodexDiff(msg.diffView)}
-                          className="px-1.5 py-0.2 rounded bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-600 dark:text-emerald-300 text-[9px] font-sans flex items-center gap-0.5 ml-1 transition-colors cursor-pointer"
+                          className="px-1.5 py-0.5 rounded bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-600 dark:text-emerald-300 text-[9px] font-sans flex items-center gap-0.5 ml-1 transition-colors cursor-pointer shrink-0"
                         >
                           <span>Codex 视图</span>
                           <ArrowRight className="w-2.5 h-2.5" />
@@ -248,10 +417,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         {!isResolved ? (
           <button
             onClick={() => setShowResolveModal(true)}
-            className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-semibold text-xs shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+            className="w-full min-h-[38px] py-2 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-semibold text-xs shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer leading-snug text-center"
           >
-            <ShieldCheck className="w-4 h-4" />
-            <span>达成共识并沉淀结论 (Resolve & Merge)</span>
+            <ShieldCheck className="w-4 h-4 shrink-0" />
+            <span className="text-center">达成共识并沉淀结论 (Resolve & Merge)</span>
           </button>
         ) : (
           <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between">
@@ -280,16 +449,51 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
         {/* Mini Composer to Reply in this Topic */}
         <div className="relative bg-surface border border-border rounded-xl p-2 focus-within:border-purple-500 transition-all">
+          <MentionSuggestions
+            isOpen={isMentionOpen}
+            query={mentionQuery}
+            agents={candidateAgents}
+            selectedIndex={mentionIndex}
+            onSelect={handleSelectMention}
+            onClose={() => setIsMentionOpen(false)}
+          />
+
           <textarea
+            ref={textareaRef}
             value={replyContent}
-            onChange={(e) => setReplyContent(e.target.value)}
+            onChange={handleChange}
             onKeyDown={handleKeyDown}
-            placeholder="在当前议题中回复或 @Agent 继续推演..."
+            placeholder="在当前议题中回复或输入 @ 召唤 Agent 继续推演..."
             rows={2}
             className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none leading-relaxed"
           />
           <div className="flex items-center justify-between pt-1 border-t border-border mt-1">
-            <span className="text-[10px] text-fg-muted font-mono">Shift+Enter 换行</span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  const textarea = textareaRef.current;
+                  if (!textarea) return;
+                  textarea.focus();
+                  const cursor = textarea.selectionStart || replyContent.length;
+                  const newContent = replyContent.slice(0, cursor) + '@' + replyContent.slice(cursor);
+                  setReplyContent(newContent);
+                  setMentionQuery('');
+                  setIsMentionOpen(true);
+                  setMentionIndex(0);
+                  setTimeout(() => {
+                    const nextCursor = cursor + 1;
+                    textarea.setSelectionRange(nextCursor, nextCursor);
+                  }, 0);
+                }}
+                className="p-1 rounded hover:text-accent hover:bg-surface-hover text-fg-muted transition-colors cursor-pointer"
+                title="输入 @ 提及 Agent"
+              >
+                <AtSign className="w-3.5 h-3.5 text-accent" />
+              </button>
+              <span className="text-[10px] text-fg-muted font-mono">Shift+Enter 换行</span>
+            </div>
+
             <button
               onClick={handleSend}
               disabled={!replyContent.trim()}
@@ -367,6 +571,52 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Right-Click Context Menu in Drawer */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 w-44 bg-surface border border-border rounded-xl shadow-2xl py-1.5 px-1 backdrop-blur-md animate-in fade-in zoom-in-95 duration-100 text-xs select-none"
+          style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-2.5 py-1 text-[10px] text-fg-muted font-medium border-b border-border/50 truncate mb-1">
+            {contextMenu.message.authorName} 的发言
+          </div>
+
+          <button
+            onClick={() => handleCopyMessage(contextMenu.message)}
+            className="w-full px-2.5 py-1.5 flex items-center gap-2 rounded-lg hover:bg-surface-hover text-fg transition-colors cursor-pointer text-left"
+          >
+            {copiedMsgId === contextMenu.message.id ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-500" />
+                <span className="text-emerald-500 font-medium">已复制到剪贴板</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3.5 h-3.5 text-fg-muted" />
+                <span>复制内容</span>
+              </>
+            )}
+          </button>
+
+          <button
+            onClick={() => handleQuoteInDrawer(contextMenu.message)}
+            className="w-full px-2.5 py-1.5 flex items-center gap-2 rounded-lg hover:bg-surface-hover text-fg transition-colors cursor-pointer text-left"
+          >
+            <CornerDownRight className="w-3.5 h-3.5 text-accent" />
+            <span>引用到输入框</span>
+          </button>
+        </div>
+      )}
+
+      {/* Toast on Copied */}
+      {copiedMsgId && (
+        <div className="fixed bottom-16 right-8 z-50 px-3 py-1.5 rounded-xl bg-surface border border-border shadow-2xl text-fg text-xs font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2 duration-150">
+          <Check className="w-3.5 h-3.5 text-emerald-500" />
+          <span>消息内容已复制到剪贴板</span>
         </div>
       )}
     </aside>

@@ -164,13 +164,13 @@ export const ThreadList: React.FC<ThreadListProps> = ({
                     {thread.mentions && thread.mentions.slice(0, 2).map((m) => (
                       <span 
                         key={m} 
-                        className="text-[9px] bg-accent/15 text-accent border border-accent/30 px-1 py-0.2 rounded font-mono"
+                        className="text-[9px] bg-accent/15 text-accent border border-accent/30 px-1.5 py-0.5 rounded font-mono shrink-0"
                       >
                         {m}
                       </span>
                     ))}
                     {thread.hasSubThreads && (
-                      <span className="text-[9px] bg-purple-500/15 text-purple-500 border border-purple-500/30 px-1 py-0.2 rounded flex items-center gap-0.5 font-mono">
+                      <span className="text-[9px] bg-purple-500/15 text-purple-500 border border-purple-500/30 px-1.5 py-0.5 rounded flex items-center gap-0.5 font-mono shrink-0">
                         <GitBranch className="w-2.5 h-2.5" />
                         <span>子话题</span>
                       </span>
@@ -178,7 +178,7 @@ export const ThreadList: React.FC<ThreadListProps> = ({
                   </div>
 
                   {thread.unreadCount && thread.unreadCount > 0 ? (
-                    <span className="text-[10px] bg-accent/15 text-accent font-mono px-1.5 py-0.2 rounded-full border border-accent/30 flex items-center gap-1">
+                    <span className="text-[10px] bg-accent/15 text-accent font-mono px-1.5 py-0.5 rounded-full border border-accent/30 flex items-center gap-1 shrink-0">
                       <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
                       <span>{thread.unreadCount} unread</span>
                     </span>

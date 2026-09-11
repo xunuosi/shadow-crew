@@ -2,7 +2,7 @@ mod memory;
 
 use anyhow::Result;
 use memory::AgentMemoryStore;
-use shinobi_protocol::{AcpPromptResult, JsonRpcRequest, MemoryTrace};
+use shinobi_protocol::{AcpPromptResult, MemoryTrace};
 use std::io::{self, BufRead, Write};
 
 #[tokio::main]
@@ -33,9 +33,49 @@ async fn main() -> Result<()> {
             continue;
         }
 
-        if let Ok(req) = serde_json::from_str::<JsonRpcRequest<serde_json::Value>>(&line) {
-            if req.method == "session/prompt" {
-                let query = req.params["user_query"].as_str().unwrap_or_default();
+        if let Ok(json_req) = serde_json::from_str::<serde_json::Value>(&line) {
+            let id = json_req.get("id").cloned().unwrap_or(serde_json::json!(1));
+            let method = json_req.get("method").and_then(|v| v.as_str()).unwrap_or("session/prompt");
+            let params = json_req.get("params").cloned().unwrap_or(serde_json::json!({}));
+
+            if method == "initialize" {
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "protocolVersion": "2025-01-01",
+                        "agentInfo": { "name": "shinobi-agent", "version": "0.1.0" },
+                        "capabilities": {
+                            "prompts": { "listChanged": true },
+                            "tools": { "listChanged": true },
+                            "memory": { "persistent": true, "backend": "sqlite" },
+                            "workspace": { "canDirectExec": true }
+                        }
+                    }
+                });
+                writeln!(stdout, "{}", resp.to_string())?;
+                stdout.flush()?;
+            } else if method == "session/new" {
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "sessionId": "shinobi-session-default"
+                    }
+                });
+                writeln!(stdout, "{}", resp.to_string())?;
+                stdout.flush()?;
+            } else if method == "session/prompt" {
+                let query = if let Some(prompt_arr) = params.get("prompt").and_then(|v| v.as_array()) {
+                    prompt_arr.iter()
+                        .find_map(|b| b.get("text").and_then(|t| t.as_str()))
+                        .unwrap_or_default()
+                } else {
+                    params.get("user_query")
+                        .or_else(|| params.get("prompt"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                };
                 
                 // 1. 从私有记忆库召回关键知识
                 let recalled = memory_store.recall_relevant(query).unwrap_or_default();
@@ -48,11 +88,38 @@ async fn main() -> Result<()> {
                     });
                 }
 
-                // 2. 模拟逐字流式返回
+                // 2. 生成结构化响应
+                let display_query = if query.chars().count() > 30 {
+                    format!("{}...", query.chars().take(30).collect::<String>())
+                } else if query.is_empty() {
+                    "ACP 连通性测试".to_string()
+                } else {
+                    query.to_string()
+                };
+
                 let response_text = format!(
-                    "【Shinobi 替身响应】已从私有记忆库召回 {} 条专属规范，针对当前问题推演完成。",
-                    recalled.len()
+                    "【Shinobi 替身响应】已从私有记忆库召回 {} 条专属规范，针对「{}」推演完成：\n\n• **链路状态**：本地 ACP Stdio JSON-RPC 2.0 管道运行正常，通信端对端畅通。\n• **工作区挂载**：已就绪，随时可执行架构分析、任务推演与代码评审。",
+                    recalled.len(),
+                    display_query
                 );
+
+                let session_id = params.get("sessionId").and_then(|v| v.as_str()).unwrap_or("shinobi-session-default");
+                let chunk_notification = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": session_id,
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {
+                                "type": "text",
+                                "text": &response_text
+                            }
+                        }
+                    }
+                });
+                let _ = writeln!(stdout, "{}", chunk_notification.to_string());
+                let _ = stdout.flush();
 
                 let result = AcpPromptResult {
                     text_response: response_text,
@@ -63,13 +130,41 @@ async fn main() -> Result<()> {
 
                 let resp = serde_json::json!({
                     "jsonrpc": "2.0",
-                    "id": req.id,
+                    "id": id,
                     "result": result
                 });
 
                 writeln!(stdout, "{}", resp.to_string())?;
                 stdout.flush()?;
+            } else {
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "text_response": format!("【Shinobi 替身响应】已接收方法: {}", method),
+                        "memory_actions": [],
+                        "workspace_diffs": [],
+                        "mcp_tool_calls": []
+                    }
+                });
+                writeln!(stdout, "{}", resp.to_string())?;
+                stdout.flush()?;
             }
+        } else {
+            // 兜底非标准 JSON 纯文本输入
+            let trimmed = line.trim();
+            let resp = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "text_response": format!("【Shinobi 替身响应】已收到输入：「{}」，本地 ACP 进程运转正常。", trimmed),
+                    "memory_actions": [],
+                    "workspace_diffs": [],
+                    "mcp_tool_calls": []
+                }
+            });
+            writeln!(stdout, "{}", resp.to_string())?;
+            stdout.flush()?;
         }
     }
 

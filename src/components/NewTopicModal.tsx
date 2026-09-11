@@ -5,7 +5,7 @@ import { X, Sparkles, Plus, Bot, Shield, Check, GitBranch } from 'lucide-react';
 interface NewTopicModalProps {
   isOpen: boolean;
   onClose: () => void;
-  channel: Channel;
+  channel?: Channel;
   agents: Agent[];
   onCreateTopic: (topicData: {
     title: string;
@@ -27,7 +27,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
     agents.slice(0, 3).map((a) => a.id)
   );
 
-  if (!isOpen) return null;
+  if (!isOpen || !channel) return null;
 
   const toggleAgent = (agentId: string) => {
     setSelectedAgentIds((prev) =>
@@ -135,7 +135,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
                         <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
                           <span>{agent.name}</span>
                           {agent.isManagedByYou && (
-                            <span className="text-[9px] px-1 py-0.2 rounded bg-surface text-fg-muted border border-border font-mono">
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface text-fg-muted border border-border font-mono shrink-0">
                               我的替身
                             </span>
                           )}

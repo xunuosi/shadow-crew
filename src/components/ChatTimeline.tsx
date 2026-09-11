@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Message, Thread, Agent, Channel } from '../types';
 import { TopicMessageCard } from './TopicMessageCard';
 import { 
@@ -26,12 +26,15 @@ import {
   Plus,
   Filter,
   Trash2,
-  Lock
+  Lock,
+  UserPlus,
+  Quote
 } from 'lucide-react';
+import { renderFormattedContent } from '../utils/formatMentions';
 
 interface ChatTimelineProps {
   messages: Message[];
-  activeThread: Thread;
+  activeThread?: Thread;
   channel?: Channel;
   agents: Agent[];
   onAddReaction: (messageId: string, emoji: string) => void;
@@ -43,6 +46,7 @@ interface ChatTimelineProps {
   onOpenAcpInspector: () => void;
   onOpenMembersModal?: () => void;
   onOpenDeleteChannelModal?: () => void;
+  onQuoteMessage?: (message: Message) => void;
 }
 
 export const ChatTimeline: React.FC<ChatTimelineProps> = ({
@@ -59,14 +63,55 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   onOpenAcpInspector,
   onOpenMembersModal,
   onOpenDeleteChannelModal,
+  onQuoteMessage,
 }) => {
   const [filter, setFilter] = useState<'all' | 'topics' | 'resolved'>('all');
-  const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({
-    'msg-openclaw-primary': true,
-  });
+  const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   const [expandedTraces, setExpandedTraces] = useState<Record<string, boolean>>({});
   const [showMembersPopover, setShowMembersPopover] = useState(false);
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    message: Message;
+  } | null>(null);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+
+  // Close context menu on global click or Escape
+  useEffect(() => {
+    const handleGlobalClick = () => setContextMenu(null);
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContextMenu(null);
+    };
+    window.addEventListener('click', handleGlobalClick);
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener('click', handleGlobalClick);
+      window.removeEventListener('keydown', handleGlobalKeyDown);
+    };
+  }, []);
+
+  const handleContextMenu = (e: React.MouseEvent, message: Message) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const menuWidth = 190;
+    const menuHeight = 170;
+    const x = Math.min(e.clientX, window.innerWidth - menuWidth - 12);
+    const y = Math.min(e.clientY, window.innerHeight - menuHeight - 12);
+    setContextMenu({ x, y, message });
+  };
+
+  const handleCopyMessage = (message: Message) => {
+    navigator.clipboard.writeText(message.content);
+    setCopiedMsgId(message.id);
+    setTimeout(() => setCopiedMsgId(null), 2000);
+    setContextMenu(null);
+  };
+
+  const handleQuote = (message: Message) => {
+    onQuoteMessage?.(message);
+    setContextMenu(null);
+  };
 
   const toggleThinking = (msgId: string) => {
     setExpandedThinking((prev) => ({ ...prev, [msgId]: !prev[msgId] }));
@@ -82,7 +127,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     setTimeout(() => setCopiedCodeId(null), 2000);
   };
 
-  const activeAgents = agents.filter((a) => activeThread.activeAgentIds?.includes(a.id));
+  const activeAgents = agents.filter((a) => activeThread?.activeAgentIds?.includes(a.id));
 
   const filteredMessages = messages.filter((m) => {
     if (filter === 'topics') return m.type === 'topic';
@@ -92,22 +137,33 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
 
   const topicCount = messages.filter((m) => m.type === 'topic').length;
 
+  if (!activeThread) {
+    return (
+      <div 
+        id="shinobi-chat-timeline-pane"
+        className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-canvas text-fg text-xs select-none"
+      >
+        <p className="text-fg-muted">未选择讨论议题</p>
+      </div>
+    );
+  }
+
   return (
     <div 
       id="shinobi-chat-timeline-pane"
       className="flex-1 flex flex-col min-w-0 bg-canvas text-fg text-xs overflow-hidden transition-colors duration-150"
     >
       {/* 1. Top Channel / Thread Header */}
-      <header className="h-12 px-4 border-b border-border flex items-center justify-between bg-surface-subtle select-none shrink-0">
-        <div className="flex items-center gap-2.5 truncate">
-          <span className="font-bold text-fg text-sm tracking-wide truncate flex items-center gap-1.5">
+      <header className="min-h-[48px] py-1.5 px-3 sm:px-4 border-b border-border flex items-center justify-between bg-surface-subtle select-none shrink-0 gap-2">
+        <div className="flex items-center gap-2 truncate min-w-0 flex-1">
+          <span className="font-bold text-fg text-sm tracking-wide truncate flex items-center gap-1.5 shrink-0">
             {activeThread.type === 'dm' ? (
               <span>DM with <span className="text-accent font-semibold">{activeThread.authorName}</span></span>
             ) : (
               <span className="flex items-center gap-1.5">
                 <span className="text-accent font-mono font-bold">#{channel?.name || activeThread.channelName}</span>
                 {channel?.kind && (
-                  <span className={`text-[9px] px-1.5 py-0.2 rounded-full font-mono font-semibold border ${
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-mono font-semibold border shrink-0 ${
                     channel.kind === 'feature'
                       ? 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 border-cyan-500/30'
                       : channel.kind === 'requirement'
@@ -123,14 +179,14 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
 
           {/* Git Branch Badge */}
           {channel?.gitBranch && (
-            <span className="hidden sm:inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-surface text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-mono">
+            <span className="hidden xl:inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-surface text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-mono shrink-0">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              <span>{channel.gitBranch}</span>
+              <span className="max-w-[120px] truncate">{channel.gitBranch}</span>
             </span>
           )}
 
           {/* Filter Pill Tabs */}
-          <div className="hidden md:flex items-center bg-surface rounded-lg p-0.5 border border-border gap-0.5 ml-2">
+          <div className="hidden lg:flex items-center bg-surface rounded-lg p-0.5 border border-border gap-0.5 ml-1 shrink-0">
             <button
               onClick={() => setFilter('all')}
               className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer ${
@@ -147,7 +203,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             >
               <span>议题</span>
               {topicCount > 0 && (
-                <span className="px-1 py-0.1 rounded-full text-[9px] bg-purple-500/20 text-purple-500 font-mono">
+                <span className="px-1 py-0.5 rounded-full text-[9px] bg-purple-500/20 text-purple-500 font-mono">
                   {topicCount}
                 </span>
               )}
@@ -156,16 +212,18 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
         </div>
 
         {/* Right Header Controls */}
-        <div className="flex items-center gap-1.5 text-fg-muted relative">
-          {/* Members / Invite Admission Button */}
+        <div className="flex items-center gap-1.5 text-fg-muted relative shrink-0">
+          {/* Members / Invite Agent Admission Button */}
           {onOpenMembersModal && channel && (
             <button
               onClick={onOpenMembersModal}
-              className="px-2 py-1 rounded-lg hover:bg-surface-hover text-fg-muted hover:text-fg border border-border flex items-center gap-1 text-[11px] cursor-pointer"
-              title="查看与邀请频道成员"
+              className="px-2 py-1 rounded-lg bg-accent/15 hover:bg-accent/25 text-accent font-semibold border border-accent/40 flex items-center gap-1 text-[11px] transition-all cursor-pointer shadow-2xs whitespace-nowrap shrink-0"
+              title="邀请专职 Agent 或管理受邀成员"
             >
-              <Users className="w-3.5 h-3.5 text-accent" />
-              <span className="hidden sm:inline">{channel.memberIds?.length || 1} 成员</span>
+              <UserPlus className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden 2xl:inline">邀请/管理 Agent</span>
+              <span className="hidden sm:inline 2xl:hidden">成员</span>
+              <span>({channel.memberIds?.length || 1})</span>
             </button>
           )}
 
@@ -173,10 +231,10 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           {onOpenNewTopicModal && (
             <button
               onClick={onOpenNewTopicModal}
-              className="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium text-[11px] shadow-xs flex items-center gap-1 transition-all cursor-pointer"
+              className="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium text-[11px] shadow-xs flex items-center gap-1 transition-all cursor-pointer whitespace-nowrap shrink-0"
               title="在当前频道发起独立推演议题"
             >
-              <Plus className="w-3.5 h-3.5" />
+              <Plus className="w-3.5 h-3.5 shrink-0" />
               <span className="hidden sm:inline">新建议题</span>
             </button>
           )}
@@ -185,46 +243,47 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           {onOpenDeleteChannelModal && channel && (
             <button
               onClick={onOpenDeleteChannelModal}
-              className="p-1.5 rounded-lg hover:text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer"
+              className="p-1 sm:px-2 sm:py-1 rounded-lg hover:text-red-500 hover:bg-red-500/10 text-fg-muted border border-border hover:border-red-500/30 transition-colors flex items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
               title="删除此频道 (级联清理)"
             >
-              <Trash2 className="w-3.5 h-3.5" />
+              <Trash2 className="w-3.5 h-3.5 text-red-500 shrink-0" />
+              <span className="hidden 2xl:inline text-red-500 font-medium">删除</span>
             </button>
           )}
 
           {/* Codex Diff Toggle */}
           <button
             onClick={() => onOpenCodexDiff(null)}
-            className="px-2 py-1 rounded-lg hover:text-emerald-500 hover:bg-surface-hover border border-transparent hover:border-emerald-500/30 transition-all flex items-center gap-1 text-[11px] cursor-pointer"
+            className="px-2 py-1 rounded-lg hover:text-emerald-500 hover:bg-surface-hover border border-transparent hover:border-emerald-500/30 transition-all flex items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
             title="查看代码变更与 Unified Diff (Codex 视图)"
           >
-            <GitCompare className="w-3.5 h-3.5 text-emerald-500" />
+            <GitCompare className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
             <span className="hidden sm:inline font-mono">Diff</span>
           </button>
 
           {/* ACP Inspector Toggle */}
           <button
             onClick={onOpenAcpInspector}
-            className="px-2 py-1 rounded-lg hover:text-accent hover:bg-surface-hover border border-transparent hover:border-accent/30 transition-all flex items-center gap-1 text-[11px] cursor-pointer"
+            className="px-2 py-1 rounded-lg hover:text-accent hover:bg-surface-hover border border-transparent hover:border-accent/30 transition-all flex items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
             title="打开 ACP 协议与私有记忆观测面板 (Antigravity 视图)"
           >
-            <Terminal className="w-3.5 h-3.5 text-accent" />
+            <Terminal className="w-3.5 h-3.5 text-accent shrink-0" />
             <span className="hidden sm:inline font-mono">ACP</span>
           </button>
 
           {/* Popout button */}
           <button 
-            className="p-1.5 rounded-lg hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer"
+            className="p-1.5 rounded-lg hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
             title="在新窗口打开此讨论"
           >
             <ExternalLink className="w-3.5 h-3.5" />
           </button>
 
           {/* Collaborator Count & List */}
-          <div className="relative">
+          <div className="relative shrink-0">
             <button 
               onClick={() => setShowMembersPopover(!showMembersPopover)}
-              className="px-2 py-1 rounded-lg hover:text-fg hover:bg-surface-hover transition-colors flex items-center gap-1 cursor-pointer"
+              className="px-2 py-1 rounded-lg hover:text-fg hover:bg-surface-hover transition-colors flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
               title="当前协同成员"
             >
               <Users className="w-3.5 h-3.5 text-fg-muted" />
@@ -288,6 +347,35 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           </div>
         )}
 
+        {/* Creator-only Channel Helper Banner */}
+        {channel && onOpenMembersModal && (!channel.memberIds || channel.memberIds.filter((id) => id.startsWith('agent-')).length === 0) && (
+          <div className="max-w-3xl mx-auto p-3.5 rounded-2xl bg-accent/10 border border-accent/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs animate-in fade-in">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-accent/20 border border-accent/30 flex items-center justify-center shrink-0">
+                <Bot className="w-4 h-4 text-accent" />
+              </div>
+              <div className="min-w-0">
+                <div className="font-bold text-xs text-fg flex items-center gap-1.5">
+                  <span>当前频道处于创建者专属模式 (Creator-only)</span>
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-mono shrink-0">
+                    未拉入 Agent
+                  </span>
+                </div>
+                <div className="text-[11px] text-fg-secondary mt-0.5">
+                  默认仅创建者入驻。点击右侧按钮拉入专职 Agent，开启项目需求推演与代码实现协作。
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={onOpenMembersModal}
+              className="px-3 py-1.5 rounded-xl bg-accent hover:opacity-90 text-white font-semibold text-xs flex items-center gap-1.5 shrink-0 whitespace-nowrap transition-all cursor-pointer shadow-xs"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>立即邀请 Agent</span>
+            </button>
+          </div>
+        )}
+
         {filteredMessages.length === 0 && (
           <div className="max-w-md mx-auto text-center py-16 space-y-3 select-none">
             <div className="w-12 h-12 rounded-2xl bg-surface-subtle border border-border flex items-center justify-center mx-auto text-fg-muted shadow-xs">
@@ -324,7 +412,8 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           return (
             <article
               key={message.id}
-              className="max-w-3xl mx-auto group relative transition-all"
+              onContextMenu={(e) => handleContextMenu(e, message)}
+              className="max-w-3xl mx-auto group relative transition-all rounded-xl p-2 -mx-2 hover:bg-surface-subtle/40"
             >
               {/* Message Header */}
               <div className="flex items-center justify-between mb-2">
@@ -339,14 +428,14 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                     </span>
 
                     {message.managedBy && (
-                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-surface-subtle text-fg-secondary font-mono flex items-center gap-1 border border-border">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-subtle text-fg-secondary font-mono flex items-center gap-1 border border-border shrink-0">
                         <Bot className="w-2.5 h-2.5 text-accent" />
                         <span>managed by {message.managedBy}</span>
                       </span>
                     )}
 
                     {message.agentBadge && (
-                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-mono border border-emerald-500/30">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-mono border border-emerald-500/30 shrink-0">
                         {message.agentBadge}
                       </span>
                     )}
@@ -379,6 +468,24 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                       <span className="text-[10px]">Diff</span>
                     </button>
                   )}
+                  <button
+                    onClick={() => handleCopyMessage(message)}
+                    className="p-1 hover:text-fg hover:bg-surface-hover rounded transition-colors cursor-pointer"
+                    title="复制内容 (右键亦可)"
+                  >
+                    {copiedMsgId === message.id ? (
+                      <Check className="w-3 h-3 text-emerald-500" />
+                    ) : (
+                      <Copy className="w-3 h-3 text-fg-muted" />
+                    )}
+                  </button>
+                  <button
+                    onClick={() => handleQuote(message)}
+                    className="p-1 hover:text-accent hover:bg-accent/10 rounded transition-colors cursor-pointer"
+                    title="引用回复 (右键亦可)"
+                  >
+                    <CornerDownRight className="w-3 h-3 text-fg-muted hover:text-accent" />
+                  </button>
                   <button
                     onClick={() => onAddReaction(message.id, '🔥')}
                     className="p-1 hover:bg-surface-hover rounded transition-colors cursor-pointer"
@@ -423,7 +530,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
 
                 {/* Main Markdown Text with Code Formatting */}
                 <div className="text-fg leading-relaxed text-xs space-y-2 whitespace-pre-wrap font-sans">
-                  {message.content}
+                  {renderFormattedContent(message.content)}
                 </div>
 
                 {/* Codex Style Unified Diff Card */}
@@ -535,6 +642,71 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           );
         })}
       </div>
+
+      {/* Right-Click Context Menu */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 w-44 bg-surface border border-border rounded-xl shadow-2xl py-1.5 px-1 backdrop-blur-md animate-in fade-in zoom-in-95 duration-100 text-xs select-none"
+          style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-2.5 py-1 text-[10px] text-fg-muted font-medium border-b border-border/50 truncate mb-1">
+            {contextMenu.message.authorName} 的发言
+          </div>
+
+          <button
+            onClick={() => handleCopyMessage(contextMenu.message)}
+            className="w-full px-2.5 py-1.5 flex items-center gap-2 rounded-lg hover:bg-surface-hover text-fg transition-colors cursor-pointer text-left"
+          >
+            {copiedMsgId === contextMenu.message.id ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-500" />
+                <span className="text-emerald-500 font-medium">已复制到剪贴板</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3.5 h-3.5 text-fg-muted" />
+                <span>复制内容</span>
+              </>
+            )}
+          </button>
+
+          <button
+            onClick={() => handleQuote(contextMenu.message)}
+            className="w-full px-2.5 py-1.5 flex items-center gap-2 rounded-lg hover:bg-surface-hover text-fg transition-colors cursor-pointer text-left"
+          >
+            <CornerDownRight className="w-3.5 h-3.5 text-accent" />
+            <span>引用回复</span>
+          </button>
+
+          <div className="border-t border-border/50 my-1"></div>
+
+          {/* Quick Reaction Row in Context Menu */}
+          <div className="flex items-center justify-around px-1 py-1">
+            {['🔥', '🥷', '💡', '👍'].map((emoji) => (
+              <button
+                key={emoji}
+                onClick={() => {
+                  onAddReaction(contextMenu.message.id, emoji);
+                  setContextMenu(null);
+                }}
+                className="p-1 hover:bg-surface-hover rounded-md text-sm transition-transform hover:scale-125 cursor-pointer"
+                title={`添加 ${emoji}`}
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification on Copied */}
+      {copiedMsgId && (
+        <div className="fixed bottom-24 right-8 z-50 px-3 py-1.5 rounded-xl bg-surface border border-border shadow-2xl text-fg text-xs font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2 duration-150">
+          <Check className="w-3.5 h-3.5 text-emerald-500" />
+          <span>消息内容已复制到剪贴板</span>
+        </div>
+      )}
     </div>
   );
 };

@@ -27,15 +27,15 @@ export const ChannelMembersModal: React.FC<ChannelMembersModalProps> = ({
   onClose,
   channel,
   agents,
-  currentUserId = 'user-developer',
+  currentUserId = 'user-norris',
   onUpdateMembers,
 }) => {
   const [selectedAgentToAdd, setSelectedAgentToAdd] = useState<string>('');
 
   if (!isOpen) return null;
 
-  const isCreator = channel.creatorId === currentUserId;
-  const currentMemberIds = channel.memberIds || [channel.creatorId];
+  const isCreator = !channel.creatorId || channel.creatorId === currentUserId || channel.creatorId === 'user-developer' || channel.creatorId === 'user-norris';
+  const currentMemberIds = channel.memberIds || [channel.creatorId || currentUserId];
 
   // Candidates for invitation: agents not yet in channel
   const availableAgents = agents.filter((a) => !currentMemberIds.includes(a.id));
@@ -109,12 +109,12 @@ export const ChannelMembersModal: React.FC<ChannelMembersModalProps> = ({
                         <div className="font-semibold text-fg truncate flex items-center gap-1.5">
                           <span>{agent ? agent.name : (isSelf ? 'Developer (You)' : memberId)}</span>
                           {isOwner && (
-                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 font-mono border border-amber-500/30">
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 font-mono border border-amber-500/30 shrink-0">
                               Owner
                             </span>
                           )}
                           {agent?.isManagedByYou && (
-                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-accent/15 text-accent font-mono border border-accent/30">
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-accent/15 text-accent font-mono border border-accent/30 shrink-0">
                               影替身
                             </span>
                           )}
@@ -142,13 +142,26 @@ export const ChannelMembersModal: React.FC<ChannelMembersModalProps> = ({
           </div>
 
           {/* Invite Agents Section */}
-          {isCreator && availableAgents.length > 0 && (
-            <div className="border-t border-border pt-3">
-              <label className="block text-[11px] font-semibold text-fg mb-1.5 flex items-center gap-1">
+          <div className="border-t border-border pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-[11px] font-semibold text-fg flex items-center gap-1">
                 <UserPlus className="w-3.5 h-3.5 text-accent" />
                 <span>邀请专职 Agent 进入频道推演</span>
               </label>
+              {availableAgents.length > 1 && (
+                <button
+                  onClick={() => {
+                    const allNewIds = availableAgents.map((a) => a.id);
+                    onUpdateMembers(channel.id, [...currentMemberIds, ...allNewIds]);
+                  }}
+                  className="text-[10px] text-accent hover:underline font-medium cursor-pointer"
+                >
+                  一键全部拉入 ({availableAgents.length})
+                </button>
+              )}
+            </div>
 
+            {availableAgents.length > 0 ? (
               <div className="space-y-1.5">
                 {availableAgents.map((agent) => (
                   <div
@@ -159,21 +172,28 @@ export const ChannelMembersModal: React.FC<ChannelMembersModalProps> = ({
                       <span className="text-base">{agent.avatar}</span>
                       <div className="min-w-0">
                         <div className="font-semibold text-fg truncate text-xs">{agent.name}</div>
-                        <div className="text-[10px] text-fg-muted truncate">{agent.role}</div>
+                        <div className="text-[10px] text-fg-muted truncate">
+                          {agent.role} · {agent.modelBadge?.split(' ')[0] || 'Local ACP'}
+                        </div>
                       </div>
                     </div>
 
                     <button
                       onClick={() => handleAddMember(agent.id)}
-                      className="px-2.5 py-1 rounded-lg bg-accent/15 hover:bg-accent text-accent hover:text-white transition-all text-xs font-semibold cursor-pointer shrink-0"
+                      className="px-2.5 py-1 rounded-lg bg-accent/15 hover:bg-accent text-accent hover:text-white transition-all text-xs font-semibold cursor-pointer shrink-0 flex items-center gap-1"
                     >
-                      拉入频道
+                      <UserPlus className="w-3 h-3" />
+                      <span>拉入频道</span>
                     </button>
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="p-3 rounded-xl bg-surface-subtle border border-border text-center text-fg-muted text-[11px]">
+                所有可用 Agent 已全部加入此频道。如需引入新 Agent，可前往「Agents & 编队」连接新 ACP Agent。
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Footer */}

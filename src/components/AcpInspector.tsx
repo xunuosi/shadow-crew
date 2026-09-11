@@ -39,6 +39,8 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'architecture' | 'rust_tauri' | 'memory' | 'workspace' | 'skills' | 'rpc_logs'>('rust_tauri');
   const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
+  const [diskLogText, setDiskLogText] = useState<string | null>(null);
+  const [loadingDiskLog, setLoadingDiskLog] = useState(false);
 
   // New Memory Item Form State
   const [newMemKey, setNewMemKey] = useState('');
@@ -49,6 +51,26 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
   const [previewFile, setPreviewFile] = useState<WorkspaceFile | null>(
     workspaceFiles[0]?.children?.[0]?.children?.[1] || null // client.rs
   );
+
+  const fetchDiskLogs = async () => {
+    setLoadingDiskLog(true);
+    const tauriInvoke =
+      typeof window !== 'undefined'
+        ? (window as any).__TAURI_INTERNALS__?.invoke ||
+          (window as any).__TAURI__?.core?.invoke
+        : null;
+    if (tauriInvoke) {
+      try {
+        const text = await tauriInvoke('read_recent_acp_logs', { lines: 150 });
+        setDiskLogText(text);
+      } catch (e: any) {
+        setDiskLogText(`读取失败: ${e?.message || e}`);
+      }
+    } else {
+      setDiskLogText('当前运行于浏览器预览模式，本地磁盘日志由桌面端 Tauri 维护在 logs/acp.log。');
+    }
+    setLoadingDiskLog(false);
+  };
 
   const handleCopyLog = (id: string, text: string) => {
     navigator.clipboard.writeText(text);
@@ -164,7 +186,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                   <span className="text-sm">🦀</span>
                   <span>Tauri v2 + Rust Axum 运行时宿主</span>
                 </span>
-                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-orange-500/20 text-orange-700 dark:text-orange-200">
+                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-700 dark:text-orange-200 shrink-0">
                   Tokio Process
                 </span>
               </div>
@@ -497,11 +519,63 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
           </div>
         )}
 
-        {/* TAB 5: RAW JSON-RPC 2.0 LOGS */}
+        {/* TAB 5: RAW JSON-RPC 2.0 LOGS & LOCAL DISK LOG */}
         {activeTab === 'rpc_logs' && (
-          <div className="space-y-2 font-mono text-[10px]">
+          <div className="space-y-3 font-mono text-[10px]">
+            {/* Local Persistent File Log Banner */}
+            <div className="p-2.5 rounded bg-surface-subtle border border-border space-y-2 font-sans">
+              <div className="flex items-center justify-between text-[11px] font-semibold text-fg">
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                  本地文件落盘 (Persistent Stdio Log)
+                </span>
+                <span className="font-mono text-[10px] text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                  实时同步
+                </span>
+              </div>
+              <p className="text-[10px] text-fg-muted leading-relaxed">
+                所有底层原始 stdio 通信报文（发送、返回、报错）已持久化写入当前项目：
+              </p>
+              <div className="flex items-center justify-between bg-surface border border-border px-2 py-1 rounded font-mono text-[10px] text-fg">
+                <span className="truncate select-all text-emerald-600 dark:text-emerald-400">logs/acp.log</span>
+                <div className="flex items-center gap-1 shrink-0 ml-2">
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText('tail -f logs/acp.log');
+                      setCopiedLogId('tail-cmd');
+                      setTimeout(() => setCopiedLogId(null), 2000);
+                    }}
+                    className="text-accent hover:underline cursor-pointer flex items-center gap-1 text-[10px]"
+                    title="复制终端实时查看命令"
+                  >
+                    {copiedLogId === 'tail-cmd' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                    <span>tail -f</span>
+                  </button>
+                  <span className="text-border">|</span>
+                  <button
+                    onClick={fetchDiskLogs}
+                    className="text-accent hover:underline cursor-pointer flex items-center gap-1 text-[10px]"
+                  >
+                    {loadingDiskLog ? '读取中...' : diskLogText ? '刷新' : '查看内容'}
+                  </button>
+                </div>
+              </div>
+
+              {diskLogText && (
+                <div className="mt-2 border border-border rounded bg-surface overflow-hidden">
+                  <div className="px-2 py-1 bg-surface-subtle border-b border-border text-[9px] font-mono text-fg-muted flex items-center justify-between">
+                    <span>logs/acp.log (最近条目)</span>
+                    <button onClick={() => setDiskLogText(null)} className="hover:text-fg cursor-pointer">关闭</button>
+                  </div>
+                  <pre className="p-2 text-[9px] font-mono text-fg-secondary overflow-x-auto max-h-40 leading-tight select-text">
+                    {diskLogText}
+                  </pre>
+                </div>
+              )}
+            </div>
+
             <div className="flex items-center justify-between text-fg-muted mb-1">
-              <span>实时 ACP 消息帧 (共 {rpcLogs.length} 条)</span>
+              <span>实时消息帧事件 ({rpcLogs.length} 条)</span>
               <span className="text-emerald-500">JSON-RPC 2.0</span>
             </div>
 

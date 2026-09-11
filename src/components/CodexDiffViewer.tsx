@@ -102,11 +102,11 @@ export const CodexDiffViewer: React.FC<CodexDiffViewerProps> = ({
           <span className="text-[10px] text-fg-muted font-mono">feat/w13</span>
         </div>
 
-        <div className="flex items-center gap-2 text-[10px] font-mono">
-          <span className="text-emerald-500 bg-emerald-500/15 px-1.5 py-0.2 rounded border border-emerald-500/30">
+        <div className="flex items-center gap-2 text-[10px] font-mono shrink-0">
+          <span className="text-emerald-500 bg-emerald-500/15 px-1.5 py-0.5 rounded border border-emerald-500/30">
             +{sampleDiff.additions}
           </span>
-          <span className="text-red-500 bg-red-500/15 px-1.5 py-0.2 rounded border border-red-500/30">
+          <span className="text-red-500 bg-red-500/15 px-1.5 py-0.5 rounded border border-red-500/30">
             -{sampleDiff.deletions}
           </span>
           <span className="text-fg-muted">Unified Format</span>

@@ -78,7 +78,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         >
           <span className="text-sm leading-none">🦀</span>
           <span className="font-semibold hidden sm:inline">Rust+Tauri</span>
-          <span className="hidden xl:inline text-[9px] px-1 py-0.2 bg-orange-500/20 text-orange-600 dark:text-orange-300 rounded font-mono">
+          <span className="hidden xl:inline text-[9px] px-1.5 py-0.5 bg-orange-500/20 text-orange-600 dark:text-orange-300 rounded font-mono shrink-0">
             v2 + Axum
           </span>
         </button>

@@ -155,7 +155,7 @@ export const RustTauriArchitectureHub: React.FC<RustTauriArchitectureHubProps> =
           >
             <FileCode className="w-3.5 h-3.5" />
             <span>真实 Rust 源码工作区</span>
-            <span className="text-[10px] px-1.5 py-0.2 rounded bg-blue-500/15 text-blue-500 font-mono">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-500 font-mono shrink-0">
               {RUST_TAURI_WORKSPACE_FILES.length} 个核心文件
             </span>
           </button>

@@ -262,7 +262,7 @@ export const AgentTeamsModal: React.FC<AgentTeamsModalProps> = ({
                       <div className="truncate flex-1">
                         <div className="flex items-center justify-between">
                           <span className="font-bold text-xs text-fg truncate">{ag.name}</span>
-                          <span className="text-[10px] text-accent font-mono bg-accent/15 px-1 py-0.2 rounded border border-accent/30">
+                          <span className="text-[10px] text-accent font-mono bg-accent/15 px-1.5 py-0.5 rounded border border-accent/30 shrink-0">
                             {ag.modelBadge}
                           </span>
                         </div>

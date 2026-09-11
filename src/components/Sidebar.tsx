@@ -14,10 +14,11 @@ import {
   PanelLeftOpen,
   Sparkles,
   Command,
-  Shield,
   Circle,
   FileCode,
-  ListTodo
+  ListTodo,
+  UserPlus,
+  Trash2
 } from 'lucide-react';
 import { NinjaIcon } from './NinjaIcon';
 import { ThemeSwitcher } from './ThemeSwitcher';
@@ -31,16 +32,18 @@ interface SidebarProps {
   activeChannelId: string;
   onSelectChannel: (channelId: string) => void;
   onOpenCreateChannel: () => void;
+  onOpenMembersModal?: (channelId?: string) => void;
+  onOpenDeleteChannelModal?: (channelId?: string) => void;
   agents: Agent[];
   teams: AgentTeam[];
   onOpenAgentTeamsModal: () => void;
   onSelectDirectMessage: (agent: Agent) => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
+  activeThreadId?: string;
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
   currentWorkspace?: string;
-  onOpenRustTauriHub?: () => void;
   currentMainView?: 'chat' | 'agents';
   onSelectMainView?: (view: 'chat' | 'agents') => void;
 }
@@ -53,23 +56,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeChannelId,
   onSelectChannel,
   onOpenCreateChannel,
+  onOpenMembersModal,
+  onOpenDeleteChannelModal,
   agents,
   teams,
   onOpenAgentTeamsModal,
   onSelectDirectMessage,
   searchQuery,
   onSearchChange,
+  activeThreadId,
   isCollapsed = false,
   onToggleCollapse,
   currentWorkspace = 'shadow-crew',
-  onOpenRustTauriHub,
   currentMainView = 'chat',
   onSelectMainView,
 }) => {
   return (
     <aside
       id="shinobi-primary-sidebar"
-      className="w-60 bg-surface border-r border-border flex flex-col shrink-0 select-none text-fg-secondary text-xs select-none transition-colors duration-150"
+      className="w-64 min-w-[240px] bg-surface border-r border-border flex flex-col shrink-0 select-none text-fg-secondary text-xs select-none transition-colors duration-150"
     >
       {/* 1. Window Controls & History Bar */}
       <div className="h-10 px-3 flex items-center justify-between border-b border-border bg-surface-subtle">
@@ -139,7 +144,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             placeholder="Search channels, topics..."
             className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none"
           />
-          <span className="text-[10px] text-fg-muted font-mono flex items-center gap-0.5 border border-border px-1 py-0.2 rounded bg-surface">
+          <span className="text-[10px] text-fg-muted font-mono flex items-center gap-0.5 border border-border px-1 py-0.5 rounded bg-surface shrink-0">
             ⌘K
           </span>
         </div>
@@ -152,10 +157,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
           title="所有未读与待办"
         >
           <div className="flex items-center gap-2">
-            <Inbox className="w-4 h-4 text-fg-muted group-hover:text-accent transition-colors" />
+            <Inbox className="w-4 h-4 text-fg-muted group-hover:text-accent transition-colors shrink-0" />
             <span className="font-medium text-xs">Inbox</span>
           </div>
-          <span className="text-[10px] bg-accent/15 text-accent px-1.5 py-0.2 rounded font-mono border border-accent/30">
+          <span className="text-[10px] bg-accent/15 text-accent px-1.5 py-0.5 rounded font-mono border border-accent/30 shrink-0">
             3
           </span>
         </button>
@@ -177,22 +182,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {agents.length} Agent · {teams.length} 编队
           </span>
         </button>
-
-        {onOpenRustTauriHub && (
-          <button
-            onClick={onOpenRustTauriHub}
-            className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-fg-secondary hover:text-fg hover:bg-surface-hover transition-all cursor-pointer group"
-            title="查看 Rust + Tauri 架构代码与白皮书"
-          >
-            <div className="flex items-center gap-2">
-              <Shield className="w-4 h-4 text-purple-500 group-hover:scale-110 transition-transform" />
-              <span className="font-medium text-xs">Rust+Tauri 架构</span>
-            </div>
-            <span className="text-[9px] text-purple-500 bg-purple-500/10 px-1 py-0.2 rounded border border-purple-500/30 font-mono">
-              白皮书
-            </span>
-          </button>
-        )}
       </div>
 
       {/* 4. Channels Section (功能、需求与任务频道 - 按当前项目过滤) */}
@@ -210,18 +199,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
 
           <div className="space-y-0.5">
-            {channels
-              .filter((c) => (!activeProjectId || !c.projectId || c.projectId === activeProjectId) && c.status !== 'deleted')
-              .map((channel) => {
+            {channels.filter((c) => (!activeProjectId || !c.projectId || c.projectId === activeProjectId) && c.status !== 'deleted').length === 0 ? (
+              <button
+                type="button"
+                onClick={onOpenCreateChannel}
+                className="w-full px-2.5 py-3 rounded-lg border border-dashed border-border hover:border-accent/40 text-fg-muted hover:text-accent transition-all cursor-pointer text-center group bg-surface-subtle/30"
+              >
+                <Plus className="w-4 h-4 mx-auto mb-1 opacity-70 group-hover:scale-110 transition-transform text-accent" />
+                <span className="text-[11px] font-medium block">暂无频道，点击新建</span>
+              </button>
+            ) : (
+              channels
+                .filter((c) => (!activeProjectId || !c.projectId || c.projectId === activeProjectId) && c.status !== 'deleted')
+                .map((channel) => {
                 const isActive = channel.id === activeChannelId;
                 const memberCount = channel.memberIds?.length || 1;
 
                 return (
-                  <button
+                  <div
                     key={channel.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => {
                       onSelectChannel(channel.id);
                       onSelectMainView?.('chat');
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        onSelectChannel(channel.id);
+                        onSelectMainView?.('chat');
+                      }
                     }}
                     className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition-all cursor-pointer group ${
                       isActive
@@ -229,7 +236,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         : 'text-fg-secondary hover:text-fg hover:bg-surface-hover'
                     }`}
                   >
-                    <div className="flex items-center gap-1.5 truncate min-w-0">
+                    <div className="flex items-center gap-1.5 truncate min-w-0 flex-1 mr-1">
                       {channel.isPrivate ? (
                         <Lock className={`w-3 h-3 shrink-0 ${isActive ? 'text-amber-500' : 'text-fg-muted'}`} />
                       ) : (
@@ -238,39 +245,69 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       
                       {/* Kind Badge */}
                       {channel.kind === 'feature' && (
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 font-mono border border-cyan-500/20 shrink-0">
+                        <span className="text-[9px] px-1 py-0.5 rounded bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 font-mono border border-cyan-500/20 shrink-0">
                           feat
                         </span>
                       )}
                       {channel.kind === 'requirement' && (
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 font-mono border border-purple-500/20 shrink-0">
+                        <span className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 font-mono border border-purple-500/20 shrink-0">
                           req
                         </span>
                       )}
                       {channel.kind === 'task' && (
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-mono border border-amber-500/20 shrink-0">
+                        <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-mono border border-amber-500/20 shrink-0">
                           task
                         </span>
                       )}
 
-                      <span className="truncate text-xs">{channel.name}</span>
+                      <span className="truncate text-xs font-medium">{channel.name}</span>
                     </div>
 
                     <div className="flex items-center gap-1 shrink-0">
-                      {/* Member count tag */}
-                      <span className="text-[9px] text-fg-muted font-mono hidden sm:inline" title={`${memberCount} 位受邀成员`}>
+                      {/* Quick action buttons visible on group hover */}
+                      <div className="hidden group-hover:flex items-center gap-0.5">
+                        {onOpenMembersModal && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenMembersModal(channel.id);
+                            }}
+                            className="p-1 rounded hover:bg-accent/20 hover:text-accent text-fg-muted transition-colors cursor-pointer"
+                            title="邀请 Agent / 管理成员"
+                          >
+                            <UserPlus className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {onOpenDeleteChannelModal && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenDeleteChannelModal(channel.id);
+                            }}
+                            className="p-1 rounded hover:bg-red-500/20 hover:text-red-500 text-fg-muted transition-colors cursor-pointer"
+                            title="删除频道"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Member count tag (hidden on hover when actions show) */}
+                      <span className="text-[9px] text-fg-muted font-mono group-hover:hidden hidden sm:inline shrink-0" title={`${memberCount} 位受邀成员`}>
                         {memberCount}人
                       </span>
 
                       {channel.unreadCount > 0 && (
-                        <span className="text-[10px] bg-red-500/15 text-red-500 border border-red-500/30 px-1.5 py-0.2 rounded-full font-mono">
+                        <span className="text-[10px] bg-red-500/15 text-red-500 border border-red-500/30 px-1.5 py-0.5 rounded-full font-mono shrink-0">
                           {channel.unreadCount}
                         </span>
                       )}
                     </div>
-                  </button>
+                  </div>
                 );
-              })}
+              }))}
           </div>
         </div>
 
@@ -282,38 +319,61 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
 
           <div className="space-y-0.5">
-            {agents.map((agent) => (
-              <button
-                key={agent.id}
-                onClick={() => {
-                  onSelectDirectMessage(agent);
-                  onSelectMainView?.('chat');
-                }}
-                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left text-fg-secondary hover:text-fg hover:bg-surface-hover transition-all cursor-pointer group"
-              >
-                <div className="flex items-center gap-2 truncate">
-                  <div className="relative shrink-0 flex items-center justify-center text-sm">
-                    {agent.avatar}
-                    <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 border border-surface" />
-                  </div>
-                  <div className="truncate">
-                    <div className="text-xs truncate font-medium text-fg flex items-center gap-1">
-                      <span>{agent.name}</span>
-                      {agent.isManagedByYou && (
-                        <span className="text-[9px] text-accent font-normal">
-                          (替身)
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[10px] text-fg-muted truncate">{agent.role}</div>
-                  </div>
-                </div>
+            {agents.map((agent) => {
+              const formatBadge = (b?: string) => {
+                if (!b) return 'ACP';
+                const lower = b.toLowerCase();
+                if (lower.includes('deepseek')) return 'DeepSeek';
+                if (lower.includes('claude')) return 'Claude';
+                if (lower.includes('gpt')) return 'GPT-4o';
+                if (lower.includes('kimi')) return 'Kimi';
+                if (lower.includes('qwen')) return 'Qwen';
+                const first = b.split(' ')[0];
+                return first.length > 8 ? `${first.slice(0, 7)}…` : first;
+              };
 
-                <span className="text-[9px] text-fg-muted font-mono px-1 rounded bg-surface-subtle border border-border shrink-0">
-                  {agent.modelBadge ? agent.modelBadge.split(' ')[0] : 'ACP'}
-                </span>
-              </button>
-            ))}
+              const isSelected = activeThreadId === `thread-dm-${agent.id}`;
+
+              return (
+                <button
+                  key={agent.id}
+                  onClick={() => {
+                    onSelectDirectMessage(agent);
+                    onSelectMainView?.('chat');
+                  }}
+                  className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition-all cursor-pointer group ${
+                    isSelected
+                      ? 'bg-accent/15 text-accent font-medium border border-accent/30 shadow-2xs'
+                      : 'text-fg-secondary hover:text-fg hover:bg-surface-hover border border-transparent'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 truncate min-w-0 flex-1 mr-1.5">
+                    <div className="relative shrink-0 flex items-center justify-center text-sm">
+                      {agent.avatar}
+                      <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 border border-surface" />
+                    </div>
+                    <div className="truncate min-w-0 flex-1">
+                      <div className="text-xs truncate font-medium text-fg flex items-center gap-1">
+                        <span className="truncate">{agent.name}</span>
+                        {agent.isManagedByYou && (
+                          <span className="text-[9px] text-accent font-normal shrink-0">
+                            (替身)
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-fg-muted truncate">{agent.role}</div>
+                    </div>
+                  </div>
+
+                  <span 
+                    className="text-[9px] text-fg-muted font-mono px-1.5 py-0.5 rounded bg-surface-subtle border border-border shrink-0 max-w-[68px] truncate"
+                    title={agent.modelBadge || 'ACP'}
+                  >
+                    {formatBadge(agent.modelBadge)}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>

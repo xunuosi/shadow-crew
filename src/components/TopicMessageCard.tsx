@@ -58,32 +58,32 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
       <div className="p-4 sm:p-5 pl-5 sm:pl-6 space-y-3">
         {/* Top Meta Bar: Status Badge, Author & Timestamp */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {/* Status Badge */}
             {isResolved ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 shrink-0 whitespace-nowrap">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
                 <span>已达成共识 · Resolved</span>
               </span>
             ) : isInvestigating ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-purple-500/15 text-purple-600 dark:text-purple-300 border border-purple-500/30">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-purple-500/15 text-purple-600 dark:text-purple-300 border border-purple-500/30 shrink-0 whitespace-nowrap">
                 <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
                 <span>进行中 · Investigating</span>
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-surface-subtle text-fg-muted border border-border">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-surface-subtle text-fg-muted border border-border shrink-0 whitespace-nowrap">
                 <Clock className="w-3.5 h-3.5" />
                 <span>待响应 · Open</span>
               </span>
             )}
 
-            <span className="text-xs text-fg-muted font-mono">
+            <span className="text-xs text-fg-muted font-mono whitespace-nowrap shrink-0">
               by <span className="text-fg font-medium">{topic.authorName}</span> · {topic.timestamp}
             </span>
           </div>
 
           {/* Reply Count & Action Hint */}
-          <div className="flex items-center gap-1.5 text-xs text-fg-muted group-hover:text-accent transition-colors font-medium">
+          <div className="flex items-center gap-1.5 text-xs text-fg-muted group-hover:text-accent transition-colors font-medium shrink-0 whitespace-nowrap">
             <MessageSquare className="w-3.5 h-3.5" />
             <span>{topic.repliesCount} 条讨论</span>
             <ChevronRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
@@ -165,36 +165,36 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
         )}
 
         {/* Bottom Bar: Participating Agents Stack & Latest Preview */}
-        <div className="flex items-center justify-between pt-1 border-t border-border-subtle gap-3">
+        <div className="flex items-center justify-between pt-1 border-t border-border-subtle gap-3 flex-wrap sm:flex-nowrap">
           {/* Agent Avatar Stack */}
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] text-fg-muted">协同成员:</span>
-            <div className="flex items-center -space-x-1.5">
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-[11px] text-fg-muted whitespace-nowrap">协同成员:</span>
+            <div className="flex items-center -space-x-1.5 shrink-0">
               {participatingAgents.length > 0 ? (
                 participatingAgents.map((ag) => (
                   <div
                     key={ag.id}
                     title={`${ag.name} (${ag.role})`}
-                    className="w-6 h-6 rounded-lg bg-surface border border-border flex items-center justify-center text-xs shadow-xs"
+                    className="w-6 h-6 rounded-lg bg-surface border border-border flex items-center justify-center text-xs shadow-xs shrink-0"
                   >
                     {ag.avatar}
                   </div>
                 ))
               ) : (
-                <div className="w-6 h-6 rounded-lg bg-surface border border-border flex items-center justify-center text-xs">
+                <div className="w-6 h-6 rounded-lg bg-surface border border-border flex items-center justify-center text-xs shrink-0">
                   🤖
                 </div>
               )}
             </div>
-            <span className="text-[10px] text-fg-muted font-mono">
+            <span className="text-[10px] text-fg-muted font-mono whitespace-nowrap">
               {participatingAgents.length} 位协作
             </span>
           </div>
 
           {/* Latest reply snippet or dive in button */}
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-purple-600 dark:text-purple-400 group-hover:text-accent transition-colors">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-purple-600 dark:text-purple-400 group-hover:text-accent transition-colors shrink-0 whitespace-nowrap">
             <span>进入议题讨论</span>
-            <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" />
+            <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1 shrink-0" />
           </div>
         </div>
       </div>
