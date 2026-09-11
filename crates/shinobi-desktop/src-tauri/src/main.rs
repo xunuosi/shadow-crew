@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 // 共享的全局状态
 struct AppState {
     acp_manager: Arc<Mutex<AcpProcessManager>>,
+    #[allow(dead_code)]
     nostr_relay_url: String,
 }
 

@@ -7,6 +7,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
 pub struct RunningAgent {
+    #[allow(dead_code)]
     pub pid: u32,
     pub stdin_tx: mpsc::Sender<String>,
 }
