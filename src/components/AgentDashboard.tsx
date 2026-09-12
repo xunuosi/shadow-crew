@@ -11,7 +11,11 @@ import {
   Sparkles, 
   Zap,
   Trash2,
-  Pencil
+  Pencil,
+  Globe,
+  Upload,
+  Download,
+  Layers,
 } from 'lucide-react';
 import { AgentAvatarArtwork, TeamArtwork } from './AgentAvatarArtwork';
 import { ThemeSwitcher } from './ThemeSwitcher';
@@ -30,6 +34,8 @@ interface AgentDashboardProps {
   onEditAgent?: (agent: Agent) => void;
   onDeleteAgent?: (agentId: string) => void;
   onDeleteTeam?: (teamId: string) => void;
+  onExportAgentMemory?: (agent: Agent) => void;
+  onImportMemoryCartridge?: () => void;
 }
 
 export const AgentDashboard: React.FC<AgentDashboardProps> = ({
@@ -46,6 +52,8 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   onEditAgent,
   onDeleteAgent,
   onDeleteTeam,
+  onExportAgentMemory,
+  onImportMemoryCartridge,
 }) => {
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [activeTeamMenuId, setActiveTeamMenuId] = useState<string | null>(null);
@@ -133,12 +141,60 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
               >
                 {/* Top Card Row: Online Status Badge (Left) & Menu (Right) */}
                 <div className="flex items-center justify-between h-6">
-                  <div>
-                    {isRunning ? (
-                      <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-600 dark:text-emerald-400 text-[11px] font-medium">
+                  <div className="flex items-center gap-1.5 min-w-0 pr-1">
+                    {/* Guest Clone Badge */}
+                    {agent.isGuestClone && (
+                      <span
+                        className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-500/15 border border-purple-500/30 text-purple-600 dark:text-purple-300 text-[10px] font-medium shrink-0"
+                        title={`基于 ${agent.guestCloneFrom || '外部'} 经验的独立访客替身`}
+                      >
+                        <span>🪪 Guest</span>
+                      </span>
+                    )}
+
+                    {/* Remote Agent Badge */}
+                    {agent.isRemote || agent.acpTransport === 'websocket' ? (
+                      <span
+                        className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-cyan-500/15 border border-cyan-500/35 text-cyan-700 dark:text-cyan-300 text-[11px] font-medium shrink-0"
+                        title={`远程 WebSocket 端点: ${agent.remoteUrl || agent.acpCommandOrUrl || 'ws://...'}`}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                        <span>remote</span>
+                      </span>
+                    ) : agent.status === 'running' || agent.status === 'thinking' || agent.status === 'using_skill' || agent.status === 'accessing_workspace' || agent.status === 'querying_memory' ? (
+                      <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-600 dark:text-emerald-400 text-[11px] font-medium" title="ACP 协议已握手就绪，模型可调用">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                         <span>online</span>
                       </span>
+                    ) : agent.status === 'auth_required' ? (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onEditAgent?.(agent);
+                        }}
+                        className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/35 text-amber-600 dark:text-amber-400 text-[11px] font-medium hover:bg-amber-500/25 transition-all cursor-pointer"
+                        title={agent.statusDetail || "缺少或无效 API Key，点击配置"}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                        <span>auth required</span>
+                      </button>
+                    ) : agent.status === 'starting' ? (
+                      <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-sky-500/10 border border-sky-500/25 text-sky-600 dark:text-sky-400 text-[11px] font-medium">
+                        <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-ping" />
+                        <span>connecting...</span>
+                      </span>
+                    ) : agent.status === 'error' ? (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onEditAgent?.(agent);
+                        }}
+                        className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/25 text-red-600 dark:text-red-400 text-[11px] font-medium hover:bg-red-500/20 transition-all cursor-pointer"
+                        title={agent.statusDetail || "启动或握手异常，点击排障"}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                        <span>error</span>
+                      </button>
                     ) : (
                       <span className="text-[10px] text-fg-muted font-mono pl-1">
                         {agent.acpTransport || 'stdio'}
@@ -171,7 +227,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
 
                       {/* Dropdown Menu */}
                       {isMenuOpen && (
-                        <div className="absolute right-0 top-7 w-44 bg-surface border border-border rounded-2xl shadow-2xl py-1.5 z-30 text-xs animate-in fade-in zoom-in-95 duration-100">
+                        <div className="absolute right-0 top-7 w-48 bg-surface border border-border rounded-2xl shadow-2xl py-1.5 z-30 text-xs animate-in fade-in zoom-in-95 duration-100">
                           {onEditAgent && (
                             <button
                               onClick={() => {
@@ -191,55 +247,84 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                             }}
                             className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-fg flex items-center gap-2 cursor-pointer"
                           >
-                          <Bot className="w-3.5 h-3.5 text-accent" />
-                          <span>发起 1-on-1 私信</span>
-                        </button>
-                        <button
-                          onClick={() => {
-                            onInspectAgent(agent.id);
-                            setActiveMenuId(null);
-                          }}
-                          className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-fg flex items-center gap-2 cursor-pointer"
-                        >
-                          <Info className="w-3.5 h-3.5 text-purple-500" />
-                          <span>查看能力与记忆 (ACP)</span>
-                        </button>
-                        <button
-                          onClick={() => {
-                            onToggleAgentStatus(agent.id);
-                            setActiveMenuId(null);
-                          }}
-                          className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-fg-secondary flex items-center gap-2 cursor-pointer"
-                        >
-                          {isRunning ? (
-                            <>
-                              <Square className="w-3.5 h-3.5 text-red-500" />
-                              <span>暂停 Agent 进程</span>
-                            </>
-                          ) : (
-                            <>
-                              <Play className="w-3.5 h-3.5 text-emerald-500" />
-                              <span>启动 Agent 进程</span>
-                            </>
-                          )}
-                        </button>
-                        {onDeleteAgent && (
+                            <Bot className="w-3.5 h-3.5 text-accent" />
+                            <span>发起 1-on-1 私信</span>
+                          </button>
                           <button
                             onClick={() => {
-                              onDeleteAgent(agent.id);
+                              onInspectAgent(agent.id);
                               setActiveMenuId(null);
                             }}
-                            className="w-full text-left px-3.5 py-1.5 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-500 flex items-center gap-2 cursor-pointer border-t border-border"
+                            className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-fg flex items-center gap-2 cursor-pointer"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span>移除此 Agent</span>
+                            <Info className="w-3.5 h-3.5 text-purple-500" />
+                            <span>查看能力与记忆 (ACP)</span>
                           </button>
-                        )}
-                      </div>
-                    )}
+
+                          {/* Memory Export */}
+                          {onExportAgentMemory && (
+                            <button
+                              onClick={() => {
+                                onExportAgentMemory(agent);
+                                setActiveMenuId(null);
+                              }}
+                              className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-emerald-600 dark:text-emerald-400 flex items-center gap-2 cursor-pointer"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              <span>导出记忆卡带 (.acpmem)</span>
+                            </button>
+                          )}
+
+                          {/* Memory Import */}
+                          {onImportMemoryCartridge && (
+                            <button
+                              onClick={() => {
+                                onImportMemoryCartridge();
+                                setActiveMenuId(null);
+                              }}
+                              className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-accent flex items-center gap-2 cursor-pointer"
+                            >
+                              <Upload className="w-3.5 h-3.5" />
+                              <span>挂载外挂记忆卡带</span>
+                            </button>
+                          )}
+
+                          <button
+                            onClick={() => {
+                              onToggleAgentStatus(agent.id);
+                              setActiveMenuId(null);
+                            }}
+                            className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-fg-secondary flex items-center gap-2 cursor-pointer"
+                          >
+                            {isRunning ? (
+                              <>
+                                <Square className="w-3.5 h-3.5 text-red-500" />
+                                <span>暂停 Agent 进程</span>
+                              </>
+                            ) : (
+                              <>
+                                <Play className="w-3.5 h-3.5 text-emerald-500" />
+                                <span>启动 Agent 进程</span>
+                              </>
+                            )}
+                          </button>
+                          {onDeleteAgent && (
+                            <button
+                              onClick={() => {
+                                onDeleteAgent(agent.id);
+                                setActiveMenuId(null);
+                              }}
+                              className="w-full text-left px-3.5 py-1.5 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-500 flex items-center gap-2 cursor-pointer border-t border-border"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>移除此 Agent</span>
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
 
                 {/* Center: 3D Artwork Avatar with Status Capsule (Matching Screenshot) */}
                 <div className="flex flex-col items-center justify-center my-auto relative">
@@ -252,18 +337,47 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     {/* Floating Status / Start Capsule at Bottom Center of Avatar */}
                     <button
                       onClick={() => onToggleAgentStatus(agent.id)}
+                      disabled={agent.status === 'starting'}
                       className={`absolute -bottom-2.5 left-1/2 -translate-x-1/2 pl-3 pr-2 py-1 rounded-full text-[11px] font-semibold flex items-center gap-2 transition-all shadow-md cursor-pointer ${
-                        isRunning
-                          ? 'bg-surface border border-emerald-500/50 text-emerald-600 dark:text-emerald-400 hover:border-red-500/60'
+                        agent.status === 'starting'
+                          ? 'bg-surface border border-sky-500/40 text-sky-500 cursor-wait'
+                          : isRunning
+                          ? agent.status === 'auth_required'
+                            ? 'bg-surface border border-amber-500/50 text-amber-600 dark:text-amber-400 hover:border-red-500/60'
+                            : 'bg-surface border border-emerald-500/50 text-emerald-600 dark:text-emerald-400 hover:border-red-500/60'
                           : 'bg-surface border border-border hover:border-accent text-fg-secondary hover:text-fg'
                       }`}
-                      title={isRunning ? '点击挂起进程' : '点击启动进程'}
+                      title={
+                        agent.status === 'starting'
+                          ? '正在建立 ACP 握手连接...'
+                          : isRunning
+                          ? '点击挂起/终止进程'
+                          : '点击启动进程并完成 ACP 握手'
+                      }
                     >
-                      <span>{isRunning ? 'Stop' : 'Start'}</span>
+                      <span>
+                        {agent.status === 'starting'
+                          ? 'Connecting...'
+                          : isRunning
+                          ? 'Stop'
+                          : 'Start'}
+                      </span>
                       <span className={`w-3.5 h-3.5 rounded-full flex items-center justify-center ${
-                        isRunning ? 'bg-emerald-500' : 'bg-emerald-500/25'
+                        agent.status === 'starting'
+                          ? 'bg-sky-500/20'
+                          : isRunning
+                          ? agent.status === 'auth_required'
+                            ? 'bg-amber-500'
+                            : 'bg-emerald-500'
+                          : 'bg-emerald-500/25'
                       }`}>
-                        <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-white animate-pulse' : 'bg-emerald-500'}`} />
+                        <span className={`w-2 h-2 rounded-full ${
+                          agent.status === 'starting'
+                            ? 'bg-sky-500 animate-ping'
+                            : isRunning
+                            ? 'bg-white animate-pulse'
+                            : 'bg-emerald-500'
+                        }`} />
                       </span>
                     </button>
                   </div>

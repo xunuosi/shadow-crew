@@ -90,6 +90,17 @@ impl AcpEnvVar {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentRuntimeStatus {
+    pub agent_id: String,
+    pub pid: u32,
+    pub is_alive: bool,
+    pub is_initialized: bool,
+    pub auth_state: String, // "ok" | "auth_required" | "missing_key" | "unknown"
+    pub status: String,     // "running" | "auth_required" | "starting" | "error" | "idle"
+    pub status_detail: Option<String>,
+}
+
 pub struct RunningAgent {
     #[allow(dead_code)]
     pub pid: u32,
@@ -101,8 +112,11 @@ pub struct RunningAgent {
     pub session_active_req: Arc<TokioMutex<HashMap<String, u64>>>,
     pub is_alive: Arc<AtomicBool>,
     pub initialized: Arc<AtomicBool>,
+    pub auth_state: Arc<TokioMutex<String>>,
+    pub status_detail: Arc<TokioMutex<Option<String>>>,
     pub session_ids: Arc<TokioMutex<HashMap<String, String>>>,
     pub cwd: String,
+    pub app_handle: AppHandle,
 }
 
 pub struct AcpProcessManager {
@@ -131,6 +145,36 @@ impl AcpProcessManager {
             .filter(|(_, a)| a.is_alive.load(Ordering::SeqCst))
             .map(|(id, _)| id.clone())
             .collect()
+    }
+
+    /// 获取当前所有 Agent 的细粒度运行时状态 (包括握手与鉴权)
+    pub async fn get_agents_runtime_status(&self) -> Vec<AgentRuntimeStatus> {
+        let mut statuses = Vec::new();
+        for (id, agent) in &self.agents {
+            let is_alive = agent.is_alive.load(Ordering::SeqCst);
+            let is_initialized = agent.initialized.load(Ordering::SeqCst);
+            let auth_state = agent.auth_state.lock().await.clone();
+            let status_detail = agent.status_detail.lock().await.clone();
+
+            let status = if !is_alive {
+                "idle".to_string()
+            } else if auth_state == "auth_required" {
+                "auth_required".to_string()
+            } else {
+                "running".to_string()
+            };
+
+            statuses.push(AgentRuntimeStatus {
+                agent_id: id.clone(),
+                pid: agent.pid,
+                is_alive,
+                is_initialized,
+                auth_state,
+                status,
+                status_detail,
+            });
+        }
+        statuses
     }
 
     /// 终止指定 Agent 进程并释放资源
@@ -214,9 +258,9 @@ impl AcpProcessManager {
             .kill_on_drop(true);
 
         // 注入用户配置的环境变量 (如 ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL 等)
-        if let Some(vars) = env_vars {
+        if let Some(ref vars) = env_vars {
             for item in vars {
-                let (k, v) = item.into_pair();
+                let (k, v) = item.clone().into_pair();
                 let trimmed_k = k.trim();
                 let trimmed_v = v.trim();
                 if !trimmed_k.is_empty() && !trimmed_v.is_empty() {
@@ -272,6 +316,8 @@ impl AcpProcessManager {
             Arc::new(TokioMutex::new(HashMap::new()));
         let is_alive = Arc::new(AtomicBool::new(true));
         let initialized = Arc::new(AtomicBool::new(false));
+        let auth_state = Arc::new(TokioMutex::new("ok".to_string()));
+        let status_detail = Arc::new(TokioMutex::new(None::<String>));
         let session_ids = Arc::new(TokioMutex::new(HashMap::new()));
 
         // 异步任务 1: 处理写往 Agent 的指令
@@ -499,22 +545,92 @@ impl AcpProcessManager {
             RunningAgent {
                 pid,
                 child: child_arc,
-                stdin_tx,
-                pending_requests,
+                stdin_tx: stdin_tx.clone(),
+                pending_requests: pending_requests.clone(),
                 active_chunks,
                 session_active_req,
-                is_alive,
-                initialized,
+                is_alive: is_alive.clone(),
+                initialized: initialized.clone(),
+                auth_state: auth_state.clone(),
+                status_detail: status_detail.clone(),
                 session_ids,
                 cwd: cwd.to_string(),
+                app_handle: app_handle.clone(),
             },
         );
+
+        // 1. 立即发起 ACP initialize 握手 (超时 3 秒)
+        let init_id = 1001u64;
+        let (init_tx, init_rx) = oneshot::channel();
+        {
+            let mut map = pending_requests.lock().await;
+            map.insert(init_id, init_tx);
+        }
+        let init_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": init_id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientInfo": {
+                    "name": "shadow-crew",
+                    "version": "0.1.0"
+                },
+                "clientCapabilities": {
+                    "fs": { "readTextFile": true, "writeTextFile": true },
+                    "terminal": true
+                }
+            }
+        });
+        let _ = stdin_tx.send(init_req.to_string()).await;
+
+        let mut initial_status = "running".to_string();
+        let mut initial_auth_state = "ok".to_string();
+        let mut detail_msg: Option<String> = None;
+
+        match tokio::time::timeout(Duration::from_millis(3000), init_rx).await {
+            Ok(Ok(resp)) => {
+                tracing::info!("[Agent {}] Immediate initialize succeeded: {:?}", agent_id, resp);
+                log_acp_event(agent_id, "INIT_OK", &format!("ACP initialize handshake confirmed: {:?}", resp.get("result")));
+                initialized.store(true, Ordering::SeqCst);
+            }
+            Ok(Err(_)) => {
+                tracing::warn!("[Agent {}] Initialize channel closed immediately", agent_id);
+                detail_msg = Some("Agent closed connection during ACP initialize".to_string());
+            }
+            Err(_) => {
+                tracing::warn!("[Agent {}] Immediate initialize timed out, marking initialized for backward compat", agent_id);
+                initialized.store(true, Ordering::SeqCst);
+            }
+        }
+
+        // 2. 检查特定 Agent 的 API Key 凭证 (如 Claude Code 需要 ANTHROPIC_API_KEY)
+        let is_claude = command_line.contains("claude") || agent_id.contains("claude");
+        if is_claude {
+            let has_key = env_vars.as_ref().map(|vars| {
+                vars.iter().any(|item| {
+                    let (k, v) = item.clone().into_pair();
+                    k.trim() == "ANTHROPIC_API_KEY" && !v.trim().is_empty()
+                })
+            }).unwrap_or(false) || std::env::var("ANTHROPIC_API_KEY").map(|k| !k.trim().is_empty()).unwrap_or(false);
+
+            if !has_key {
+                initial_status = "auth_required".to_string();
+                initial_auth_state = "auth_required".to_string();
+                detail_msg = Some("缺少 ANTHROPIC_API_KEY，点击编辑配置".to_string());
+                *auth_state.lock().await = "auth_required".to_string();
+                *status_detail.lock().await = detail_msg.clone();
+                log_acp_event(agent_id, "WARN", "Missing ANTHROPIC_API_KEY for Claude Code ACP");
+            }
+        }
 
         let _ = app_handle.emit(
             "acp:status_change",
             serde_json::json!({
                 "agent_id": agent_id,
-                "status": "running",
+                "status": initial_status,
+                "auth_state": initial_auth_state,
+                "status_detail": detail_msg,
                 "pid": pid
             }),
         );
@@ -655,9 +771,22 @@ impl AcpProcessManager {
         let response = match tokio::time::timeout(Duration::from_secs(180), resp_rx).await {
             Ok(Ok(resp)) => {
                 // 若出现特定 session 错误，清除缓存触发重新 session/new
-                if resp.get("error").is_some() {
+                if let Some(err) = resp.get("error") {
                     let mut map = agent.session_ids.lock().await;
                     map.remove(room_id);
+
+                    let err_msg = err.get("message").and_then(|m| m.as_str()).unwrap_or_default();
+                    if err_msg.contains("Authentication required") || err_msg.to_lowercase().contains("authentication") {
+                        *agent.auth_state.lock().await = "auth_required".to_string();
+                        *agent.status_detail.lock().await = Some(err_msg.to_string());
+                        let _ = agent.app_handle.emit("acp:status_change", serde_json::json!({
+                            "agent_id": agent_id,
+                            "status": "auth_required",
+                            "auth_state": "auth_required",
+                            "status_detail": err_msg,
+                            "pid": agent.pid
+                        }));
+                    }
                 }
                 Ok(resp)
             }

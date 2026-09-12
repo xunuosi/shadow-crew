@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Agent, LocalAcpRuntime } from '../types';
+import { Agent, LocalAcpRuntime, AcpTransport } from '../types';
 import {
   X,
   ChevronDown,
@@ -13,9 +13,15 @@ import {
   Info,
   ExternalLink,
   RefreshCw,
+  Globe,
+  Wifi,
+  Radio,
+  Layers,
+  ShieldCheck,
 } from 'lucide-react';
 import { AgentAvatarArtwork } from './AgentAvatarArtwork';
 import { discoverLocalAcpRuntimes, FALLBACK_PRESET_RUNTIMES } from '../services/acpDiscovery';
+import { probeRemoteAcpConnection } from '../services/acpClient';
 
 interface ConnectAgentModalProps {
   isOpen: boolean;
@@ -24,6 +30,7 @@ interface ConnectAgentModalProps {
   defaultWorkspaceRoot?: string;
   initialAgent?: Agent | null;
   onUpdateAgent?: (agentId: string, updatedData: Partial<Agent>) => void;
+  onOpenImportModal?: () => void;
 }
 
 interface EnvVarItem {
@@ -48,8 +55,12 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   defaultWorkspaceRoot,
   initialAgent,
   onUpdateAgent,
+  onOpenImportModal,
 }) => {
   if (!isOpen) return null;
+
+  // Connection Tab: 'local' | 'remote' | 'clone'
+  const [connectTab, setConnectTab] = useState<'local' | 'remote' | 'clone'>('local');
 
   // Form Fields
   const [name, setName] = useState('Shinobi Native Agent');
@@ -59,6 +70,17 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   const [selectedIconId, setSelectedIconId] = useState('shinobi');
   const [customCommand, setCustomCommand] = useState('');
   const [isPickingIcon, setIsPickingIcon] = useState(false);
+
+  // Remote ACP Connection State
+  const [remoteUrl, setRemoteUrl] = useState('ws://127.0.0.1:9000');
+  const [authToken, setAuthToken] = useState('');
+  const [readOnlyGuard, setReadOnlyGuard] = useState(true);
+  const [isTestingRemote, setIsTestingRemote] = useState(false);
+  const [remoteTestResult, setRemoteTestResult] = useState<{
+    ok: boolean;
+    latencyMs: number;
+    error?: string;
+  } | null>(null);
 
   // Local ACP Runtimes & Discovery
   const [runtimes, setRuntimes] = useState<LocalAcpRuntime[]>(FALLBACK_PRESET_RUNTIMES);
@@ -81,6 +103,15 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       setName(initialAgent.name || '');
       setDescription(initialAgent.description || initialAgent.role || '');
       setCustomCommand(initialAgent.acpCommandOrUrl || '');
+
+      if (initialAgent.isRemote || initialAgent.acpTransport === 'websocket') {
+        setConnectTab('remote');
+        setRemoteUrl(initialAgent.remoteUrl || initialAgent.acpCommandOrUrl || 'ws://127.0.0.1:9000');
+        setAuthToken(initialAgent.authToken || '');
+        setReadOnlyGuard(initialAgent.readOnlyGuard ?? true);
+      } else {
+        setConnectTab('local');
+      }
 
       // Map icon from avatar or name
       if (initialAgent.avatar === '🥷' || initialAgent.name.toLowerCase().includes('shinobi')) {
@@ -125,12 +156,35 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       setSelectedIconId('shinobi');
       setSelectedAcpId('shinobi_core');
       setCustomCommand('./target/debug/shinobi-agent');
+      setConnectTab('local');
+      setRemoteUrl('ws://127.0.0.1:9000');
+      setAuthToken('');
+      setReadOnlyGuard(true);
+      setRemoteTestResult(null);
       setEnvVars([
         { id: '1', key: 'SHINOBI_LOG', value: 'debug' },
         { id: '2', key: 'MEMORY_STORE', value: 'sqlite' },
       ]);
     }
   }, [initialAgent, isOpen, runtimes]);
+
+  const handleTestRemote = async () => {
+    if (!remoteUrl.trim()) return;
+    setIsTestingRemote(true);
+    setRemoteTestResult(null);
+    try {
+      const res = await probeRemoteAcpConnection(remoteUrl.trim(), authToken.trim() || undefined);
+      setRemoteTestResult(res);
+    } catch (e: any) {
+      setRemoteTestResult({
+        ok: false,
+        latencyMs: 0,
+        error: e?.message || '探测失败',
+      });
+    } finally {
+      setIsTestingRemote(false);
+    }
+  };
 
   // Fetch / probe local ACP agents
   const fetchRuntimes = async () => {
@@ -210,54 +264,70 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   };
 
   const isReady = selectedAcp.availability === 'available';
+  const isRemoteMode = connectTab === 'remote';
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-    if (!initialAgent && !isReady) return;
+    if (!initialAgent && !isRemoteMode && !isReady) return;
+    if (isRemoteMode && !remoteUrl.trim()) return;
 
     const chosenIcon = PRESET_ICONS.find((i) => i.id === selectedIconId);
-    const resolvedCommand = customCommand.trim() || selectedAcp.command;
+    const resolvedCommand = isRemoteMode
+      ? remoteUrl.trim()
+      : customCommand.trim() || selectedAcp.command;
+
+    const transport: AcpTransport = isRemoteMode ? 'websocket' : selectedAcp.transport;
 
     if (initialAgent && onUpdateAgent) {
       onUpdateAgent(initialAgent.id, {
         name: name.trim(),
         handle: initialAgent.handle || `@${name.trim().toLowerCase().replace(/\s+/g, '-')}`,
-        avatar: chosenIcon?.icon || initialAgent.avatar || '🤖',
-        role: selectedAcp.name,
-        description: description.trim() || selectedAcp.description,
-        localAcpProfile: selectedAcp.name,
+        avatar: chosenIcon?.icon || (isRemoteMode ? '🌐' : initialAgent.avatar || '🤖'),
+        role: isRemoteMode ? 'Remote ACP Agent' : selectedAcp.name,
+        description: description.trim() || (isRemoteMode ? 'Remote WebSocket ACP Endpoint' : selectedAcp.description),
+        localAcpProfile: isRemoteMode ? 'Remote WebSocket' : selectedAcp.name,
+        isRemote: isRemoteMode,
+        remoteUrl: isRemoteMode ? remoteUrl.trim() : undefined,
+        authToken: isRemoteMode ? authToken.trim() || undefined : undefined,
+        readOnlyGuard: isRemoteMode ? readOnlyGuard : undefined,
         envVars: envVars
           .filter((v) => v.key.trim().length > 0)
           .map((v) => ({ key: v.key.trim(), value: v.value })),
-        acpTransport: selectedAcp.transport,
+        acpTransport: transport,
         acpCommandOrUrl: resolvedCommand,
       });
     } else {
       onConnectAgent({
         name: name.trim(),
         handle: `@${name.trim().toLowerCase().replace(/\s+/g, '-')}`,
-        avatar: chosenIcon?.icon || '🤖',
-        role: selectedAcp.name,
-        description: description.trim() || selectedAcp.description,
-        localAcpProfile: selectedAcp.name,
+        avatar: chosenIcon?.icon || (isRemoteMode ? '🌐' : '🤖'),
+        role: isRemoteMode ? 'Remote ACP Agent' : selectedAcp.name,
+        description: description.trim() || (isRemoteMode ? 'Remote WebSocket ACP Endpoint' : selectedAcp.description),
+        localAcpProfile: isRemoteMode ? 'Remote WebSocket' : selectedAcp.name,
+        isRemote: isRemoteMode,
+        remoteUrl: isRemoteMode ? remoteUrl.trim() : undefined,
+        authToken: isRemoteMode ? authToken.trim() || undefined : undefined,
+        readOnlyGuard: isRemoteMode ? readOnlyGuard : undefined,
         envVars: envVars
           .filter((v) => v.key.trim().length > 0)
           .map((v) => ({ key: v.key.trim(), value: v.value })),
-        color: '#3b82f6',
-        status: 'idle',
-        modelBadge: selectedAcp.id === 'claude_code' 
-          ? 'Claude 3.7 Sonnet' 
+        color: isRemoteMode ? '#06b6d4' : '#3b82f6',
+        status: isRemoteMode ? 'running' : 'idle',
+        modelBadge: isRemoteMode
+          ? 'Remote ACP'
+          : selectedAcp.id === 'claude_code'
+          ? 'Claude 3.7 Sonnet'
           : selectedAcp.id === 'kimi_code'
           ? 'Kimi 2.5'
           : 'Local ACP',
         isManagedByYou: true,
-        acpTransport: selectedAcp.transport,
+        acpTransport: transport,
         acpCommandOrUrl: resolvedCommand,
         protocolVersion: '2025-01-01 (ACP v1.0.4)',
         capabilities: {
           canUseInternalMemory: true,
-          canAccessWorkspaceFiles: true,
+          canAccessWorkspaceFiles: !isRemoteMode || !readOnlyGuard,
           canExecuteSkills: true,
           canDelegateToSubAgents: true,
           supportsStreaming: true,
@@ -266,7 +336,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           rootPath: defaultWorkspaceRoot || '.',
           repoName: 'shadow-crew',
           gitBranch: 'main',
-          permissionMode: 'full_read_write',
+          permissionMode: isRemoteMode && readOnlyGuard ? 'read_only' : 'full_read_write',
           activeFiles: ['src/App.tsx'],
         },
         skills: [],
@@ -356,6 +426,58 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           </div>
         </div>
 
+        {/* Connection Mode Tabs (Local vs Remote vs Clone) */}
+        {!initialAgent && (
+          <div className={`px-6 pt-3 flex border-b gap-5 text-xs font-semibold ${isLightMode ? 'border-gray-100 bg-gray-50/70' : 'border-[#1b2536] bg-[#121824]'}`}>
+            <button
+              type="button"
+              onClick={() => {
+                setConnectTab('local');
+                setName('Shinobi Native Agent');
+                setDescription('Local ultra-fast native agent runtime with private SQLite memory bank.');
+              }}
+              className={`pb-2.5 border-b-2 flex items-center gap-1.5 transition-all cursor-pointer ${
+                connectTab === 'local'
+                  ? 'border-blue-600 text-blue-600 dark:border-cyan-400 dark:text-cyan-400 font-bold'
+                  : 'border-transparent text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'
+              }`}
+            >
+              <span>💻 本地预设 (Local)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setConnectTab('remote');
+                setName('Remote Claude / Shinobi');
+                setDescription('Remote ACP process connected via WebSocket / Relay Hub.');
+              }}
+              className={`pb-2.5 border-b-2 flex items-center gap-1.5 transition-all cursor-pointer ${
+                connectTab === 'remote'
+                  ? 'border-blue-600 text-blue-600 dark:border-cyan-400 dark:text-cyan-400 font-bold'
+                  : 'border-transparent text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'
+              }`}
+            >
+              <Globe className="w-3.5 h-3.5 text-cyan-500" />
+              <span>🌐 远程连接 (Remote WebSocket)</span>
+            </button>
+
+            {onOpenImportModal && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenImportModal();
+                }}
+                className={`pb-2.5 border-b-2 flex items-center gap-1.5 transition-all cursor-pointer border-transparent text-purple-600 dark:text-purple-400 hover:opacity-80`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>📥 从记忆包克隆 (.acpmem)</span>
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Modal Form Content */}
         <form onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-5 text-xs">
           {/* Top Section: Icon Placeholder (Left) & Name / Description (Right) */}
@@ -435,266 +557,358 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
             </div>
           </div>
 
-          {/* Middle Section: Local ACP Dropdown with Status Probing */}
-          <div className="relative">
-            <div className="flex items-center justify-between mb-1.5">
-              <label className={`block text-xs font-semibold ${labelColor}`}>
-                Local ACP Agent
-              </label>
-              <button
-                type="button"
-                onClick={fetchRuntimes}
-                disabled={isLoadingRuntimes}
-                className={`px-2 py-0.5 rounded-lg text-xs flex items-center gap-1 transition-colors cursor-pointer ${
-                  isLightMode
-                    ? 'text-gray-500 hover:text-blue-600 hover:bg-gray-100'
-                    : 'text-gray-400 hover:text-cyan-400 hover:bg-[#1a2333]'
-                }`}
-                title="重新探测本地 PATH 与 ACP 状态"
-              >
-                <RefreshCw className={`w-3 h-3 ${isLoadingRuntimes ? 'animate-spin' : ''}`} />
-                <span className="text-[10px]">{isLoadingRuntimes ? 'Probing...' : 'Rescan'}</span>
-              </button>
-            </div>
-
-            {/* Dropdown Trigger Box */}
-            <button
-              type="button"
-              onClick={() => setIsAcpDropdownOpen(!isAcpDropdownOpen)}
-              className={`w-full rounded-xl px-3.5 py-2.5 text-xs flex items-center justify-between transition-all cursor-pointer text-left ${
-                isAcpDropdownOpen
-                  ? isLightMode
-                    ? 'border-2 border-blue-500 ring-2 ring-blue-100 bg-white'
-                    : 'border-2 border-cyan-500 ring-2 ring-cyan-500/20 bg-[#151c2b]'
-                  : inputBg
-              }`}
-            >
-              <div className="flex items-center gap-2.5 min-w-0 pr-2">
-                <span className="font-semibold text-xs text-inherit truncate">{selectedAcp.name}</span>
-                {renderAvailabilityBadge(selectedAcp.availability)}
-              </div>
-              <ChevronDown
-                className={`w-4 h-4 shrink-0 transition-transform ${
-                  isAcpDropdownOpen ? 'rotate-180 text-blue-500' : 'text-gray-400'
-                }`}
-              />
-            </button>
-
-            {/* Dropdown Options Menu (Matching Buzz & Screenshot) */}
-            {isAcpDropdownOpen && (
-              <div
-                className={`absolute left-0 right-0 top-full mt-1.5 rounded-2xl border shadow-xl py-1.5 z-30 max-h-60 overflow-y-auto ${
-                  isLightMode ? 'bg-white border-gray-200 divide-y divide-gray-100' : 'bg-[#131b28] border-[#26354c] divide-y divide-[#1e2a3c]'
-                }`}
-              >
-                {runtimes.map((option) => {
-                  const isSelected = selectedAcpId === option.id;
-                  return (
-                    <button
-                      key={option.id}
-                      type="button"
-                      onClick={() => handleSelectRuntime(option)}
-                      className={`w-full text-left px-4 py-2.5 transition-colors cursor-pointer flex items-center justify-between gap-3 ${
-                        isSelected
-                          ? isLightMode
-                            ? 'bg-blue-50/80 text-blue-900'
-                            : 'bg-cyan-950/60 text-cyan-200'
-                          : isLightMode
-                          ? 'hover:bg-gray-50 text-gray-800'
-                          : 'hover:bg-[#1a2436] text-gray-200'
-                      }`}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="font-semibold text-xs truncate">{option.name}</div>
-                        <div className={`text-[11px] mt-0.5 font-mono truncate ${isLightMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                          {option.command}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        {renderAvailabilityBadge(option.availability)}
-                        {isSelected && (
-                          <Check className={`w-4 h-4 shrink-0 ${isLightMode ? 'text-blue-600' : 'text-cyan-400'}`} />
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Setup Guidance Callout (for Not Adapted or Not Installed) */}
-            {selectedAcp.availability === 'not_adapted' && (
-              <div
-                className={`mt-2.5 p-3.5 rounded-2xl border text-xs flex items-start gap-2.5 animate-in fade-in duration-150 ${
-                  isLightMode
-                    ? 'bg-amber-50/90 border-amber-200 text-amber-900'
-                    : 'bg-amber-950/30 border-amber-800/40 text-amber-200'
-                }`}
-              >
-                <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-                <div className="flex-1 min-w-0 space-y-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-bold text-xs">缺少 ACP 协议适配器 (Not Adapted)</span>
-                    {selectedAcp.install_url && (
-                      <a
-                        href={selectedAcp.install_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[11px] font-medium underline flex items-center gap-1 hover:opacity-80 shrink-0"
-                      >
-                        <span>适配指南</span>
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
-                    )}
-                  </div>
-                  <p className="text-[11px] leading-relaxed opacity-90">{selectedAcp.install_hint}</p>
+          {/* Middle Section: Remote ACP or Local ACP */}
+          {connectTab === 'remote' ? (
+            <div className={`p-4 rounded-2xl border space-y-3.5 ${
+              isLightMode ? 'bg-cyan-50/50 border-cyan-200' : 'bg-cyan-950/20 border-cyan-800/40'
+            }`}>
+              <div className="flex items-center justify-between">
+                <div className="font-bold text-xs flex items-center gap-1.5 text-cyan-700 dark:text-cyan-300">
+                  <Globe className="w-4 h-4 text-cyan-500" />
+                  <span>远程 ACP 端点连接与权限护栏</span>
                 </div>
-              </div>
-            )}
-
-            {selectedAcp.availability === 'not_installed' && (
-              <div
-                className={`mt-2.5 p-3.5 rounded-2xl border text-xs flex items-start gap-2.5 animate-in fade-in duration-150 ${
-                  isLightMode
-                    ? 'bg-zinc-50 border-zinc-200 text-zinc-800'
-                    : 'bg-zinc-900/60 border-zinc-800 text-zinc-300'
-                }`}
-              >
-                <Info className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
-                <div className="flex-1 min-w-0 space-y-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-bold text-xs">本地未检测到此 Agent (Not Installed)</span>
-                    {selectedAcp.install_url && (
-                      <a
-                        href={selectedAcp.install_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[11px] font-medium underline flex items-center gap-1 hover:opacity-80 shrink-0"
-                      >
-                        <span>安装指南</span>
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
-                    )}
-                  </div>
-                  <p className="text-[11px] leading-relaxed opacity-80">{selectedAcp.install_hint}</p>
-                </div>
-              </div>
-            )}
-
-            {/* Custom Command Input */}
-            <div className="mt-3">
-              <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
-                CLI Command / Executable
-              </label>
-              <input
-                type="text"
-                value={customCommand}
-                onChange={(e) => setCustomCommand(e.target.value)}
-                placeholder={selectedAcp.command}
-                className={`w-full rounded-xl px-3.5 py-2 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
-              />
-              <p className="text-[10px] text-gray-400 mt-1">
-                实际拉起该 Agent 的命令行。支持自定义启动参数。
-              </p>
-            </div>
-          </div>
-
-          {/* Bottom Section: Environment Variables (ENV) */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className={`text-xs font-semibold ${labelColor}`}>
-                Environment Variables (ENV)
-              </label>
-            </div>
-
-            {/* Claude Auth Notice */}
-            {(selectedAcp.id === 'claude_code' || name.toLowerCase().includes('claude')) && (
-              <div className={`p-2.5 rounded-xl border text-[11px] leading-relaxed flex items-start gap-2 ${
-                isLightMode 
-                  ? 'bg-amber-50/80 border-amber-200 text-amber-900' 
-                  : 'bg-amber-950/20 border-amber-800/40 text-amber-200/90'
-              }`}>
-                <span className="text-amber-500 font-bold shrink-0">⚠️ 认证提示:</span>
-                <span>
-                  Anthropic 官方规定，第三方客户端 ACP 模式<strong>无法直接复用</strong>终端的网页版个人订阅 OAuth 凭证。必须在此环境变量中配置 <code>ANTHROPIC_API_KEY</code>（形如 <code>sk-ant-api03-...</code>），或配合 <code>ANTHROPIC_BASE_URL</code> 转发中转。
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 border border-cyan-500/25">
+                  WebSocket Direct / Relay Hub
                 </span>
               </div>
-            )}
 
-            {/* Key-Value Header */}
-            <div className="grid grid-cols-12 gap-3 px-1 text-[11px] font-medium text-gray-400">
-              <div className="col-span-5">Key</div>
-              <div className="col-span-6">Value</div>
-              <div className="col-span-1 text-center"></div>
-            </div>
-
-            {/* Key-Value Dynamic Rows */}
-            <div className="space-y-2 max-h-40 overflow-y-auto p-0.5">
-              {envVars.map((item) => (
-                <div key={item.id} className="grid grid-cols-12 gap-2 items-center">
-                  {/* Key Input */}
-                  <div className="col-span-5">
-                    <input
-                      type="text"
-                      placeholder="KEY_NAME"
-                      value={item.key}
-                      onChange={(e) => handleUpdateVariable(item.id, 'key', e.target.value)}
-                      className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
-                    />
-                  </div>
-
-                  {/* Value Input */}
-                  <div className="col-span-6">
-                    <input
-                      type="text"
-                      placeholder={
-                        item.key === 'ANTHROPIC_API_KEY'
-                          ? 'sk-ant-api03-... (必填)'
-                          : item.key === 'ANTHROPIC_BASE_URL'
-                          ? 'https://api.anthropic.com'
-                          : 'value'
-                      }
-                      value={item.value}
-                      onChange={(e) => handleUpdateVariable(item.id, 'value', e.target.value)}
-                      className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
-                    />
-                  </div>
-
-                  {/* Delete Button */}
-                  <div className="col-span-1 flex justify-center">
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveVariable(item.id)}
-                      className={`p-1 rounded-lg transition-colors cursor-pointer ${
-                        isLightMode
-                          ? 'text-gray-400 hover:text-red-500 hover:bg-gray-100'
-                          : 'text-gray-500 hover:text-red-400 hover:bg-[#1a2333]'
-                      }`}
-                      title="删除此环境变量"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+              <div>
+                <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                  WebSocket 目标地址 (ws:// 或 wss://)
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    required
+                    value={remoteUrl}
+                    onChange={(e) => setRemoteUrl(e.target.value)}
+                    placeholder="ws://192.168.1.55:9000 或 wss://hub.shadowcrew.ai/..."
+                    className={`flex-1 rounded-xl px-3.5 py-2 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleTestRemote}
+                    disabled={isTestingRemote || !remoteUrl.trim()}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all shrink-0 cursor-pointer ${
+                      isLightMode
+                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                        : 'bg-cyan-600 hover:bg-cyan-500 text-white'
+                    }`}
+                  >
+                    <Wifi className={`w-3.5 h-3.5 ${isTestingRemote ? 'animate-pulse' : ''}`} />
+                    <span>{isTestingRemote ? '探测中...' : '测试连通性'}</span>
+                  </button>
                 </div>
-              ))}
-            </div>
+                {remoteTestResult && (
+                  <div className={`mt-2 p-2.5 rounded-xl border text-[11px] flex items-center gap-2 ${
+                    remoteTestResult.ok
+                      ? 'bg-emerald-50/90 border-emerald-300 text-emerald-800 dark:bg-emerald-950/30 dark:border-emerald-800/40 dark:text-emerald-300'
+                      : 'bg-red-50/90 border-red-300 text-red-800 dark:bg-red-950/30 dark:border-red-800/40 dark:text-red-300'
+                  }`}>
+                    {remoteTestResult.ok ? (
+                      <>
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                        <span>连通握手成功！往返延迟: <strong>{remoteTestResult.latencyMs}ms</strong></span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="w-2 h-2 rounded-full bg-red-500" />
+                        <span>连接失败: {remoteTestResult.error}</span>
+                      </>
+                    )}
+                  </div>
+                )}
+                <p className="text-[10px] text-fg-muted mt-1">
+                  支持同事内网 Tailscale 直连，或通过团队中心 Relay Hub 邀请码连接。
+                </p>
+              </div>
 
-            {/* + Add Variable Button */}
-            <div>
-              <button
-                type="button"
-                onClick={handleAddVariable}
-                className={`px-3 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer shadow-xs ${
-                  isLightMode
-                    ? 'bg-white hover:bg-gray-50 border-gray-300 text-gray-700'
-                    : 'bg-[#151c2b] hover:bg-[#1c263a] border-[#27354d] text-gray-300'
-                }`}
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add Variable</span>
-              </button>
+              <div>
+                <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                  访问授权令牌 (Auth Token - 可选)
+                </label>
+                <input
+                  type="password"
+                  value={authToken}
+                  onChange={(e) => setAuthToken(e.target.value)}
+                  placeholder="由对方生成的临时访问密钥 (Bearer token)"
+                  className={`w-full rounded-xl px-3.5 py-2 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
+                />
+              </div>
+
+              <div className="pt-1">
+                <label className="flex items-center gap-2.5 cursor-pointer text-[11px]">
+                  <input
+                    type="checkbox"
+                    checked={readOnlyGuard}
+                    onChange={(e) => setReadOnlyGuard(e.target.checked)}
+                    className="rounded text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="leading-tight text-fg-secondary">
+                    <strong>只读安全护栏 (Read-Only Guard)</strong>：默认开启，禁止远程 Agent 在本地写盘，仅作为架构推演参谋
+                  </span>
+                </label>
+              </div>
             </div>
-          </div>
+          ) : (
+            <>
+              {/* Middle Section: Local ACP Dropdown with Status Probing */}
+              <div className="relative">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className={`block text-xs font-semibold ${labelColor}`}>
+                    Local ACP Agent
+                  </label>
+                  <button
+                    type="button"
+                    onClick={fetchRuntimes}
+                    disabled={isLoadingRuntimes}
+                    className={`px-2 py-0.5 rounded-lg text-xs flex items-center gap-1 transition-colors cursor-pointer ${
+                      isLightMode
+                        ? 'text-gray-500 hover:text-blue-600 hover:bg-gray-100'
+                        : 'text-gray-400 hover:text-cyan-400 hover:bg-[#1a2333]'
+                    }`}
+                    title="重新探测本地 PATH 与 ACP 状态"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isLoadingRuntimes ? 'animate-spin' : ''}`} />
+                    <span className="text-[10px]">{isLoadingRuntimes ? 'Probing...' : 'Rescan'}</span>
+                  </button>
+                </div>
+
+                {/* Dropdown Trigger Box */}
+                <button
+                  type="button"
+                  onClick={() => setIsAcpDropdownOpen(!isAcpDropdownOpen)}
+                  className={`w-full rounded-xl px-3.5 py-2.5 text-xs flex items-center justify-between transition-all cursor-pointer text-left ${
+                    isAcpDropdownOpen
+                      ? isLightMode
+                        ? 'border-2 border-blue-500 ring-2 ring-blue-100 bg-white'
+                        : 'border-2 border-cyan-500 ring-2 ring-cyan-500/20 bg-[#151c2b]'
+                      : inputBg
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                    <span className="font-semibold text-xs text-inherit truncate">{selectedAcp.name}</span>
+                    {renderAvailabilityBadge(selectedAcp.availability)}
+                  </div>
+                  <ChevronDown
+                    className={`w-4 h-4 shrink-0 transition-transform ${
+                      isAcpDropdownOpen ? 'rotate-180 text-blue-500' : 'text-gray-400'
+                    }`}
+                  />
+                </button>
+
+                {/* Dropdown Options Menu */}
+                {isAcpDropdownOpen && (
+                  <div
+                    className={`absolute left-0 right-0 top-full mt-1.5 rounded-2xl border shadow-xl py-1.5 z-30 max-h-60 overflow-y-auto ${
+                      isLightMode ? 'bg-white border-gray-200 divide-y divide-gray-100' : 'bg-[#131b28] border-[#26354c] divide-y divide-[#1e2a3c]'
+                    }`}
+                  >
+                    {runtimes.map((option) => {
+                      const isSelected = selectedAcpId === option.id;
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => handleSelectRuntime(option)}
+                          className={`w-full text-left px-4 py-2.5 transition-colors cursor-pointer flex items-center justify-between gap-3 ${
+                            isSelected
+                              ? isLightMode
+                                ? 'bg-blue-50/80 text-blue-900'
+                                : 'bg-cyan-950/60 text-cyan-200'
+                              : isLightMode
+                              ? 'hover:bg-gray-50 text-gray-800'
+                              : 'hover:bg-[#1a2436] text-gray-200'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="font-semibold text-xs truncate">{option.name}</div>
+                            <div className={`text-[11px] mt-0.5 font-mono truncate ${isLightMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                              {option.command}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {renderAvailabilityBadge(option.availability)}
+                            {isSelected && (
+                              <Check className={`w-4 h-4 shrink-0 ${isLightMode ? 'text-blue-600' : 'text-cyan-400'}`} />
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Setup Guidance Callout */}
+                {selectedAcp.availability === 'not_adapted' && (
+                  <div
+                    className={`mt-2.5 p-3.5 rounded-2xl border text-xs flex items-start gap-2.5 animate-in fade-in duration-150 ${
+                      isLightMode
+                        ? 'bg-amber-50/90 border-amber-200 text-amber-900'
+                        : 'bg-amber-950/30 border-amber-800/40 text-amber-200'
+                    }`}
+                  >
+                    <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-xs">缺少 ACP 协议适配器 (Not Adapted)</span>
+                        {selectedAcp.install_url && (
+                          <a
+                            href={selectedAcp.install_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[11px] font-medium underline flex items-center gap-1 hover:opacity-80 shrink-0"
+                          >
+                            <span>适配指南</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
+                      </div>
+                      <p className="text-[11px] leading-relaxed opacity-90">{selectedAcp.install_hint}</p>
+                    </div>
+                  </div>
+                )}
+
+                {selectedAcp.availability === 'not_installed' && (
+                  <div
+                    className={`mt-2.5 p-3.5 rounded-2xl border text-xs flex items-start gap-2.5 animate-in fade-in duration-150 ${
+                      isLightMode
+                        ? 'bg-zinc-50 border-zinc-200 text-zinc-800'
+                        : 'bg-zinc-900/60 border-zinc-800 text-zinc-300'
+                    }`}
+                  >
+                    <Info className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-xs">本地未检测到此 Agent (Not Installed)</span>
+                        {selectedAcp.install_url && (
+                          <a
+                            href={selectedAcp.install_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[11px] font-medium underline flex items-center gap-1 hover:opacity-80 shrink-0"
+                          >
+                            <span>安装指南</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
+                      </div>
+                      <p className="text-[11px] leading-relaxed opacity-80">{selectedAcp.install_hint}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Custom Command Input */}
+                <div className="mt-3">
+                  <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                    CLI Command / Executable
+                  </label>
+                  <input
+                    type="text"
+                    value={customCommand}
+                    onChange={(e) => setCustomCommand(e.target.value)}
+                    placeholder={selectedAcp.command}
+                    className={`w-full rounded-xl px-3.5 py-2 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
+                  />
+                  <p className="text-[10px] text-gray-400 mt-1">
+                    实际拉起该 Agent 的命令行。支持自定义启动参数。
+                  </p>
+                </div>
+              </div>
+
+              {/* Bottom Section: Environment Variables (ENV) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className={`text-xs font-semibold ${labelColor}`}>
+                    Environment Variables (ENV)
+                  </label>
+                </div>
+
+                {/* Claude Auth Notice */}
+                {(selectedAcp.id === 'claude_code' || name.toLowerCase().includes('claude')) && (
+                  <div className={`p-2.5 rounded-xl border text-[11px] leading-relaxed flex items-start gap-2 ${
+                    isLightMode 
+                      ? 'bg-amber-50/80 border-amber-200 text-amber-900' 
+                      : 'bg-amber-950/20 border-amber-800/40 text-amber-200/90'
+                  }`}>
+                    <span className="text-amber-500 font-bold shrink-0">⚠️ 认证提示:</span>
+                    <span>
+                      Anthropic 官方规定，第三方客户端 ACP 模式<strong>无法直接复用</strong>终端的网页版个人订阅 OAuth 凭证。必须在此环境变量中配置 <code>ANTHROPIC_API_KEY</code>（形如 <code>sk-ant-api03-...</code>），或配合 <code>ANTHROPIC_BASE_URL</code> 转发中转。
+                    </span>
+                  </div>
+                )}
+
+                {/* Key-Value Header */}
+                <div className="grid grid-cols-12 gap-3 px-1 text-[11px] font-medium text-gray-400">
+                  <div className="col-span-5">Key</div>
+                  <div className="col-span-6">Value</div>
+                  <div className="col-span-1 text-center"></div>
+                </div>
+
+                {/* Key-Value Dynamic Rows */}
+                <div className="space-y-2 max-h-40 overflow-y-auto p-0.5">
+                  {envVars.map((item) => (
+                    <div key={item.id} className="grid grid-cols-12 gap-2 items-center">
+                      <div className="col-span-5">
+                        <input
+                          type="text"
+                          placeholder="KEY_NAME"
+                          value={item.key}
+                          onChange={(e) => handleUpdateVariable(item.id, 'key', e.target.value)}
+                          className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
+                        />
+                      </div>
+                      <div className="col-span-6">
+                        <input
+                          type="text"
+                          placeholder={
+                            item.key === 'ANTHROPIC_API_KEY'
+                              ? 'sk-ant-api03-... (必填)'
+                              : item.key === 'ANTHROPIC_BASE_URL'
+                              ? 'https://api.anthropic.com'
+                              : 'value'
+                          }
+                          value={item.value}
+                          onChange={(e) => handleUpdateVariable(item.id, 'value', e.target.value)}
+                          className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
+                        />
+                      </div>
+                      <div className="col-span-1 flex justify-center">
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveVariable(item.id)}
+                          className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                            isLightMode
+                              ? 'text-gray-400 hover:text-red-500 hover:bg-gray-100'
+                              : 'text-gray-500 hover:text-red-400 hover:bg-[#1a2333]'
+                          }`}
+                          title="删除此环境变量"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* + Add Variable Button */}
+                <div>
+                  <button
+                    type="button"
+                    onClick={handleAddVariable}
+                    className={`px-3 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer shadow-xs ${
+                      isLightMode
+                        ? 'bg-white hover:bg-gray-50 border-gray-300 text-gray-700'
+                        : 'bg-[#151c2b] hover:bg-[#1c263a] border-[#27354d] text-gray-300'
+                    }`}
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Variable</span>
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
 
           {/* Modal Footer Actions */}
           <div
@@ -703,7 +917,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
             }`}
           >
             <div>
-              {!isReady && !initialAgent && (
+              {connectTab === 'local' && !isReady && !initialAgent && (
                 <span className="text-[11px] text-amber-600 dark:text-amber-400 font-medium">
                   * 需完成本地安装/适配后方可创建
                 </span>
@@ -724,9 +938,12 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
               </button>
               <button
                 type="submit"
-                disabled={!name.trim() || (!initialAgent && !isReady)}
+                disabled={
+                  !name.trim() ||
+                  (connectTab === 'remote' ? !remoteUrl.trim() : !initialAgent && !isReady)
+                }
                 className={`px-5 py-2 rounded-xl text-xs font-semibold text-white transition-all shadow-md ${
-                  name.trim() && (initialAgent || isReady)
+                  name.trim() && (connectTab === 'remote' ? remoteUrl.trim() : initialAgent || isReady)
                     ? isLightMode
                       ? 'bg-[#2563eb] hover:bg-[#1d4ed8] cursor-pointer'
                       : 'bg-cyan-600 hover:bg-cyan-500 cursor-pointer'
@@ -735,6 +952,8 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
               >
                 {initialAgent
                   ? '保存修改 (Save Changes)'
+                  : connectTab === 'remote'
+                  ? '连接远程 Agent (Connect Remote)'
                   : selectedAcp.availability === 'not_adapted'
                   ? 'Adapter Required'
                   : selectedAcp.availability === 'not_installed'

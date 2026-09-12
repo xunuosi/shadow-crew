@@ -73,6 +73,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   const [filter, setFilter] = useState<'all' | 'topics' | 'resolved'>('all');
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   const [expandedTraces, setExpandedTraces] = useState<Record<string, boolean>>({});
+  const [expandedCitations, setExpandedCitations] = useState<Record<string, boolean>>({});
   const [showMembersPopover, setShowMembersPopover] = useState(false);
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{
@@ -633,6 +634,47 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                       <span>进入子话题</span>
                       <ArrowRight className="w-3 h-3" />
                     </span>
+                  </div>
+                )}
+
+                {/* Cartridge Citation Pill (PRD Section 5.3) */}
+                {message.cartridgeCitation && (
+                  <div className="rounded-xl bg-amber-500/10 border border-amber-500/25 overflow-hidden text-[11px] animate-in fade-in">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedCitations((prev) => ({
+                          ...prev,
+                          [message.id]: !prev[message.id],
+                        }))
+                      }
+                      className="w-full px-3 py-1.5 flex items-center justify-between text-amber-700 dark:text-amber-300 hover:bg-amber-500/15 transition-colors cursor-pointer text-left"
+                    >
+                      <div className="flex items-center gap-1.5 font-medium">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                        <span>
+                          💡 引用了外挂卡带「<strong>{message.cartridgeCitation.cartridgeName}</strong>」中的{' '}
+                          {message.cartridgeCitation.recalledCount} 条规约经验（消耗 ~{message.cartridgeCitation.tokenCost} Tokens）
+                        </span>
+                      </div>
+                      {expandedCitations[message.id] ? (
+                        <ChevronUp className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                      ) : (
+                        <ChevronDown className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                      )}
+                    </button>
+
+                    {expandedCitations[message.id] && (
+                      <div className="p-3 border-t border-amber-500/20 bg-surface space-y-1.5 font-mono text-[10px]">
+                        <div className="text-fg-muted font-bold mb-1">引用的经验条目明细 (只读注入):</div>
+                        {message.cartridgeCitation.items.map((it, idx) => (
+                          <div key={idx} className="p-2 rounded bg-surface-subtle border border-border">
+                            <span className="font-bold text-amber-600 dark:text-amber-400">[{it.key}] </span>
+                            <span className="text-fg-secondary">{it.content}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 

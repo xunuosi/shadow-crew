@@ -72,6 +72,13 @@ async fn get_running_agent_ids(state: State<'_, AppState>) -> Result<Vec<String>
     Ok(manager.get_running_agent_ids())
 }
 
+/// Tauri Command: 获取当前所有 ACP Agent 的细粒度运行时状态 (包括握手与鉴权)
+#[tauri::command]
+async fn get_agents_runtime_status(state: State<'_, AppState>) -> Result<Vec<acp_manager::AgentRuntimeStatus>, String> {
+    let manager = state.acp_manager.lock().await;
+    Ok(manager.get_agents_runtime_status().await)
+}
+
 /// Tauri Command: 发送指令到 ACP Agent (带流式回调与自动拉起)
 #[tauri::command]
 async fn send_prompt_to_agent(
@@ -157,6 +164,7 @@ async fn main() {
             spawn_acp_agent,
             stop_acp_agent,
             get_running_agent_ids,
+            get_agents_runtime_status,
             send_prompt_to_agent,
             read_workspace_file_sandboxed,
             get_acp_log_path,

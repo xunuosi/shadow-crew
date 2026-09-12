@@ -21,6 +21,16 @@ export interface LocalAcpRuntime {
   recommended_env?: Array<[string, string]>;
 }
 
+export interface AgentRuntimeStatus {
+  agent_id: string;
+  pid: number;
+  is_alive: boolean;
+  is_initialized: boolean;
+  auth_state: 'ok' | 'auth_required' | 'missing_key' | 'unknown';
+  status: 'running' | 'auth_required' | 'starting' | 'error' | 'idle';
+  status_detail?: string | null;
+}
+
 export interface AgentSkill {
   id: string;
   name: string;
@@ -28,6 +38,47 @@ export interface AgentSkill {
   type: 'builtin' | 'mcp' | 'client_delegated';
   mcpServer?: string;
   commandSnippet?: string;
+}
+
+export interface MemoryCartridgeItem {
+  id: string;
+  category: 'user_preference' | 'codebase_pattern' | 'incident_history' | 'skill_rule' | string;
+  key: string;
+  content: string;
+  importance?: number;
+  created_at?: string;
+}
+
+export interface MemoryCartridge {
+  id: string;
+  name: string;
+  author: string;
+  description: string;
+  version: string;
+  tags: string[];
+  isEnabled: boolean;
+  totalRecords: number;
+  importedAt: string;
+  memories: MemoryCartridgeItem[];
+}
+
+export interface AcpMemoryBundle {
+  manifest: {
+    format_version: string;
+    exported_at: string;
+    source_agent: {
+      name: string;
+      model?: string;
+      role?: string;
+    };
+    checksum: string;
+  };
+  metadata: {
+    description: string;
+    total_records: number;
+    tags: string[];
+  };
+  memories: MemoryCartridgeItem[];
 }
 
 export interface AgentMemoryBank {
@@ -40,6 +91,7 @@ export interface AgentMemoryBank {
     content: string;
     lastAccessed: string;
   }>;
+  cartridges?: MemoryCartridge[];
   sessionCacheCount: number;
 }
 
@@ -59,7 +111,16 @@ export interface Agent {
   role: string;
   description: string;
   color: string;
-  status: 'idle' | 'running' | 'thinking' | 'using_skill' | 'accessing_workspace' | 'querying_memory';
+  status:
+    | 'idle'
+    | 'starting'
+    | 'running'
+    | 'auth_required'
+    | 'error'
+    | 'thinking'
+    | 'using_skill'
+    | 'accessing_workspace'
+    | 'querying_memory';
   statusDetail?: string;
   modelBadge?: string; // e.g., 'DeepSeek V3', 'Claude 3.7 Sonnet', 'Gemini 2.5 Pro'
   isManagedByYou?: boolean;
@@ -80,6 +141,15 @@ export interface Agent {
   localAcpProfile?: string;
   envVars?: Array<{ key: string; value: string }>;
   
+  // Remote & Guest Clone Attributes
+  isRemote?: boolean;
+  remoteUrl?: string;
+  authToken?: string;
+  remoteLatencyMs?: number;
+  readOnlyGuard?: boolean;
+  isGuestClone?: boolean;
+  guestCloneFrom?: string;
+
   // Three Core Pillars
   workspace: AgentWorkspaceConfig;
   skills: AgentSkill[];
@@ -228,12 +298,25 @@ export interface AcpTrace {
     detail: string;
     targetBank: 'agent_private_sqlite' | 'shinobi_room_timeline';
   };
+
+  cartridgeRecall?: {
+    cartridgeName: string;
+    recalledKeys: string[];
+    tokenCost: number;
+  };
 }
 
 export interface MessageReaction {
   emoji: string;
   count: number;
   users: string[];
+}
+
+export interface CartridgeCitation {
+  cartridgeName: string;
+  recalledCount: number;
+  tokenCost: number;
+  items: Array<{ key: string; content: string }>;
 }
 
 export interface Message {
@@ -279,6 +362,7 @@ export interface Message {
   subThreadTitle?: string;
   subThreadRepliesCount?: number;
   
+  cartridgeCitation?: CartridgeCitation;
   acpTrace?: AcpTrace;
   reactions?: MessageReaction[];
   codeSnippets?: Array<{

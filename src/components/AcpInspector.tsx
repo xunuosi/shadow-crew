@@ -16,7 +16,12 @@ import {
   Layers,
   ArrowRight,
   Server,
-  Pencil
+  Pencil,
+  Upload,
+  Download,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 interface AcpInspectorProps {
@@ -27,6 +32,10 @@ interface AcpInspectorProps {
   onRunAgentSkill: (agentId: string, skillId: string) => void;
   onOpenRustTauriHub?: () => void;
   onEditAgent?: (agent: Agent) => void;
+  onToggleCartridge?: (agentId: string, cartridgeId: string) => void;
+  onEjectCartridge?: (agentId: string, cartridgeId: string) => void;
+  onOpenExportModal?: (agent: Agent) => void;
+  onOpenImportModal?: () => void;
   onClose: () => void;
 }
 
@@ -38,12 +47,17 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
   onRunAgentSkill,
   onOpenRustTauriHub,
   onEditAgent,
+  onToggleCartridge,
+  onEjectCartridge,
+  onOpenExportModal,
+  onOpenImportModal,
   onClose,
 }) => {
   const [activeTab, setActiveTab] = useState<'architecture' | 'rust_tauri' | 'memory' | 'workspace' | 'skills' | 'rpc_logs'>('rust_tauri');
   const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
   const [diskLogText, setDiskLogText] = useState<string | null>(null);
   const [loadingDiskLog, setLoadingDiskLog] = useState(false);
+  const [expandedCartridgeId, setExpandedCartridgeId] = useState<string | null>(null);
 
   // New Memory Item Form State
   const [newMemKey, setNewMemKey] = useState('');
@@ -355,30 +369,180 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
           </div>
         )}
 
-        {/* TAB 2: AGENT INTERNAL MEMORY BANK */}
+        {/* TAB 2: AGENT INTERNAL MEMORY BANK & MOUNTED CARTRIDGES */}
         {activeTab === 'memory' && (
-          <div className="space-y-3">
-            <div className="p-2 rounded bg-surface-subtle border border-border">
-              <div className="flex items-center justify-between text-[11px] mb-1">
-                <span className="text-fg-muted">存储格式:</span>
-                <span className="font-mono text-emerald-500 uppercase font-bold">{selectedAgent.memory.persistentType}</span>
+          <div className="space-y-3.5">
+            {/* Quick Action Toolbar: Export & Import Cartridges */}
+            <div className="grid grid-cols-2 gap-2">
+              {onOpenImportModal && (
+                <button
+                  type="button"
+                  onClick={onOpenImportModal}
+                  className="py-1.5 px-2.5 rounded-xl border border-accent/40 bg-accent/10 hover:bg-accent/20 text-accent font-semibold text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                  title="导入他人 .acpmem 记忆文件，只读挂载到此 Agent"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>📥 挂载外挂卡带</span>
+                </button>
+              )}
+
+              {onOpenExportModal && (
+                <button
+                  type="button"
+                  onClick={() => onOpenExportModal(selectedAgent)}
+                  className="py-1.5 px-2.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-semibold text-[11px] flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                  title="将当前 Agent 的避坑记忆脱敏导出为 .acpmem 文件"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>📤 导出记忆资产</span>
+                </button>
+              )}
+            </div>
+
+            {/* Mounted Cartridges Section (Track A: Read-Only Cartridges) */}
+            <div className="p-2.5 rounded-2xl bg-surface-subtle border border-border space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-fg">
+                  <Layers className="w-3.5 h-3.5 text-accent" />
+                  <span>外挂记忆卡带 (Mounted Cartridges)</span>
+                </div>
+                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-accent/15 text-accent border border-accent/30 font-semibold">
+                  {(selectedAgent.memory.cartridges || []).length} 张
+                </span>
               </div>
-              <div className="text-[10px] text-fg-muted font-mono break-all">
+
+              {(!selectedAgent.memory.cartridges || selectedAgent.memory.cartridges.length === 0) ? (
+                <div className="p-3 rounded-xl bg-surface border border-border text-center space-y-1">
+                  <p className="text-[11px] text-fg-muted">
+                    暂未挂载外部卡带 · 原生 SQLite 数据库保持 100% 纯净
+                  </p>
+                  <p className="text-[10px] text-fg-secondary">
+                    可点击上方「挂载外挂卡带」将架构避坑经验以零写入只读形式注入推演。
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {selectedAgent.memory.cartridges.map((cartridge) => {
+                    const isExpanded = expandedCartridgeId === cartridge.id;
+                    return (
+                      <div
+                        key={cartridge.id}
+                        className={`rounded-xl border transition-all text-[11px] ${
+                          cartridge.isEnabled
+                            ? 'bg-surface border-accent/40 shadow-xs'
+                            : 'bg-surface/50 border-border opacity-60'
+                        }`}
+                      >
+                        <div className="p-2.5 flex items-center justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-xs text-fg truncate">
+                                {cartridge.name}
+                              </span>
+                              <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-surface-subtle text-fg-muted border border-border">
+                                {cartridge.totalRecords} 条
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5 text-[10px] text-fg-muted mt-0.5 font-mono">
+                              <span>作者: {cartridge.author}</span>
+                              {cartridge.tags?.slice(0, 2).map((t) => (
+                                <span key={t} className="text-accent">#{t}</span>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {/* Toggle active switch */}
+                            {onToggleCartridge && (
+                              <button
+                                type="button"
+                                onClick={() => onToggleCartridge(selectedAgent.id, cartridge.id)}
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-medium border transition-colors cursor-pointer ${
+                                  cartridge.isEnabled
+                                    ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                                    : 'bg-surface-subtle text-fg-muted border-border'
+                                }`}
+                                title={cartridge.isEnabled ? '点击停用（停用后推演时不召回）' : '点击启用'}
+                              >
+                                {cartridge.isEnabled ? '启用中' : '已停用'}
+                              </button>
+                            )}
+
+                            {/* Expand items */}
+                            <button
+                              type="button"
+                              onClick={() => setExpandedCartridgeId(isExpanded ? null : cartridge.id)}
+                              className="p-1 text-fg-muted hover:text-fg rounded hover:bg-surface-hover cursor-pointer"
+                              title="查看卡带记忆条目"
+                            >
+                              {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                            </button>
+
+                            {/* Eject / Unmount */}
+                            {onEjectCartridge && (
+                              <button
+                                type="button"
+                                onClick={() => onEjectCartridge(selectedAgent.id, cartridge.id)}
+                                className="p-1 text-fg-muted hover:text-red-500 rounded hover:bg-surface-hover transition-colors cursor-pointer"
+                                title="一键弹出卸载卡带（本地无任何数据残留）"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Collapsible Items Preview */}
+                        {isExpanded && (
+                          <div className="p-2.5 border-t border-border bg-surface-subtle/50 space-y-1.5 font-mono text-[10px]">
+                            <div className="text-fg-muted text-[9px] uppercase">卡带原子条目快照:</div>
+                            {cartridge.memories.slice(0, 5).map((mem) => (
+                              <div key={mem.id} className="p-1.5 rounded bg-surface border border-border">
+                                <div className="font-bold text-accent">[{mem.key}]</div>
+                                <div className="text-fg-secondary mt-0.5 leading-relaxed">{mem.content}</div>
+                              </div>
+                            ))}
+                            {cartridge.memories.length > 5 && (
+                              <div className="text-center text-fg-muted text-[9px] pt-1">
+                                ... 还有 {cartridge.memories.length - 5} 条原子记忆
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Native Persistent SQLite Memory Bank */}
+            <div className="p-2.5 rounded-2xl bg-surface-subtle border border-border space-y-2">
+              <div className="flex items-center justify-between text-[11px]">
+                <div className="flex items-center gap-1.5 font-bold text-fg">
+                  <Database className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>私有持久化数据库 (Native SQLite)</span>
+                </div>
+                <span className="font-mono text-emerald-500 uppercase font-bold text-[10px]">
+                  {selectedAgent.memory.persistentType}
+                </span>
+              </div>
+              <div className="text-[10px] text-fg-muted font-mono break-all bg-surface p-1.5 rounded border border-border">
                 路径: {selectedAgent.memory.internalMemoryPath}
               </div>
             </div>
 
             {/* Add Memory Form */}
-            <form onSubmit={handleCreateMemory} className="p-2.5 rounded bg-surface-subtle border border-border space-y-2">
+            <form onSubmit={handleCreateMemory} className="p-2.5 rounded-2xl bg-surface-subtle border border-border space-y-2">
               <div className="font-semibold text-fg text-[11px] flex items-center gap-1">
                 <Plus className="w-3.5 h-3.5 text-emerald-500" />
-                <span>写入一条新记忆到 Agent 数据库</span>
+                <span>写入新规约到本地主库</span>
               </div>
               <div className="grid grid-cols-2 gap-1.5 text-[10px]">
                 <select
                   value={newMemCategory}
                   onChange={(e: any) => setNewMemCategory(e.target.value)}
-                  className="bg-surface border border-border rounded p-1 text-fg"
+                  className="bg-surface border border-border rounded-xl p-1.5 text-fg text-xs"
                 >
                   <option value="codebase_pattern">工程架构规则</option>
                   <option value="user_preference">用户偏好规则</option>
@@ -390,7 +554,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                   placeholder="记忆检索 Key"
                   value={newMemKey}
                   onChange={(e) => setNewMemKey(e.target.value)}
-                  className="bg-surface border border-border rounded p-1 text-fg placeholder-fg-muted font-mono"
+                  className="bg-surface border border-border rounded-xl px-2.5 py-1 text-fg placeholder-fg-muted font-mono text-xs"
                 />
               </div>
               <textarea
@@ -398,28 +562,28 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                 value={newMemContent}
                 onChange={(e) => setNewMemContent(e.target.value)}
                 rows={2}
-                className="w-full bg-surface border border-border rounded p-1.5 text-fg placeholder-fg-muted text-[11px]"
+                className="w-full bg-surface border border-border rounded-xl p-2 text-fg placeholder-fg-muted text-[11px] resize-none"
               />
               <button
                 type="submit"
-                className="w-full py-1 rounded bg-accent text-accent-fg hover:opacity-90 font-medium text-[11px] transition-colors cursor-pointer shadow-xs"
+                className="w-full py-1.5 rounded-xl bg-accent text-accent-fg hover:opacity-90 font-semibold text-[11px] transition-colors cursor-pointer shadow-xs"
               >
-                持久化存入 Agent Memory
+                持久化存入私有 Memory
               </button>
             </form>
 
             {/* Current Memory Items List */}
             <div className="space-y-1.5">
               <div className="text-[10px] uppercase text-fg-muted font-mono">
-                已持久化记忆列表 ({selectedAgent.memory.persistentItems.length})
+                本地私有记忆列表 ({selectedAgent.memory.persistentItems.length})
               </div>
               {selectedAgent.memory.persistentItems.map((item) => (
-                <div key={item.id} className="p-2 rounded bg-surface-subtle border border-border text-[11px]">
+                <div key={item.id} className="p-2.5 rounded-xl bg-surface-subtle border border-border text-[11px]">
                   <div className="flex items-center justify-between text-[10px] mb-1">
                     <span className="font-mono text-emerald-500 font-bold">[{item.key}]</span>
                     <span className="text-fg-muted font-mono">{item.lastAccessed}</span>
                   </div>
-                  <div className="text-fg-secondary text-[11px]">{item.content}</div>
+                  <div className="text-fg-secondary text-[11px] leading-relaxed">{item.content}</div>
                 </div>
               ))}
             </div>

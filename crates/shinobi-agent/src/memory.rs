@@ -86,4 +86,27 @@ impl AgentMemoryStore {
         }
         Ok(results)
     }
+
+    /// 获取所有记忆条目 (用于导出记忆卡带)
+    pub fn get_all(&self) -> Result<Vec<MemoryRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, category, key, content, created_at FROM acp_memories ORDER BY created_at DESC"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok(MemoryRecord {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                key: row.get(2)?,
+                content: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r?);
+        }
+        Ok(results)
+    }
 }

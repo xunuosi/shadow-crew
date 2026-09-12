@@ -7,20 +7,23 @@ use std::io::{self, BufRead, Write};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 实例化私有持久化 SQLite 记忆引擎 (每个开发者的影替身独立持有一份)
-    let memory_store = AgentMemoryStore::new("shinobi_agent_memory.db")?;
+    // 实例化私有持久化 SQLite 记忆引擎 (每个开发者的影替身独立持有一份，支持通过环境变量沙盒化隔离)
+    let db_path = std::env::var("SHINOBI_MEMORY_DB").unwrap_or_else(|_| "shinobi_agent_memory.db".to_string());
+    let memory_store = AgentMemoryStore::new(&db_path)?;
 
-    // 默认写入初始替身认知
-    let _ = memory_store.store(
-        "identity",
-        "alter_ego_role",
-        "我是用户的 AI 影替身 (Shinobi Alter-Ego)，代表主人参与技术架构推演与代码审查",
-    );
-    let _ = memory_store.store(
-        "coding_style",
-        "rust_guidelines",
-        "严禁 unwrap，优先使用 anyhow/thiserror；异步操作一律基于 Tokio",
-    );
+    // 若使用的是默认主数据库，写入初始替身认知
+    if db_path == "shinobi_agent_memory.db" {
+        let _ = memory_store.store(
+            "identity",
+            "alter_ego_role",
+            "我是用户的 AI 影替身 (Shinobi Alter-Ego)，代表主人参与技术架构推演与代码审查",
+        );
+        let _ = memory_store.store(
+            "coding_style",
+            "rust_guidelines",
+            "严禁 unwrap，优先使用 anyhow/thiserror；异步操作一律基于 Tokio",
+        );
+    }
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -61,6 +64,17 @@ async fn main() -> Result<()> {
                     "id": id,
                     "result": {
                         "sessionId": "shinobi-session-default"
+                    }
+                });
+                writeln!(stdout, "{}", resp.to_string())?;
+                stdout.flush()?;
+            } else if method == "memory/all" {
+                let all_records = memory_store.get_all().unwrap_or_default();
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "memories": all_records
                     }
                 });
                 writeln!(stdout, "{}", resp.to_string())?;

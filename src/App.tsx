@@ -17,7 +17,9 @@ import {
   TopicMessageData,
   DecisionRecord,
   TopicStatus,
-  ActiveAgentExecution
+  ActiveAgentExecution,
+  AgentRuntimeStatus,
+  MemoryCartridge
 } from './types';
 import { 
   INITIAL_PROJECTS,
@@ -49,6 +51,8 @@ import { CreateTeamModal } from './components/CreateTeamModal';
 import { AgentDefaultsModal } from './components/AgentDefaultsModal';
 import { RustTauriArchitectureHub } from './components/RustTauriArchitectureHub';
 import { AgentDashboard } from './components/AgentDashboard';
+import { MemoryExportModal } from './components/MemoryExportModal';
+import { MemoryImportModal } from './components/MemoryImportModal';
 import { sendPromptToAcpAgent } from './services/acpClient';
 
 export default function App() {
@@ -326,6 +330,9 @@ export default function App() {
   const [modalChannelId, setModalChannelId] = useState<string | null>(null);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState<boolean>(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
+  const [isMemoryExportModalOpen, setIsMemoryExportModalOpen] = useState<boolean>(false);
+  const [exportingAgent, setExportingAgent] = useState<Agent | null>(null);
+  const [isMemoryImportModalOpen, setIsMemoryImportModalOpen] = useState<boolean>(false);
   const [isRustTauriHubOpen, setIsRustTauriHubOpen] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [activeExecutions, setActiveExecutions] = useState<Record<string, ActiveAgentExecution>>({});
@@ -373,28 +380,86 @@ export default function App() {
     if (!tauriInvoke) return;
 
     try {
-      const runningIds: string[] = await tauriInvoke('get_running_agent_ids');
-      if (Array.isArray(runningIds)) {
+      const runtimeStatuses: AgentRuntimeStatus[] = await tauriInvoke('get_agents_runtime_status');
+      if (Array.isArray(runtimeStatuses)) {
         setAgents((prev) =>
           prev.map((a) => {
-            const isAlive = runningIds.includes(a.id);
-            if (isAlive) {
-              if (a.status === 'idle') {
-                return { ...a, status: 'running' };
-              }
-              return a;
+            const match = runtimeStatuses.find((s) => s.agent_id === a.id);
+            if (match && match.is_alive) {
+              const targetStatus = match.status as any;
+              return {
+                ...a,
+                status: targetStatus === 'idle' ? 'idle' : targetStatus,
+                statusDetail: match.status_detail || undefined,
+              };
             } else {
-              if (a.status === 'running') {
-                return { ...a, status: 'idle' };
+              // If not in active backend pool, revert to idle if not currently starting
+              if (a.status !== 'idle' && a.status !== 'starting') {
+                return { ...a, status: 'idle', statusDetail: undefined };
               }
               return a;
             }
           })
         );
+        return;
       }
-    } catch (err) {
-      console.warn('[Sync ACP] Failed to query running agents:', err);
+    } catch {
+      // Fallback to legacy get_running_agent_ids
+      try {
+        const runningIds: string[] = await tauriInvoke('get_running_agent_ids');
+        if (Array.isArray(runningIds)) {
+          setAgents((prev) =>
+            prev.map((a) => {
+              const isAlive = runningIds.includes(a.id);
+              if (isAlive) {
+                if (a.status === 'idle') return { ...a, status: 'running' };
+                return a;
+              } else {
+                if (a.status === 'running') return { ...a, status: 'idle' };
+                return a;
+              }
+            })
+          );
+        }
+      } catch (err) {
+        console.warn('[Sync ACP] Failed to query running agents:', err);
+      }
     }
+  }, []);
+
+  // Listen for real-time ACP status changes from Tauri backend
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const tauriListen =
+      (window as any).__TAURI__?.event?.listen ||
+      (window as any).__TAURI_INTERNALS__?.listen;
+    if (!tauriListen) return;
+
+    let unlisten: (() => void) | undefined;
+    tauriListen('acp:status_change', (event: any) => {
+      const payload = event?.payload;
+      if (payload && payload.agent_id) {
+        setAgents((prev) =>
+          prev.map((a) => {
+            if (a.id === payload.agent_id) {
+              const newStatus = payload.status === 'stopped' ? 'idle' : payload.status;
+              return {
+                ...a,
+                status: newStatus,
+                statusDetail: payload.status_detail || undefined,
+              };
+            }
+            return a;
+          })
+        );
+      }
+    }).then((fn: any) => {
+      unlisten = fn;
+    }).catch(() => {});
+
+    return () => {
+      if (unlisten) unlisten();
+    };
   }, []);
 
   // Sync on initial mount
@@ -658,6 +723,101 @@ export default function App() {
     setIsDeleteChannelModalOpen(false);
   };
 
+  // External Memory Cartridge & Guest Alter-Ego Handlers (Non-Invasive Import)
+  const handleToggleCartridge = (agentId: string, cartridgeId: string) => {
+    setAgents((prev) =>
+      prev.map((a) => {
+        if (a.id !== agentId) return a;
+        const cartridges = (a.memory?.cartridges || []).map((c) =>
+          c.id === cartridgeId ? { ...c, isEnabled: !c.isEnabled } : c
+        );
+        return {
+          ...a,
+          memory: {
+            ...a.memory,
+            cartridges,
+          },
+        };
+      })
+    );
+  };
+
+  const handleEjectCartridge = (agentId: string, cartridgeId: string) => {
+    setAgents((prev) =>
+      prev.map((a) => {
+        if (a.id !== agentId) return a;
+        const cartridges = (a.memory?.cartridges || []).filter((c) => c.id !== cartridgeId);
+        return {
+          ...a,
+          memory: {
+            ...a.memory,
+            cartridges,
+          },
+        };
+      })
+    );
+  };
+
+  const handleMountCartridge = (targetAgentId: string, cartridge: MemoryCartridge) => {
+    setAgents((prev) =>
+      prev.map((a) => {
+        if (a.id !== targetAgentId) return a;
+        const existing = a.memory?.cartridges || [];
+        const filtered = existing.filter((c) => c.id !== cartridge.id);
+        return {
+          ...a,
+          memory: {
+            ...a.memory,
+            cartridges: [...filtered, cartridge],
+          },
+        };
+      })
+    );
+  };
+
+  const handleCloneGuestAgent = (guestAgent: Partial<Agent>) => {
+    const fullAgent: Agent = {
+      id: `guest-${Date.now()}`,
+      name: guestAgent.name || 'Guest Agent',
+      handle: guestAgent.handle || `@guest_${Date.now().toString().slice(-4)}`,
+      avatar: guestAgent.avatar || '🪪',
+      role: guestAgent.role || 'Guest Alter-Ego',
+      description: guestAgent.description || 'Imported Guest Alter-Ego Agent',
+      color: '#10b981',
+      status: 'idle',
+      modelBadge: guestAgent.modelBadge || 'Claude 3.7 Sonnet',
+      isManagedByYou: true,
+      isGuestClone: true,
+      guestCloneFrom: guestAgent.guestCloneFrom,
+      acpTransport: guestAgent.acpTransport || 'stdio',
+      acpCommandOrUrl: guestAgent.acpCommandOrUrl || './target/debug/shinobi-agent',
+      protocolVersion: '2025-01-01 (ACP v1.0.4)',
+      capabilities: guestAgent.capabilities || {
+        canUseInternalMemory: true,
+        canAccessWorkspaceFiles: true,
+        canExecuteSkills: true,
+        canDelegateToSubAgents: true,
+        supportsStreaming: true,
+      },
+      workspace: guestAgent.workspace || {
+        rootPath: activeProject?.localWorkspaceRoot || '.',
+        repoName: 'shadow-crew',
+        gitBranch: 'main',
+        permissionMode: 'full_read_write',
+        activeFiles: ['crates/shinobi-agent/src/main.rs'],
+      },
+      envVars: guestAgent.envVars || [],
+      skills: [],
+      memory: guestAgent.memory || {
+        internalMemoryPath: `~/.local/share/shinobi/guest_${Date.now()}_memory.sqlite`,
+        persistentType: 'sqlite',
+        persistentItems: [],
+        sessionCacheCount: 0,
+      },
+    };
+    setAgents((prev) => [...prev, fullAgent]);
+  };
+
   // Handle Creation of New Channel (Topic)
   const handleCreateChannel = (newChan: Omit<Channel, 'id' | 'unreadCount'>) => {
     const id = `channel-${Date.now()}`;
@@ -908,7 +1068,7 @@ export default function App() {
             authorHandle: responder.handle,
             authorAvatar: responder.avatar,
             isAgent: true,
-            agentBadge: `${responder.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : '协作'}`,
+            agentBadge: `${responder.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : responder.isRemote ? 'ACP Remote' : '协作'}`,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             content: acpResp.textResponse,
             thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
@@ -918,6 +1078,7 @@ export default function App() {
               detail: acpResp.memoryActions.map(m => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n')
             } : undefined,
             diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
+            cartridgeCitation: acpResp.cartridgeCitation,
           };
 
           setMessages((prev) => {
@@ -1222,7 +1383,7 @@ export default function App() {
           authorAvatar: primaryResponder.avatar,
           isAgent: true,
           managedBy: primaryResponder.isManagedByYou ? 'you' : undefined,
-          agentBadge: `${primaryResponder.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : 'ACP'}`,
+          agentBadge: `${primaryResponder.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : primaryResponder.isRemote ? 'ACP Remote' : 'ACP'}`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           content: acpResp.textResponse,
           thinkingProcess:
@@ -1237,6 +1398,7 @@ export default function App() {
                 }
               : undefined,
           diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
+          cartridgeCitation: acpResp.cartridgeCitation,
           acpTrace: {
             requestId: `acp-${Date.now()}`,
             method: 'session/prompt',
@@ -1244,7 +1406,7 @@ export default function App() {
             workspaceAction: {
               action: 'read',
               path: primaryResponder.workspace?.activeFiles?.[0] || 'src/App.tsx',
-              summary: `Target workspace: ${primaryResponder.workspace?.rootPath || '.'}${acpResp.isRealProcess ? ' (Real stdio process)' : ''}`,
+              summary: `Target workspace: ${primaryResponder.workspace?.rootPath || '.'}${acpResp.isRealProcess ? ' (Real stdio process)' : primaryResponder.isRemote ? ' (Remote WebSocket)' : ''}`,
             },
           },
         };
@@ -1472,16 +1634,53 @@ export default function App() {
             setEditingAgent(agent);
             setIsConnectModalOpen(true);
           }}
+          onExportAgentMemory={(agent) => {
+            setExportingAgent(agent);
+            setIsMemoryExportModalOpen(true);
+          }}
+          onImportMemoryCartridge={() => {
+            setIsMemoryImportModalOpen(true);
+          }}
           onToggleAgentStatus={(agentId) => {
             const currentAgent = agents.find((a) => a.id === agentId);
             if (!currentAgent) return;
             const isCurrentlyRunning = currentAgent.status !== 'idle';
 
             if (!isCurrentlyRunning) {
-              // 启动 Agent 进程
+              if (currentAgent.isRemote) {
+                // 远程 ACP 节点：通过 WebSocket 探测连接
+                setAgents((prev) =>
+                  prev.map((a) =>
+                    a.id === agentId ? { ...a, status: 'starting', statusDetail: '连接远程 ACP 节点中...' } : a
+                  )
+                );
+                import('./services/acpClient').then(({ probeRemoteAcpConnection }) => {
+                  probeRemoteAcpConnection(currentAgent.remoteUrl || currentAgent.acpCommandOrUrl, currentAgent.authToken)
+                    .then((probe) => {
+                      if (probe.ok) {
+                        setAgents((prev) =>
+                          prev.map((a) =>
+                            a.id === agentId
+                              ? { ...a, status: 'running', remoteLatencyMs: probe.latencyMs, statusDetail: `远程连接正常 (${probe.latencyMs}ms)` }
+                              : a
+                          )
+                        );
+                      } else {
+                        setAgents((prev) =>
+                          prev.map((a) =>
+                            a.id === agentId ? { ...a, status: 'error', statusDetail: probe.error || '远程连接失败' } : a
+                          )
+                        );
+                      }
+                    });
+                });
+                return;
+              }
+
+              // 启动 Agent 进程: 初始设为 starting 握手过渡态
               setAgents((prev) =>
                 prev.map((a) =>
-                  a.id === agentId ? { ...a, status: 'running' } : a
+                  a.id === agentId ? { ...a, status: 'starting', statusDetail: 'ACP 进程启动与协议握手中...' } : a
                 )
               );
               if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke) {
@@ -1496,7 +1695,7 @@ export default function App() {
                   console.warn('Spawn agent error:', err);
                   setAgents((prev) =>
                     prev.map((a) =>
-                      a.id === agentId ? { ...a, status: 'idle' } : a
+                      a.id === agentId ? { ...a, status: 'error', statusDetail: String(err) } : a
                     )
                   );
                 });
@@ -1505,10 +1704,10 @@ export default function App() {
               // 终止 Agent 进程
               setAgents((prev) =>
                 prev.map((a) =>
-                  a.id === agentId ? { ...a, status: 'idle' } : a
+                  a.id === agentId ? { ...a, status: 'idle', statusDetail: undefined } : a
                 )
               );
-              if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke) {
+              if (!currentAgent.isRemote && typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke) {
                 (window as any).__TAURI_INTERNALS__.invoke('stop_acp_agent', {
                   agentId: currentAgent.id,
                 }).then(() => {
@@ -1548,7 +1747,7 @@ export default function App() {
                   activeThread={activeThread}
                   channel={activeThread.type === 'dm' ? undefined : activeChannel}
                   agents={agents}
-                  activeExecutions={activeThread ? Object.values(activeExecutions).filter((e) => e.threadId === activeThread.id) : []}
+                  activeExecutions={activeThread ? Object.values(activeExecutions).filter((e: any) => e.threadId === activeThread.id) : []}
                   onAbortAgent={(agentId) => activeThread && handleAbortAgent(agentId, activeThread.id)}
                   onAddReaction={handleAddReaction}
                   onInspectAgent={(id) => {
@@ -1609,7 +1808,7 @@ export default function App() {
             topic={activeTopicData}
             messages={activeTopicMessages}
             agents={agents}
-            activeExecutions={activeTopicId ? Object.values(activeExecutions).filter((e) => e.threadId === activeTopicId) : []}
+            activeExecutions={activeTopicId ? Object.values(activeExecutions).filter((e: any) => e.threadId === activeTopicId) : []}
             onAbortAgent={(agentId) => activeTopicId && handleAbortAgent(agentId, activeTopicId)}
             onClose={() => setActiveTopicId(null)}
             onSendMessage={handleSendTopicMessage}
@@ -1675,6 +1874,15 @@ export default function App() {
           onEditAgent={(agent) => {
             setEditingAgent(agent);
             setIsConnectModalOpen(true);
+          }}
+          onToggleCartridge={handleToggleCartridge}
+          onEjectCartridge={handleEjectCartridge}
+          onOpenExportModal={(agent) => {
+            setExportingAgent(agent);
+            setIsMemoryExportModalOpen(true);
+          }}
+          onOpenImportModal={() => {
+            setIsMemoryImportModalOpen(true);
           }}
           onClose={() => setIsAcpInspectorOpen(false)}
         />
@@ -1759,6 +1967,10 @@ export default function App() {
         }}
         initialAgent={editingAgent}
         defaultWorkspaceRoot={activeProject?.localWorkspaceRoot || '.'}
+        onOpenImportModal={() => {
+          setIsConnectModalOpen(false);
+          setIsMemoryImportModalOpen(true);
+        }}
         onUpdateAgent={(agentId, updatedData) => {
           setAgents((prev) =>
             prev.map((a) => {
@@ -1797,8 +2009,15 @@ export default function App() {
             localAcpProfile: agentData.localAcpProfile,
             envVars: agentData.envVars,
             isManagedByYou: true,
-            acpTransport: agentData.acpTransport || 'stdio',
-            acpCommandOrUrl: agentData.acpCommandOrUrl || 'cargo run --bin custom-agent -- --acp',
+            isRemote: agentData.isRemote,
+            remoteUrl: agentData.remoteUrl,
+            authToken: agentData.authToken,
+            remoteLatencyMs: agentData.remoteLatencyMs,
+            readOnlyGuard: agentData.readOnlyGuard,
+            isGuestClone: agentData.isGuestClone,
+            guestCloneFrom: agentData.guestCloneFrom,
+            acpTransport: agentData.acpTransport || (agentData.isRemote ? 'websocket' : 'stdio'),
+            acpCommandOrUrl: agentData.acpCommandOrUrl || (agentData.isRemote ? (agentData.remoteUrl || 'ws://127.0.0.1:9090/acp') : 'cargo run --bin custom-agent -- --acp'),
             protocolVersion: '2025-01-01 (ACP v1.0.4)',
             capabilities: {
               canUseInternalMemory: true,
@@ -1811,7 +2030,7 @@ export default function App() {
               rootPath: agentData.workspace?.rootPath || activeProject?.localWorkspaceRoot || '.',
               repoName: 'shadow-crew',
               gitBranch: 'main',
-              permissionMode: 'full_read_write',
+              permissionMode: agentData.readOnlyGuard ? 'read_only' : 'full_read_write',
               activeFiles: ['src/App.tsx'],
             },
             skills: [],
@@ -1820,6 +2039,7 @@ export default function App() {
               persistentType: 'sqlite',
               persistentItems: [],
               sessionCacheCount: 0,
+              cartridges: agentData.memory?.cartridges || [],
             },
           };
           setAgents((prev) => [...prev, newAg]);
@@ -1839,6 +2059,28 @@ export default function App() {
       <RustTauriArchitectureHub
         isOpen={isRustTauriHubOpen}
         onClose={() => setIsRustTauriHubOpen(false)}
+      />
+
+      {/* 11. Memory Export & Import Modals */}
+      {isMemoryExportModalOpen && exportingAgent && (
+        <MemoryExportModal
+          isOpen={isMemoryExportModalOpen}
+          agent={exportingAgent}
+          onClose={() => {
+            setIsMemoryExportModalOpen(false);
+            setExportingAgent(null);
+          }}
+        />
+      )}
+
+      <MemoryImportModal
+        isOpen={isMemoryImportModalOpen}
+        agents={agents}
+        defaultAgentId={selectedAgentId || undefined}
+        defaultWorkspaceRoot={activeProject?.localWorkspaceRoot || '.'}
+        onClose={() => setIsMemoryImportModalOpen(false)}
+        onMountCartridge={handleMountCartridge}
+        onCloneGuestAgent={handleCloneGuestAgent}
       />
     </div>
   );
