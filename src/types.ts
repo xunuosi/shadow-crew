@@ -88,6 +88,19 @@ export interface Agent {
   isJoinedCurrentRoom?: boolean;
 }
 
+export type AgentExecutionStatus = 'queued' | 'thinking' | 'accessing_workspace' | 'querying_memory' | 'streaming';
+
+export interface ActiveAgentExecution {
+  agentId: string;
+  agentName: string;
+  agentAvatar: string;
+  threadId: string;
+  topicId?: string;
+  status: AgentExecutionStatus;
+  currentActionDetail?: string; // e.g. "正在检索本地工作区 src/App.tsx..."
+  startedAt: number; // timestamp
+}
+
 // 自由编队 Agent Team
 export interface AgentTeam {
   id: string;

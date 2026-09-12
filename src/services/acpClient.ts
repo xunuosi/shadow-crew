@@ -100,7 +100,7 @@ export async function sendPromptToAcpAgent(
   }
 
   // 2. Web 预览或进程故障时的智能兜底拟真响应 (基于 Agent 身份和记忆模式)
-  await new Promise((resolve) => setTimeout(resolve, 800 + Math.random() * 400));
+  await new Promise((resolve) => setTimeout(resolve, 3200 + Math.random() * 600));
   const durationMs = Date.now() - startTime;
 
   let simulatedText = '';

@@ -429,7 +429,7 @@ impl AcpProcessManager {
   "identifier": "com.shinobi.workspace.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:3000",
+    "devUrl": "http://localhost:3033",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },

@@ -13,7 +13,8 @@ import {
   GitBranch,
   Plus,
   CornerDownRight,
-  X
+  X,
+  Square
 } from 'lucide-react';
 import { MentionSuggestions, MentionItem } from './MentionSuggestions';
 
@@ -22,6 +23,7 @@ interface MessageInputProps {
   activeAgents: Agent[];
   allAgents?: Agent[];
   isGenerating?: boolean;
+  onAbort?: () => void;
   channelName?: string;
   onOpenNewTopicModal?: () => void;
   quotingMessage?: Message | null;
@@ -33,6 +35,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   activeAgents,
   allAgents = [],
   isGenerating = false,
+  onAbort,
   channelName = 'TestChannel',
   onOpenNewTopicModal,
   quotingMessage,
@@ -133,6 +136,12 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         setIsMentionOpen(false);
         return;
       }
+    }
+
+    if (isGenerating && e.key === 'Escape') {
+      e.preventDefault();
+      onAbort?.();
+      return;
     }
 
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -344,21 +353,35 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               </button>
             </div>
 
-            {/* Right Circular Send Button with ⌘ + Enter hint */}
+            {/* Right Action Button: Send or Stop */}
             <div className="flex items-center gap-1.5 shrink-0">
-              <span className="hidden sm:inline text-[10px] font-mono text-fg-muted select-none">⌘ + Enter</span>
-              <button
-                onClick={handleSend}
-                disabled={!content.trim() || isGenerating}
-                className={`w-7 h-7 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-md shrink-0 ${
-                  content.trim() && !isGenerating
-                    ? 'bg-accent text-accent-fg hover:opacity-95 hover:scale-105 active:scale-95'
-                    : 'bg-surface border border-border text-fg-muted cursor-not-allowed'
-                }`}
-                title="发送消息 (⌘ + Enter)"
-              >
-                <ArrowUp className="w-4 h-4 stroke-[2.5]" />
-              </button>
+              <span className="hidden sm:inline text-[10px] font-mono text-fg-muted select-none">
+                {isGenerating ? 'Esc 停止' : '⌘ + Enter'}
+              </span>
+              {isGenerating ? (
+                <button
+                  type="button"
+                  onClick={onAbort}
+                  className="w-7 h-7 rounded-lg bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-all cursor-pointer shadow-md shrink-0 hover:scale-105 active:scale-95 animate-in fade-in zoom-in-90"
+                  title="停止生成 (Esc)"
+                >
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSend}
+                  disabled={!content.trim()}
+                  className={`w-7 h-7 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-md shrink-0 ${
+                    content.trim()
+                      ? 'bg-accent text-accent-fg hover:opacity-95 hover:scale-105 active:scale-95'
+                      : 'bg-surface border border-border text-fg-muted cursor-not-allowed'
+                  }`}
+                  title="发送消息 (⌘ + Enter)"
+                >
+                  <ArrowUp className="w-4 h-4 stroke-[2.5]" />
+                </button>
+              )}
             </div>
           </div>
         </div>

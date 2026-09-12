@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { Message, Thread, Agent, Channel } from '../types';
+import React, { useState, useEffect, useRef } from 'react';
+import { Message, Thread, Agent, Channel, ActiveAgentExecution } from '../types';
 import { TopicMessageCard } from './TopicMessageCard';
+import { ChannelComposerActivityBar } from './ChannelComposerActivityBar';
 import { 
   Terminal, 
   Database, 
@@ -37,6 +38,8 @@ interface ChatTimelineProps {
   activeThread?: Thread;
   channel?: Channel;
   agents: Agent[];
+  activeExecutions?: ActiveAgentExecution[];
+  onAbortAgent?: (agentId: string) => void;
   onAddReaction: (messageId: string, emoji: string) => void;
   onInspectAgent: (agentId: string) => void;
   onOpenTopic?: (topicId: string) => void;
@@ -54,6 +57,8 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   activeThread,
   channel,
   agents,
+  activeExecutions = [],
+  onAbortAgent,
   onAddReaction,
   onInspectAgent,
   onOpenTopic,
@@ -127,7 +132,26 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     setTimeout(() => setCopiedCodeId(null), 2000);
   };
 
+  const [isDmThinkingOpen, setIsDmThinkingOpen] = useState(true);
+  const [now, setNow] = useState(Date.now());
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
   const activeAgents = agents.filter((a) => activeThread?.activeAgentIds?.includes(a.id));
+
+  const currentThreadExecutions = activeExecutions.filter(
+    (e) => e.threadId === activeThread?.id || (activeThread?.type === 'thread' && (!e.threadId || e.threadId === activeThread?.id))
+  );
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages.length, currentThreadExecutions.length]);
+
+  useEffect(() => {
+    if (currentThreadExecutions.length === 0) return;
+    const interval = setInterval(() => setNow(Date.now()), 200);
+    return () => clearInterval(interval);
+  }, [currentThreadExecutions.length]);
 
   const filteredMessages = messages.filter((m) => {
     if (filter === 'topics') return m.type === 'topic';
@@ -156,9 +180,20 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
       {/* 1. Top Channel / Thread Header */}
       <header className="min-h-[48px] py-1.5 px-3 sm:px-4 border-b border-border flex items-center justify-between bg-surface-subtle select-none shrink-0 gap-2">
         <div className="flex items-center gap-2 truncate min-w-0 flex-1">
-          <span className="font-bold text-fg text-sm tracking-wide truncate flex items-center gap-1.5 shrink-0">
+          <span className="font-bold text-fg text-sm tracking-wide truncate flex items-center gap-2 shrink-0">
             {activeThread.type === 'dm' ? (
-              <span>DM with <span className="text-accent font-semibold">{activeThread.authorName}</span></span>
+              <span className="flex items-center gap-2 truncate">
+                <span>DM with <span className="text-accent font-semibold">{activeThread.authorName}</span></span>
+                {currentThreadExecutions.length > 0 && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-[10px] font-mono shrink-0 animate-in fade-in">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="truncate max-w-[150px] sm:max-w-[220px]">
+                      {currentThreadExecutions[0].currentActionDetail || '深度思考中'}
+                    </span>
+                    <span>({((now - currentThreadExecutions[0].startedAt) / 1000).toFixed(1)}s)</span>
+                  </span>
+                )}
+              </span>
             ) : (
               <span className="flex items-center gap-1.5">
                 <span className="text-accent font-mono font-bold">#{channel?.name || activeThread.channelName}</span>
@@ -505,27 +540,45 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
               <div className="pl-10.5 space-y-3">
                 {/* Antigravity Thinking Chain Accordion */}
                 {message.thinkingProcess && (
-                  <div className="rounded-xl bg-surface-subtle border border-border overflow-hidden text-[11px]">
-                    <button
-                      onClick={() => toggleThinking(message.id)}
-                      className="w-full px-3 py-2 flex items-center justify-between text-fg-muted hover:text-fg bg-surface-subtle transition-colors cursor-pointer"
-                    >
-                      <div className="flex items-center gap-2">
-                        <BrainCircuit className="w-3.5 h-3.5 text-accent" />
-                        <span className="font-semibold text-fg">
-                          Thinking Process ({message.thinkingProcess.duration} · {message.thinkingProcess.tokens} tokens)
-                        </span>
-                      </div>
-                      {isThinkingOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                    </button>
+                  activeThread.type === 'dm' ? (
+                    <div className="text-[11px] select-none my-1">
+                      <button
+                        onClick={() => toggleThinking(message.id)}
+                        className="inline-flex items-center gap-1.5 text-fg-muted hover:text-fg transition-colors cursor-pointer py-0.5 group"
+                      >
+                        <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-150 text-fg-muted/70 group-hover:text-fg ${isThinkingOpen ? '' : '-rotate-90'}`} />
+                        <span className="font-mono text-fg-secondary">Thought for {message.thinkingProcess.duration}</span>
+                      </button>
+                      {isThinkingOpen && (
+                        <div className="pl-5 pt-1.5 pb-2 text-fg-muted font-mono text-[10px] leading-relaxed border-l-2 border-border/80 ml-1.5 space-y-1 animate-in fade-in">
+                          <p className="text-fg-secondary font-medium">{message.thinkingProcess.summary}</p>
+                          <pre className="whitespace-pre-wrap font-mono text-fg-muted/80">{message.thinkingProcess.detail}</pre>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="rounded-xl bg-surface-subtle border border-border overflow-hidden text-[11px]">
+                      <button
+                        onClick={() => toggleThinking(message.id)}
+                        className="w-full px-3 py-2 flex items-center justify-between text-fg-muted hover:text-fg bg-surface-subtle transition-colors cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2">
+                          <BrainCircuit className="w-3.5 h-3.5 text-accent" />
+                          <span className="font-semibold text-fg">
+                            Thinking Process ({message.thinkingProcess.duration} · {message.thinkingProcess.tokens} tokens)
+                          </span>
+                        </div>
+                        {isThinkingOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                      </button>
 
-                    {isThinkingOpen && (
-                      <div className="p-3 border-t border-border font-mono text-[11px] text-fg-secondary bg-surface leading-relaxed whitespace-pre-wrap">
-                        <div className="text-accent font-bold mb-1">推理摘要: {message.thinkingProcess.summary}</div>
-                        <div className="text-fg-muted">{message.thinkingProcess.detail}</div>
-                      </div>
-                    )}
-                  </div>
+                      {isThinkingOpen && (
+                        <div className="p-3 border-t border-border font-mono text-[11px] text-fg-secondary bg-surface leading-relaxed whitespace-pre-wrap">
+                          <div className="text-accent font-bold mb-1">推理摘要: {message.thinkingProcess.summary}</div>
+                          <div className="text-fg-muted">{message.thinkingProcess.detail}</div>
+                        </div>
+                      )}
+                    </div>
+                  )
                 )}
 
                 {/* Main Markdown Text with Code Formatting */}
@@ -641,7 +694,49 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             </article>
           );
         })}
+
+        {/* Antigravity / Codex Minimal Inline Live Thinking for 1v1 DM */}
+        {activeThread.type === 'dm' && currentThreadExecutions.length > 0 && (
+          <div className="max-w-3xl mx-auto pl-2 py-1 select-none animate-in fade-in duration-150">
+            <div className="flex items-center gap-2 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setIsDmThinkingOpen((prev) => !prev)}
+                className="inline-flex items-center gap-1.5 text-fg-muted hover:text-fg transition-colors cursor-pointer group"
+              >
+                <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-150 text-fg-muted ${isDmThinkingOpen ? '' : '-rotate-90'}`} />
+                <span className="font-mono text-accent font-medium">
+                  {currentThreadExecutions[0].status === 'thinking' ? 'Thinking' : 'Working'} ({((now - currentThreadExecutions[0].startedAt) / 1000).toFixed(1)}s)...
+                </span>
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent animate-ping ml-0.5" />
+              </button>
+            </div>
+            {isDmThinkingOpen && (
+              <div className="pl-5 pt-1.5 pb-2 text-fg-muted font-mono text-[10px] leading-relaxed border-l-2 border-accent/40 ml-1.5 space-y-1 animate-in fade-in">
+                <p className="text-fg-secondary font-medium">
+                  {currentThreadExecutions[0].currentActionDetail || '正在深入分析上下文与工程边界...'}
+                </p>
+              </div>
+            )}
+            <div className="pl-5 pt-1 text-fg-muted flex items-center gap-1">
+              <span className="inline-block w-1.5 h-3 bg-accent animate-pulse" />
+            </div>
+          </div>
+        )}
+
+        <div ref={messagesEndRef} />
       </div>
+
+      {/* Buzz-Style Channel Composer Activity Bar (Bottom-Left Stacked for Channel) */}
+      {activeThread.type !== 'dm' && currentThreadExecutions.length > 0 && (
+        <div className="shrink-0 max-w-3xl mx-auto w-full px-4 mb-2">
+          <ChannelComposerActivityBar
+            executions={currentThreadExecutions}
+            onAbortAgent={onAbortAgent}
+            onOpenAgentSession={onInspectAgent}
+          />
+        </div>
+      )}
 
       {/* Right-Click Context Menu */}
       {contextMenu && (

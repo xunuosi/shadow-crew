@@ -1,28 +1,32 @@
-import React from 'react';
-import { Channel, Agent, AgentTeam, Project } from '../types';
+import React, { useState } from 'react';
+import { Channel, Agent, AgentTeam, Project, ActiveAgentExecution } from '../types';
 import { 
   Hash, 
   Lock, 
   Plus, 
-  Inbox, 
-  Bot, 
+  Inbox,
   Users, 
-  Search, 
-  ChevronLeft, 
-  ChevronRight, 
-  PanelLeftClose, 
-  PanelLeftOpen,
-  Sparkles,
-  Command,
-  Circle,
-  FileCode,
-  ListTodo,
-  UserPlus,
-  Trash2
+  Settings, 
+  Bot, 
+  FolderGit2, 
+  GitBranch, 
+  Sparkles, 
+  Search,
+  MessageSquare,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Layers,
+  LogOut,
+  Sliders,
+  PanelLeftClose,
+  PanelLeft,
+  Trash2,
+  UserPlus
 } from 'lucide-react';
-import { NinjaIcon } from './NinjaIcon';
-import { ThemeSwitcher } from './ThemeSwitcher';
 import { ProjectSwitcher } from './ProjectSwitcher';
+import { ThemeSwitcher } from './ThemeSwitcher';
+import { NinjaIcon } from './NinjaIcon';
 
 interface SidebarProps {
   projects?: Project[];
@@ -36,6 +40,7 @@ interface SidebarProps {
   onOpenDeleteChannelModal?: (channelId?: string) => void;
   agents: Agent[];
   teams: AgentTeam[];
+  activeExecutions?: ActiveAgentExecution[];
   onOpenAgentTeamsModal: () => void;
   onSelectDirectMessage: (agent: Agent) => void;
   searchQuery: string;
@@ -60,6 +65,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenDeleteChannelModal,
   agents,
   teams,
+  activeExecutions = [],
   onOpenAgentTeamsModal,
   onSelectDirectMessage,
   searchQuery,
@@ -333,6 +339,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               };
 
               const isSelected = activeThreadId === `thread-dm-${agent.id}`;
+              const isAgentActive = activeExecutions.some((e) => e.agentId === agent.id);
 
               return (
                 <button
@@ -351,6 +358,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <div className="relative shrink-0 flex items-center justify-center text-sm">
                       {agent.avatar}
                       <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 border border-surface" />
+                      {isAgentActive && (
+                        <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 animate-ping opacity-80" />
+                      )}
                     </div>
                     <div className="truncate min-w-0 flex-1">
                       <div className="text-xs truncate font-medium text-fg flex items-center gap-1">

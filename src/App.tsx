@@ -16,7 +16,8 @@ import {
   WorkspaceFile,
   TopicMessageData,
   DecisionRecord,
-  TopicStatus
+  TopicStatus,
+  ActiveAgentExecution
 } from './types';
 import { 
   INITIAL_PROJECTS,
@@ -327,6 +328,7 @@ export default function App() {
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [isRustTauriHubOpen, setIsRustTauriHubOpen] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [activeExecutions, setActiveExecutions] = useState<Record<string, ActiveAgentExecution>>({});
 
   const currentUserId = 'user-norris';
 
@@ -858,6 +860,24 @@ export default function App() {
     }
 
     if (responder) {
+      const now = Date.now();
+      const currentResponder = responder;
+      const execKey = `${topicId}:${currentResponder.id}`;
+
+      setActiveExecutions((prev) => ({
+        ...prev,
+        [execKey]: {
+          agentId: currentResponder.id,
+          agentName: currentResponder.name,
+          agentAvatar: currentResponder.avatar,
+          threadId: topicId,
+          topicId: topicId,
+          status: 'thinking',
+          currentActionDetail: '正在深度推演议题方案与系统共识...',
+          startedAt: now,
+        },
+      }));
+
       logRpc(responder.name, 'client_to_agent', 'session/prompt', {
         jsonrpc: '2.0',
         id: Date.now(),
@@ -873,6 +893,12 @@ export default function App() {
         channelId: activeChannel?.id,
       })
         .then((acpResp) => {
+          setActiveExecutions((prev) => {
+            const next = { ...prev };
+            delete next[execKey];
+            return next;
+          });
+
           const agentReply: Message = {
             id: `topic-reply-${Date.now()}`,
             threadId: topicId,
@@ -924,6 +950,11 @@ export default function App() {
           });
         })
         .catch((err) => {
+          setActiveExecutions((prev) => {
+            const next = { ...prev };
+            delete next[execKey];
+            return next;
+          });
           console.error('Failed to send topic prompt to agent:', err);
           const errorReply: Message = {
             id: `topic-reply-err-${Date.now()}`,
@@ -1014,6 +1045,58 @@ export default function App() {
     });
   };
 
+  // Interrupt / Abort Agent Execution (Individual or Global)
+  const handleAbortAgent = (agentId: string, threadId?: string) => {
+    setActiveExecutions((prev) => {
+      const next = { ...prev };
+      Object.keys(next).forEach((key) => {
+        const item = next[key];
+        if (item.agentId === agentId && (!threadId || item.threadId === threadId)) {
+          delete next[key];
+        }
+      });
+      return next;
+    });
+
+    setAgents((prev) =>
+      prev.map((a) => (a.id === agentId ? { ...a, status: 'idle' } : a))
+    );
+
+    if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+      (window as any).__TAURI_INTERNALS__.invoke('stop_acp_agent', { agentId }).catch(() => {});
+    }
+
+    setTimeout(() => {
+      setActiveExecutions((current) => {
+        if (Object.keys(current).length === 0) {
+          setIsGenerating(false);
+        }
+        return current;
+      });
+    }, 0);
+  };
+
+  const handleAbortAll = (threadId?: string) => {
+    const agentsToReset: string[] = [];
+    setActiveExecutions((prev) => {
+      const next = { ...prev };
+      Object.keys(next).forEach((key) => {
+        const item = next[key];
+        if (!threadId || item.threadId === threadId) {
+          agentsToReset.push(item.agentId);
+          delete next[key];
+        }
+      });
+      return next;
+    });
+
+    setAgents((prev) =>
+      prev.map((a) => (agentsToReset.includes(a.id) ? { ...a, status: 'idle' } : a))
+    );
+
+    setIsGenerating(false);
+  };
+
   // Send Message in active thread
   const handleSendMessage = (content: string) => {
     if (!content.trim() || !activeThread) return;
@@ -1084,15 +1167,33 @@ export default function App() {
     }
 
     setIsGenerating(true);
-    respondingAgents.forEach((ag) => {
+    const now = Date.now();
+    const newExecs: Record<string, ActiveAgentExecution> = {};
+
+    respondingAgents.forEach((ag, idx) => {
       setAgents((prev) => prev.map((a) => (a.id === ag.id ? { ...a, status: 'thinking' } : a)));
       logRpc(ag.name, 'client_to_agent', 'session/prompt', {
         jsonrpc: '2.0',
-        id: Date.now(),
+        id: Date.now() + idx,
         method: 'session/prompt',
         params: { threadId: activeThread.id, prompt: content },
       });
+
+      newExecs[`${activeThread.id}:${ag.id}`] = {
+        agentId: ag.id,
+        agentName: ag.name,
+        agentAvatar: ag.avatar,
+        threadId: activeThread.id,
+        status: idx === 0 ? 'thinking' : 'queued',
+        currentActionDetail: idx === 0 ? '正在思考与检索上下文...' : '排队等待推演中...',
+        startedAt: now + idx * 200,
+      };
     });
+
+    setActiveExecutions((prev) => ({
+      ...prev,
+      ...newExecs,
+    }));
 
     // Handle agent response via ACP client (real stdio subprocess or fallback)
     const primaryResponder = respondingAgents[0];
@@ -1104,6 +1205,13 @@ export default function App() {
       channelId: activeChannel?.id,
     })
       .then((acpResp) => {
+        setActiveExecutions((prev) => {
+          const next = { ...prev };
+          delete next[`${activeThread.id}:${primaryResponder.id}`];
+          if (Object.keys(next).length === 0) setIsGenerating(false);
+          return next;
+        });
+
         const agentReply: Message = {
           id: `msg-reply-${Date.now()}`,
           threadId: activeThread.id,
@@ -1148,7 +1256,6 @@ export default function App() {
 
         setAgents((prev) => prev.map((a) => (a.id === primaryResponder.id ? { ...a, status: 'running' } : a)));
         syncRunningAgentsWithBackend();
-        setIsGenerating(false);
 
         logRpc(primaryResponder.name, 'agent_to_client', 'session/prompt:result', {
           jsonrpc: '2.0',
@@ -1157,6 +1264,13 @@ export default function App() {
         });
       })
       .catch((err) => {
+        setActiveExecutions((prev) => {
+          const next = { ...prev };
+          delete next[`${activeThread.id}:${primaryResponder.id}`];
+          if (Object.keys(next).length === 0) setIsGenerating(false);
+          return next;
+        });
+
         console.error('Failed to send prompt to agent:', err);
         const errorReply: Message = {
           id: `msg-err-${Date.now()}`,
@@ -1177,8 +1291,56 @@ export default function App() {
         }));
         setAgents((prev) => prev.map((a) => (a.id === primaryResponder.id ? { ...a, status: 'idle' } : a)));
         syncRunningAgentsWithBackend();
-        setIsGenerating(false);
       });
+
+    // If multiple agents responding in channel, dispatch subsequent collaborators
+    if (respondingAgents.length > 1) {
+      respondingAgents.slice(1).forEach((secondaryAgent, sIdx) => {
+        setTimeout(() => {
+          setActiveExecutions((prev) => {
+            const key = `${activeThread.id}:${secondaryAgent.id}`;
+            if (!prev[key]) return prev;
+            return {
+              ...prev,
+              [key]: {
+                ...prev[key],
+                status: 'thinking',
+                currentActionDetail: '正在对齐多智能体决策与协同审查...',
+              },
+            };
+          });
+
+          setTimeout(() => {
+            setActiveExecutions((prev) => {
+              const next = { ...prev };
+              delete next[`${activeThread.id}:${secondaryAgent.id}`];
+              if (Object.keys(next).length === 0) setIsGenerating(false);
+              return next;
+            });
+
+            const secondaryReply: Message = {
+              id: `msg-reply-${Date.now()}-${secondaryAgent.id}`,
+              threadId: activeThread.id,
+              channelId: activeChannel?.id,
+              authorId: secondaryAgent.id,
+              authorName: secondaryAgent.name,
+              authorHandle: secondaryAgent.handle,
+              authorAvatar: secondaryAgent.avatar,
+              isAgent: true,
+              agentBadge: `${secondaryAgent.modelBadge?.split(' ')[0] || 'Local'} · 协同`,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: `已确认收到，我已针对 @${primaryResponder.name} 的推演方案完成交叉验证，相关上下文已对齐。`,
+            };
+
+            setMessages((prev) => ({
+              ...prev,
+              [activeThread.id]: [...(prev[activeThread.id] || []), secondaryReply],
+            }));
+            setAgents((prev) => prev.map((a) => (a.id === secondaryAgent.id ? { ...a, status: 'idle' } : a)));
+          }, 2400);
+        }, 1200 * (sIdx + 1));
+      });
+    }
   };
 
   // Add Message to SubThread
@@ -1271,6 +1433,7 @@ export default function App() {
           onOpenMembersModal={handleOpenMembersModal}
           onOpenDeleteChannelModal={handleOpenDeleteChannelModal}
           agents={agents}
+          activeExecutions={Object.values(activeExecutions)}
           teams={teams}
           onOpenAgentTeamsModal={() => setIsAgentTeamsModalOpen(true)}
           onSelectDirectMessage={handleSelectDirectMessage}
@@ -1385,6 +1548,8 @@ export default function App() {
                   activeThread={activeThread}
                   channel={activeThread.type === 'dm' ? undefined : activeChannel}
                   agents={agents}
+                  activeExecutions={activeThread ? Object.values(activeExecutions).filter((e) => e.threadId === activeThread.id) : []}
+                  onAbortAgent={(agentId) => activeThread && handleAbortAgent(agentId, activeThread.id)}
                   onAddReaction={handleAddReaction}
                   onInspectAgent={(id) => {
                     setSelectedAgentId(id);
@@ -1405,6 +1570,7 @@ export default function App() {
 
                 <MessageInput
                   onSendMessage={handleSendMessage}
+                  onAbort={() => activeThread && handleAbortAll(activeThread.id)}
                   activeAgents={activeThread.type === 'dm' 
                     ? agents.filter((a) => a.id === activeThread.authorId || activeThread.activeAgentIds?.includes(a.id))
                     : agents.filter((a) => activeThread.activeAgentIds?.includes(a.id))}
@@ -1443,6 +1609,8 @@ export default function App() {
             topic={activeTopicData}
             messages={activeTopicMessages}
             agents={agents}
+            activeExecutions={activeTopicId ? Object.values(activeExecutions).filter((e) => e.threadId === activeTopicId) : []}
+            onAbortAgent={(agentId) => activeTopicId && handleAbortAgent(agentId, activeTopicId)}
             onClose={() => setActiveTopicId(null)}
             onSendMessage={handleSendTopicMessage}
             onResolveTopic={handleResolveTopic}

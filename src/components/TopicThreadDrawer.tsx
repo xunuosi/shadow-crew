@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { TopicMessageData, Message, Agent } from '../types';
+import { TopicMessageData, Message, Agent, ActiveAgentExecution } from '../types';
 import { 
   X, 
   GitBranch, 
@@ -19,7 +19,8 @@ import {
   RotateCcw,
   AtSign,
   Copy,
-  Check
+  Check,
+  Square
 } from 'lucide-react';
 import { MentionSuggestions } from './MentionSuggestions';
 import { renderFormattedContent } from '../utils/formatMentions';
@@ -29,6 +30,8 @@ interface TopicThreadDrawerProps {
   topic: TopicMessageData | null;
   messages: Message[];
   agents: Agent[];
+  activeExecutions?: ActiveAgentExecution[];
+  onAbortAgent?: (agentId: string) => void;
   onClose: () => void;
   onSendMessage: (topicId: string, content: string) => void;
   onResolveTopic: (topicId: string, decision: {
@@ -45,6 +48,8 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   topic,
   messages,
   agents,
+  activeExecutions = [],
+  onAbortAgent,
   onClose,
   onSendMessage,
   onResolveTopic,
@@ -106,6 +111,20 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     setTimeout(() => textareaRef.current?.focus(), 50);
     setContextMenu(null);
   };
+
+  // Live execution tracking for topic drawer
+  const topicExecutions = activeExecutions.filter(
+    (e) => (topic && e.topicId === topic.id) || (topic && e.threadId === topic.id)
+  );
+  const isExecuting = topicExecutions.length > 0;
+  const activeTopicExecution = topicExecutions[0];
+
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!isExecuting) return;
+    const interval = setInterval(() => setNow(Date.now()), 200);
+    return () => clearInterval(interval);
+  }, [isExecuting]);
 
   if (!isOpen || !topic) return null;
 
@@ -192,6 +211,12 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       }
     }
 
+    if (isExecuting && e.key === 'Escape') {
+      e.preventDefault();
+      if (activeTopicExecution) onAbortAgent?.(activeTopicExecution.agentId);
+      return;
+    }
+
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       handleSend();
@@ -253,9 +278,14 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   <CheckCircle2 className="w-3 h-3" />
                   <span>🟢 已达成共识 (Resolved)</span>
                 </span>
+              ) : isExecuting && activeTopicExecution ? (
+                <span className="text-purple-500 font-semibold flex items-center gap-1.5 shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+                  <span>🟡 {activeTopicExecution.agentName} 正在推演 ({((now - activeTopicExecution.startedAt) / 1000).toFixed(1)}s)</span>
+                </span>
               ) : (
                 <span className="text-purple-500 font-semibold flex items-center gap-1 shrink-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
                   <span>🟡 深度推演中 · {participatingAgents.length} 位协作 Agent</span>
                 </span>
               )}
@@ -273,6 +303,13 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           </button>
         </div>
       </div>
+
+      {/* 2px Animated Progress Streamline when Active */}
+      {isExecuting && (
+        <div className="relative h-[2px] w-full overflow-hidden bg-surface-subtle shrink-0">
+          <div className="absolute inset-y-0 w-1/3 bg-gradient-to-r from-purple-500 via-accent to-purple-500 animate-streamline" />
+        </div>
+      )}
 
       {/* 2. Topic Anchor Context */}
       <div className="p-3.5 bg-surface-subtle border-b border-border text-[11px] space-y-1.5">
@@ -410,6 +447,24 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             );
           })
         )}
+
+        {/* Topic In-Thread Live Thinking Stepper */}
+        {isExecuting && activeTopicExecution && (
+          <div className="p-3 rounded-xl bg-purple-500/10 border border-purple-500/30 text-xs space-y-1.5 animate-in fade-in duration-150">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-purple-600 dark:text-purple-400 flex items-center gap-1.5">
+                <BrainCircuit className="w-3.5 h-3.5 animate-pulse text-purple-500" />
+                <span>{activeTopicExecution.agentName} 正在论证推演中</span>
+              </span>
+              <span className="text-[10px] font-mono text-purple-500 font-semibold">
+                {((now - activeTopicExecution.startedAt) / 1000).toFixed(1)}s
+              </span>
+            </div>
+            <p className="text-[11px] text-fg-muted font-mono leading-relaxed">
+              {activeTopicExecution.currentActionDetail || '正在评估架构方案、校验多分支边界...'}
+            </p>
+          </div>
+        )}
       </div>
 
       {/* 4. Consensus Rollup Banner / Action Button */}
@@ -463,7 +518,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             value={replyContent}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
-            placeholder="在当前议题中回复或输入 @ 召唤 Agent 继续推演... (⌘ + Enter 发送)"
+            placeholder={isExecuting ? "议题正在推演中... 可补充信息，按 Esc 终止推演" : "在当前议题中回复或输入 @ 召唤 Agent 继续推演... (⌘ + Enter 发送)"}
             rows={2}
             className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none leading-relaxed"
           />
@@ -491,17 +546,32 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               >
                 <AtSign className="w-3.5 h-3.5 text-accent" />
               </button>
-              <span className="text-[10px] text-fg-muted font-mono">⌘ + Enter 发送</span>
+              <span className="text-[10px] text-fg-muted font-mono">
+                {isExecuting ? 'Esc 终止' : '⌘ + Enter 发送'}
+              </span>
             </div>
 
-            <button
-              onClick={handleSend}
-              disabled={!replyContent.trim()}
-              className="p-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white transition-all cursor-pointer shadow-xs"
-              title="发送回复 (⌘ + Enter)"
-            >
-              <Send className="w-3 h-3" />
-            </button>
+            {isExecuting ? (
+              <button
+                type="button"
+                onClick={() => activeTopicExecution && onAbortAgent?.(activeTopicExecution.agentId)}
+                className="px-2 py-1 rounded-lg bg-red-500 hover:bg-red-600 text-white transition-all cursor-pointer shadow-xs flex items-center gap-1 text-[11px] font-medium animate-in fade-in"
+                title="终止推演 (Esc)"
+              >
+                <Square className="w-3 h-3 fill-current" />
+                <span>终止</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSend}
+                disabled={!replyContent.trim()}
+                className="p-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white transition-all cursor-pointer shadow-xs"
+                title="发送回复 (⌘ + Enter)"
+              >
+                <Send className="w-3 h-3" />
+              </button>
+            )}
           </div>
         </div>
       </div>
