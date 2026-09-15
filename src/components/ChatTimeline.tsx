@@ -476,6 +476,28 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                       </span>
                     )}
 
+                    {message.collaborationInfo && (
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded font-mono border shrink-0 flex items-center gap-1 ${
+                          message.collaborationInfo.isCircuitBroken
+                            ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-semibold'
+                            : 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30'
+                        }`}
+                      >
+                        {message.collaborationInfo.isCircuitBroken ? (
+                          <>
+                            <span>🛡️ 协同熔断</span>
+                            <span>(Hop {message.collaborationInfo.hop})</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>🔗 响应 {message.collaborationInfo.invokedByAgentName || message.collaborationInfo.invokedByAgentHandle || '协同'}</span>
+                            <span>(Hop {message.collaborationInfo.hop}/{message.collaborationInfo.maxHops})</span>
+                          </>
+                        )}
+                      </span>
+                    )}
+
                     <span className="text-[10px] text-fg-muted font-mono">
                       · {message.timestamp}
                     </span>

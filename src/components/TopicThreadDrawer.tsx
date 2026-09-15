@@ -361,6 +361,21 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                           {msg.agentBadge}
                         </span>
                       )}
+                      {msg.collaborationInfo && (
+                        <span
+                          className={`text-[9px] px-1.5 py-0.5 rounded font-mono border shrink-0 flex items-center gap-1 ${
+                            msg.collaborationInfo.isCircuitBroken
+                              ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-semibold'
+                              : 'bg-purple-500/15 text-purple-600 dark:text-purple-300 border-purple-500/30'
+                          }`}
+                        >
+                          {msg.collaborationInfo.isCircuitBroken ? (
+                            <span>🛡️ 协同熔断</span>
+                          ) : (
+                            <span>🔗 响应 {msg.collaborationInfo.invokedByAgentName || msg.collaborationInfo.invokedByAgentHandle || '协同'} (Hop {msg.collaborationInfo.hop})</span>
+                          )}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5">

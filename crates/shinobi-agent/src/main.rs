@@ -111,11 +111,19 @@ async fn main() -> Result<()> {
                     query.to_string()
                 };
 
-                let response_text = format!(
-                    "【Shinobi 替身响应】已从私有记忆库召回 {} 条专属规范，针对「{}」推演完成：\n\n• **链路状态**：本地 ACP Stdio JSON-RPC 2.0 管道运行正常，通信端对端畅通。\n• **工作区挂载**：已就绪，随时可执行架构分析、任务推演与代码评审。",
-                    recalled.len(),
-                    display_query
-                );
+                let is_collaboration = query.contains("[🤝 团队协同协作请求");
+                let response_text = if is_collaboration {
+                    format!(
+                        "【Shinobi 替身协同响应】已接收到团队跨智能体协作请求，已基于本地 SQLite 私有记忆库召回 {} 条专属架构规约：\n\n• **架构方案审查**：针对前序方案已完成技术对齐与依赖边界评估。\n• **规约约束确认**：请确保遵循 Rust 异步 Tokio / anyhow 错误处理及前端规范。\n• **协同状态**：本轮协同推演达成一致，随时可推进下一步代码实现与验证。",
+                        recalled.len()
+                    )
+                } else {
+                    format!(
+                        "【Shinobi 替身响应】已从私有记忆库召回 {} 条专属规范，针对「{}」推演完成：\n\n• **链路状态**：本地 ACP Stdio JSON-RPC 2.0 管道运行正常，通信端对端畅通。\n• **工作区挂载**：已就绪，随时可执行架构分析、任务推演与代码评审。",
+                        recalled.len(),
+                        display_query
+                    )
+                };
 
                 let session_id = params.get("sessionId").and_then(|v| v.as_str()).unwrap_or("shinobi-session-default");
                 let chunk_notification = serde_json::json!({

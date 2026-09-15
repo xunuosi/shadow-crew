@@ -169,6 +169,19 @@ export interface ActiveAgentExecution {
   status: AgentExecutionStatus;
   currentActionDetail?: string; // e.g. "正在检索本地工作区 src/App.tsx..."
   startedAt: number; // timestamp
+  cascadeHop?: number; // 协同链跳数 (1, 2, 3...)
+  invokingAgentName?: string; // 哪个 Agent 呼叫该 Agent 协同
+}
+
+export interface CollaborationInfo {
+  cascadeId: string;
+  hop: number;
+  maxHops: number;
+  invokedByAgentId?: string;
+  invokedByAgentName?: string;
+  invokedByAgentHandle?: string;
+  isCircuitBroken?: boolean;
+  circuitBreakReason?: string;
 }
 
 // 自由编队 Agent Team
@@ -364,6 +377,7 @@ export interface Message {
   
   cartridgeCitation?: CartridgeCitation;
   acpTrace?: AcpTrace;
+  collaborationInfo?: CollaborationInfo;
   reactions?: MessageReaction[];
   codeSnippets?: Array<{
     language: string;

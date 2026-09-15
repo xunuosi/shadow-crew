@@ -92,6 +92,11 @@ export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProp
             </div>
 
             <div className="flex items-center gap-1.5 min-w-0 truncate">
+              {primary.cascadeHop && (
+                <span className="text-[9px] px-1 py-0.5 rounded bg-accent/15 text-accent font-mono border border-accent/30 shrink-0">
+                  Hop {primary.cascadeHop}
+                </span>
+              )}
               <span className="font-semibold text-fg text-xs shrink-0">
                 {primary.agentName}:
               </span>
