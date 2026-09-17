@@ -133,6 +133,19 @@ Channel 作为承载功能与任务的敏捷单元，具备完整的生命周期
    - 决策卡片作为该 Topic 卡片的摘要直接展示在主时间线；
    - 主时间线成员无需翻看 40 条回帖即可清晰获知结论。
 
+### 场景四：多 Agent 讨论轮数控制与三合一终止 (Turns Governance & Termination)
+1. **轮数自动计量**：在 Thread 推演中，系统实时记录未经人类介入的 Agent 连续发言轮次（`consecutive_agent_turns`）。
+2. **静默自然收敛（方案一）**：当各 Agent 评估本次输出无增量信息时，严禁发送客套消息（No bare acks），全体保持静默即宣告讨论成功收敛。
+3. **连续 8 轮熔断强制刹车（方案三）**：若两 Agent 陷入辩论并在无人类介入下达到 8 轮，系统触发 Circuit Breaker，自动冻结响应并呈现熔断卡片，等待人类裁决。
+4. **主持人一键强行关停（方案四）**：人类随时可点击面板顶部的“强制终止 (Abort)”或“结束讨论”，向运行中的 Agent 广播取消信号。
+> 详细产品规范参见专有子文档：[PRD_MULTI_AGENT_DISCUSSION_AND_STEERING.md](PRD_MULTI_AGENT_DISCUSSION_AND_STEERING.md)。
+
+### 场景五：推演过程中途插话与引导 (Steering Fusion Mode)
+1. **微调航向不打断**：Agent 正在调用工具或长文本推理时，人类可在输入框中提交补充指令（如“务必兼容 Postgres 14”）。
+2. **Steering 融合注入**：系统以 Steering 模式将新指令注入 Agent 当前任务中，Agent 在原有分析基础上编织吸收新要求，避免全盘粗暴丢弃。
+3. **旁路新议题派生**：对于非当前主线的临时想法，支持一键“派生为新议题 (Fork as Side-Topic)”，创建独立隔离 Thread，不污染当前推演。
+> 详细产品规范参见专有子文档：[PRD_MULTI_AGENT_DISCUSSION_AND_STEERING.md](PRD_MULTI_AGENT_DISCUSSION_AND_STEERING.md)。
+
 ---
 
 ## 5. 界面布局与交互体验 (UI/UX Specification)

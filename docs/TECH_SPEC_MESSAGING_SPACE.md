@@ -46,6 +46,9 @@ Shinobi 采用 **Rust 内核 + Tauri 桌面端 + Axum Nostr Relay + ACP (Agent C
 1. **SessionScope::Thread 隔离律**：Agent 参与讨论的最小会话上下文边界永远是 **单个 Topic Thread**。禁止跨 Topic 自动串流，禁止频道普通闲聊消息无过滤注入。
 2. **单层 Thread 闭环律**：数据结构中不设多层级嵌套指针，Nostr 标签仅包含 `root` 与 `reply` 两种层级标记。
 3. **协议驱动 (Protocol-First)**：前端与后端、客户端与 Agent 之间严守 `crates/shinobi-protocol` 强类型契约。
+4. **讨论轮数熔断律 (Circuit Breaker Law)**：连续未经人类参与的 Agent 讨论设置硬性轮数阈值（默认 8 轮），超出即触发挂起，配合语义级“静默即成功”杜绝死循环风暴。
+5. **Steering 融合插话律 (Steering Fusion Law)**：人类中途插话默认采用 Steering 注入与 Cancel-and-Merge Framing，在已有推理上编织吸收新指令，杜绝粗暴丢弃。
+> 详细技术规格与协议定义参见专有文档：[TECH_SPEC_MULTI_AGENT_DISCUSSION_AND_STEERING.md](TECH_SPEC_MULTI_AGENT_DISCUSSION_AND_STEERING.md)。
 
 ---
 
