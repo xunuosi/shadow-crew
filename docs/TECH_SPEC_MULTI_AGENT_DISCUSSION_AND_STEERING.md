@@ -392,74 +392,60 @@ pub async fn abort_thread_discussion(
 }
 ```
 
-### 3.4 议题开题自启动与级联调度实现 (Kickoff Engine & Cascading Dispatcher)
+### 3.4 议题开题触发：用户主动点题驱动与级联调度实现 (User-Initiated Kickoff & Cascading)
 
-针对“创建好议题后 Agent 未启动推演”的断链问题，系统在创建议题流程中内置了 **开题自启动器 (Auto-Kickoff Engine)** 与 **排队协作者轮转器 (Queued Collaborators Dispatcher)**：
+针对“创建议题时未配置细分角色”的现状，系统确立 **“用户主动开题驱动”** 机制：创建 Topic 仅完成空间注册与候选名单准入，由用户发送第一条具体分配角色的指令来正式激活 ACP 级联推演链条。
 
 ```rust
-/// 开题自启动调度器
-pub async fn dispatch_topic_kickoff(
+/// 用户主动发送首条议题指令，触发多智能体级联调度
+pub async fn on_user_send_topic_message(
     topic_id: &str,
     channel_id: &str,
-    title: &str,
-    description: &str,
-    assigned_agents: &[AgentEntity],
+    user_prompt: &str,
+    candidate_agent_ids: &[String],
     session_pool: &Arc<SessionPoolManager>,
 ) -> Result<(), DispatchError> {
-    if assigned_agents.is_empty() {
-        tracing::info!("Topic {} created without assigned agents, awaiting manual prompt.", topic_id);
+    // 1. 从用户输入内容中解析显式 @ 的目标 Agent 列表
+    let mentioned_agents = parse_agent_mentions(user_prompt, candidate_agent_ids);
+
+    let (first_responder_id, queued_collaborator_ids) = if !mentioned_agents.is_empty() {
+        // 用户显式指定了首位 Agent 及协作者
+        (mentioned_agents[0].clone(), mentioned_agents[1..].to_vec())
+    } else if !candidate_agent_ids.is_empty() {
+        // 未显式 @ 时，默认以候选名单首位作为接收人，其余作为排队协作者
+        (candidate_agent_ids[0].clone(), candidate_agent_ids[1..].to_vec())
+    } else {
+        tracing::warn!("No candidate agents in topic {}, awaiting explicit agent assignment.", topic_id);
         return Ok(());
-    }
+    };
 
-    // 1. 选取首位 Agent (通常为开发者影替身或领头架构师) 作为议题主持人
-    let lead_agent = &assigned_agents[0];
-    let queued_collaborators: Vec<AgentEntity> = assigned_agents[1..].to_vec();
-
-    // 2. 组装立足名册公约 (Crew Roster Guidance)
-    let roster_summary = assigned_agents
-        .iter()
-        .map(|a| format!("• @{} ({})", a.name, a.role_description))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let kickoff_prompt = format!(
-        "【议题开题指令】\n你已被指定为议题【{}】的主持推演 Agent。\n\n\
-        目标背景：{}\n\n\
-        本议题协作成员名册：\n{}\n\n\
-        请针对本议题进行第一轮系统化拆解与架构草案设计。在输出方案末尾，请根据分工明确 @ 下一位协作者（例如：{}）进行专项审查或补充。",
-        title,
-        if description.is_empty() { "无额外补充，请根据标题进行技术推演。" } else { description },
-        roster_summary,
-        queued_collaborators.first().map(|a| a.name.as_str()).unwrap_or("相关协作者")
-    );
-
-    // 3. 初始化议题协同级联状态机 (Collaboration Cascade)
+    // 2. 初始化议题协同级联状态机 (Collaboration Cascade)
     let cascade_id = format!("cascade-topic-{}", topic_id);
     session_pool.register_cascade(CollaborationCascade {
         cascade_id: cascade_id.clone(),
         room_id: topic_id.to_string(),
-        lead_agent_id: lead_agent.id.clone(),
-        queued_collaborator_ids: queued_collaborators.iter().map(|a| a.id.clone()).collect(),
+        lead_agent_id: first_responder_id.clone(),
+        queued_collaborator_ids,
         depth: 1,
         max_depth: 8, // 对应方案三连续 8 轮熔断上限
     }).await;
 
-    // 4. 派发 ACP session/prompt 任务唤醒首位 Agent
+    // 3. 向首位响应 Agent 分发 ACP session/prompt
     session_pool.dispatch_prompt_task(
-        &lead_agent.id,
+        &first_responder_id,
         topic_id,
-        &kickoff_prompt,
+        user_prompt,
     ).await?;
 
     Ok(())
 }
 ```
 
-* **级联轮转流转算法 (Cascading Turn-Taking)**：
-  1. 当 `lead_agent` 输出推演结果后，Relay 捕获其正文并执行 `@` 解析；
-  2. 若解析出目标协作者 `@AgentB`，触发下一步推演；
-  3. **排队补齐保底**：若 `lead_agent` 未显式 `@` 任何成员，级联调度器自动出队 `queued_collaborator_ids` 的首个 Agent，并附上前序分析作为输入，驱动其接力发言；
-  4. 每一轮流转均累加 `consecutive_agent_turns`，在触及第 8 轮时平稳触发熔断机制。
+* **后续级联接力算法 (Cascading Turn-Taking)**：
+  1. 首位 Agent 回复后，调度器扫描其输出文本中的 `@` 标记；
+  2. 若存在 `@AgentB`，则将上下文组装后派发给 Agent B；
+  3. 若未显式 `@` 但存在用户首轮带入的排队协作者队列（`queued_collaborator_ids`），则自动轮转至下一位协作者接力发言；
+  4. 无后续目标时，协同链依据**方案一自然静默完结**，连续轮数达 8 轮时触发**方案三熔断**。
 
 ---
 
