@@ -38,9 +38,18 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
   const [name, setName] = useState('');
   const [topic, setTopic] = useState('');
   const [gitBranch, setGitBranch] = useState('main');
-  const [initialInvitedAgentIds, setInitialInvitedAgentIds] = useState<string[]>([]);
+  const [initialInvitedAgentIds, setInitialInvitedAgentIds] = useState<string[]>(() =>
+    agents.map((a) => a.id)
+  );
   const [mountCode, setMountCode] = useState(true);
   const [repoName, setRepoName] = useState('shadow-crew');
+
+  // Reset or pre-fill all agents whenever the modal opens
+  React.useEffect(() => {
+    if (isOpen) {
+      setInitialInvitedAgentIds(agents.map((a) => a.id));
+    }
+  }, [isOpen, agents]);
 
   if (!isOpen) return null;
 
@@ -199,8 +208,27 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
             </p>
 
             {/* Optional initial invitees */}
-            <div className="space-y-1 pt-1">
-              <div className="text-[10px] text-fg font-medium">可选：初始加入的 Agent 角色</div>
+            <div className="space-y-1.5 pt-1">
+              <div className="flex items-center justify-between text-[10px] text-fg font-medium">
+                <span>初始加入频道的 Agent 角色</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setInitialInvitedAgentIds(agents.map((a) => a.id))}
+                    className="text-[10px] text-accent hover:underline cursor-pointer"
+                  >
+                    全选
+                  </button>
+                  <span className="text-border">|</span>
+                  <button
+                    type="button"
+                    onClick={() => setInitialInvitedAgentIds([])}
+                    className="text-[10px] text-fg-muted hover:underline cursor-pointer"
+                  >
+                    清空
+                  </button>
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-1.5">
                 {agents.map((agent) => {
                   const isChecked = initialInvitedAgentIds.includes(agent.id);
@@ -216,7 +244,10 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
                     >
                       <div className="flex items-center gap-1.5 truncate">
                         <span>{agent.avatar}</span>
-                        <span className="truncate text-[11px]">{agent.name}</span>
+                        <span className="truncate text-[11px] font-medium">{agent.name}</span>
+                        {agent.isManagedByYou && (
+                          <span className="text-[9px] text-accent shrink-0">(影替身)</span>
+                        )}
                       </div>
                       {isChecked && <Check className="w-3 h-3 text-accent shrink-0" />}
                     </div>

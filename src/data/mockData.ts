@@ -33,7 +33,7 @@ export const INITIAL_AGENTS: Agent[] = [
     description: 'Local ultra-fast native agent runtime with private SQLite memory bank',
     color: '#10b981',
     status: 'idle',
-    statusDetail: 'Listening on stdio (ACP v1.0.4)',
+    statusDetail: undefined,
     modelBadge: 'Rust Native',
     isManagedByYou: true,
     acpTransport: 'stdio',
@@ -70,7 +70,7 @@ export const INITIAL_AGENTS: Agent[] = [
     description: 'Personal assistant / Autonomous multi-agent gateway daemon via openclaw acp',
     color: '#06b6d4',
     status: 'idle',
-    statusDetail: 'Connected via stdio (ACP v1.0.4)',
+    statusDetail: undefined,
     modelBadge: 'deepseek-v4-flash-vision-exp',
     localAcpProfile: 'OpenClaw Mantis',
     envVars: [

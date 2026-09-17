@@ -313,7 +313,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           .filter((v) => v.key.trim().length > 0)
           .map((v) => ({ key: v.key.trim(), value: v.value })),
         color: isRemoteMode ? '#06b6d4' : '#3b82f6',
-        status: isRemoteMode ? 'running' : 'idle',
+        status: 'idle',
         modelBadge: isRemoteMode
           ? 'Remote ACP'
           : selectedAcp.id === 'claude_code'

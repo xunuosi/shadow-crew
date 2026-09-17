@@ -85,30 +85,25 @@ async fn send_prompt_to_agent(
     agent_id: String,
     room_id: String,
     prompt: String,
-    command: Option<String>,
-    cwd: Option<String>,
-    env_vars: Option<Vec<acp_manager::AcpEnvVar>>,
-    app_handle: AppHandle,
+    _command: Option<String>,
+    _cwd: Option<String>,
+    _env_vars: Option<Vec<acp_manager::AcpEnvVar>>,
+    system_prompt: Option<String>,
+    _app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let mut manager = state.acp_manager.lock().await;
+    let manager = state.acp_manager.lock().await;
 
-    // 若 Agent 尚未运行且提供了命令，则自动拉起
+    // 严格检查 Agent 进程是否已由用户手动启动，禁止程序自发静默自动拉起
     if !manager.is_agent_running(&agent_id) {
-        if let Some(cmd) = command {
-            let working_dir = cwd.unwrap_or_else(|| ".".to_string());
-            tracing::info!("Auto-spawning agent {} before dispatching prompt: {}", agent_id, cmd);
-            manager
-                .spawn_agent(&agent_id, &cmd, &working_dir, env_vars, app_handle)
-                .await
-                .map_err(|e| format!("Auto-spawn agent failed: {}", e))?;
-        } else {
-            return Err(format!("Agent {} is not running and no command specified", agent_id));
-        }
+        return Err(format!(
+            "Agent '{}' 尚未开启通信。请先在 Agent 控制面板点击「Start」启动进程并建立 ACP 握手连接。",
+            agent_id
+        ));
     }
 
     let response = manager
-        .send_session_prompt(&agent_id, &room_id, &prompt)
+        .send_session_prompt(&agent_id, &room_id, &prompt, system_prompt.as_deref())
         .await
         .map_err(|e| format!("ACP Prompt Error: {}", e))?;
         

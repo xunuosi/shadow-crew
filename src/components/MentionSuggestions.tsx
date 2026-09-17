@@ -12,12 +12,14 @@ export interface MentionItem {
   isManagedByYou?: boolean;
   status?: string;
   isSpecialAll?: boolean;
+  isChannelMember?: boolean;
 }
 
 interface MentionSuggestionsProps {
   isOpen: boolean;
   query: string;
   agents: Agent[];
+  activeMemberIds?: string[];
   selectedIndex: number;
   onSelect: (item: MentionItem) => void;
   onClose: () => void;
@@ -27,6 +29,7 @@ export const MentionSuggestions: React.FC<MentionSuggestionsProps> = ({
   isOpen,
   query,
   agents,
+  activeMemberIds,
   selectedIndex,
   onSelect,
   onClose,
@@ -49,29 +52,43 @@ export const MentionSuggestions: React.FC<MentionSuggestionsProps> = ({
       avatar: '👥',
       role: '广播给当前频道所有协作成员及 Agent',
       isSpecialAll: true,
+      isChannelMember: true,
     });
   }
 
   // 2. Filter available agents by name, handle, role
-  agents.forEach((ag) => {
-    const matches =
+  const matchedAgents = agents.filter((ag) => {
+    return (
       normalizedQuery === '' ||
       ag.name.toLowerCase().includes(normalizedQuery) ||
       ag.handle.toLowerCase().includes(normalizedQuery) ||
-      ag.role.toLowerCase().includes(normalizedQuery);
+      ag.role.toLowerCase().includes(normalizedQuery)
+    );
+  });
 
-    if (matches) {
-      items.push({
-        id: ag.id,
-        name: ag.name,
-        handle: ag.handle,
-        avatar: ag.avatar,
-        role: ag.role,
-        modelBadge: ag.modelBadge,
-        isManagedByYou: ag.isManagedByYou,
-        status: ag.status,
-      });
-    }
+  // Sort: current channel members first, followed by remaining workspace agents
+  matchedAgents.sort((a, b) => {
+    if (!activeMemberIds) return 0;
+    const aIn = activeMemberIds.includes(a.id);
+    const bIn = activeMemberIds.includes(b.id);
+    if (aIn && !bIn) return -1;
+    if (!aIn && bIn) return 1;
+    return 0;
+  });
+
+  matchedAgents.forEach((ag) => {
+    const isMember = activeMemberIds ? activeMemberIds.includes(ag.id) : true;
+    items.push({
+      id: ag.id,
+      name: ag.name,
+      handle: ag.handle,
+      avatar: ag.avatar,
+      role: ag.role,
+      modelBadge: ag.modelBadge,
+      isManagedByYou: ag.isManagedByYou,
+      status: ag.status,
+      isChannelMember: isMember,
+    });
   });
 
   if (items.length === 0) {
@@ -126,6 +143,16 @@ export const MentionSuggestions: React.FC<MentionSuggestionsProps> = ({
                     {item.isSpecialAll && (
                       <span className="text-[9px] px-1 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 font-mono border border-amber-500/25">
                         全员广播
+                      </span>
+                    )}
+                    {!item.isSpecialAll && item.isChannelMember && (
+                      <span className="text-[9px] px-1 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-mono border border-emerald-500/25">
+                        本群成员
+                      </span>
+                    )}
+                    {!item.isSpecialAll && !item.isChannelMember && (
+                      <span className="text-[9px] px-1 rounded bg-purple-500/15 text-purple-600 dark:text-purple-300 font-mono border border-purple-500/25">
+                        点名拉入
                       </span>
                     )}
                   </div>

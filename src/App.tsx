@@ -89,9 +89,14 @@ export default function App() {
                   rootPath: '/Users/xunuosi/Code/Lx/AI/shadow-crew',
                 };
               }
+              const baseAgent = {
+                ...a,
+                status: 'idle', // 启动默认未开启通信，需用户在面板点击 Start
+                statusDetail: undefined,
+              };
               if (a.id === 'agent-shinobi-core') {
                 return {
-                  ...a,
+                  ...baseAgent,
                   acpCommandOrUrl: './target/debug/shinobi-agent',
                   workspace: updatedWorkspace || {
                     rootPath: '/Users/xunuosi/Code/Lx/AI/shadow-crew',
@@ -102,7 +107,7 @@ export default function App() {
                   },
                 };
               }
-              return updatedWorkspace ? { ...a, workspace: updatedWorkspace } : a;
+              return updatedWorkspace ? { ...baseAgent, workspace: updatedWorkspace } : baseAgent;
             });
           filtered.sort((a: any, b: any) => (a.id === 'agent-shinobi-core' ? -1 : b.id === 'agent-shinobi-core' ? 1 : 0));
           if (filtered.length > 0) return filtered;
@@ -347,6 +352,10 @@ export default function App() {
   const activeCascadesRef = useRef<Record<string, CollaborationCascade>>({});
   activeCascadesRef.current = activeCascades;
 
+  // 对标 Buzz: 记录每个会话/房间与 Agent 之间的立足上下文 (Standing Context) 交付状态
+  // 保证整套平台公约与团队花名册只在 Session 建立时/第 1 轮传递，后续日常交互均为纯净指令
+  const deliveredStandingContextRef = useRef<Set<string>>(new Set());
+
   const currentUserId = 'user-norris';
 
   // Computed Context
@@ -380,6 +389,80 @@ export default function App() {
       setActiveThreadId('');
     }
   }, [activeThread?.id]);
+
+  // One-time repair for TestChannel: Ensure MyClaudeCode is included, ShinobiCore is excluded, and never override user changes
+  useEffect(() => {
+    try {
+      const MIGRATION_KEY = 'shinobi_testchannel_repaired_v4';
+      if (localStorage.getItem(MIGRATION_KEY)) return;
+      if (agents.length === 0) return;
+
+      // Find Claude Code agent (MyClaudeCode)
+      const claudeAgent = agents.find(
+        (a) =>
+          a.name.toLowerCase().includes('claude') ||
+          a.handle?.toLowerCase().includes('claude') ||
+          a.id.toLowerCase().includes('claude')
+      );
+
+      setChannels((prevChannels) => {
+        let changed = false;
+        const updated = prevChannels.map((channel) => {
+          const isTestChannel =
+            channel.name.toLowerCase().includes('test') ||
+            channel.id.toLowerCase().includes('test');
+
+          if (isTestChannel) {
+            changed = true;
+            // Exclude shinobi-core
+            const newAssigned = (channel.assignedAgentIds || []).filter(
+              (id) => id !== 'agent-shinobi-core'
+            );
+            const newMembers = (channel.memberIds || [channel.creatorId || currentUserId]).filter(
+              (id) => id !== 'agent-shinobi-core'
+            );
+
+            // Include claudeAgent if found
+            if (claudeAgent) {
+              if (!newAssigned.includes(claudeAgent.id)) newAssigned.push(claudeAgent.id);
+              if (!newMembers.includes(claudeAgent.id)) newMembers.push(claudeAgent.id);
+            }
+
+            return {
+              ...channel,
+              assignedAgentIds: newAssigned,
+              memberIds: newMembers,
+            };
+          }
+          return channel;
+        });
+
+        if (changed) {
+          localStorage.setItem(MIGRATION_KEY, 'true');
+          setThreads((prevThreads) =>
+            prevThreads.map((thread) => {
+              const chan = updated.find((c) => c.id === thread.channelId);
+              if (
+                chan &&
+                (chan.name.toLowerCase().includes('test') ||
+                  chan.id.toLowerCase().includes('test'))
+              ) {
+                return {
+                  ...thread,
+                  activeAgentIds: chan.assignedAgentIds,
+                };
+              }
+              return thread;
+            })
+          );
+          return updated;
+        }
+
+        localStorage.setItem(MIGRATION_KEY, 'true');
+        return prevChannels;
+      });
+    } catch {}
+  }, [agents, currentUserId]);
 
   // Synchronize Agent running status with Tauri backend process manager
   const syncRunningAgentsWithBackend = useCallback(async () => {
@@ -449,6 +532,14 @@ export default function App() {
     tauriListen('acp:status_change', (event: any) => {
       const payload = event?.payload;
       if (payload && payload.agent_id) {
+        if (payload.status === 'stopped') {
+          // Agent 停止或重启后，清空该 Agent 在各房间的交付缓存，确保新拉起后重新注入 session/new
+          deliveredStandingContextRef.current.forEach((key) => {
+            if (key.endsWith(`:${payload.agent_id}`)) {
+              deliveredStandingContextRef.current.delete(key);
+            }
+          });
+        }
         setAgents((prev) =>
           prev.map((a) => {
             if (a.id === payload.agent_id) {
@@ -467,8 +558,40 @@ export default function App() {
       unlisten = fn;
     }).catch(() => {});
 
+    let unlistenHeartbeat: (() => void) | undefined;
+    tauriListen('acp:thinking_heartbeat', (event: any) => {
+      const payload = event?.payload;
+      if (payload && payload.agent_id) {
+        const elapsed = payload.elapsed_seconds || 0;
+        const hint =
+          elapsed > 60
+            ? `大模型正在深度推理，请耐心稍候 (${elapsed}s)...`
+            : elapsed > 25
+            ? `正在深入分析上下文与技术边界 (${elapsed}s)...`
+            : `正在分析推演中 (${elapsed}s)...`;
+
+        setActiveExecutions((prev) => {
+          let updated = false;
+          const next = { ...prev };
+          for (const key in next) {
+            if (next[key].agentId === payload.agent_id && next[key].status === 'thinking') {
+              next[key] = {
+                ...next[key],
+                currentActionDetail: hint,
+              };
+              updated = true;
+            }
+          }
+          return updated ? next : prev;
+        });
+      }
+    }).then((fn: any) => {
+      unlistenHeartbeat = fn;
+    }).catch(() => {});
+
     return () => {
       if (unlisten) unlisten();
+      if (unlistenHeartbeat) unlistenHeartbeat();
     };
   }, []);
 
@@ -574,8 +697,9 @@ export default function App() {
     setActiveChannelId(channelId);
     // Switch to first thread of this channel if exists
     const channelThreads = threads.filter((t) => t.channelId === channelId);
-    if (channelThreads.length > 0) {
-      setActiveThreadId(channelThreads[0].id);
+    const targetThread = channelThreads.find((t) => t.type !== 'dm') || channelThreads[0];
+    if (targetThread) {
+      setActiveThreadId(targetThread.id);
     } else {
       setActiveThreadId('');
     }
@@ -688,8 +812,25 @@ export default function App() {
 
   // Handle Channel Members Update (Invite / Remove Agent or Human)
   const handleUpdateChannelMembers = (channelId: string, updatedMemberIds: string[]) => {
+    const updatedAgentIds = updatedMemberIds.filter((id) => agents.some((a) => a.id === id));
     setChannels((prev) =>
-      prev.map((c) => (c.id === channelId ? { ...c, memberIds: updatedMemberIds } : c))
+      prev.map((c) =>
+        c.id === channelId
+          ? {
+              ...c,
+              memberIds: updatedMemberIds,
+              assignedAgentIds: updatedAgentIds,
+            }
+          : c
+      )
+    );
+    // 同步更新该频道下各个 Thread 的 activeAgentIds 列表
+    setThreads((prev) =>
+      prev.map((t) =>
+        t.channelId === channelId
+          ? { ...t, activeAgentIds: updatedAgentIds }
+          : t
+      )
     );
   };
 
@@ -989,14 +1130,53 @@ export default function App() {
     const cascade = activeCascadesRef.current[cascadeId];
     if (!cascade || cascade.isAborted) return;
 
-    // 获取当前频道准入的候选 Agent 列表
+    // 获取当前频道/议题准入的候选 Agent 列表 (严格限制在当前频道或议题范围内)
     const channelAgents = (activeChannel?.assignedAgentIds || [])
       .map((id) => agents.find((a) => a.id === id))
       .filter((a): a is Agent => Boolean(a));
-    const candidateAgents = channelAgents.length > 0 ? channelAgents : agents;
+    
+    const topicAgents = (isTopic && topicId)
+      ? ((activeTopicData?.participatingAgentIds || [])
+          .map((id) => agents.find((a) => a.id === id))
+          .filter((a): a is Agent => Boolean(a)))
+      : [];
 
-    // 1. 优先从 Agent 回复正文中正则提取显式 @ 的成员
+    const candidateAgents = topicAgents.length > 0
+      ? topicAgents
+      : (activeThread.type === 'dm'
+          ? agents.filter((a) => a.id === activeThread.authorId || activeThread.activeAgentIds?.includes(a.id))
+          : channelAgents);
+
+    // 1. 严格仅从当前频道准入的候选成员中解析显式 @ 的目标 (绝不越界回退全工作区)
     let targetAgents = parseAgentMentions(replyContent, candidateAgents, invokingAgent.id);
+
+    // 检查是否存在对未受邀外部 Agent 的越界 @ 点名
+    if (activeThread.type !== 'dm') {
+      const uninvitedMentions = parseAgentMentions(replyContent, agents, invokingAgent.id)
+        .filter((a) => !candidateAgents.some((ca) => ca.id === a.id));
+      if (uninvitedMentions.length > 0) {
+        const guardNotice: Message = {
+          id: `channel-guard-${Date.now()}`,
+          threadId: roomId,
+          channelId: activeChannel?.id,
+          authorId: 'system',
+          authorName: 'Shadow Crew 频道隔离守护',
+          authorHandle: '@channel-guard',
+          authorAvatar: '🔒',
+          isAgent: true,
+          agentBadge: 'Channel Guard',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `🔒 **频道准入拦截**：${invokingAgent.name} 尝试点名了 ${uninvitedMentions.map((a) => `@${a.name} (${a.handle})`).join('、')}，但该 Agent **未加入当前频道**。\n\n根据受邀准入原则，未受邀成员无法跨频道接收协同调度。如需其参与推演，请点击右上角「成员管理」邀请入驻。`,
+        };
+        setMessages((prev) => {
+          const targetList = prev[roomId] || [];
+          return {
+            ...prev,
+            [roomId]: [...targetList, guardNotice],
+          };
+        });
+      }
+    }
 
     // 2. 若正文中未显式 @，但存在用户最初批量 @ 进来的排队协作者
     let remainingQueued: Agent[] = [];
@@ -1074,7 +1254,7 @@ export default function App() {
       [cascadeId]: updatedCascade,
     }));
 
-    // 构造具有前序方案与明确协作诉求的上下文提示词
+    // 构造具有前序方案与明确协作诉求的上下文提示词 (严格使用当前频道的候选成员花名册)
     const cascadePrompt = buildCascadePrompt({
       targetAgent,
       invokingAgent,
@@ -1104,6 +1284,13 @@ export default function App() {
 
     setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'thinking' } : a)));
 
+    const sessionKey = `${roomId}:${targetAgent.id}`;
+    const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
+    const standingContext = !isStandingContextDelivered
+      ? buildCrewRosterGuidance(candidateAgents, targetAgent.id)
+      : undefined;
+    deliveredStandingContextRef.current.add(sessionKey);
+
     try {
       const acpResp = await sendPromptToAcpAgent({
         agent: targetAgent,
@@ -1111,6 +1298,7 @@ export default function App() {
         prompt: cascadePrompt,
         projectId: activeProjectId,
         channelId: activeChannel?.id,
+        systemPrompt: standingContext,
       });
 
       setActiveExecutions((prev) => {
@@ -1267,29 +1455,96 @@ export default function App() {
       };
     });
 
-    const mentioned = agents.filter((a) => content.includes(a.handle) || content.includes('@all'));
-    let responder: Agent | null = null;
-    const channelAssigned = (activeChannel?.assignedAgentIds || [])
+    const currentChannelAgentIds = Array.from(
+      new Set([
+        ...(activeChannel?.assignedAgentIds || []),
+        ...(activeChannel?.memberIds || []),
+        ...(activeThread?.activeAgentIds || []),
+      ])
+    );
+    let channelAssigned = currentChannelAgentIds
       .map((id) => agents.find((a) => a.id === id))
       .filter((a): a is Agent => Boolean(a));
-    const candidateAgents = channelAssigned.length > 0 ? channelAssigned : agents;
+    let topicAssigned = (activeTopicData?.participatingAgentIds || [])
+      .map((id) => agents.find((a) => a.id === id))
+      .filter((a): a is Agent => Boolean(a));
 
-    if (mentioned.length > 0) {
-      responder = mentioned[0];
-    } else {
-      if (candidateAgents.length > 0) {
-        responder = candidateAgents[0];
+    const userMentionedAgents = parseAgentMentions(content, agents);
+    if (userMentionedAgents.length > 0 && activeTopicData) {
+      const newlyInvitedToTopic = userMentionedAgents.filter(
+        (a) => !topicAssigned.some((ta) => ta.id === a.id)
+      );
+      if (newlyInvitedToTopic.length > 0) {
+        const newIds = newlyInvitedToTopic.map((a) => a.id);
+        const updatedParticipating = Array.from(
+          new Set([...(activeTopicData.participatingAgentIds || []), ...newIds])
+        );
+        topicAssigned.push(...newlyInvitedToTopic);
+
+        setMessages((prev) => {
+          const roomMsgs = prev[activeThread.id] || [];
+          return {
+            ...prev,
+            [activeThread.id]: roomMsgs.map((m) =>
+              m.topicData && m.topicData.id === topicId
+                ? { ...m, topicData: { ...m.topicData, participatingAgentIds: updatedParticipating } }
+                : m
+            ),
+          };
+        });
       }
     }
 
+    const candidateAgents = topicAssigned.length > 0 ? topicAssigned : channelAssigned;
+    let responder: Agent | null = null;
+
+    if (userMentionedAgents.length > 0) {
+      responder = userMentionedAgents[0];
+    } else if (candidateAgents.length > 0) {
+      responder = candidateAgents[0];
+    }
+
     if (responder) {
+      // 严格检查通信状态：若未手动点击 Start 开启通信，则进行拦截与引导
+      if (responder.status === 'idle') {
+        setTimeout(() => {
+          const offlineNotice: Message = {
+            id: `msg-offline-topic-${Date.now()}`,
+            threadId: topicId,
+            channelId: activeChannel?.id,
+            authorId: 'system',
+            authorName: 'Shadow Crew 通信管控',
+            authorHandle: '@connection-guard',
+            authorAvatar: '🔌',
+            isAgent: true,
+            agentBadge: 'Communication Required',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `🔌 **Agent 通信尚未开启**：**${responder.name}** 当前处于离线/未连接状态。\n\n根据产品规范，在与其协作推演前，需先在左侧「Agents & 编队」控制面板点击该 Agent 头像下方的【Start】按钮开启 ACP 通信连接。`,
+          };
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: [...(prev[topicId] || []), offlineNotice],
+          }));
+        }, 300);
+        return;
+      }
+
       const now = Date.now();
       const currentResponder = responder;
       const execKey = `${topicId}:${currentResponder.id}`;
 
-      // 附加当前频道团队花名册与协同召唤指引
-      const roster = buildCrewRosterGuidance(candidateAgents, currentResponder.id);
-      const promptWithRoster = `${content}${roster}`;
+      // 对标 Buzz: 仅当该 Session 尚未交付过立足上下文时构造公约 (首轮通过 systemPrompt + 前置引导)
+      const sessionKey = `${topicId}:${currentResponder.id}`;
+      const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
+      const standingContext = !isStandingContextDelivered
+        ? buildCrewRosterGuidance(candidateAgents, currentResponder.id)
+        : undefined;
+
+      const finalPrompt = !isStandingContextDelivered && standingContext
+        ? `${content}${standingContext}`
+        : content;
+
+      deliveredStandingContextRef.current.add(sessionKey);
 
       // 初始化协同链状态
       const cascadeId = `cascade-topic-${Date.now()}`;
@@ -1325,15 +1580,16 @@ export default function App() {
         jsonrpc: '2.0',
         id: Date.now(),
         method: 'session/prompt',
-        params: { roomId: topicId, prompt: promptWithRoster, channelId: activeChannel?.id },
+        params: { roomId: topicId, prompt: finalPrompt, channelId: activeChannel?.id },
       });
 
       sendPromptToAcpAgent({
         agent: responder,
         roomId: topicId,
-        prompt: promptWithRoster,
+        prompt: finalPrompt,
         projectId: activeProjectId,
         channelId: activeChannel?.id,
+        systemPrompt: standingContext,
       })
         .then((acpResp) => {
           setActiveExecutions((prev) => {
@@ -1590,29 +1846,71 @@ export default function App() {
       [activeThread.id]: [...(prev[activeThread.id] || []), userMsg],
     }));
 
-    // Detect responding agents with priority fallback:
-    // 1. In a 1-on-1 direct message (DM) thread, the target agent ALWAYS responds
-    // 2. Explicitly @mentioned agents
-    // 3. Agents assigned to the active channel
-    // 4. Fallback to default local agent (Shinobi Core)
-    const mentioned = agents.filter((a) => content.includes(a.handle) || content.includes('@all'));
-    let respondingAgents: Agent[] = [];
-    const channelAssigned = (activeChannel?.assignedAgentIds || [])
+    // Detect responding agents:
+    // 1. Resolve channel assigned agents (merge assignedAgentIds, memberIds, activeAgentIds)
+    const currentChannelAgentIds = Array.from(
+      new Set([
+        ...(activeChannel?.assignedAgentIds || []),
+        ...(activeChannel?.memberIds || []),
+        ...(activeThread.activeAgentIds || []),
+      ])
+    );
+    let channelAssigned = currentChannelAgentIds
       .map((id) => agents.find((a) => a.id === id))
       .filter((a): a is Agent => Boolean(a));
-    const candidateAgents = channelAssigned.length > 0 ? channelAssigned : agents;
+
+    // 2. Parse mentioned agents from ALL workspace agents (case-insensitive & fuzzy)
+    const userMentionedAgents = parseAgentMentions(content, agents);
+
+    // 3. If human user mentions an agent not yet in the channel, automatically invite & add them!
+    if (activeThread.type !== 'dm' && activeChannel && userMentionedAgents.length > 0) {
+      const newlyInvited = userMentionedAgents.filter(
+        (a) => !channelAssigned.some((ca) => ca.id === a.id)
+      );
+
+      if (newlyInvited.length > 0) {
+        const newlyInvitedIds = newlyInvited.map((a) => a.id);
+        const updatedAssignedIds = Array.from(
+          new Set([...(activeChannel.assignedAgentIds || []), ...newlyInvitedIds])
+        );
+        const updatedMemberIds = Array.from(
+          new Set([...(activeChannel.memberIds || []), ...newlyInvitedIds])
+        );
+
+        setChannels((prev) =>
+          prev.map((c) =>
+            c.id === activeChannel.id
+              ? { ...c, assignedAgentIds: updatedAssignedIds, memberIds: updatedMemberIds }
+              : c
+          )
+        );
+        setThreads((prev) =>
+          prev.map((t) =>
+            t.channelId === activeChannel.id
+              ? { ...t, activeAgentIds: updatedAssignedIds }
+              : t
+          )
+        );
+
+        channelAssigned.push(...newlyInvited);
+      }
+    }
+
+    const candidateAgents = activeThread.type === 'dm'
+      ? agents.filter((a) => a.id === activeThread.authorId || activeThread.activeAgentIds?.includes(a.id))
+      : channelAssigned;
+
+    let respondingAgents: Agent[] = [];
 
     if (activeThread.type === 'dm') {
-      const dmTarget = agents.find((a) => a.id === activeThread.authorId || activeThread.activeAgentIds?.includes(a.id));
+      const dmTarget = candidateAgents[0];
       if (dmTarget) {
         respondingAgents = [dmTarget];
       }
-    } else if (mentioned.length > 0) {
-      respondingAgents = mentioned;
-    } else {
-      if (candidateAgents.length > 0) {
-        respondingAgents = [candidateAgents[0]];
-      }
+    } else if (userMentionedAgents.length > 0) {
+      respondingAgents = userMentionedAgents;
+    } else if (candidateAgents.length > 0) {
+      respondingAgents = [candidateAgents[0]];
     }
 
     if (respondingAgents.length === 0) {
@@ -1627,7 +1925,9 @@ export default function App() {
           isAgent: true,
           agentBadge: 'System',
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: '当前工作台尚未连接任何本地 ACP Agent。\n\n请前往 **Agents & 编队** 页面，点击 `+` 接入本机可用的 Agent（如 Claude Code、OpenClaw、Shinobi Core 等）。接入后即可在此直接与你的 AI 影分身对话！',
+          content: activeThread.type === 'dm'
+            ? '当前工作台尚未连接该 Agent。'
+            : '当前频道尚未指派任何 Agent。\n\n请在下方输入框中输入 `@` 选择并点名 Agent（如 Claude Code、OpenClaw 等）加入此频道，或点击右上角「成员管理」进行邀请！',
         };
         setMessages((prev) => ({
           ...prev,
@@ -1637,13 +1937,47 @@ export default function App() {
       return;
     }
 
-    setIsGenerating(true);
-    const now = Date.now();
     const primaryResponder = respondingAgents[0];
 
-    // 附加团队花名册与协同召唤指引
-    const roster = buildCrewRosterGuidance(candidateAgents, primaryResponder.id);
-    const promptWithRoster = `${content}${roster}`;
+    // 严格检查通信状态：若未手动点击 Start 开启通信，则进行拦截并引导
+    if (primaryResponder.status === 'idle') {
+      setTimeout(() => {
+        const offlineNotice: Message = {
+          id: `msg-offline-${Date.now()}`,
+          threadId: activeThread.id,
+          channelId: activeChannel?.id,
+          authorId: 'system',
+          authorName: 'Shadow Crew 通信管控',
+          authorHandle: '@connection-guard',
+          authorAvatar: '🔌',
+          isAgent: true,
+          agentBadge: 'Communication Required',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `🔌 **Agent 通信尚未开启**：**${primaryResponder.name}** 当前处于离线/未连接状态。\n\n根据产品规范，需先在左侧「Agents & 编队」面板点击该 Agent 头像下方的【Start】按钮开启通信连接后方可协作推演。\n\n*(开启通信后，重新发送消息或在此 @ 召唤即可正常推演)*`,
+        };
+        setMessages((prev) => ({
+          ...prev,
+          [activeThread.id]: [...(prev[activeThread.id] || []), offlineNotice],
+        }));
+      }, 300);
+      return;
+    }
+
+    setIsGenerating(true);
+    const now = Date.now();
+    const sessionKey = `${activeThread.id}:${primaryResponder.id}`;
+    const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
+
+    // 对标 Buzz: 仅当该 Session 尚未交付过立足上下文时构造公约 (首轮通过 systemPrompt + 前置引导)
+    const standingContext = !isStandingContextDelivered
+      ? buildCrewRosterGuidance(candidateAgents, primaryResponder.id)
+      : undefined;
+
+    const finalPrompt = !isStandingContextDelivered && standingContext
+      ? `${content}${standingContext}`
+      : content;
+
+    deliveredStandingContextRef.current.add(sessionKey);
 
     // 初始化协同链状态
     const cascadeId = `cascade-thread-${Date.now()}`;
@@ -1667,7 +2001,7 @@ export default function App() {
         jsonrpc: '2.0',
         id: Date.now() + idx,
         method: 'session/prompt',
-        params: { threadId: activeThread.id, prompt: promptWithRoster },
+        params: { threadId: activeThread.id, prompt: finalPrompt },
       });
 
       newExecs[`${activeThread.id}:${ag.id}`] = {
@@ -1691,9 +2025,10 @@ export default function App() {
     sendPromptToAcpAgent({
       agent: primaryResponder,
       roomId: activeThread.id,
-      prompt: promptWithRoster,
+      prompt: finalPrompt,
       projectId: activeProjectId,
       channelId: activeChannel?.id,
+      systemPrompt: standingContext,
     })
       .then((acpResp) => {
         setActiveExecutions((prev) => {
@@ -2068,13 +2403,21 @@ export default function App() {
                   onAbort={() => activeThread && handleAbortAll(activeThread.id)}
                   activeAgents={activeThread.type === 'dm' 
                     ? agents.filter((a) => a.id === activeThread.authorId || activeThread.activeAgentIds?.includes(a.id))
-                    : agents.filter((a) => activeThread.activeAgentIds?.includes(a.id))}
+                    : agents.filter((a) => {
+                        const channelIds = new Set([
+                          ...(activeChannel?.assignedAgentIds || []),
+                          ...(activeChannel?.memberIds || []),
+                          ...(activeThread.activeAgentIds || [])
+                        ]);
+                        return channelIds.has(a.id);
+                      })}
                   allAgents={agents}
                   isGenerating={isGenerating}
                   channelName={activeThread.type === 'dm' ? (activeThread.authorName || 'Agent') : (activeChannel?.name || 'chat')}
                   onOpenNewTopicModal={activeThread.type === 'dm' ? undefined : () => setIsNewTopicModalOpen(true)}
                   quotingMessage={quotingMessage}
                   onCancelQuote={() => setQuotingMessage(null)}
+                  isDm={activeThread.type === 'dm'}
                 />
               </>
             ) : (

@@ -14,7 +14,9 @@ import {
   Plus,
   CornerDownRight,
   X,
-  Square
+  Square,
+  ChevronDown,
+  Users
 } from 'lucide-react';
 import { MentionSuggestions, MentionItem } from './MentionSuggestions';
 
@@ -28,6 +30,7 @@ interface MessageInputProps {
   onOpenNewTopicModal?: () => void;
   quotingMessage?: Message | null;
   onCancelQuote?: () => void;
+  isDm?: boolean;
 }
 
 export const MessageInput: React.FC<MessageInputProps> = ({
@@ -40,13 +43,30 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   onOpenNewTopicModal,
   quotingMessage,
   onCancelQuote,
+  isDm = false,
 }) => {
   const [content, setContent] = useState('');
   const [selectedModel, setSelectedModel] = useState<'claude' | 'deepseek' | 'openai' | 'shinobi'>('claude');
   const [isMentionOpen, setIsMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
+  const [isOverflowOpen, setIsOverflowOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const overflowRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
+        setIsOverflowOpen(false);
+      }
+    };
+    if (isOverflowOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isOverflowOpen]);
 
   useEffect(() => {
     if (quotingMessage && textareaRef.current) {
@@ -54,7 +74,13 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     }
   }, [quotingMessage]);
 
-  const candidateAgents = allAgents.length > 0 ? allAgents : activeAgents;
+  const displayedAgents = activeAgents.slice(0, 3);
+  const overflowAgents = activeAgents.slice(3);
+
+  const activeAgentIds = new Set((activeAgents || []).map((a) => a.id));
+  const otherAgents = (allAgents || []).filter((a) => !activeAgentIds.has(a.id));
+  const candidateAgents = [...(activeAgents || []), ...otherAgents];
+
   const filteredCandidates = candidateAgents.filter(
     (ag) =>
       mentionQuery === '' ||
@@ -197,37 +223,103 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       className="p-3.5 bg-surface border-t border-border select-none text-xs transition-colors duration-150"
     >
       <div className="max-w-3xl mx-auto space-y-2">
-        {/* 1. Top Quick-Mention Agent Pills + New Topic Trigger */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 text-[11px]">
-          {onOpenNewTopicModal && (
-            <button
-              onClick={onOpenNewTopicModal}
-              className="px-2.5 py-1 rounded-full bg-purple-500/15 hover:bg-purple-500/25 text-purple-600 dark:text-purple-300 border border-purple-500/40 text-[11px] font-semibold transition-all flex items-center gap-1 cursor-pointer shrink-0 shadow-2xs"
-              title="新建议题 (开启独立单层推演)"
-            >
-              <GitBranch className="w-3.5 h-3.5 text-purple-500" />
-              <span>+ 新建议题</span>
-            </button>
-          )}
+        {/* 1. Top Quick-Mention Agent Pills + New Topic Trigger (Scenario-Adaptive & Collapsible) */}
+        {((!isDm && (activeAgents.length > 0 || onOpenNewTopicModal)) || (isDm && onOpenNewTopicModal)) && (
+          <div className="flex items-center gap-1.5 pb-0.5 text-[11px] relative">
+            {onOpenNewTopicModal && (
+              <button
+                onClick={onOpenNewTopicModal}
+                className="px-2.5 py-1 rounded-full bg-purple-500/15 hover:bg-purple-500/25 text-purple-600 dark:text-purple-300 border border-purple-500/40 text-[11px] font-semibold transition-all flex items-center gap-1 cursor-pointer shrink-0 shadow-2xs"
+                title="新建议题 (开启独立单层推演)"
+              >
+                <GitBranch className="w-3.5 h-3.5 text-purple-500" />
+                <span>+ 新建议题</span>
+              </button>
+            )}
 
-          {activeAgents.map((agent) => (
-            <button
-              key={agent.id}
-              onClick={() => addMention(agent.handle)}
-              className="px-2.5 py-1 rounded-full bg-surface-subtle hover:bg-surface-hover text-fg-secondary hover:text-fg border border-border hover:border-accent/40 transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
-              title={`点击召唤 ${agent.name}`}
-            >
-              <span className="text-xs">{agent.avatar}</span>
-              <span className="font-semibold text-xs text-fg">{agent.name}</span>
-            </button>
-          ))}
-          <button
-            onClick={() => addMention('@all')}
-            className="px-2.5 py-1 rounded-full bg-surface-subtle hover:bg-surface-hover text-fg-muted hover:text-fg border border-border font-mono text-[10px] cursor-pointer shrink-0"
-          >
-            @all 全员
-          </button>
-        </div>
+            {/* In Channel mode, render active agents pills (up to 3) */}
+            {!isDm && (
+              <>
+                {displayedAgents.map((agent) => (
+                  <button
+                    key={agent.id}
+                    onClick={() => addMention(agent.handle)}
+                    className="px-2.5 py-1 rounded-full bg-surface-subtle hover:bg-surface-hover text-fg-secondary hover:text-fg border border-border hover:border-accent/40 transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+                    title={`点击召唤 ${agent.name} (${agent.role})`}
+                  >
+                    <span className="text-xs leading-none">{agent.avatar}</span>
+                    <span className="font-semibold text-xs text-fg max-w-[110px] truncate">{agent.name}</span>
+                  </button>
+                ))}
+
+                {/* Overflow +N Popover Trigger */}
+                {overflowAgents.length > 0 && (
+                  <div className="relative shrink-0" ref={overflowRef}>
+                    <button
+                      type="button"
+                      onClick={() => setIsOverflowOpen((prev) => !prev)}
+                      className={`px-2 py-1 rounded-full text-[11px] font-medium transition-all flex items-center gap-1 cursor-pointer border ${
+                        isOverflowOpen
+                          ? 'bg-accent/20 text-accent border-accent/40 shadow-xs'
+                          : 'bg-surface-subtle hover:bg-surface-hover text-fg-secondary hover:text-fg border-border hover:border-accent/30'
+                      }`}
+                      title={`查看其余 ${overflowAgents.length} 位受邀 Agent`}
+                    >
+                      <Users className="w-3 h-3 text-fg-muted" />
+                      <span>+{overflowAgents.length}</span>
+                      <ChevronDown className={`w-3 h-3 transition-transform ${isOverflowOpen ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {/* Popover Card (Popping Upwards to avoid covering textarea) */}
+                    {isOverflowOpen && (
+                      <div className="absolute bottom-full left-0 mb-1.5 w-64 bg-surface border border-border rounded-xl shadow-2xl p-1.5 z-50 animate-in fade-in slide-in-from-bottom-2">
+                        <div className="px-2 py-1 text-[10px] text-fg-muted font-medium border-b border-border mb-1 flex items-center justify-between">
+                          <span>频道内其余 Agent ({overflowAgents.length})</span>
+                          <span className="text-[9px] text-fg-muted font-mono">点击召唤</span>
+                        </div>
+                        <div className="max-h-48 overflow-y-auto space-y-0.5">
+                          {overflowAgents.map((agent) => (
+                            <button
+                              key={agent.id}
+                              type="button"
+                              onClick={() => {
+                                addMention(agent.handle);
+                                setIsOverflowOpen(false);
+                              }}
+                              className="w-full flex items-center justify-between px-2 py-1.5 rounded-lg hover:bg-surface-hover text-left transition-colors cursor-pointer group"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-sm shrink-0">{agent.avatar}</span>
+                                <div className="truncate">
+                                  <div className="text-xs font-medium text-fg truncate">{agent.name}</div>
+                                  <div className="text-[10px] text-fg-muted truncate">{agent.role}</div>
+                                </div>
+                              </div>
+                              <span className="text-[10px] text-fg-muted font-mono ml-2 shrink-0 group-hover:text-accent">
+                                {agent.handle}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* @all Button: Only in Channel with >= 2 active agents */}
+                {activeAgents.length >= 2 && (
+                  <button
+                    onClick={() => addMention('@all')}
+                    className="px-2.5 py-1 rounded-full bg-surface-subtle hover:bg-surface-hover text-fg-muted hover:text-fg border border-border font-mono text-[10px] cursor-pointer shrink-0"
+                    title="同时召唤频道内全部 Agent 协同"
+                  >
+                    @all 全员
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         {/* 2. Main Textarea Box with Floating Mention Suggestions */}
         <div className="relative bg-surface-subtle border border-border rounded-2xl p-3 focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/20 transition-all">
@@ -235,6 +327,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             isOpen={isMentionOpen}
             query={mentionQuery}
             agents={candidateAgents}
+            activeMemberIds={(activeAgents || []).map((a) => a.id)}
             selectedIndex={mentionIndex}
             onSelect={handleSelectMention}
             onClose={() => setIsMentionOpen(false)}

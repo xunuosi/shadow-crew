@@ -34,7 +34,8 @@ export const ChannelMembersModal: React.FC<ChannelMembersModalProps> = ({
 
   if (!isOpen) return null;
 
-  const isCreator = !channel.creatorId || channel.creatorId === currentUserId || channel.creatorId === 'user-developer' || channel.creatorId === 'user-norris';
+  const isAgent = (id: string) => agents.some((a) => a.id === id);
+  const isCreator = true; // 本机桌面用户拥有本频道的全权成员管理权限
   const currentMemberIds = channel.memberIds || [channel.creatorId || currentUserId];
 
   // Candidates for invitation: agents not yet in channel
@@ -47,7 +48,8 @@ export const ChannelMembersModal: React.FC<ChannelMembersModalProps> = ({
   };
 
   const handleRemoveMember = (memberId: string) => {
-    if (memberId === channel.creatorId) return; // Cannot remove creator
+    // 保护人类创建者，Agent 成员则均可被随时移出
+    if (memberId === channel.creatorId && !isAgent(memberId)) return;
     const updated = currentMemberIds.filter((id) => id !== memberId);
     onUpdateMembers(channel.id, updated);
   };
@@ -92,7 +94,8 @@ export const ChannelMembersModal: React.FC<ChannelMembersModalProps> = ({
 
             <div className="space-y-1.5">
               {currentMemberIds.map((memberId) => {
-                const isOwner = memberId === channel.creatorId;
+                const isAgentMember = isAgent(memberId);
+                const isOwner = memberId === channel.creatorId && !isAgentMember;
                 const agent = agents.find((a) => a.id === memberId);
                 const isSelf = memberId === currentUserId;
 
@@ -126,7 +129,7 @@ export const ChannelMembersModal: React.FC<ChannelMembersModalProps> = ({
                     </div>
 
                     {/* Remove Action */}
-                    {isCreator && !isOwner && (
+                    {!isOwner && (
                       <button
                         onClick={() => handleRemoveMember(memberId)}
                         className="p-1 rounded-md text-fg-muted hover:text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer"

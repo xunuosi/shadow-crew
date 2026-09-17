@@ -340,6 +340,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
               const isSelected = activeThreadId === `thread-dm-${agent.id}`;
               const isAgentActive = activeExecutions.some((e) => e.agentId === agent.id);
+              const isOnline = agent.status === 'running' || agent.status === 'thinking' || agent.status === 'using_skill' || agent.status === 'accessing_workspace' || agent.status === 'querying_memory';
+              const isStarting = agent.status === 'starting';
+              const isError = agent.status === 'error';
+              const isAuth = agent.status === 'auth_required';
 
               return (
                 <button
@@ -357,7 +361,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <div className="flex items-center gap-2 truncate min-w-0 flex-1 mr-1.5">
                     <div className="relative shrink-0 flex items-center justify-center text-sm">
                       {agent.avatar}
-                      <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 border border-surface" />
+                      <span
+                        className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-surface transition-colors ${
+                          isOnline
+                            ? 'bg-emerald-500'
+                            : isStarting
+                            ? 'bg-sky-500 animate-ping'
+                            : isAuth
+                            ? 'bg-amber-500'
+                            : isError
+                            ? 'bg-red-500'
+                            : 'bg-zinc-400 dark:bg-zinc-600'
+                        }`}
+                        title={
+                          isOnline
+                            ? '在线 (通信已建立)'
+                            : isStarting
+                            ? '正在连接...'
+                            : isAuth
+                            ? '需要配置密钥'
+                            : isError
+                            ? '通信异常'
+                            : '未开启通信 (离线 · 点击 Start 开启)'
+                        }
+                      />
                       {isAgentActive && (
                         <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 animate-ping opacity-80" />
                       )}
@@ -367,7 +394,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         <span className="truncate">{agent.name}</span>
                         {agent.isManagedByYou && (
                           <span className="text-[9px] text-accent font-normal shrink-0">
-                            (替身)
+                            (影替身)
                           </span>
                         )}
                       </div>

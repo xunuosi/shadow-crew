@@ -130,7 +130,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
   const isResolved = topic.status === 'resolved';
 
-  const candidateAgents = agents;
+  const participatingIds = new Set(topic.participatingAgentIds || []);
+  const topicParticipatingAgents = agents.filter((a) => participatingIds.has(a.id));
+  const otherAgents = agents.filter((a) => !participatingIds.has(a.id));
+  const candidateAgents = [...topicParticipatingAgents, ...otherAgents];
   const filteredCandidates = candidateAgents.filter(
     (ag) =>
       mentionQuery === '' ||
@@ -523,6 +526,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             isOpen={isMentionOpen}
             query={mentionQuery}
             agents={candidateAgents}
+            activeMemberIds={topic.participatingAgentIds}
             selectedIndex={mentionIndex}
             onSelect={handleSelectMention}
             onClose={() => setIsMentionOpen(false)}

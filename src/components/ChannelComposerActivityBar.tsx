@@ -101,7 +101,12 @@ export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProp
                 {primary.agentName}:
               </span>
               <span className="animate-shimmer text-xs truncate max-w-[200px] sm:max-w-[340px]">
-                {primary.currentActionDetail || '正在分析推演中...'}
+                {primary.currentActionDetail ||
+                  ((now - primary.startedAt) / 1000 > 60
+                    ? '大模型正在深度推理，请稍候...'
+                    : (now - primary.startedAt) / 1000 > 25
+                    ? '正在深入分析上下文与工程边界...'
+                    : '正在分析推演中...')}
               </span>
               <span className="text-[10px] font-mono text-fg-muted shrink-0">
                 ({((now - primary.startedAt) / 1000).toFixed(1)}s)
@@ -157,7 +162,12 @@ export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProp
                         <span className="text-[10px] text-fg-muted font-mono">({elapsed}s)</span>
                       </div>
                       <p className="text-[11px] text-fg-muted truncate">
-                        {ex.currentActionDetail || '正在协同思考中...'}
+                        {ex.currentActionDetail ||
+                          (Number(elapsed) > 60
+                            ? '大模型正在深度推理，请稍候...'
+                            : Number(elapsed) > 25
+                            ? '正在深入分析上下文...'
+                            : '正在协同思考中...')}
                       </p>
                     </div>
                   </div>

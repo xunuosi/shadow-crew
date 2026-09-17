@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -117,6 +117,7 @@ pub struct RunningAgent {
     pub session_ids: Arc<TokioMutex<HashMap<String, String>>>,
     pub cwd: String,
     pub app_handle: AppHandle,
+    pub last_activity: Arc<AtomicU64>,
 }
 
 pub struct AcpProcessManager {
@@ -319,6 +320,11 @@ impl AcpProcessManager {
         let auth_state = Arc::new(TokioMutex::new("ok".to_string()));
         let status_detail = Arc::new(TokioMutex::new(None::<String>));
         let session_ids = Arc::new(TokioMutex::new(HashMap::new()));
+        let now_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let last_activity = Arc::new(AtomicU64::new(now_millis));
 
         // 异步任务 1: 处理写往 Agent 的指令
         let agent_id_in = agent_id.to_string();
@@ -344,10 +350,16 @@ impl AcpProcessManager {
         let session_active_req_clone = session_active_req.clone();
         let is_alive_clone = is_alive.clone();
         let stdin_tx_reader = stdin_tx.clone();
+        let last_activity_clone = last_activity.clone();
 
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
+                let current_ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                last_activity_clone.store(current_ts, Ordering::Relaxed);
                 log_acp_event(&agent_id_clone, "STDOUT <<<", &line);
 
                 // 1. 触发逐行流式事件: acp:stream:{agent_id}
@@ -556,6 +568,7 @@ impl AcpProcessManager {
                 session_ids,
                 cwd: cwd.to_string(),
                 app_handle: app_handle.clone(),
+                last_activity: last_activity.clone(),
             },
         );
 
@@ -644,6 +657,7 @@ impl AcpProcessManager {
         agent_id: &str,
         room_id: &str,
         prompt: &str,
+        system_prompt: Option<&str>,
     ) -> Result<serde_json::Value> {
         let agent = self
             .agents
@@ -704,14 +718,24 @@ impl AcpProcessManager {
                 let mut map = agent.pending_requests.lock().await;
                 map.insert(new_sess_id, sess_tx);
             }
+            let mut params = serde_json::json!({
+                "cwd": &agent.cwd,
+                "mcpServers": []
+            });
+            // 对标 Buzz: 在 session/new 时将系统公约与人设注入底层（支持标准协议与 Claude Code 的 _meta）
+            if let Some(sp) = system_prompt {
+                params["systemPrompt"] = serde_json::Value::String(sp.to_string());
+                params["_meta"] = serde_json::json!({
+                    "systemPrompt": {
+                        "append": sp
+                    }
+                });
+            }
             let new_req = serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": new_sess_id,
                 "method": "session/new",
-                "params": {
-                    "cwd": &agent.cwd,
-                    "mcpServers": []
-                }
+                "params": params
             });
             let _ = agent.stdin_tx.send(new_req.to_string()).await;
             let sid = match tokio::time::timeout(Duration::from_secs(5), sess_rx).await {
@@ -767,9 +791,95 @@ impl AcpProcessManager {
             anyhow::bail!("Failed to write to agent stdin channel: {}", e);
         }
 
-        // 4. 等待 Agent 响应 (最长等待 180 秒适配多轮工具调用与大模型深度思考)
-        let response = match tokio::time::timeout(Duration::from_secs(180), resp_rx).await {
-            Ok(Ok(resp)) => {
+        // 4. 等待 Agent 响应 (对标 Buzz 架构: 动态空闲超时 300s~1500s + 最大硬上限 1800s)
+        // 允许通过环境变量 SHADOW_CREW_ACP_IDLE_TIMEOUT 与 SHADOW_CREW_ACP_MAX_DURATION 动态配置
+        let idle_timeout_secs = std::env::var("SHADOW_CREW_ACP_IDLE_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(300);
+        let max_duration_secs = std::env::var("SHADOW_CREW_ACP_MAX_DURATION")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(1800);
+
+        let start_time = std::time::Instant::now();
+        let idle_timeout = Duration::from_secs(idle_timeout_secs);
+        let max_duration = Duration::from_secs(max_duration_secs);
+
+        let mut resp_rx = resp_rx;
+        let mut last_heartbeat_sec: u64 = 0;
+        let wait_result: Result<serde_json::Value, String> = loop {
+            let now = std::time::Instant::now();
+            let total_elapsed = now.duration_since(start_time);
+            if total_elapsed >= max_duration {
+                tracing::warn!("[Agent {}] Prompt reached hard maximum duration limit of {}s", agent_id, max_duration_secs);
+                break Err(format!("Agent response exceeded maximum turn duration ({}s)", max_duration_secs));
+            }
+
+            let last_act_ms = agent.last_activity.load(Ordering::Relaxed);
+            let current_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let idle_elapsed_ms = current_ms.saturating_sub(last_act_ms);
+            if idle_elapsed_ms >= idle_timeout.as_millis() as u64 {
+                tracing::warn!("[Agent {}] Prompt reached idle timeout (no output for {}s)", agent_id, idle_timeout_secs);
+                break Err(format!("Agent response idle timeout (no stdout output for {}s)", idle_timeout_secs));
+            }
+
+            // 心跳进度通知 (每 4 秒向前端发送一次，避免无 stdout 时前端显示僵死)
+            let total_sec = total_elapsed.as_secs();
+            if total_sec > last_heartbeat_sec + 3 {
+                last_heartbeat_sec = total_sec;
+                let _ = agent.app_handle.emit("acp:thinking_heartbeat", serde_json::json!({
+                    "agent_id": agent_id,
+                    "sessionId": current_session_id,
+                    "elapsed_seconds": total_sec,
+                    "idle_elapsed_seconds": idle_elapsed_ms / 1000,
+                }));
+            }
+
+            // 检查子进程是否已非正常退出
+            if !agent.is_alive.load(Ordering::SeqCst) {
+                match resp_rx.try_recv() {
+                    Ok(val) => break Ok(val),
+                    Err(oneshot::error::TryRecvError::Empty) => {
+                        break Ok(serde_json::json!({
+                            "status": "closed",
+                            "error": "Agent process exited while waiting for response"
+                        }));
+                    }
+                    Err(oneshot::error::TryRecvError::Closed) => {
+                        break Ok(serde_json::json!({
+                            "status": "closed",
+                            "error": "Agent stdio pipe closed"
+                        }));
+                    }
+                }
+            }
+
+            let remaining_idle_ms = (idle_timeout.as_millis() as u64).saturating_sub(idle_elapsed_ms);
+            let remaining_total_ms = (max_duration.as_millis() as u64).saturating_sub(total_elapsed.as_millis() as u64);
+            let step_wait_ms = remaining_idle_ms.min(remaining_total_ms).min(1000).max(50);
+
+            tokio::select! {
+                res = &mut resp_rx => {
+                    match res {
+                        Ok(val) => break Ok(val),
+                        Err(_) => break Ok(serde_json::json!({
+                            "status": "closed",
+                            "error": "Agent closed stdio response pipe"
+                        })),
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(step_wait_ms)) => {
+                    // 心跳轮询，继续检查空闲倒计时与总时长
+                }
+            }
+        };
+
+        let response = match wait_result {
+            Ok(resp) => {
                 // 若出现特定 session 错误，清除缓存触发重新 session/new
                 if let Some(err) = resp.get("error") {
                     let mut map = agent.session_ids.lock().await;
@@ -790,18 +900,14 @@ impl AcpProcessManager {
                 }
                 Ok(resp)
             }
-            Ok(Err(_)) => Ok(serde_json::json!({
-                "status": "closed",
-                "error": "Agent closed stdio response pipe"
-            })),
-            Err(_) => {
+            Err(timeout_err_msg) => {
                 let mut map = agent.pending_requests.lock().await;
                 map.remove(&req_id);
                 let mut active_reqs = agent.session_active_req.lock().await;
                 active_reqs.remove(&current_session_id);
                 Ok(serde_json::json!({
                     "status": "timeout",
-                    "error": "Agent response timed out after 180s"
+                    "error": timeout_err_msg
                 }))
             }
         };

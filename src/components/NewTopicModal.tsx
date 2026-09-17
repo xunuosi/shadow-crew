@@ -136,7 +136,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
                           <span>{agent.name}</span>
                           {agent.isManagedByYou && (
                             <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface text-fg-muted border border-border font-mono shrink-0">
-                              我的替身
+                              影替身
                             </span>
                           )}
                         </div>

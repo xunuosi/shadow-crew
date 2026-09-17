@@ -139,6 +139,9 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const activeAgents = agents.filter((a) => activeThread?.activeAgentIds?.includes(a.id));
+  const dmTargetAgent = activeThread?.type === 'dm'
+    ? agents.find((a) => a.id === activeThread.authorId || activeThread.activeAgentIds?.includes(a.id))
+    : undefined;
 
   const currentThreadExecutions = activeExecutions.filter(
     (e) => e.threadId === activeThread?.id || (activeThread?.type === 'thread' && (!e.threadId || e.threadId === activeThread?.id))
@@ -185,11 +188,28 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             {activeThread.type === 'dm' ? (
               <span className="flex items-center gap-2 truncate">
                 <span>DM with <span className="text-accent font-semibold">{activeThread.authorName}</span></span>
+                {dmTargetAgent && dmTargetAgent.status === 'idle' && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 border border-zinc-500/25 text-[10px] font-mono shrink-0" title="通信未开启，请先在 Agents 面板点击 Start 开启连接">
+                    <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500" />
+                    <span>未开启通信 (Offline)</span>
+                  </span>
+                )}
+                {dmTargetAgent && (dmTargetAgent.status === 'running' || dmTargetAgent.status === 'thinking') && currentThreadExecutions.length === 0 && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 text-[10px] font-mono shrink-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    <span>通信就绪 (Online)</span>
+                  </span>
+                )}
                 {currentThreadExecutions.length > 0 && (
                   <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-[10px] font-mono shrink-0 animate-in fade-in">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                     <span className="truncate max-w-[150px] sm:max-w-[220px]">
-                      {currentThreadExecutions[0].currentActionDetail || '深度思考中'}
+                      {currentThreadExecutions[0].currentActionDetail ||
+                        ((now - currentThreadExecutions[0].startedAt) / 1000 > 60
+                          ? '大模型深度推理中'
+                          : (now - currentThreadExecutions[0].startedAt) / 1000 > 25
+                          ? '正在深入分析上下文'
+                          : '深度思考中')}
                     </span>
                     <span>({((now - currentThreadExecutions[0].startedAt) / 1000).toFixed(1)}s)</span>
                   </span>
@@ -778,7 +798,12 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             {isDmThinkingOpen && (
               <div className="pl-5 pt-1.5 pb-2 text-fg-muted font-mono text-[10px] leading-relaxed border-l-2 border-accent/40 ml-1.5 space-y-1 animate-in fade-in">
                 <p className="text-fg-secondary font-medium">
-                  {currentThreadExecutions[0].currentActionDetail || '正在深入分析上下文与工程边界...'}
+                  {currentThreadExecutions[0].currentActionDetail ||
+                    ((now - currentThreadExecutions[0].startedAt) / 1000 > 60
+                      ? '大模型正在深度推理生成，请耐心稍候...'
+                      : (now - currentThreadExecutions[0].startedAt) / 1000 > 25
+                      ? '正在深入分析上下文与技术边界...'
+                      : '正在深入分析上下文与工程边界...')}
                 </p>
               </div>
             )}

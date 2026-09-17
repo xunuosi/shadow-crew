@@ -6,6 +6,7 @@ export interface AcpSendPromptOptions {
   prompt: string;
   projectId?: string;
   channelId?: string;
+  systemPrompt?: string;
 }
 
 export interface AcpAgentResponse {
@@ -232,23 +233,61 @@ export async function sendPromptToRemoteAcpWebSocket(
   return new Promise((resolve) => {
     let resolved = false;
     let ws: WebSocket | null = null;
-    const timeoutMs = 45000;
+    // 对标 Buzz 架构: 动态空闲心跳超时 (每次收到流式数据/心跳自动续期 300s，上限 1800s)
+    const IDLE_TIMEOUT_MS = 300_000;
+    const MAX_DURATION_MS = 1800_000;
+    let idleTimer: NodeJS.Timeout | null = null;
+    let maxTimer: NodeJS.Timeout | null = null;
 
-    const timer = setTimeout(() => {
+    const cleanupTimers = () => {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+      if (maxTimer) {
+        clearTimeout(maxTimer);
+        maxTimer = null;
+      }
+    };
+
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          cleanupTimers();
+          if (ws) {
+            try {
+              ws.close();
+            } catch {}
+          }
+          resolve({
+            textResponse: `⚠️【远程 ACP】响应空闲超时 (超过 ${IDLE_TIMEOUT_MS / 1000}s 未收到任何模型输出或心跳)。若使用深度思考或大参数量慢模型，可在端点处增加心跳支持。`,
+            durationMs: Date.now() - startTime,
+            isRealProcess: true,
+          });
+        }
+      }, IDLE_TIMEOUT_MS);
+    };
+
+    maxTimer = setTimeout(() => {
       if (!resolved) {
         resolved = true;
+        cleanupTimers();
         if (ws) {
           try {
             ws.close();
           } catch {}
         }
         resolve({
-          textResponse: `⚠️【远程 ACP】等待响应超时 (${timeoutMs / 1000}s)，远程 Agent 可能处于繁忙状态。`,
+          textResponse: `⚠️【远程 ACP】执行超过最大硬上限 (${MAX_DURATION_MS / 1000}s)，会话已安全收敛。`,
           durationMs: Date.now() - startTime,
           isRealProcess: true,
         });
       }
-    }, timeoutMs);
+    }, MAX_DURATION_MS);
+
+    resetIdleTimer();
 
     try {
       const urlObj = new URL(remoteUrl);
@@ -258,6 +297,7 @@ export async function sendPromptToRemoteAcpWebSocket(
       ws = new WebSocket(urlObj.toString());
 
       ws.onopen = () => {
+        resetIdleTimer();
         // 发送 session/prompt 报文
         const rpcPayload = {
           jsonrpc: '2.0',
@@ -276,6 +316,7 @@ export async function sendPromptToRemoteAcpWebSocket(
       const memoryActions: Array<{ action: string; key: string; detail: string }> = [];
 
       ws.onmessage = (event) => {
+        resetIdleTimer();
         try {
           const msg = JSON.parse(event.data);
 
@@ -288,7 +329,7 @@ export async function sendPromptToRemoteAcpWebSocket(
           if (msg.result || msg.error) {
             if (!resolved) {
               resolved = true;
-              clearTimeout(timer);
+              cleanupTimers();
               const durationMs = Date.now() - startTime;
               ws?.close();
 
@@ -325,7 +366,7 @@ export async function sendPromptToRemoteAcpWebSocket(
       ws.onerror = (err) => {
         if (!resolved) {
           resolved = true;
-          clearTimeout(timer);
+          cleanupTimers();
           resolve({
             textResponse: `⚠️【远程 ACP】WebSocket 网络断开或鉴权拒绝，请确认端点是否存活。`,
             durationMs: Date.now() - startTime,
@@ -336,7 +377,7 @@ export async function sendPromptToRemoteAcpWebSocket(
     } catch (err: any) {
       if (!resolved) {
         resolved = true;
-        clearTimeout(timer);
+        cleanupTimers();
         resolve({
           textResponse: `⚠️【远程 ACP】无效端点地址: ${err?.message || err}`,
           durationMs: Date.now() - startTime,
@@ -363,6 +404,16 @@ export async function sendPromptToAcpAgent(
 
   // 1. JIT 动态外挂记忆召回 (有限上下文防塞爆)
   const { enhancedPrompt, citation } = recallRelevantCartridgeMemories(agent, prompt);
+
+  // 1.1 严格通信准入：若 Agent 尚未由用户手动点击 Start 开启通信 (处于 idle 离线)，拒绝自动发起通信
+  if (agent.status === 'idle') {
+    return {
+      textResponse: `🔌 **Agent 通信尚未开启**：【${agent.name}】当前处于离线未连接状态。\n\n根据产品功能规范，请先在 **Agents & 编队** 控制面板点击该 Agent 头像下方的【Start】按钮开启 ACP 通信连接后，再进行指令协作。`,
+      cartridgeCitation: citation,
+      durationMs: Date.now() - startTime,
+      isRealProcess: false,
+    };
+  }
 
   // 2. 判定是否为远程 Agent (WebSocket / Relay Hub)
   const isRemote =
@@ -406,6 +457,7 @@ export async function sendPromptToAcpAgent(
         command: agent.acpCommandOrUrl || './target/debug/shinobi-agent',
         cwd: agent.workspace?.rootPath || '.',
         envVars: agent.envVars || [],
+        systemPrompt: options.systemPrompt,
       });
 
       const durationMs = Date.now() - startTime;
@@ -445,7 +497,7 @@ export async function sendPromptToAcpAgent(
         const rawErrMsg =
           response.error?.message ||
           (typeof response.error === 'string' ? response.error : JSON.stringify(response.error)) ||
-          (response.status === 'timeout' ? 'Agent 响应超时 (90s)' : 'Agent 进程异常关闭');
+          (response.status === 'timeout' ? 'Agent 响应空闲超时 (等待超时)' : 'Agent 进程异常关闭');
 
         let formattedHelp = '';
         if (rawErrMsg.toLowerCase().includes('authentication required')) {
@@ -457,6 +509,14 @@ export async function sendPromptToAcpAgent(
             `  2. 在「环境变量 (ENV)」中填入您的 \`ANTHROPIC_API_KEY\`（格式如 \`sk-ant-api03-...\`）；\n` +
             `  3. *(可选)* 若使用第三方反代/中转网关，可额外添加 \`ANTHROPIC_BASE_URL\`；\n` +
             `  4. 保存后重新发送消息或点击「Start」重新拉起即可。`;
+        } else if (rawErrMsg.toLowerCase().includes('idle timeout') || rawErrMsg.toLowerCase().includes('timeout')) {
+          formattedHelp =
+            `\n\n💡 **慢模型 / 深度推理排障建议**：\n` +
+            `• **原因**：复杂推理模型（如 DeepSeek-R1、o1/o3-mini、Claude 3.7 Thinking）首字思考耗时较长，或模型服务提供商处于排队状态。\n` +
+            `• **解决方案**：\n` +
+            `  1. 系统已启用对标 Buzz 的动态空闲心跳机制 (默认 300s)；若需要更长思考时间，可通过环境变量 \`SHADOW_CREW_ACP_IDLE_TIMEOUT=600\` 进一步放宽限制；\n` +
+            `  2. 建议确认底层 Agent 命令是否启用了流式 (Streaming) 传输，以便首个 chunk 快速回传；\n` +
+            `  3. 可点击输入框上方重新尝试或简化当前指令。`;
         }
 
         return {
