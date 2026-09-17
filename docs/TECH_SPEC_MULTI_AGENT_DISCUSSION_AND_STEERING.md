@@ -392,6 +392,75 @@ pub async fn abort_thread_discussion(
 }
 ```
 
+### 3.4 议题开题自启动与级联调度实现 (Kickoff Engine & Cascading Dispatcher)
+
+针对“创建好议题后 Agent 未启动推演”的断链问题，系统在创建议题流程中内置了 **开题自启动器 (Auto-Kickoff Engine)** 与 **排队协作者轮转器 (Queued Collaborators Dispatcher)**：
+
+```rust
+/// 开题自启动调度器
+pub async fn dispatch_topic_kickoff(
+    topic_id: &str,
+    channel_id: &str,
+    title: &str,
+    description: &str,
+    assigned_agents: &[AgentEntity],
+    session_pool: &Arc<SessionPoolManager>,
+) -> Result<(), DispatchError> {
+    if assigned_agents.is_empty() {
+        tracing::info!("Topic {} created without assigned agents, awaiting manual prompt.", topic_id);
+        return Ok(());
+    }
+
+    // 1. 选取首位 Agent (通常为开发者影替身或领头架构师) 作为议题主持人
+    let lead_agent = &assigned_agents[0];
+    let queued_collaborators: Vec<AgentEntity> = assigned_agents[1..].to_vec();
+
+    // 2. 组装立足名册公约 (Crew Roster Guidance)
+    let roster_summary = assigned_agents
+        .iter()
+        .map(|a| format!("• @{} ({})", a.name, a.role_description))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let kickoff_prompt = format!(
+        "【议题开题指令】\n你已被指定为议题【{}】的主持推演 Agent。\n\n\
+        目标背景：{}\n\n\
+        本议题协作成员名册：\n{}\n\n\
+        请针对本议题进行第一轮系统化拆解与架构草案设计。在输出方案末尾，请根据分工明确 @ 下一位协作者（例如：{}）进行专项审查或补充。",
+        title,
+        if description.is_empty() { "无额外补充，请根据标题进行技术推演。" } else { description },
+        roster_summary,
+        queued_collaborators.first().map(|a| a.name.as_str()).unwrap_or("相关协作者")
+    );
+
+    // 3. 初始化议题协同级联状态机 (Collaboration Cascade)
+    let cascade_id = format!("cascade-topic-{}", topic_id);
+    session_pool.register_cascade(CollaborationCascade {
+        cascade_id: cascade_id.clone(),
+        room_id: topic_id.to_string(),
+        lead_agent_id: lead_agent.id.clone(),
+        queued_collaborator_ids: queued_collaborators.iter().map(|a| a.id.clone()).collect(),
+        depth: 1,
+        max_depth: 8, // 对应方案三连续 8 轮熔断上限
+    }).await;
+
+    // 4. 派发 ACP session/prompt 任务唤醒首位 Agent
+    session_pool.dispatch_prompt_task(
+        &lead_agent.id,
+        topic_id,
+        &kickoff_prompt,
+    ).await?;
+
+    Ok(())
+}
+```
+
+* **级联轮转流转算法 (Cascading Turn-Taking)**：
+  1. 当 `lead_agent` 输出推演结果后，Relay 捕获其正文并执行 `@` 解析；
+  2. 若解析出目标协作者 `@AgentB`，触发下一步推演；
+  3. **排队补齐保底**：若 `lead_agent` 未显式 `@` 任何成员，级联调度器自动出队 `queued_collaborator_ids` 的首个 Agent，并附上前序分析作为输入，驱动其接力发言；
+  4. 每一轮流转均累加 `consecutive_agent_turns`，在触及第 8 轮时平稳触发熔断机制。
+
 ---
 
 ## 4. Steering 融合模式双轨执行引擎
