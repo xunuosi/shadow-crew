@@ -230,9 +230,58 @@ impl MergeFraming {
 }
 ```
 
+### 2.4 议题 Agent 成员准入校验协议 (Channel-Scoped Admission Gate)
+
+为确保“新建议题时只能拉取属于频道内的 Agent 成员”，在协议和调度层设定严格的包含性约束校验：
+
+```rust
+/// 议题创建请求参数校验
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateTopicParams {
+    pub channel_id: String,
+    pub title: String,
+    /// 指定参与该议题推演的 Agent 公钥列表 (必须是 channel.member_pubkeys 的子集)
+    pub assigned_agent_pubkeys: Vec<String>,
+}
+
+/// 频道准入错误枚举
+#[derive(Debug, thiserror::Error)]
+pub enum AdmissionError {
+    #[error("Channel not found: {0}")]
+    ChannelNotFound(String),
+    #[error("Agent {0} is not a member of channel {1}. Agents must already be admitted to the channel before joining its topics.")]
+    AgentNotInChannel(String, String),
+}
+
+/// 准入网关：校验新建议题的 Agent 成员是否全量属于当前频道
+pub fn validate_topic_agents_admission(
+    channel_member_pubkeys: &[String],
+    requested_agent_pubkeys: &[String],
+    channel_id: &str,
+) -> Result<(), AdmissionError> {
+    let member_set: std::collections::HashSet<&str> =
+        channel_member_pubkeys.iter().map(|s| s.as_str()).collect();
+
+    for agent_pk in requested_agent_pubkeys {
+        if !member_set.contains(agent_pk.as_str()) {
+            return Err(AdmissionError::AgentNotInChannel(
+                agent_pk.clone(),
+                channel_id.to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+```
+
+* **Relay 与调度层硬拦截**：
+  1. 当客户端提交创建 Topic 事件（`Kind: 40002`，携带 `["p", "<agent_pubkey>"]`）时，Relay 拦截并执行 `validate_topic_agents_admission`，存在非频道成员直接拒收并返回错误。
+  2. 桌面端 `acp_manager` 在分发 `session/prompt` 任务给 Agent 进程前，二次校验 `agent_pubkey ∈ channel.member_pubkeys`，未通过者绝不下派 Session，杜绝越权沙盒创建。
+
 ---
 
 ## 3. 三合一终止机制深度落地实现
+
 
 ### 3.1 方案一：基于局部信息价值（Local Information Value）的静默收敛
 在 Agent 系统提示词（`base_prompt.md`）中建立不可妥协的语义硬化规范：

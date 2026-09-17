@@ -340,7 +340,7 @@ graph LR
 - **调度准入表**：`src-tauri` 中的 `acp_manager` 维护 `Channel -> Vec<AgentPubkey>` 的准入映射。仅当 Agent 的 `pubkey` 被显式加入该 Channel 的 `member_pubkeys` 时：
   1. 宿主为该 Agent 下发该 Channel 绑定的工作空间分支（`active_git_branch`）；
   2. 建立该 Channel 的 Nostr 过滤监听与 stdio JSON-RPC 2.0 管道；
-  3. 允许该 Channel 的 Topic Thread 派生针对该 Agent 的专属 ACP Session。
+  3. 允许该 Channel 的 Topic Thread 派生针对该 Agent 的专属 ACP Session（**核心准入约束**：新建议题时只能选择已加入当前 Channel 的 Agent 成员，非频道内 Agent 严格禁止直接拉取或参与议题）。
 - **算力与隐私隔离**：未被加入的 Agent 不会接收该频道的任何提问，后台不产生进程开销，不消耗 Token，杜绝跨频道信息外泄。
 
 ### 4.2 提示词组装算法 (Prompt Assembly Formula)
