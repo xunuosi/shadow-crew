@@ -35,6 +35,21 @@ export const FALLBACK_PRESET_RUNTIMES: LocalAcpRuntime[] = [
     ],
   },
   {
+    id: 'codex',
+    name: 'OpenAI Codex',
+    description: 'OpenAI Codex autonomous coding agent via local codex-acp adapter',
+    transport: 'stdio',
+    command: 'codex-acp',
+    default_args: [],
+    underlying_cli: 'codex',
+    availability: 'available',
+    binary_path: '~/.local/bin/codex-acp',
+    install_hint:
+      'Codex CLI detected. Powered by local codex-acp stdio adapter.',
+    install_url: 'https://openai.com',
+    recommended_env: [['OPENAI_API_KEY', '']],
+  },
+  {
     id: 'openclaw',
     name: 'OpenClaw Mantis',
     description: 'Autonomous multi-agent gateway daemon via openclaw acp',

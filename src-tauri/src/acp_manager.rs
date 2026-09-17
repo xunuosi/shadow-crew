@@ -237,10 +237,28 @@ impl AcpProcessManager {
             }
         }
 
-        // 注入常见环境 PATH，保障 macOS GUI 模式下能正常执行 cargo/openclaw 等 CLI
-        let current_path = std::env::var("PATH").unwrap_or_default();
+        // 智能路径探测: codex-acp 适配器命令
         let home = std::env::var("HOME").unwrap_or_default();
-        let extra_paths = format!("{}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:{}", home, current_path);
+        if command_line.contains("codex-acp") {
+            let possible_bins = [
+                format!("{}/bin/codex-acp", cwd),
+                "bin/codex-acp".to_string(),
+                "../bin/codex-acp".to_string(),
+                format!("{}/.local/bin/codex-acp", home),
+            ];
+            for b in &possible_bins {
+                if let Ok(canonical) = std::fs::canonicalize(b) {
+                    if canonical.is_file() {
+                        actual_cmd = canonical.to_string_lossy().to_string();
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 注入常见环境 PATH，保障 macOS GUI 模式下能正常执行 cargo/openclaw/codex 等 CLI
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        let extra_paths = format!("{}/.local/bin:{}/.cargo/bin:{}/.codex/plugins/.plugin-appserver:/opt/homebrew/bin:/usr/local/bin:{}", home, home, home, current_path);
 
         let parts: Vec<&str> = actual_cmd.split_whitespace().collect();
         if parts.is_empty() {

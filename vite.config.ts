@@ -130,6 +130,18 @@ function localAcpDiscoveryPlugin(): Plugin {
               ],
             },
             {
+              id: 'codex',
+              name: 'OpenAI Codex',
+              description: 'OpenAI Codex autonomous coding agent via local codex-acp adapter',
+              transport: 'stdio',
+              candidate_cmds: ['codex-acp', './bin/codex-acp', 'codex'],
+              underlying_clis: ['codex'],
+              default_args: [],
+              install_hint: 'Codex CLI detected. Powered by local codex-acp stdio adapter.',
+              install_url: 'https://openai.com',
+              recommended_env: [['OPENAI_API_KEY', '']],
+            },
+            {
               id: 'openclaw',
               name: 'OpenClaw Mantis',
               description: 'Autonomous multi-agent gateway daemon via openclaw acp',

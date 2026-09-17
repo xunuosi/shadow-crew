@@ -65,6 +65,18 @@ pub const PRESET_HARNESSES: &[PresetHarness] = &[
         recommended_env: &[("ANTHROPIC_API_KEY", ""), ("CLAUDE_AUTO_APPROVE", "false")],
     },
     PresetHarness {
+        id: "codex",
+        name: "OpenAI Codex",
+        description: "OpenAI Codex autonomous coding agent via local codex-acp adapter",
+        transport: "stdio",
+        command_candidates: &["codex-acp", "./bin/codex-acp", "codex"],
+        default_args: &[],
+        underlying_cli_candidates: &["codex"],
+        install_hint: "Codex CLI detected. Powered by local codex-acp stdio adapter.",
+        install_url: Some("https://openai.com"),
+        recommended_env: &[("OPENAI_API_KEY", "")],
+    },
+    PresetHarness {
         id: "openclaw",
         name: "OpenClaw Mantis",
         description: "Autonomous multi-agent gateway daemon via openclaw acp",
@@ -146,9 +158,13 @@ pub fn resolve_command_path(command: &str) -> Option<PathBuf> {
         dirs.push(home_path.join(".local/bin"));
         dirs.push(home_path.join(".cargo/bin"));
         dirs.push(home_path.join(".orbstack/bin"));
+        dirs.push(home_path.join(".codex/plugins/.plugin-appserver"));
     }
     dirs.push(PathBuf::from("/opt/homebrew/bin"));
     dirs.push(PathBuf::from("/usr/local/bin"));
+    dirs.push(PathBuf::from("/Applications/ChatGPT.app/Contents/Resources"));
+    dirs.push(PathBuf::from("./bin"));
+    dirs.push(PathBuf::from("../bin"));
 
     for dir in dirs {
         let candidate = dir.join(raw_cmd);
@@ -272,4 +288,19 @@ pub fn discover_presets() -> Vec<AcpRuntimeCatalogEntry> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_discover_codex() {
+        let presets = discover_presets();
+        let codex = presets.iter().find(|p| p.id == "codex");
+        assert!(codex.is_some(), "Codex should be present in discovered presets");
+        let codex = codex.unwrap();
+        println!("Discovered Codex: name={}, avail={:?}, cmd={}, bin={:?}", codex.name, codex.availability, codex.command, codex.binary_path);
+        assert_eq!(codex.availability, AcpAvailabilityStatus::Available);
+    }
 }

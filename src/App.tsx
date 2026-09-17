@@ -3,7 +3,7 @@
  * Fusing Block Buzz, Codex, and Google Antigravity
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   Project,
   Agent, 
@@ -372,6 +372,17 @@ export default function App() {
   const activeMessages = activeThread ? messages[activeThread.id] || [] : [];
   const activeSubThread = activeSubThreadId ? subThreads[activeSubThreadId] : null;
   const selectedAgent = agents.find((a) => a.id === selectedAgentId) || agents[0];
+
+  // 当前频道的专属受邀成员 Agent 列表 (严格限定在当前频道的受邀成员范围内，杜绝非成员 Agent 渗入)
+  const currentChannelAgents = useMemo(() => {
+    if (!activeChannel) return [];
+    const channelIds = new Set([
+      ...(activeChannel.assignedAgentIds || []),
+      ...(activeChannel.memberIds || []),
+      ...(activeThread?.activeAgentIds || []),
+    ]);
+    return agents.filter((a) => channelIds.has(a.id));
+  }, [activeChannel, activeThread?.activeAgentIds, agents]);
 
   // Auto sync active IDs if state drifted
   useEffect(() => {
@@ -1066,6 +1077,9 @@ export default function App() {
     assignedAgentIds: string[];
   }) => {
     const topicId = `topic-${Date.now()}`;
+    const validAssignedAgentIds = topicData.assignedAgentIds.filter((id) =>
+      currentChannelAgents.some((a) => a.id === id)
+    );
     const newTopic: TopicMessageData = {
       id: topicId,
       channelId: activeChannel.id,
@@ -1077,7 +1091,7 @@ export default function App() {
       authorAvatar: '👨‍💻',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       repliesCount: 0,
-      participatingAgentIds: topicData.assignedAgentIds,
+      participatingAgentIds: validAssignedAgentIds,
     };
 
     const topicCardMsg: Message = {
@@ -1108,7 +1122,7 @@ export default function App() {
           authorAvatar: '👨‍💻',
           isAgent: false,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `已发起议题【${topicData.title}】。\n目标背景：${topicData.description || '开始方案推演。'}\n指派 Agent：${topicData.assignedAgentIds.map(id => agents.find(a => a.id === id)?.name).filter(Boolean).join('、')}。`,
+          content: `已发起议题【${topicData.title}】。\n目标背景：${topicData.description || '开始方案推演。'}\n指派 Agent：${validAssignedAgentIds.length > 0 ? validAssignedAgentIds.map(id => agents.find(a => a.id === id)?.name).filter(Boolean).join('、') : '暂无 (可在抽屉中指派)'}。`,
         },
       ],
     }));
@@ -2446,7 +2460,7 @@ export default function App() {
             isOpen={Boolean(activeTopicId && activeTopicData)}
             topic={activeTopicData}
             messages={activeTopicMessages}
-            agents={agents}
+            agents={currentChannelAgents.length > 0 ? currentChannelAgents : agents}
             activeExecutions={activeTopicId ? Object.values(activeExecutions).filter((e: any) => e.threadId === activeTopicId) : []}
             onAbortAgent={(agentId) => activeTopicId && handleAbortAgent(agentId, activeTopicId)}
             onClose={() => setActiveTopicId(null)}
@@ -2690,7 +2704,7 @@ export default function App() {
         isOpen={isNewTopicModalOpen}
         onClose={() => setIsNewTopicModalOpen(false)}
         channel={activeChannel}
-        agents={agents}
+        agents={currentChannelAgents}
         onCreateTopic={handleCreateTopic}
       />
 

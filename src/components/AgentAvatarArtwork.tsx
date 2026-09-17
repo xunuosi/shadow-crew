@@ -140,6 +140,51 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
     );
   }
 
+  // 3.5. Codex / OpenAI - Neural Code Processor with Swirling Aperture Core
+  if (normalized.includes('codex') || normalized.includes('openai')) {
+    return (
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#102a24] via-[#0b1714] to-[#050b09] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
+        <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
+          <defs>
+            <linearGradient id="codexNeon" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#10b981" />
+              <stop offset="50%" stopColor="#06b6d4" />
+              <stop offset="100%" stopColor="#3b82f6" />
+            </linearGradient>
+            <radialGradient id="codexCoreGlow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#34d399" stopOpacity="0.9" />
+              <stop offset="40%" stopColor="#059669" stopOpacity="0.5" />
+              <stop offset="100%" stopColor="#042f2e" stopOpacity="0" />
+            </radialGradient>
+          </defs>
+          {/* Subtle Outer Cyber Hexagon / Circuit Frame */}
+          <polygon points="50,12 82,30 82,70 50,88 18,70 18,30" fill="none" stroke="#134e4a" strokeWidth="2" strokeDasharray="3 2" />
+          {/* Neural Core Radial Glow */}
+          <circle cx="50" cy="50" r="32" fill="url(#codexCoreGlow)" />
+          {/* OpenAI-inspired Spiraling Neural Aperture Loop */}
+          <g transform="translate(50, 50)">
+            {[0, 60, 120, 180, 240, 300].map((deg) => (
+              <path
+                key={deg}
+                d="M 0 -22 C 12 -22 20 -12 20 0 C 20 12 12 20 0 16"
+                fill="none"
+                stroke="url(#codexNeon)"
+                strokeWidth="3.5"
+                strokeLinecap="round"
+                transform={`rotate(${deg})`}
+              />
+            ))}
+            {/* Center Processing Dot */}
+            <circle cx="0" cy="0" r="4.5" fill="#a7f3d0" stroke="#064e3b" strokeWidth="1.5" />
+          </g>
+          {/* Code Prompt Indicator Bracket at bottom */}
+          <path d="M 38 78 L 44 82 L 38 86" fill="none" stroke="#34d399" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          <line x1="48" y1="86" x2="58" y2="86" stroke="#34d399" strokeWidth="2" strokeLinecap="round" />
+        </svg>
+      </div>
+    );
+  }
+
   // 4. OpenClaw - Emerald Cyber Mantis Recon
   if (normalized.includes('openclaw') || normalized.includes('claw')) {
     return (

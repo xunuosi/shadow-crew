@@ -331,6 +331,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 const lower = b.toLowerCase();
                 if (lower.includes('deepseek')) return 'DeepSeek';
                 if (lower.includes('claude')) return 'Claude';
+                if (lower.includes('codex')) return 'Codex';
                 if (lower.includes('gpt')) return 'GPT-4o';
                 if (lower.includes('kimi')) return 'Kimi';
                 if (lower.includes('qwen')) return 'Qwen';

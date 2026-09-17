@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Agent, Channel } from '../types';
 import { X, Sparkles, Plus, Bot, Shield, Check, GitBranch } from 'lucide-react';
 
@@ -23,9 +23,16 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
 }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>(() => 
-    agents.slice(0, 3).map((a) => a.id)
-  );
+  const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
+
+  // 当弹窗打开或频道切换时，重置表单并默认选中当前频道的成员 Agent
+  useEffect(() => {
+    if (isOpen) {
+      setTitle('');
+      setDescription('');
+      setSelectedAgentIds(agents.map((a) => a.id));
+    }
+  }, [isOpen, channel?.id, agents]);
 
   if (!isOpen || !channel) return null;
 
@@ -109,52 +116,67 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-semibold text-fg">
-                指派协同推演 Agent
+                指派协同推演 Agent <span className="text-[10px] text-fg-muted font-normal">(仅限当前频道成员)</span>
               </label>
               <span className="text-[10px] text-fg-muted font-mono">
-                已选中 {selectedAgentIds.length} 位
+                已选中 {selectedAgentIds.length} / {agents.length} 位
               </span>
             </div>
 
-            <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-              {agents.map((agent) => {
-                const isSelected = selectedAgentIds.includes(agent.id);
-                return (
-                  <div
-                    key={agent.id}
-                    onClick={() => toggleAgent(agent.id)}
-                    className={`flex items-center justify-between p-2 rounded-xl border transition-all cursor-pointer select-none ${
-                      isSelected
-                        ? 'bg-purple-500/10 border-purple-500/40 text-fg'
-                        : 'bg-surface-subtle border-border hover:bg-surface-hover text-fg-secondary'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <span className="text-base">{agent.avatar}</span>
-                      <div>
-                        <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
-                          <span>{agent.name}</span>
-                          {agent.isManagedByYou && (
+            {agents.length === 0 ? (
+              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 space-y-1 text-[11px]">
+                <div className="font-semibold flex items-center gap-1.5">
+                  <Bot className="w-3.5 h-3.5" />
+                  <span>当前频道 #{channel.name} 暂无成员 Agent</span>
+                </div>
+                <p className="text-[10px] opacity-90 leading-relaxed">
+                  本频道目前尚未邀请任何智能体。可先创建议题，并在频道右上角「成员管理」中邀请专属 Agent 加入本频道。
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                {agents.map((agent) => {
+                  const isSelected = selectedAgentIds.includes(agent.id);
+                  return (
+                    <div
+                      key={agent.id}
+                      onClick={() => toggleAgent(agent.id)}
+                      className={`flex items-center justify-between p-2 rounded-xl border transition-all cursor-pointer select-none ${
+                        isSelected
+                          ? 'bg-purple-500/10 border-purple-500/40 text-fg'
+                          : 'bg-surface-subtle border-border hover:bg-surface-hover text-fg-secondary'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <span className="text-base">{agent.avatar}</span>
+                        <div>
+                          <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
+                            <span>{agent.name}</span>
                             <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface text-fg-muted border border-border font-mono shrink-0">
-                              影替身
+                              {agent.handle}
                             </span>
-                          )}
+                            {agent.isManagedByYou && (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface text-fg-muted border border-border font-mono shrink-0">
+                                影替身
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-fg-muted truncate max-w-xs">{agent.role}</div>
                         </div>
-                        <div className="text-[10px] text-fg-muted truncate max-w-xs">{agent.role}</div>
+                      </div>
+
+                      <div className={`w-4 h-4 rounded-md border flex items-center justify-center transition-colors ${
+                        isSelected
+                          ? 'bg-purple-600 border-purple-600 text-white'
+                          : 'border-border bg-surface'
+                      }`}>
+                        {isSelected && <Check className="w-3 h-3" />}
                       </div>
                     </div>
-
-                    <div className={`w-4 h-4 rounded-md border flex items-center justify-center transition-colors ${
-                      isSelected
-                        ? 'bg-purple-600 border-purple-600 text-white'
-                        : 'border-border bg-surface'
-                    }`}>
-                      {isSelected && <Check className="w-3 h-3" />}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Buttons */}

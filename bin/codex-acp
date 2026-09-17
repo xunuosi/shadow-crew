@@ -1,0 +1,237 @@
+#!/usr/bin/env node
+/**
+ * Codex ACP (Agent Client Protocol) Adapter
+ * Exposes OpenAI Codex CLI as a standard ACP stdio server for Shadow Crew / Shinobi.
+ */
+
+import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as readline from 'node:readline';
+import * as os from 'node:os';
+
+const HOME = os.homedir();
+
+// Locate local codex binary
+function findCodexBinary() {
+  if (process.env.CODEX_BINARY && fs.existsSync(process.env.CODEX_BINARY)) {
+    return process.env.CODEX_BINARY;
+  }
+  const candidates = [
+    path.join(HOME, '.local/bin/codex'),
+    path.join(HOME, '.codex/plugins/.plugin-appserver/codex'),
+    '/Applications/ChatGPT.app/Contents/Resources/codex',
+    '/opt/homebrew/bin/codex',
+    '/usr/local/bin/codex',
+  ];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) return c;
+    } catch {}
+  }
+  return 'codex';
+}
+
+const CODEX_BIN = findCodexBinary();
+let currentCwd = process.cwd();
+let activeSessionId = `codex-sess-${Date.now()}`;
+let sessionSystemPrompt = '';
+
+function sendRpc(msg) {
+  const str = JSON.stringify(msg);
+  process.stdout.write(str + '\n');
+}
+
+function sendNotification(method, params) {
+  sendRpc({
+    jsonrpc: '2.0',
+    method,
+    params,
+  });
+}
+
+function sendResult(id, result) {
+  sendRpc({
+    jsonrpc: '2.0',
+    id,
+    result,
+  });
+}
+
+function sendError(id, code, message) {
+  sendRpc({
+    jsonrpc: '2.0',
+    id,
+    error: { code, message },
+  });
+}
+
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+  terminal: false,
+});
+
+rl.on('line', async (line) => {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+
+  let request;
+  try {
+    request = JSON.parse(trimmed);
+  } catch (err) {
+    return;
+  }
+
+  const { id, method, params } = request;
+
+  // 1. initialize
+  if (method === 'initialize') {
+    sendResult(id, {
+      protocolVersion: 1,
+      agentInfo: {
+        name: 'OpenAI Codex',
+        version: '0.153.4',
+        description: 'OpenAI Codex CLI ACP Agent',
+      },
+      capabilities: {
+        prompts: { listChanged: true },
+        tools: { listChanged: true },
+        streaming: true,
+      },
+    });
+    return;
+  }
+
+  // 2. session/new
+  if (method === 'session/new') {
+    if (params?.cwd) {
+      currentCwd = params.cwd;
+    }
+    if (params?.systemPrompt) {
+      sessionSystemPrompt = params.systemPrompt;
+    }
+    activeSessionId = `codex-sess-${Date.now()}`;
+    sendResult(id, {
+      sessionId: activeSessionId,
+    });
+    return;
+  }
+
+  // 3. session/prompt
+  if (method === 'session/prompt') {
+    const rawPrompt = params?.prompt;
+    let userPromptText = '';
+
+    if (typeof rawPrompt === 'string') {
+      userPromptText = rawPrompt;
+    } else if (Array.isArray(rawPrompt)) {
+      userPromptText = rawPrompt
+        .map((p) => (typeof p === 'string' ? p : p.text || ''))
+        .filter(Boolean)
+        .join('\n');
+    } else if (rawPrompt && typeof rawPrompt === 'object' && rawPrompt.text) {
+      userPromptText = rawPrompt.text;
+    }
+
+    const fullPrompt = sessionSystemPrompt
+      ? `${sessionSystemPrompt}\n\n${userPromptText}`
+      : userPromptText;
+
+    const args = ['exec', '--skip-git-repo-check', '--json'];
+    if (currentCwd && fs.existsSync(currentCwd)) {
+      args.push('--cd', currentCwd);
+    }
+    args.push('-');
+
+    let fullOutput = '';
+    let hasSentChunk = false;
+
+    const child = spawn(CODEX_BIN, args, {
+      cwd: currentCwd && fs.existsSync(currentCwd) ? currentCwd : undefined,
+      env: {
+        ...process.env,
+        PATH: `${path.join(HOME, '.local/bin')}:${path.join(HOME, '.cargo/bin')}:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}`,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    // Pipe the user prompt into stdin
+    child.stdin.write(fullPrompt);
+    child.stdin.end();
+
+    const outRl = readline.createInterface({
+      input: child.stdout,
+      terminal: false,
+    });
+
+    outRl.on('line', (outLine) => {
+      const outTrimmed = outLine.trim();
+      if (!outTrimmed) return;
+
+      try {
+        const event = JSON.parse(outTrimmed);
+        if (event.type === 'item.completed' && event.item) {
+          if (event.item.type === 'agent_message' && event.item.text) {
+            const text = event.item.text;
+            fullOutput += (fullOutput ? '\n\n' : '') + text;
+            hasSentChunk = true;
+            // Emit ACP session/update chunk
+            sendNotification('session/update', {
+              sessionId: activeSessionId,
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                content: { text },
+              },
+            });
+          }
+        }
+      } catch {
+        // Raw non-JSON line
+        if (outTrimmed && !outTrimmed.startsWith('{')) {
+          fullOutput += (fullOutput ? '\n' : '') + outTrimmed;
+          sendNotification('session/update', {
+            sessionId: activeSessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { text: outTrimmed },
+            },
+          });
+        }
+      }
+    });
+
+    let stderrBuffer = '';
+    child.stderr.on('data', (data) => {
+      stderrBuffer += data.toString();
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0 && !fullOutput) {
+        sendResult(id, {
+          text_response: `⚠️ Codex 执行退出 (exit code: ${code})\n${stderrBuffer.trim()}`,
+          stopReason: 'error',
+        });
+      } else {
+        sendResult(id, {
+          text_response: fullOutput || '（Codex 执行完成，无输出文本）',
+          stopReason: 'completed',
+        });
+      }
+    });
+
+    child.on('error', (err) => {
+      sendResult(id, {
+        text_response: `⚠️ 无法启动 Codex 进程: ${err.message}\n请检查 ${CODEX_BIN} 是否存在并可执行。`,
+        stopReason: 'error',
+      });
+    });
+
+    return;
+  }
+
+  // Fallback for unknown methods
+  if (id !== undefined) {
+    sendResult(id, {});
+  }
+});

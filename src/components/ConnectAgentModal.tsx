@@ -42,6 +42,7 @@ interface EnvVarItem {
 const PRESET_ICONS = [
   { id: 'shinobi', label: 'Shinobi Ninja', icon: '🥷', artworkType: 'shinobi' },
   { id: 'claudecode', label: 'Claude Code', icon: '🪷', artworkType: 'claudecode' },
+  { id: 'codex', label: 'OpenAI Codex', icon: '🤖', artworkType: 'codex' },
   { id: 'palette', label: 'Artistry Palette', icon: '🎨', artworkType: 'palette' },
   { id: 'alien', label: 'DeepSeek Alien', icon: '🐞', artworkType: 'alien' },
   { id: 'astra', label: 'Astra Compass', icon: '🧭', artworkType: 'astra' },
@@ -118,6 +119,8 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         setSelectedIconId('shinobi');
       } else if (initialAgent.avatar === '🪷' || initialAgent.name.toLowerCase().includes('claude')) {
         setSelectedIconId('claudecode');
+      } else if (initialAgent.avatar === '🤖' || initialAgent.name.toLowerCase().includes('codex')) {
+        setSelectedIconId('codex');
       } else if (initialAgent.avatar === '🦗' || initialAgent.name.toLowerCase().includes('openclaw')) {
         setSelectedIconId('openclaw');
       } else if (initialAgent.avatar === '🐞' || initialAgent.name.toLowerCase().includes('deepseek')) {
@@ -230,6 +233,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       // Map icon if available
       if (option.id === 'claude_code') setSelectedIconId('claudecode');
       else if (option.id === 'openclaw') setSelectedIconId('openclaw');
+      else if (option.id === 'codex') setSelectedIconId('codex');
       else if (option.id === 'shinobi_core') setSelectedIconId('shinobi');
       else setSelectedIconId('palette');
     }
@@ -318,6 +322,8 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           ? 'Remote ACP'
           : selectedAcp.id === 'claude_code'
           ? 'Claude 3.7 Sonnet'
+          : selectedAcp.id === 'codex'
+          ? 'deepseek-v4-flash'
           : selectedAcp.id === 'kimi_code'
           ? 'Kimi 2.5'
           : 'Local ACP',
@@ -834,6 +840,20 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                     <span className="text-amber-500 font-bold shrink-0">⚠️ 认证提示:</span>
                     <span>
                       Anthropic 官方规定，第三方客户端 ACP 模式<strong>无法直接复用</strong>终端的网页版个人订阅 OAuth 凭证。必须在此环境变量中配置 <code>ANTHROPIC_API_KEY</code>（形如 <code>sk-ant-api03-...</code>），或配合 <code>ANTHROPIC_BASE_URL</code> 转发中转。
+                    </span>
+                  </div>
+                )}
+
+                {/* Codex Notice */}
+                {(selectedAcp.id === 'codex' || name.toLowerCase().includes('codex')) && (
+                  <div className={`p-2.5 rounded-xl border text-[11px] leading-relaxed flex items-start gap-2 ${
+                    isLightMode 
+                      ? 'bg-emerald-50/80 border-emerald-200 text-emerald-900' 
+                      : 'bg-emerald-950/20 border-emerald-800/40 text-emerald-200/90'
+                  }`}>
+                    <span className="text-emerald-500 font-bold shrink-0">🤖 Codex 适配提示:</span>
+                    <span>
+                      系统已自动探测到本机 OpenAI Codex CLI 环境，并通过 <code>codex-acp</code> 桥接适配器实现完整 ACP stdio 通信。自动复用您在 <code>~/.codex/config.toml</code> 中的模型配置（如 deepseek-v4-flash / o3-mini）。
                     </span>
                   </div>
                 )}
