@@ -1161,14 +1161,22 @@ export default function App() {
     if (!cascade || cascade.isAborted) return;
 
     // 获取当前频道/议题准入的候选 Agent 列表 (严格限制在当前频道或议题范围内)
-    const channelAgents = (activeChannel?.assignedAgentIds || [])
+    const currentChannelAgentIds = Array.from(
+      new Set([
+        ...(activeChannel?.assignedAgentIds || []),
+        ...(activeChannel?.memberIds || []),
+        ...(activeThread?.activeAgentIds || []),
+      ])
+    );
+    const channelAgents = currentChannelAgentIds
       .map((id) => agents.find((a) => a.id === id))
       .filter((a): a is Agent => Boolean(a));
     
     const topicAgents = (isTopic && topicId)
       ? ((activeTopicData?.participatingAgentIds || [])
           .map((id) => agents.find((a) => a.id === id))
-          .filter((a): a is Agent => Boolean(a)))
+          .filter((a): a is Agent => Boolean(a))
+          .filter((a) => channelAgents.some((ca) => ca.id === a.id)))
       : [];
 
     const candidateAgents = topicAgents.length > 0
@@ -1182,8 +1190,12 @@ export default function App() {
 
     // 检查是否存在对未受邀外部 Agent 的越界 @ 点名
     if (activeThread.type !== 'dm') {
-      const uninvitedMentions = parseAgentMentions(replyContent, agents, invokingAgent.id)
-        .filter((a) => !candidateAgents.some((ca) => ca.id === a.id));
+      const lowerReply = replyContent.toLowerCase();
+      const isReplyAll = lowerReply.includes('@all') || lowerReply.includes('@所有人') || lowerReply.includes('@team');
+      const uninvitedMentions = isReplyAll
+        ? []
+        : parseAgentMentions(replyContent, agents, invokingAgent.id)
+            .filter((a) => !candidateAgents.some((ca) => ca.id === a.id));
       if (uninvitedMentions.length > 0) {
         const guardNotice: Message = {
           id: `channel-guard-${Date.now()}`,
@@ -1226,6 +1238,47 @@ export default function App() {
     }
 
     const targetAgent = targetAgents[0];
+
+    // 严格检查通信状态：若未手动点击 Start 开启通信，则进行拦截并引导，尝试继续唤醒后续已连接的协作者
+    if (targetAgent.status === 'idle') {
+      const offlineNotice: Message = {
+        id: `msg-offline-collab-${Date.now()}`,
+        threadId: roomId,
+        channelId: activeChannel?.id,
+        authorId: 'system',
+        authorName: 'Shadow Crew 通信管控',
+        authorHandle: '@connection-guard',
+        authorAvatar: '🔌',
+        isAgent: true,
+        agentBadge: 'Communication Required',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: `🔌 **Agent 通信尚未开启**：协同目标 **${targetAgent.name}** 当前处于离线/未连接状态，无法接力推演。需先在左侧控制面板点击【Start】开启通信。`,
+      };
+      setMessages((prev) => ({
+        ...prev,
+        [roomId]: [...(prev[roomId] || []), offlineNotice],
+      }));
+
+      if (remainingQueued.length > 0) {
+        dispatchCascadingAgentResponse({
+          cascadeId,
+          invokingAgent,
+          replyContent,
+          roomId,
+          isTopic,
+          topicId,
+          queuedCollaborators: remainingQueued,
+        });
+      } else {
+        setActiveCascades((prev) => {
+          const next = { ...prev };
+          delete next[cascadeId];
+          return next;
+        });
+      }
+      return;
+    }
+
     const loopCheck = checkLoopGuard(cascade, targetAgent.id);
 
     if (!loopCheck.allowed) {
@@ -1497,42 +1550,95 @@ export default function App() {
       .filter((a): a is Agent => Boolean(a));
     let topicAssigned = (activeTopicData?.participatingAgentIds || [])
       .map((id) => agents.find((a) => a.id === id))
-      .filter((a): a is Agent => Boolean(a));
+      .filter((a): a is Agent => Boolean(a))
+      .filter((a) => channelAssigned.some((ca) => ca.id === a.id));
 
-    const userMentionedAgents = parseAgentMentions(content, agents);
-    if (userMentionedAgents.length > 0 && activeTopicData) {
-      const newlyInvitedToTopic = userMentionedAgents.filter(
-        (a) => !topicAssigned.some((ta) => ta.id === a.id)
+    const lowerContent = content.toLowerCase();
+    const isAllMention = lowerContent.includes('@all') || lowerContent.includes('@所有人') || lowerContent.includes('@team');
+
+    let userMentionedAgents: Agent[] = [];
+
+    if (isAllMention) {
+      // 议题中 @all 严格限制在当前议题已参与的 Agent (或当前频道已准入的 Agent)，绝对不能越界拉取全工作区外部成员
+      userMentionedAgents = topicAssigned.length > 0 ? topicAssigned : channelAssigned;
+    } else {
+      // 提取输入中的 @ 成员
+      const allMentioned = parseAgentMentions(content, agents);
+      const uninvitedMentions = allMentioned.filter(
+        (a) => !channelAssigned.some((ca) => ca.id === a.id)
       );
-      if (newlyInvitedToTopic.length > 0) {
-        const newIds = newlyInvitedToTopic.map((a) => a.id);
-        const updatedParticipating = Array.from(
-          new Set([...(activeTopicData.participatingAgentIds || []), ...newIds])
-        );
-        topicAssigned.push(...newlyInvitedToTopic);
 
-        setMessages((prev) => {
-          const roomMsgs = prev[activeThread.id] || [];
-          return {
-            ...prev,
-            [activeThread.id]: roomMsgs.map((m) =>
-              m.topicData && m.topicData.id === topicId
-                ? { ...m, topicData: { ...m.topicData, participatingAgentIds: updatedParticipating } }
-                : m
-            ),
-          };
-        });
+      // 若在议题中点名了未加入当前频道的外部 Agent，进行硬拦截并出示频道准入守护提示
+      if (uninvitedMentions.length > 0) {
+        const guardNotice: Message = {
+          id: `topic-guard-${Date.now()}`,
+          threadId: topicId,
+          channelId: activeChannel?.id,
+          authorId: 'system',
+          authorName: 'Shadow Crew 频道隔离守护',
+          authorHandle: '@channel-guard',
+          authorAvatar: '🔒',
+          isAgent: true,
+          agentBadge: 'Channel Guard',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `🔒 **频道准入拦截**：你尝试在议题中点名了 ${uninvitedMentions.map((a) => `@${a.name} (${a.handle})`).join('、')}，但该 Agent **未加入当前频道**。\n\n根据受邀准入原则，议题只能拉取属于频道内的 Agent 成员。如需其参与推演，请先在频道右上角「成员管理」邀请入驻。`,
+        };
+        setMessages((prev) => ({
+          ...prev,
+          [topicId]: [...(prev[topicId] || []), guardNotice],
+        }));
+      }
+
+      // 仅保留属于当前频道内的合法 @ 目标
+      const validMentioned = allMentioned.filter((a) =>
+        channelAssigned.some((ca) => ca.id === a.id)
+      );
+
+      if (validMentioned.length > 0 && activeTopicData) {
+        const newlyInvitedToTopic = validMentioned.filter(
+          (a) => !topicAssigned.some((ta) => ta.id === a.id)
+        );
+        if (newlyInvitedToTopic.length > 0) {
+          const newIds = newlyInvitedToTopic.map((a) => a.id);
+          const updatedParticipating = Array.from(
+            new Set([...(activeTopicData.participatingAgentIds || []), ...newIds])
+          );
+          topicAssigned.push(...newlyInvitedToTopic);
+
+          setMessages((prev) => {
+            const roomMsgs = prev[activeThread.id] || [];
+            return {
+              ...prev,
+              [activeThread.id]: roomMsgs.map((m) =>
+                m.topicData && m.topicData.id === topicId
+                  ? { ...m, topicData: { ...m.topicData, participatingAgentIds: updatedParticipating } }
+                  : m
+              ),
+            };
+          });
+        }
+        userMentionedAgents = validMentioned;
+      } else if (uninvitedMentions.length > 0) {
+        // 用户仅点名了未准入外部成员且无其他合法目标，直接阻断，避免非预期误触发
+        return;
       }
     }
 
     const candidateAgents = topicAssigned.length > 0 ? topicAssigned : channelAssigned;
-    let responder: Agent | null = null;
+    let respondingAgents: Agent[] = [];
 
     if (userMentionedAgents.length > 0) {
-      responder = userMentionedAgents[0];
+      respondingAgents = userMentionedAgents;
     } else if (candidateAgents.length > 0) {
-      responder = candidateAgents[0];
+      respondingAgents = [candidateAgents[0]];
     }
+
+    if (respondingAgents.length === 0) {
+      return;
+    }
+
+    const responder = respondingAgents[0];
+    const remainingCollaborators = respondingAgents.slice(1);
 
     if (responder) {
       // 严格检查通信状态：若未手动点击 Start 开启通信，则进行拦截与引导
@@ -1584,7 +1690,7 @@ export default function App() {
         roomId: topicId,
         originalPrompt: content,
         depth: 1,
-        maxDepth: 4,
+        maxDepth: 8,
         visitedAgentIds: [currentResponder.id],
         agentCallCounts: { [currentResponder.id]: 1 },
         isAborted: false,
@@ -1651,7 +1757,7 @@ export default function App() {
             collaborationInfo: {
               cascadeId,
               hop: 1,
-              maxHops: 4,
+              maxHops: 8,
             },
           };
 
@@ -1684,7 +1790,7 @@ export default function App() {
             result: acpResp,
           });
 
-          // 触发跨智能体互相 @ 级联调度
+          // 触发跨智能体互相 @ 级联调度（并继续按序执行用户同时 @ 进来的其他协作者）
           dispatchCascadingAgentResponse({
             cascadeId,
             invokingAgent: currentResponder,
@@ -1692,6 +1798,7 @@ export default function App() {
             roomId: topicId,
             isTopic: true,
             topicId,
+            queuedCollaborators: remainingCollaborators,
           });
         })
         .catch((err) => {
@@ -1889,40 +1996,51 @@ export default function App() {
       .map((id) => agents.find((a) => a.id === id))
       .filter((a): a is Agent => Boolean(a));
 
-    // 2. Parse mentioned agents from ALL workspace agents (case-insensitive & fuzzy)
-    const userMentionedAgents = parseAgentMentions(content, agents);
+    // 2. Parse mentioned agents
+    const lowerContent = content.toLowerCase();
+    const isAllMention = lowerContent.includes('@all') || lowerContent.includes('@所有人') || lowerContent.includes('@team');
 
-    // 3. If human user mentions an agent not yet in the channel, automatically invite & add them!
-    if (activeThread.type !== 'dm' && activeChannel && userMentionedAgents.length > 0) {
-      const newlyInvited = userMentionedAgents.filter(
-        (a) => !channelAssigned.some((ca) => ca.id === a.id)
-      );
+    let userMentionedAgents: Agent[] = [];
 
-      if (newlyInvited.length > 0) {
-        const newlyInvitedIds = newlyInvited.map((a) => a.id);
-        const updatedAssignedIds = Array.from(
-          new Set([...(activeChannel.assignedAgentIds || []), ...newlyInvitedIds])
-        );
-        const updatedMemberIds = Array.from(
-          new Set([...(activeChannel.memberIds || []), ...newlyInvitedIds])
-        );
+    if (isAllMention) {
+      // 频道内 @all 严格限定在当前频道已准入的成员范围，绝不能越界拉取全工作区外部成员进频道
+      userMentionedAgents = channelAssigned;
+    } else {
+      // 显式点名时，从工作区已登记 Agent 中解析，并允许自动邀请入驻当前频道
+      userMentionedAgents = parseAgentMentions(content, agents);
 
-        setChannels((prev) =>
-          prev.map((c) =>
-            c.id === activeChannel.id
-              ? { ...c, assignedAgentIds: updatedAssignedIds, memberIds: updatedMemberIds }
-              : c
-          )
-        );
-        setThreads((prev) =>
-          prev.map((t) =>
-            t.channelId === activeChannel.id
-              ? { ...t, activeAgentIds: updatedAssignedIds }
-              : t
-          )
+      // 3. If human user mentions an agent not yet in the channel, automatically invite & add them!
+      if (activeThread.type !== 'dm' && activeChannel && userMentionedAgents.length > 0) {
+        const newlyInvited = userMentionedAgents.filter(
+          (a) => !channelAssigned.some((ca) => ca.id === a.id)
         );
 
-        channelAssigned.push(...newlyInvited);
+        if (newlyInvited.length > 0) {
+          const newlyInvitedIds = newlyInvited.map((a) => a.id);
+          const updatedAssignedIds = Array.from(
+            new Set([...(activeChannel.assignedAgentIds || []), ...newlyInvitedIds])
+          );
+          const updatedMemberIds = Array.from(
+            new Set([...(activeChannel.memberIds || []), ...newlyInvitedIds])
+          );
+
+          setChannels((prev) =>
+            prev.map((c) =>
+              c.id === activeChannel.id
+                ? { ...c, assignedAgentIds: updatedAssignedIds, memberIds: updatedMemberIds }
+                : c
+            )
+          );
+          setThreads((prev) =>
+            prev.map((t) =>
+              t.channelId === activeChannel.id
+                ? { ...t, activeAgentIds: updatedAssignedIds }
+                : t
+            )
+          );
+
+          channelAssigned.push(...newlyInvited);
+        }
       }
     }
 
@@ -2017,7 +2135,7 @@ export default function App() {
       roomId: activeThread.id,
       originalPrompt: content,
       depth: 1,
-      maxDepth: 4,
+      maxDepth: 8,
       visitedAgentIds: [primaryResponder.id],
       agentCallCounts: { [primaryResponder.id]: 1 },
       isAborted: false,
@@ -2097,7 +2215,7 @@ export default function App() {
           collaborationInfo: {
             cascadeId,
             hop: 1,
-            maxHops: 4,
+            maxHops: 8,
           },
           acpTrace: {
             requestId: `acp-${Date.now()}`,
@@ -2476,7 +2594,7 @@ export default function App() {
             isOpen={Boolean(activeTopicId && activeTopicData)}
             topic={activeTopicData}
             messages={activeTopicMessages}
-            agents={currentChannelAgents.length > 0 ? currentChannelAgents : agents}
+            agents={currentChannelAgents}
             activeExecutions={activeTopicId ? Object.values(activeExecutions).filter((e: any) => e.threadId === activeTopicId) : []}
             onAbortAgent={(agentId) => activeTopicId && handleAbortAgent(agentId, activeTopicId)}
             onClose={() => setActiveTopicId(null)}

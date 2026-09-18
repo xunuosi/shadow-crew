@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 export interface UseResizableOptions {
   direction: 'left' | 'right'; // 'left': dragging left increases width (for right-side drawers); 'right': dragging right increases width (for left-side sidebars)
