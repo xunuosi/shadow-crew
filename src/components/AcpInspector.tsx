@@ -20,9 +20,11 @@ import {
   Upload,
   Download,
   Trash2,
-  ChevronDown,
-  ChevronUp,
+  ChevronDown, 
+  ChevronUp, 
 } from 'lucide-react';
+import { useResizablePanel } from '../hooks/useResizablePanel';
+import { ResizeHandle } from './ResizeHandle';
 
 interface AcpInspectorProps {
   selectedAgent: Agent;
@@ -103,11 +105,29 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
     setNewMemContent('');
   };
 
+  const { width: drawerWidth, isDragging, handlePointerDown, resetWidth } = useResizablePanel({
+    direction: 'left',
+    defaultWidth: 460,
+    minWidth: 380,
+    maxWidth: () => (typeof window !== 'undefined' ? Math.min(1200, window.innerWidth * 0.9) : 800),
+    storageKey: 'shinobi_acp_inspector_width',
+  });
+
   return (
     <aside
       id="buzz-acp-inspector"
-      className="w-96 bg-surface border-l border-border flex flex-col shrink-0 text-fg-secondary text-xs overflow-hidden select-none transition-colors duration-150"
+      style={{ width: `${drawerWidth}px`, maxWidth: '100vw' }}
+      className={`relative bg-surface border-l border-border flex flex-col shrink-0 text-fg-secondary text-xs overflow-hidden select-none ${
+        isDragging ? '' : 'transition-[width] duration-150'
+      }`}
     >
+      <ResizeHandle
+        direction="left"
+        onPointerDown={handlePointerDown}
+        onDoubleClick={resetWidth}
+        isDragging={isDragging}
+        title="拖动调整 ACP 检查器宽度，双击恢复默认 460px"
+      />
       {/* Inspector Header */}
       <div className="p-3 border-b border-border bg-surface-subtle flex items-center justify-between">
         <div className="flex items-center gap-2">

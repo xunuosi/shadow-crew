@@ -27,6 +27,8 @@ import {
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { NinjaIcon } from './NinjaIcon';
+import { useResizablePanel } from '../hooks/useResizablePanel';
+import { ResizeHandle } from './ResizeHandle';
 
 interface SidebarProps {
   projects?: Project[];
@@ -77,11 +79,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
   currentMainView = 'chat',
   onSelectMainView,
 }) => {
+  const { width: sidebarWidth, isDragging, handlePointerDown, resetWidth } = useResizablePanel({
+    direction: 'right',
+    defaultWidth: 260,
+    minWidth: 200,
+    maxWidth: 480,
+    storageKey: 'shinobi_sidebar_width',
+  });
+
   return (
     <aside
       id="shinobi-primary-sidebar"
-      className="w-64 min-w-[240px] bg-surface border-r border-border flex flex-col shrink-0 select-none text-fg-secondary text-xs select-none transition-colors duration-150"
+      style={{ width: `${sidebarWidth}px` }}
+      className={`relative bg-surface border-r border-border flex flex-col shrink-0 select-none text-fg-secondary text-xs select-none transition-colors duration-150 ${
+        isDragging ? '' : 'transition-[width] duration-150'
+      }`}
     >
+      {/* Draggable Right Resize Handle */}
+      <ResizeHandle
+        direction="right"
+        onPointerDown={handlePointerDown}
+        onDoubleClick={resetWidth}
+        isDragging={isDragging}
+        title="拖动调整侧边栏宽度，双击恢复默认 260px"
+      />
       {/* 1. Window Controls & History Bar */}
       <div className="h-10 px-3 flex items-center justify-between border-b border-border bg-surface-subtle">
         {/* macOS window traffic lights */}

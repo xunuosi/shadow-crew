@@ -10,6 +10,8 @@ import {
   ArrowUpRight,
   Bot
 } from 'lucide-react';
+import { useResizablePanel } from '../hooks/useResizablePanel';
+import { ResizeHandle } from './ResizeHandle';
 
 interface SubThreadDrawerProps {
   isOpen: boolean;
@@ -30,6 +32,14 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
 }) => {
   const [replyContent, setReplyContent] = useState('');
 
+  const { width: drawerWidth, isDragging, handlePointerDown, resetWidth } = useResizablePanel({
+    direction: 'left',
+    defaultWidth: 420,
+    minWidth: 320,
+    maxWidth: () => (typeof window !== 'undefined' ? Math.min(900, window.innerWidth * 0.8) : 600),
+    storageKey: 'shinobi_subthread_drawer_width',
+  });
+
   if (!isOpen || !subThread) return null;
 
   const handleSend = () => {
@@ -48,8 +58,18 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
   return (
     <aside
       id="shinobi-subthread-drawer"
-      className="w-80 md:w-96 bg-surface border-l border-border flex flex-col shrink-0 text-xs text-fg-secondary shadow-2xl z-40 transition-colors duration-150"
+      style={{ width: `${drawerWidth}px`, maxWidth: '100vw' }}
+      className={`relative bg-surface border-l border-border flex flex-col shrink-0 text-xs text-fg-secondary shadow-2xl z-40 ${
+        isDragging ? '' : 'transition-[width] duration-150'
+      }`}
     >
+      <ResizeHandle
+        direction="left"
+        onPointerDown={handlePointerDown}
+        onDoubleClick={resetWidth}
+        isDragging={isDragging}
+        title="拖动调整子话题抽屉宽度，双击恢复默认 420px"
+      />
       {/* 1. Header */}
       <div className="h-10 px-3.5 border-b border-border flex items-center justify-between bg-surface-subtle">
         <div className="flex items-center gap-2 truncate">

@@ -24,6 +24,8 @@ import {
 } from 'lucide-react';
 import { MentionSuggestions } from './MentionSuggestions';
 import { renderFormattedContent } from '../utils/formatMentions';
+import { useResizablePanel } from '../hooks/useResizablePanel';
+import { ResizeHandle } from './ResizeHandle';
 
 interface TopicThreadDrawerProps {
   isOpen: boolean;
@@ -125,6 +127,15 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     const interval = setInterval(() => setNow(Date.now()), 200);
     return () => clearInterval(interval);
   }, [isExecuting]);
+
+  // Resizable drawer width (persisted in localStorage)
+  const { width: drawerWidth, isDragging, handlePointerDown, resetWidth } = useResizablePanel({
+    direction: 'left',
+    defaultWidth: 480,
+    minWidth: 380,
+    maxWidth: () => (typeof window !== 'undefined' ? Math.min(1200, window.innerWidth * 0.85) : 800),
+    storageKey: 'shinobi_topic_drawer_width',
+  });
 
   if (!isOpen || !topic) return null;
 
@@ -263,8 +274,19 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   return (
     <aside
       id="shinobi-topic-thread-drawer"
-      className="w-full sm:w-[420px] md:w-[460px] lg:w-[480px] bg-surface border-l border-border flex flex-col shrink-0 text-xs text-fg-secondary shadow-2xl z-40 transition-all duration-200"
+      style={{ width: `${drawerWidth}px`, maxWidth: '100vw' }}
+      className={`relative bg-surface border-l border-border flex flex-col shrink-0 text-xs text-fg-secondary shadow-2xl z-40 ${
+        isDragging ? '' : 'transition-[width] duration-150'
+      }`}
     >
+      {/* Draggable Left Resize Handle */}
+      <ResizeHandle
+        direction="left"
+        onPointerDown={handlePointerDown}
+        onDoubleClick={resetWidth}
+        isDragging={isDragging}
+        title="拖动调整议题抽屉宽度，双击恢复默认"
+      />
       {/* 1. Drawer Header */}
       <div className="min-h-[52px] py-2 px-3 sm:px-4 border-b border-border flex items-center justify-between bg-surface-subtle select-none shrink-0 gap-2">
         <div className="flex items-center gap-2 truncate min-w-0 flex-1">

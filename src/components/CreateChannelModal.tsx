@@ -44,12 +44,17 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
   const [mountCode, setMountCode] = useState(true);
   const [repoName, setRepoName] = useState('shadow-crew');
 
-  // Reset or pre-fill all agents whenever the modal opens
+  // Reset or pre-fill all agents only when modal first opens
+  const prevIsOpenRef = React.useRef(false);
+  const agentsRef = React.useRef(agents);
+  agentsRef.current = agents;
+
   React.useEffect(() => {
-    if (isOpen) {
-      setInitialInvitedAgentIds(agents.map((a) => a.id));
+    if (isOpen && !prevIsOpenRef.current) {
+      setInitialInvitedAgentIds(agentsRef.current.map((a) => a.id));
     }
-  }, [isOpen, agents]);
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen]);
 
   if (!isOpen) return null;
 

@@ -11,6 +11,8 @@ import {
   GitCompare,
   FileCheck
 } from 'lucide-react';
+import { useResizablePanel } from '../hooks/useResizablePanel';
+import { ResizeHandle } from './ResizeHandle';
 
 interface CodexDiffViewerProps {
   isOpen: boolean;
@@ -31,6 +33,14 @@ export const CodexDiffViewer: React.FC<CodexDiffViewerProps> = ({
   workspaceFiles,
 }) => {
   const [copied, setCopied] = useState(false);
+
+  const { width: drawerWidth, isDragging, handlePointerDown, resetWidth } = useResizablePanel({
+    direction: 'left',
+    defaultWidth: 540,
+    minWidth: 380,
+    maxWidth: () => (typeof window !== 'undefined' ? Math.min(1300, window.innerWidth * 0.9) : 800),
+    storageKey: 'shinobi_codex_diff_width',
+  });
 
   if (!isOpen) return null;
 
@@ -64,8 +74,18 @@ export const CodexDiffViewer: React.FC<CodexDiffViewerProps> = ({
   return (
     <aside
       id="shinobi-codex-diff-drawer"
-      className="w-80 md:w-96 bg-surface border-l border-border flex flex-col shrink-0 text-xs text-fg-secondary shadow-2xl z-40 transition-colors duration-150 font-mono"
+      style={{ width: `${drawerWidth}px`, maxWidth: '100vw' }}
+      className={`relative bg-surface border-l border-border flex flex-col shrink-0 text-xs text-fg-secondary shadow-2xl z-40 font-mono ${
+        isDragging ? '' : 'transition-[width] duration-150'
+      }`}
     >
+      <ResizeHandle
+        direction="left"
+        onPointerDown={handlePointerDown}
+        onDoubleClick={resetWidth}
+        isDragging={isDragging}
+        title="拖动调整 Diff 视图宽度，双击恢复默认 540px"
+      />
       {/* 1. Header */}
       <div className="h-10 px-3.5 border-b border-border flex items-center justify-between bg-surface-subtle font-sans">
         <div className="flex items-center gap-2 truncate">

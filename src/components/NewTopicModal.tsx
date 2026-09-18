@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Agent, Channel } from '../types';
-import { X, Sparkles, Plus, Bot, Shield, Check, GitBranch } from 'lucide-react';
+import { X, Sparkles, Plus, Bot, Shield, Check, GitBranch, Maximize2, Minimize2 } from 'lucide-react';
+import { ResizeHandle } from './ResizeHandle';
 
 interface NewTopicModalProps {
   isOpen: boolean;
@@ -24,15 +25,108 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
+  const prevIsOpenRef = useRef(false);
+  const prevChannelIdRef = useRef<string | undefined>(undefined);
+  const agentsRef = useRef(agents);
+  agentsRef.current = agents;
 
-  // 当弹窗打开或频道切换时，重置表单并默认选中当前频道的成员 Agent
+  // 仅在弹窗新打开、或所在频道切换时，重置表单并默认勾选成员，避免后台每3秒轮询刷新时误清空用户已输入内容
   useEffect(() => {
-    if (isOpen) {
+    const justOpened = isOpen && !prevIsOpenRef.current;
+    const channelChanged = isOpen && channel?.id !== prevChannelIdRef.current;
+
+    if (justOpened || channelChanged) {
       setTitle('');
       setDescription('');
-      setSelectedAgentIds(agents.map((a) => a.id));
+      setSelectedAgentIds(agentsRef.current.map((a) => a.id));
     }
-  }, [isOpen, channel?.id, agents]);
+
+    prevIsOpenRef.current = isOpen;
+    prevChannelIdRef.current = channel?.id;
+  }, [isOpen, channel?.id]);
+
+  const [modalWidth, setModalWidth] = useState<number>(() => {
+    if (typeof window === 'undefined') return 560;
+    try {
+      const saved = localStorage.getItem('shinobi_new_topic_modal_width');
+      if (saved) {
+        const val = Number(saved);
+        if (!isNaN(val) && val >= 460 && val <= 1400) return val;
+      }
+    } catch {}
+    return 560;
+  });
+  const [isDraggingEdge, setIsDraggingEdge] = useState<'left' | 'right' | null>(null);
+
+  const handleStartDrag = (side: 'left' | 'right', e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture?.(e.pointerId);
+    setIsDraggingEdge(side);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const windowCenter = window.innerWidth / 2;
+      let calculatedWidth: number;
+      if (side === 'right') {
+        calculatedWidth = (moveEvent.clientX - windowCenter) * 2;
+      } else {
+        calculatedWidth = (windowCenter - moveEvent.clientX) * 2;
+      }
+      const maxWidth = Math.min(1200, window.innerWidth * 0.95);
+      const clamped = Math.min(maxWidth, Math.max(460, Math.round(calculatedWidth)));
+      setModalWidth(clamped);
+    };
+
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      setIsDraggingEdge(null);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      target.releasePointerCapture?.(upEvent.pointerId);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+
+      const windowCenter = window.innerWidth / 2;
+      let calculatedWidth: number;
+      if (side === 'right') {
+        calculatedWidth = (upEvent.clientX - windowCenter) * 2;
+      } else {
+        calculatedWidth = (windowCenter - upEvent.clientX) * 2;
+      }
+      const maxWidth = Math.min(1200, window.innerWidth * 0.95);
+      const clamped = Math.min(maxWidth, Math.max(460, Math.round(calculatedWidth)));
+      setModalWidth(clamped);
+      try {
+        localStorage.setItem('shinobi_new_topic_modal_width', String(clamped));
+      } catch {}
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+  };
+
+  const toggleWidescreen = () => {
+    setModalWidth((prev) => {
+      const next = prev > 700 ? 560 : 880;
+      try {
+        localStorage.setItem('shinobi_new_topic_modal_width', String(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const resetModalWidth = () => {
+    setModalWidth(560);
+    try {
+      localStorage.setItem('shinobi_new_topic_modal_width', '560');
+    } catch {}
+  };
 
   if (!isOpen || !channel) return null;
 
@@ -61,9 +155,32 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
-      <div className="w-full max-w-lg bg-surface border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col text-xs text-fg-secondary">
+      <div 
+        style={{ width: `${modalWidth}px`, maxWidth: '95vw' }}
+        className={`relative bg-surface border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col text-xs text-fg-secondary ${
+          isDraggingEdge ? '' : 'transition-[width] duration-150'
+        }`}
+      >
+        {/* Left Drag Resize Handle */}
+        <ResizeHandle
+          direction="left"
+          onPointerDown={(e) => handleStartDrag('left', e)}
+          onDoubleClick={resetModalWidth}
+          isDragging={isDraggingEdge === 'left'}
+          title="拖动调整弹窗宽度，双击恢复默认 560px"
+        />
+
+        {/* Right Drag Resize Handle */}
+        <ResizeHandle
+          direction="right"
+          onPointerDown={(e) => handleStartDrag('right', e)}
+          onDoubleClick={resetModalWidth}
+          isDragging={isDraggingEdge === 'right'}
+          title="拖动调整弹窗宽度，双击恢复默认 560px"
+        />
+
         {/* Header */}
-        <div className="h-12 px-5 border-b border-border flex items-center justify-between bg-surface-subtle">
+        <div className="h-12 px-5 border-b border-border flex items-center justify-between bg-surface-subtle select-none">
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 rounded-lg bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-600 dark:text-purple-300">
               <GitBranch className="w-4 h-4" />
@@ -73,12 +190,32 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
               <p className="text-[10px] text-fg-muted font-mono">在 #{channel.name} 频道内开启单层推演空间</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1 rounded-lg hover:bg-surface-hover text-fg-muted hover:text-fg transition-colors cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={toggleWidescreen}
+              className="p-1.5 rounded-lg hover:bg-surface-hover text-fg-muted hover:text-accent transition-colors cursor-pointer flex items-center gap-1 text-[11px] font-mono px-2 border border-border/50"
+              title={modalWidth > 700 ? '切换为标准宽度 (560px)' : '切换为宽屏视图 (880px)'}
+            >
+              {modalWidth > 700 ? (
+                <>
+                  <Minimize2 className="w-3.5 h-3.5 text-accent" />
+                  <span className="hidden sm:inline">标准宽度</span>
+                </>
+              ) : (
+                <>
+                  <Maximize2 className="w-3.5 h-3.5 text-accent" />
+                  <span className="hidden sm:inline">宽屏视图</span>
+                </>
+              )}
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1 rounded-lg hover:bg-surface-hover text-fg-muted hover:text-fg transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Form */}
@@ -93,6 +230,12 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
               required
               value={title}
               onChange={(e) => setTitle(e.target.value)}
+              onKeyDown={(e) => {
+                // 防止输入法候选词确认 (Enter) 误触表单提交
+                if (e.key === 'Enter' && (e.nativeEvent.isComposing || (e as any).isComposing || e.keyCode === 229)) {
+                  e.stopPropagation();
+                }
+              }}
               placeholder="例如：扫码回调统一路由与多租户适配方案"
               className="w-full px-3 py-2 rounded-xl bg-surface-subtle border border-border focus:border-purple-500 focus:ring-1 focus:ring-purple-500/30 text-fg text-xs focus:outline-none transition-all placeholder:text-fg-muted"
             />
@@ -134,7 +277,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
                 </p>
               </div>
             ) : (
-              <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
                 {agents.map((agent) => {
                   const isSelected = selectedAgentIds.includes(agent.id);
                   return (

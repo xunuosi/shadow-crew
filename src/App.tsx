@@ -486,25 +486,33 @@ export default function App() {
     try {
       const runtimeStatuses: AgentRuntimeStatus[] = await tauriInvoke('get_agents_runtime_status');
       if (Array.isArray(runtimeStatuses)) {
-        setAgents((prev) =>
-          prev.map((a) => {
+        setAgents((prev) => {
+          let hasChange = false;
+          const next = prev.map((a) => {
             const match = runtimeStatuses.find((s) => s.agent_id === a.id);
             if (match && match.is_alive) {
-              const targetStatus = match.status as any;
-              return {
-                ...a,
-                status: targetStatus === 'idle' ? 'idle' : targetStatus,
-                statusDetail: match.status_detail || undefined,
-              };
+              const targetStatus = match.status === 'idle' ? 'idle' : (match.status as any);
+              const targetDetail = match.status_detail || undefined;
+              if (a.status !== targetStatus || a.statusDetail !== targetDetail) {
+                hasChange = true;
+                return {
+                  ...a,
+                  status: targetStatus,
+                  statusDetail: targetDetail,
+                };
+              }
+              return a;
             } else {
               // If not in active backend pool, revert to idle if not currently starting
               if (a.status !== 'idle' && a.status !== 'starting') {
+                hasChange = true;
                 return { ...a, status: 'idle', statusDetail: undefined };
               }
               return a;
             }
-          })
-        );
+          });
+          return hasChange ? next : prev;
+        });
         return;
       }
     } catch {
@@ -512,18 +520,26 @@ export default function App() {
       try {
         const runningIds: string[] = await tauriInvoke('get_running_agent_ids');
         if (Array.isArray(runningIds)) {
-          setAgents((prev) =>
-            prev.map((a) => {
+          setAgents((prev) => {
+            let hasChange = false;
+            const next = prev.map((a) => {
               const isAlive = runningIds.includes(a.id);
               if (isAlive) {
-                if (a.status === 'idle') return { ...a, status: 'running' };
+                if (a.status === 'idle') {
+                  hasChange = true;
+                  return { ...a, status: 'running' };
+                }
                 return a;
               } else {
-                if (a.status === 'running') return { ...a, status: 'idle' };
+                if (a.status === 'running') {
+                  hasChange = true;
+                  return { ...a, status: 'idle' };
+                }
                 return a;
               }
-            })
-          );
+            });
+            return hasChange ? next : prev;
+          });
         }
       } catch (err) {
         console.warn('[Sync ACP] Failed to query running agents:', err);
