@@ -60,6 +60,8 @@ import {
   checkLoopGuard,
   buildCrewRosterGuidance,
   buildCascadePrompt,
+  buildTopicPrompt,
+  TopicPromptContext,
 } from './services/agentCollaboration';
 
 export default function App() {
@@ -279,6 +281,20 @@ export default function App() {
           for (const k of Object.keys(parsed)) {
             if (MOCK_THREAD_IDS.has(k) || MOCK_CHANNEL_IDS.has(k)) {
               delete parsed[k];
+            } else if (k.startsWith('thread-dm-')) {
+              // 自动清洗误入私聊会话的频道历史消息、议题卡片与共识决议卡片
+              const agentId = k.replace('thread-dm-', '');
+              parsed[k] = (parsed[k] || []).filter((m: Message) => {
+                if (
+                  m.type === 'topic' ||
+                  m.agentBadge === 'Consensus Rollup' ||
+                  m.agentBadge === 'Channel Guard' ||
+                  (m.channelId && m.channelId !== 'direct-messages')
+                ) {
+                  return false;
+                }
+                return m.authorId === 'user-norris' || m.authorId === agentId || m.authorId === 'system';
+              });
             }
           }
           return parsed;
@@ -363,12 +379,26 @@ export default function App() {
   const projectChannels = activeProjectId
     ? channels.filter((c) => (!c.projectId || c.projectId === activeProjectId) && c.status !== 'deleted')
     : channels.filter((c) => c.status !== 'deleted');
-  const activeChannel = channels.find((c) => c.id === activeChannelId && c.status !== 'deleted') || projectChannels[0];
-  const activeThread = 
-    threads.find((t) => t.id === activeThreadId) ||
-    (activeChannel ? threads.find((t) => t.channelId === activeChannel.id) : null) ||
-    threads[0] ||
-    null;
+
+  // 1. 判断当前是否处于显式私聊模式 (Direct Message Mode)
+  const isDirectMessageSelected = activeThreadId.startsWith('thread-dm-') || threads.find((t) => t.id === activeThreadId)?.type === 'dm';
+
+  // 2. 频道解析：若在私聊模式下，强制清空 activeChannel，杜绝任何频道上下文与成员名单穿透至私聊
+  const activeChannel = isDirectMessageSelected
+    ? null
+    : (channels.find((c) => c.id === activeChannelId && c.status !== 'deleted') || projectChannels[0] || null);
+
+  // 3. 线程解析：
+  // - 若为私聊模式，严格锁定对应 dmThread，严禁回退至任何频道线程；
+  // - 若为频道模式，严格只在该频道所属线程中查找，彻底废除 threads[0] 的盲目 cross-fallback
+  const activeThread = isDirectMessageSelected
+    ? (threads.find((t) => t.id === activeThreadId && t.type === 'dm') ||
+       threads.find((t) => t.type === 'dm') ||
+       null)
+    : ((activeChannel ? threads.find((t) => t.id === activeThreadId && t.channelId === activeChannel.id && t.type !== 'dm') : null) ||
+       (activeChannel ? threads.find((t) => t.channelId === activeChannel.id && t.type !== 'dm') : null) ||
+       null);
+
   const activeMessages = activeThread ? messages[activeThread.id] || [] : [];
   const activeSubThread = activeSubThreadId ? subThreads[activeSubThreadId] : null;
   const selectedAgent = agents.find((a) => a.id === selectedAgentId) || agents[0];
@@ -384,22 +414,23 @@ export default function App() {
     return agents.filter((a) => channelIds.has(a.id));
   }, [activeChannel, activeThread?.activeAgentIds, agents]);
 
-  // Auto sync active IDs if state drifted
+  // Auto sync active IDs if state drifted (私聊模式下不自动回弹 channel ID)
   useEffect(() => {
+    if (isDirectMessageSelected) return;
     if (activeChannel && activeChannel.id !== activeChannelId) {
       setActiveChannelId(activeChannel.id);
     } else if (!activeChannel && activeChannelId) {
       setActiveChannelId('');
     }
-  }, [activeChannel?.id]);
+  }, [activeChannel?.id, isDirectMessageSelected]);
 
   useEffect(() => {
     if (activeThread && activeThread.id !== activeThreadId) {
       setActiveThreadId(activeThread.id);
-    } else if (!activeThread && activeThreadId) {
+    } else if (!activeThread && activeThreadId && !isDirectMessageSelected) {
       setActiveThreadId('');
     }
-  }, [activeThread?.id]);
+  }, [activeThread?.id, isDirectMessageSelected]);
 
   // One-time repair for TestChannel: Ensure MyClaudeCode is included, ShinobiCore is excluded, and never override user changes
   useEffect(() => {
@@ -722,13 +753,47 @@ export default function App() {
   // Handle Channel Selection
   const handleSelectChannel = (channelId: string) => {
     setActiveChannelId(channelId);
-    // Switch to first thread of this channel if exists
-    const channelThreads = threads.filter((t) => t.channelId === channelId);
-    const targetThread = channelThreads.find((t) => t.type !== 'dm') || channelThreads[0];
-    if (targetThread) {
-      setActiveThreadId(targetThread.id);
+    // Switch to first dedicated thread of this channel
+    const channelThreads = threads.filter((t) => t.channelId === channelId && t.type !== 'dm');
+    if (channelThreads.length > 0) {
+      setActiveThreadId(channelThreads[0].id);
     } else {
-      setActiveThreadId('');
+      // 若该频道尚无专属线程，立刻按规约创建该频道的默认启动线程，绝对禁止拿 DM 线程充数
+      const targetChan = channels.find((c) => c.id === channelId);
+      const newThreadId = `thread-${channelId}-${Date.now()}`;
+      const defaultThread: Thread = {
+        id: newThreadId,
+        channelId,
+        channelName: targetChan?.name || 'chat',
+        type: 'thread',
+        title: `${targetChan?.name || '研讨频道'} 启动与目标同步`,
+        authorId: currentUserId,
+        authorName: 'Norris_M5Pro',
+        authorAvatar: '👨‍💻',
+        authorHandle: '@Norris_M5Pro',
+        timestamp: 'Just now',
+        preview: `欢迎进入 #${targetChan?.name || '频道'}。类别：[${targetChan?.kind || 'feature'}]。`,
+        activeAgentIds: targetChan?.assignedAgentIds || [],
+      };
+      setThreads((prev) => [defaultThread, ...prev]);
+      setActiveThreadId(newThreadId);
+      setMessages((prev) => ({
+        ...prev,
+        [newThreadId]: [
+          {
+            id: `msg-${Date.now()}`,
+            threadId: newThreadId,
+            channelId,
+            authorId: currentUserId,
+            authorName: 'Norris_M5Pro',
+            authorHandle: '@Norris_M5Pro',
+            authorAvatar: '👨‍💻',
+            isAgent: false,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `欢迎来到 **#${targetChan?.name || '频道'}**！\n- **类型**：\`[${targetChan?.kind || 'feature'}]\`\n- **说明**：${targetChan?.description || '自由推演与协作研讨'}\n请在下方输入框中发送消息或 @ 目标成员开始推演。`,
+          },
+        ],
+      }));
     }
     setActiveTopicId(null);
     setQuotingMessage(null);
@@ -737,6 +802,9 @@ export default function App() {
 
   // Handle Direct Message Selection
   const handleSelectDirectMessage = (agent: Agent) => {
+    // 明确清空 activeChannelId，彻底切断频道与私聊的上下文关联
+    setActiveChannelId('');
+
     // Check if DM thread already exists
     let dmThread = threads.find((t) => t.type === 'dm' && (t.authorId === agent.id || t.id === `thread-dm-${agent.id}`));
     if (!dmThread) {
@@ -1092,6 +1160,7 @@ export default function App() {
     description: string;
     assignedAgentIds: string[];
   }) => {
+    if (!activeChannel) return; // 私聊模式下不创建频道议题
     const topicId = `topic-${Date.now()}`;
     const validAssignedAgentIds = topicData.assignedAgentIds.filter((id) =>
       currentChannelAgents.some((a) => a.id === id)
@@ -1110,9 +1179,13 @@ export default function App() {
       participatingAgentIds: validAssignedAgentIds,
     };
 
+    // 确保将议题卡片插入属于当前频道的专属线程中，绝不渗入 DM 线程
+    const targetChannelThread = threads.find((t) => t.channelId === activeChannel.id && t.type !== 'dm') || activeThread;
+    if (!targetChannelThread) return;
+
     const topicCardMsg: Message = {
       id: `msg-${Date.now()}`,
-      threadId: activeThread.id,
+      threadId: targetChannelThread.id,
       channelId: activeChannel.id,
       type: 'topic',
       topicData: newTopic,
@@ -1127,7 +1200,7 @@ export default function App() {
 
     setMessages((prev) => ({
       ...prev,
-      [activeThread.id]: [...(prev[activeThread.id] || []), topicCardMsg],
+      [targetChannelThread.id]: [...(prev[targetChannelThread.id] || []), topicCardMsg],
       [topicId]: [
         {
           id: `topic-msg-init-${Date.now()}`,
@@ -1185,6 +1258,13 @@ export default function App() {
           ? agents.filter((a) => a.id === activeThread.authorId || activeThread.activeAgentIds?.includes(a.id))
           : channelAgents);
 
+    const topicTargetChannel = isTopic
+      ? (channels.find((c) => c.id === activeTopicData?.channelId) || activeChannel)
+      : activeChannel;
+    const targetChannelId = isTopic
+      ? (topicTargetChannel?.id || activeChannel?.id)
+      : (activeThread?.type === 'dm' ? 'direct-messages' : activeChannel?.id);
+
     // 1. 严格仅从当前频道准入的候选成员中解析显式 @ 的目标 (绝不越界回退全工作区)
     let targetAgents = parseAgentMentions(replyContent, candidateAgents, invokingAgent.id);
 
@@ -1200,7 +1280,7 @@ export default function App() {
         const guardNotice: Message = {
           id: `channel-guard-${Date.now()}`,
           threadId: roomId,
-          channelId: activeChannel?.id,
+          channelId: targetChannelId,
           authorId: 'system',
           authorName: 'Shadow Crew 频道隔离守护',
           authorHandle: '@channel-guard',
@@ -1222,9 +1302,11 @@ export default function App() {
 
     // 2. 若正文中未显式 @，但存在用户最初批量 @ 进来的排队协作者
     let remainingQueued: Agent[] = [];
+    let isQueuedByUserInput = false;
     if (targetAgents.length === 0 && queuedCollaborators.length > 0) {
       targetAgents = [queuedCollaborators[0]];
       remainingQueued = queuedCollaborators.slice(1);
+      isQueuedByUserInput = true;
     }
 
     if (targetAgents.length === 0) {
@@ -1244,7 +1326,7 @@ export default function App() {
       const offlineNotice: Message = {
         id: `msg-offline-collab-${Date.now()}`,
         threadId: roomId,
-        channelId: activeChannel?.id,
+        channelId: targetChannelId,
         authorId: 'system',
         authorName: 'Shadow Crew 通信管控',
         authorHandle: '@connection-guard',
@@ -1286,7 +1368,7 @@ export default function App() {
       const breakMsg: Message = {
         id: `circuit-break-${Date.now()}`,
         threadId: roomId,
-        channelId: activeChannel?.id,
+        channelId: targetChannelId,
         authorId: 'system',
         authorName: 'Shadow Crew 协同熔断保护',
         authorHandle: '@loop-guard',
@@ -1337,6 +1419,17 @@ export default function App() {
       [cascadeId]: updatedCascade,
     }));
 
+    const topicContext: TopicPromptContext | undefined = isTopic && activeTopicData
+      ? {
+          topicId: activeTopicData.id,
+          title: activeTopicData.title,
+          description: activeTopicData.description,
+          channelName: topicTargetChannel?.name || 'chat',
+          status: activeTopicData.status,
+          participatingAgents: candidateAgents,
+        }
+      : undefined;
+
     // 构造具有前序方案与明确协作诉求的上下文提示词 (严格使用当前频道的候选成员花名册)
     const cascadePrompt = buildCascadePrompt({
       targetAgent,
@@ -1345,6 +1438,8 @@ export default function App() {
       invokingAgentReply: replyContent,
       cascade: updatedCascade,
       availableAgents: candidateAgents,
+      topic: topicContext,
+      isQueuedByUserInput,
     });
 
     const execKey = isTopic && topicId ? `${topicId}:${targetAgent.id}` : `${roomId}:${targetAgent.id}`;
@@ -1358,7 +1453,9 @@ export default function App() {
         threadId: roomId,
         topicId: isTopic ? topicId : undefined,
         status: 'thinking',
-        currentActionDetail: `正在响应 @${invokingAgent.name} 的协同研讨 (Hop ${nextDepth}/${cascade.maxDepth})...`,
+        currentActionDetail: isQueuedByUserInput
+          ? `正在基于议题陈述独立观点 (Hop ${nextDepth}/${cascade.maxDepth})...`
+          : `正在响应 @${invokingAgent.name} 的协同研讨 (Hop ${nextDepth}/${cascade.maxDepth})...`,
         startedAt: Date.now(),
         cascadeHop: nextDepth,
         invokingAgentName: invokingAgent.name,
@@ -1380,7 +1477,7 @@ export default function App() {
         roomId,
         prompt: cascadePrompt,
         projectId: activeProjectId,
-        channelId: activeChannel?.id,
+        channelId: targetChannelId,
         systemPrompt: standingContext,
       });
 
@@ -1394,7 +1491,7 @@ export default function App() {
       const nextReply: Message = {
         id: `msg-collab-${Date.now()}-${targetAgent.id}`,
         threadId: roomId,
-        channelId: activeChannel?.id,
+        channelId: targetChannelId,
         authorId: targetAgent.id,
         authorName: targetAgent.name,
         authorHandle: targetAgent.handle,
@@ -1429,24 +1526,35 @@ export default function App() {
       if (isTopic && topicId) {
         setMessages((prev) => {
           const nextTopicMsgs = [...(prev[topicId] || []), nextReply];
-          const updatedChannelMsgs = (prev[activeThread?.id || ''] || []).map((m) => {
-            if (m.type === 'topic' && m.topicData?.id === topicId) {
-              return {
-                ...m,
-                topicData: {
-                  ...m.topicData,
-                  repliesCount: nextTopicMsgs.length,
-                  latestReplyPreview: nextReply.content.slice(0, 60),
-                },
-              };
+          
+          let parentThreadId: string | null = null;
+          for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+            if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+              parentThreadId = tId;
+              break;
             }
-            return m;
-          });
+          }
+
+          const updatedParentMsgs = parentThreadId
+            ? (prev[parentThreadId] || []).map((m) => {
+                if (m.type === 'topic' && m.topicData?.id === topicId) {
+                  return {
+                    ...m,
+                    topicData: {
+                      ...m.topicData,
+                      repliesCount: nextTopicMsgs.length,
+                      latestReplyPreview: nextReply.content.slice(0, 60),
+                    },
+                  };
+                }
+                return m;
+              })
+            : [];
 
           return {
             ...prev,
             [topicId]: nextTopicMsgs,
-            ...(activeThread ? { [activeThread.id]: updatedChannelMsgs } : {}),
+            ...(parentThreadId ? { [parentThreadId]: updatedParentMsgs } : {}),
           };
         });
       } else {
@@ -1481,7 +1589,7 @@ export default function App() {
       const errorReply: Message = {
         id: `msg-collab-err-${Date.now()}`,
         threadId: roomId,
-        channelId: activeChannel?.id,
+        channelId: targetChannelId,
         authorId: targetAgent.id,
         authorName: targetAgent.name,
         authorHandle: targetAgent.handle,
@@ -1489,9 +1597,8 @@ export default function App() {
         isAgent: true,
         agentBadge: 'ACP Error',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: `⚠️ **协同调用异常**：${err instanceof Error ? err.message : String(err)}`,
+        content: `⚠️ **协同接力异常**：${err instanceof Error ? err.message : String(err)}`,
       };
-
       setMessages((prev) => ({
         ...prev,
         [roomId]: [...(prev[roomId] || []), errorReply],
@@ -1516,33 +1623,43 @@ export default function App() {
       const topicMsgs = prev[topicId] || [];
       const nextTopicMsgs = [...topicMsgs, userMsg];
 
-      const updatedChannelMsgs = (prev[activeThread.id] || []).map((m) => {
-        if (m.type === 'topic' && m.topicData?.id === topicId) {
-          return {
-            ...m,
-            topicData: {
-              ...m.topicData,
-              status: m.topicData.status === 'open' ? 'investigating' : m.topicData.status,
-              repliesCount: nextTopicMsgs.length,
-              latestReplyPreview: content.slice(0, 60),
-            },
-          };
+      let parentThreadId: string | null = null;
+      for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+        if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+          parentThreadId = tId;
+          break;
         }
-        return m;
-      });
+      }
+
+      const updatedParentMsgs = parentThreadId
+        ? (prev[parentThreadId] || []).map((m) => {
+            if (m.type === 'topic' && m.topicData?.id === topicId) {
+              return {
+                ...m,
+                topicData: {
+                  ...m.topicData,
+                  status: m.topicData.status === 'open' ? 'investigating' : m.topicData.status,
+                  repliesCount: nextTopicMsgs.length,
+                  latestReplyPreview: content.slice(0, 60),
+                },
+              };
+            }
+            return m;
+          })
+        : [];
 
       return {
         ...prev,
         [topicId]: nextTopicMsgs,
-        [activeThread.id]: updatedChannelMsgs,
+        ...(parentThreadId ? { [parentThreadId]: updatedParentMsgs } : {}),
       };
     });
 
+    const topicChannel = channels.find((c) => c.id === activeTopicData?.channelId) || activeChannel;
     const currentChannelAgentIds = Array.from(
       new Set([
-        ...(activeChannel?.assignedAgentIds || []),
-        ...(activeChannel?.memberIds || []),
-        ...(activeThread?.activeAgentIds || []),
+        ...(topicChannel?.assignedAgentIds || []),
+        ...(topicChannel?.memberIds || []),
       ])
     );
     let channelAssigned = currentChannelAgentIds
@@ -1573,7 +1690,7 @@ export default function App() {
         const guardNotice: Message = {
           id: `topic-guard-${Date.now()}`,
           threadId: topicId,
-          channelId: activeChannel?.id,
+          channelId: activeTopicData?.channelId || activeChannel?.id,
           authorId: 'system',
           authorName: 'Shadow Crew 频道隔离守护',
           authorHandle: '@channel-guard',
@@ -1606,10 +1723,18 @@ export default function App() {
           topicAssigned.push(...newlyInvitedToTopic);
 
           setMessages((prev) => {
-            const roomMsgs = prev[activeThread.id] || [];
+            let parentThreadId: string | null = null;
+            for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+              if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+                parentThreadId = tId;
+                break;
+              }
+            }
+            if (!parentThreadId) return prev;
+            const roomMsgs = prev[parentThreadId] || [];
             return {
               ...prev,
-              [activeThread.id]: roomMsgs.map((m) =>
+              [parentThreadId]: roomMsgs.map((m) =>
                 m.topicData && m.topicData.id === topicId
                   ? { ...m, topicData: { ...m.topicData, participatingAgentIds: updatedParticipating } }
                   : m
@@ -1637,53 +1762,113 @@ export default function App() {
       return;
     }
 
-    const responder = respondingAgents[0];
-    const remainingCollaborators = respondingAgents.slice(1);
+    // 检查通信状态：分离离线与已连接的 Agent
+    const offlineAgents = respondingAgents.filter((a) => a.status === 'idle');
+    const onlineAgents = respondingAgents.filter((a) => a.status !== 'idle');
 
-    if (responder) {
-      // 严格检查通信状态：若未手动点击 Start 开启通信，则进行拦截与引导
-      if (responder.status === 'idle') {
-        setTimeout(() => {
-          const offlineNotice: Message = {
-            id: `msg-offline-topic-${Date.now()}`,
-            threadId: topicId,
-            channelId: activeChannel?.id,
-            authorId: 'system',
-            authorName: 'Shadow Crew 通信管控',
-            authorHandle: '@connection-guard',
-            authorAvatar: '🔌',
-            isAgent: true,
-            agentBadge: 'Communication Required',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `🔌 **Agent 通信尚未开启**：**${responder.name}** 当前处于离线/未连接状态。\n\n根据产品规范，在与其协作推演前，需先在左侧「Agents & 编队」控制面板点击该 Agent 头像下方的【Start】按钮开启 ACP 通信连接。`,
-          };
-          setMessages((prev) => ({
-            ...prev,
-            [topicId]: [...(prev[topicId] || []), offlineNotice],
-          }));
-        }, 300);
-        return;
-      }
+    if (offlineAgents.length > 0) {
+      setTimeout(() => {
+        const offlineNotice: Message = {
+          id: `msg-offline-topic-${Date.now()}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: 'system',
+          authorName: 'Shadow Crew 通信管控',
+          authorHandle: '@connection-guard',
+          authorAvatar: '🔌',
+          isAgent: true,
+          agentBadge: 'Communication Required',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `🔌 **Agent 通信尚未开启**：${offlineAgents.map((a) => `**${a.name}**`).join('、')} 当前处于离线/未连接状态。\n\n根据产品规范，在与其协作推演前，需先在左侧「Agents & 编队」控制面板点击对应 Agent 头像下方的【Start】按钮开启 ACP 通信连接。`,
+        };
+        setMessages((prev) => ({
+          ...prev,
+          [topicId]: [...(prev[topicId] || []), offlineNotice],
+        }));
+      }, 300);
+    }
 
-      const now = Date.now();
-      const currentResponder = responder;
-      const execKey = `${topicId}:${currentResponder.id}`;
+    if (onlineAgents.length === 0) {
+      return;
+    }
 
-      // 对标 Buzz: 仅当该 Session 尚未交付过立足上下文时构造公约 (首轮通过 systemPrompt + 前置引导)
-      const sessionKey = `${topicId}:${currentResponder.id}`;
+    const now = Date.now();
+    setIsGenerating(true);
+
+    // 1. 同时在 UI activeExecutions 中注册所有并行的推演任务
+    const newExecs: Record<string, ActiveAgentExecution> = {};
+    onlineAgents.forEach((agent, idx) => {
+      const execKey = `${topicId}:${agent.id}`;
+      newExecs[execKey] = {
+        agentId: agent.id,
+        agentName: agent.name,
+        agentAvatar: agent.avatar,
+        threadId: topicId,
+        topicId: topicId,
+        status: 'thinking',
+        currentActionDetail: onlineAgents.length > 1 
+          ? `正在并发独立推演方案与系统共识 (并行 Hop 1)...`
+          : `正在深度推演议题方案与系统共识 (Hop 1)...`,
+        startedAt: now + idx * 50,
+        cascadeHop: 1,
+      };
+    });
+
+    setActiveExecutions((prev) => ({
+      ...prev,
+      ...newExecs,
+    }));
+
+    // 更新全局 agents 状态为 thinking
+    setAgents((prev) =>
+      prev.map((a) => (onlineAgents.some((oa) => oa.id === a.id) ? { ...a, status: 'thinking' } : a))
+    );
+
+    // 提取议题前序研讨记录（取最近 4 条非系统防护类消息，为独立 Session 提供前序共识脉络）
+    const existingTopicMsgs = messages[topicId] || [];
+    const recentHistory = existingTopicMsgs
+      .filter((m) => m.authorId !== 'system' && !m.agentBadge?.includes('Guard'))
+      .slice(-4)
+      .map((m) => ({
+        author: m.authorName || m.authorHandle,
+        content: m.content,
+        isAgent: m.isAgent,
+      }));
+
+    const topicContext: TopicPromptContext = {
+      topicId,
+      title: activeTopicData?.title || '议题方案推演',
+      description: activeTopicData?.description,
+      channelName: topicChannel?.name || 'chat',
+      status: activeTopicData?.status || 'open',
+      participatingAgents: candidateAgents,
+      recentHistory,
+    };
+
+    // 2. 并发向所有已就绪的 onlineAgents 下发 prompt
+    onlineAgents.forEach((agent) => {
+      const execKey = `${topicId}:${agent.id}`;
+      const sessionKey = `${topicId}:${agent.id}`;
       const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
       const standingContext = !isStandingContextDelivered
-        ? buildCrewRosterGuidance(candidateAgents, currentResponder.id)
+        ? buildCrewRosterGuidance(candidateAgents, agent.id)
         : undefined;
 
+      const structuredTopicPrompt = buildTopicPrompt({
+        topic: topicContext,
+        userContent: content,
+        targetAgent: agent,
+        availableAgents: candidateAgents,
+      });
+
       const finalPrompt = !isStandingContextDelivered && standingContext
-        ? `${content}${standingContext}`
-        : content;
+        ? `${structuredTopicPrompt}${standingContext}`
+        : structuredTopicPrompt;
 
       deliveredStandingContextRef.current.add(sessionKey);
 
-      // 初始化协同链状态
-      const cascadeId = `cascade-topic-${Date.now()}`;
+      // 为每个推演分支初始化级联状态
+      const cascadeId = `cascade-topic-${Date.now()}-${agent.id}`;
       const newCascade: CollaborationCascade = {
         cascadeId,
         rootMessageId: userMsg.id,
@@ -1691,59 +1876,50 @@ export default function App() {
         originalPrompt: content,
         depth: 1,
         maxDepth: 8,
-        visitedAgentIds: [currentResponder.id],
-        agentCallCounts: { [currentResponder.id]: 1 },
+        visitedAgentIds: [agent.id],
+        agentCallCounts: { [agent.id]: 1 },
         isAborted: false,
       };
       setActiveCascades((prev) => ({ ...prev, [cascadeId]: newCascade }));
 
-      setActiveExecutions((prev) => ({
-        ...prev,
-        [execKey]: {
-          agentId: currentResponder.id,
-          agentName: currentResponder.name,
-          agentAvatar: currentResponder.avatar,
-          threadId: topicId,
-          topicId: topicId,
-          status: 'thinking',
-          currentActionDetail: '正在深度推演议题方案与系统共识 (Hop 1)...',
-          startedAt: now,
-          cascadeHop: 1,
-        },
-      }));
-
-      logRpc(responder.name, 'client_to_agent', 'session/prompt', {
+      logRpc(agent.name, 'client_to_agent', 'session/prompt', {
         jsonrpc: '2.0',
         id: Date.now(),
         method: 'session/prompt',
-        params: { roomId: topicId, prompt: finalPrompt, channelId: activeChannel?.id },
+        params: { roomId: topicId, prompt: finalPrompt, channelId: topicChannel?.id },
       });
 
       sendPromptToAcpAgent({
-        agent: responder,
+        agent,
         roomId: topicId,
         prompt: finalPrompt,
         projectId: activeProjectId,
-        channelId: activeChannel?.id,
+        channelId: topicChannel?.id,
         systemPrompt: standingContext,
       })
         .then((acpResp) => {
           setActiveExecutions((prev) => {
             const next = { ...prev };
             delete next[execKey];
+            if (Object.keys(next).length === 0) setIsGenerating(false);
             return next;
           });
 
+          setAgents((prev) =>
+            prev.map((a) => (a.id === agent.id ? { ...a, status: 'running' } : a))
+          );
+          syncRunningAgentsWithBackend();
+
           const agentReply: Message = {
-            id: `topic-reply-${Date.now()}`,
+            id: `topic-reply-${Date.now()}-${agent.id}`,
             threadId: topicId,
-            channelId: activeChannel?.id,
-            authorId: currentResponder.id,
-            authorName: currentResponder.name,
-            authorHandle: currentResponder.handle,
-            authorAvatar: currentResponder.avatar,
+            channelId: topicChannel?.id,
+            authorId: agent.id,
+            authorName: agent.name,
+            authorHandle: agent.handle,
+            authorAvatar: agent.avatar,
             isAgent: true,
-            agentBadge: `${currentResponder.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : currentResponder.isRemote ? 'ACP Remote' : '协作'}`,
+            agentBadge: `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : agent.isRemote ? 'ACP Remote' : '协作'}`,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             content: acpResp.textResponse,
             thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
@@ -1763,59 +1939,72 @@ export default function App() {
 
           setMessages((prev) => {
             const nextTopicMsgs = [...(prev[topicId] || []), agentReply];
-            const updatedChannelMsgs = (prev[activeThread.id] || []).map((m) => {
-              if (m.type === 'topic' && m.topicData?.id === topicId) {
-                return {
-                  ...m,
-                  topicData: {
-                    ...m.topicData,
-                    repliesCount: nextTopicMsgs.length,
-                    latestReplyPreview: agentReply.content.slice(0, 60),
-                  },
-                };
+            let parentThreadId: string | null = null;
+            for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+              if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+                parentThreadId = tId;
+                break;
               }
-              return m;
-            });
+            }
+
+            const updatedChannelMsgs = parentThreadId
+              ? (prev[parentThreadId] || []).map((m) => {
+                  if (m.type === 'topic' && m.topicData?.id === topicId) {
+                    return {
+                      ...m,
+                      topicData: {
+                        ...m.topicData,
+                        repliesCount: nextTopicMsgs.length,
+                        latestReplyPreview: agentReply.content.slice(0, 60),
+                      },
+                    };
+                  }
+                  return m;
+                })
+              : [];
 
             return {
               ...prev,
               [topicId]: nextTopicMsgs,
-              [activeThread.id]: updatedChannelMsgs,
+              ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
             };
           });
 
-          logRpc(currentResponder.name, 'agent_to_client', 'session/prompt:result', {
+          logRpc(agent.name, 'agent_to_client', 'session/prompt:result', {
             jsonrpc: '2.0',
             method: 'session/prompt:result',
             result: acpResp,
           });
 
-          // 触发跨智能体互相 @ 级联调度（并继续按序执行用户同时 @ 进来的其他协作者）
+          // 若此 Agent 在回复正文中主动 @ 了其他同行（例如 "@Architect 我补充了鉴权逻辑"），触发后续串行级联辩论接力
           dispatchCascadingAgentResponse({
             cascadeId,
-            invokingAgent: currentResponder,
+            invokingAgent: agent,
             replyContent: acpResp.textResponse,
             roomId: topicId,
             isTopic: true,
             topicId,
-            queuedCollaborators: remainingCollaborators,
           });
         })
         .catch((err) => {
           setActiveExecutions((prev) => {
             const next = { ...prev };
             delete next[execKey];
+            if (Object.keys(next).length === 0) setIsGenerating(false);
             return next;
           });
+          setAgents((prev) =>
+            prev.map((a) => (a.id === agent.id ? { ...a, status: 'idle' } : a))
+          );
           console.error('Failed to send topic prompt to agent:', err);
           const errorReply: Message = {
-            id: `topic-reply-err-${Date.now()}`,
+            id: `topic-reply-err-${Date.now()}-${agent.id}`,
             threadId: topicId,
-            channelId: activeChannel?.id,
-            authorId: currentResponder.id,
-            authorName: currentResponder.name,
-            authorHandle: currentResponder.handle,
-            authorAvatar: currentResponder.avatar,
+            channelId: topicChannel?.id,
+            authorId: agent.id,
+            authorName: agent.name,
+            authorHandle: agent.handle,
+            authorAvatar: agent.avatar,
             isAgent: true,
             agentBadge: 'ACP Error',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -1827,7 +2016,7 @@ export default function App() {
             [topicId]: [...(prev[topicId] || []), errorReply],
           }));
         });
-    }
+    });
   };
 
   const handleResolveTopic = (
@@ -1844,7 +2033,16 @@ export default function App() {
     };
 
     setMessages((prev) => {
-      const updatedChannelMsgs = (prev[activeThread.id] || []).map((m) => {
+      let parentThreadId: string | null = null;
+      for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+        if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+          parentThreadId = tId;
+          break;
+        }
+      }
+      if (!parentThreadId) return prev;
+
+      const updatedChannelMsgs = (prev[parentThreadId] || []).map((m) => {
         if (m.type === 'topic' && m.topicData?.id === topicId) {
           return {
             ...m,
@@ -1860,8 +2058,8 @@ export default function App() {
 
       const rollupNotice: Message = {
         id: `msg-rollup-${Date.now()}`,
-        threadId: activeThread.id,
-        channelId: activeChannel.id,
+        threadId: parentThreadId,
+        channelId: activeTopicData?.channelId || activeChannel?.id,
         authorId: 'system',
         authorName: 'Shinobi 共识引擎',
         authorHandle: '@shinobi',
@@ -1874,14 +2072,23 @@ export default function App() {
 
       return {
         ...prev,
-        [activeThread.id]: [...updatedChannelMsgs, rollupNotice],
+        [parentThreadId]: [...updatedChannelMsgs, rollupNotice],
       };
     });
   };
 
   const handleReopenTopic = (topicId: string) => {
     setMessages((prev) => {
-      const updatedChannelMsgs = (prev[activeThread.id] || []).map((m) => {
+      let parentThreadId: string | null = null;
+      for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+        if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+          parentThreadId = tId;
+          break;
+        }
+      }
+      if (!parentThreadId) return prev;
+
+      const updatedChannelMsgs = (prev[parentThreadId] || []).map((m) => {
         if (m.type === 'topic' && m.topicData?.id === topicId) {
           return {
             ...m,
@@ -1893,7 +2100,7 @@ export default function App() {
         }
         return m;
       });
-      return { ...prev, [activeThread.id]: updatedChannelMsgs };
+      return { ...prev, [parentThreadId]: updatedChannelMsgs };
     });
   };
 
@@ -1965,9 +2172,12 @@ export default function App() {
   const handleSendMessage = (content: string) => {
     if (!content.trim() || !activeThread) return;
 
+    const targetChannelId = activeThread.type === 'dm' ? 'direct-messages' : activeChannel?.id;
+
     const userMsg: Message = {
       id: `msg-${Date.now()}`,
       threadId: activeThread.id,
+      channelId: targetChannelId,
       authorId: 'user-norris',
       authorName: 'Norris_M5Pro',
       authorHandle: '@Norris_M5Pro',
@@ -2066,6 +2276,7 @@ export default function App() {
         const hintMsg: Message = {
           id: `msg-hint-${Date.now()}`,
           threadId: activeThread.id,
+          channelId: targetChannelId,
           authorId: 'system',
           authorName: 'Shinobi 系统提示',
           authorHandle: '@shinobi',
@@ -2093,7 +2304,7 @@ export default function App() {
         const offlineNotice: Message = {
           id: `msg-offline-${Date.now()}`,
           threadId: activeThread.id,
-          channelId: activeChannel?.id,
+          channelId: targetChannelId,
           authorId: 'system',
           authorName: 'Shadow Crew 通信管控',
           authorHandle: '@connection-guard',
@@ -2117,7 +2328,8 @@ export default function App() {
     const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
 
     // 对标 Buzz: 仅当该 Session 尚未交付过立足上下文时构造公约 (首轮通过 systemPrompt + 前置引导)
-    const standingContext = !isStandingContextDelivered
+    // 注意：私聊 (DM) 模式下不需要多智能体协同公约/花名册，避免注入 "@ 级联调度公约" 等频道协同指令
+    const standingContext = activeThread.type !== 'dm' && !isStandingContextDelivered
       ? buildCrewRosterGuidance(candidateAgents, primaryResponder.id)
       : undefined;
 
@@ -2149,7 +2361,11 @@ export default function App() {
         jsonrpc: '2.0',
         id: Date.now() + idx,
         method: 'session/prompt',
-        params: { threadId: activeThread.id, prompt: finalPrompt },
+        params: {
+          threadId: activeThread.id,
+          prompt: finalPrompt,
+          channelId: targetChannelId,
+        },
       });
 
       newExecs[`${activeThread.id}:${ag.id}`] = {
@@ -2175,7 +2391,7 @@ export default function App() {
       roomId: activeThread.id,
       prompt: finalPrompt,
       projectId: activeProjectId,
-      channelId: activeChannel?.id,
+      channelId: targetChannelId,
       systemPrompt: standingContext,
     })
       .then((acpResp) => {
@@ -2189,7 +2405,7 @@ export default function App() {
         const agentReply: Message = {
           id: `msg-reply-${Date.now()}`,
           threadId: activeThread.id,
-          channelId: activeChannel?.id,
+          channelId: targetChannelId,
           authorId: primaryResponder.id,
           authorName: primaryResponder.name,
           authorHandle: primaryResponder.handle,
@@ -2243,15 +2459,17 @@ export default function App() {
           result: { status: 'completed', isRealProcess: acpResp.isRealProcess },
         });
 
-        // 触发跨智能体互相 @ 级联调度（并继续按序执行用户同时 @ 进来的其他协作者）
-        dispatchCascadingAgentResponse({
-          cascadeId,
-          invokingAgent: primaryResponder,
-          replyContent: acpResp.textResponse,
-          roomId: activeThread.id,
-          isTopic: false,
-          queuedCollaborators: respondingAgents.slice(1),
-        });
+        // 仅在非 DM (即频道多 Agent 协同) 场景下触发跨智能体互相 @ 级联调度
+        if (activeThread.type !== 'dm') {
+          dispatchCascadingAgentResponse({
+            cascadeId,
+            invokingAgent: primaryResponder,
+            replyContent: acpResp.textResponse,
+            roomId: activeThread.id,
+            isTopic: false,
+            queuedCollaborators: respondingAgents.slice(1),
+          });
+        }
       })
       .catch((err) => {
         setActiveExecutions((prev) => {
@@ -2265,7 +2483,7 @@ export default function App() {
         const errorReply: Message = {
           id: `msg-err-${Date.now()}`,
           threadId: activeThread.id,
-          channelId: activeChannel?.id,
+          channelId: targetChannelId,
           authorId: primaryResponder.id,
           authorName: primaryResponder.name,
           authorHandle: primaryResponder.handle,
@@ -2595,8 +2813,9 @@ export default function App() {
             topic={activeTopicData}
             messages={activeTopicMessages}
             agents={currentChannelAgents}
-            activeExecutions={activeTopicId ? Object.values(activeExecutions).filter((e: any) => e.threadId === activeTopicId) : []}
+            activeExecutions={activeTopicId ? Object.values(activeExecutions).filter((e: any) => e.threadId === activeTopicId || e.topicId === activeTopicId) : []}
             onAbortAgent={(agentId) => activeTopicId && handleAbortAgent(agentId, activeTopicId)}
+            onAbortAll={() => activeTopicId && handleAbortAll(activeTopicId)}
             onClose={() => setActiveTopicId(null)}
             onSendMessage={handleSendTopicMessage}
             onResolveTopic={handleResolveTopic}

@@ -730,7 +730,10 @@ impl AcpProcessManager {
         };
 
         if session_id.is_none() {
-            let new_sess_id = 2001u64;
+            let new_sess_id = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
             let (sess_tx, sess_rx) = oneshot::channel();
             {
                 let mut map = agent.pending_requests.lock().await;

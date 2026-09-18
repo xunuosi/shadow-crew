@@ -34,6 +34,7 @@ interface TopicThreadDrawerProps {
   agents: Agent[];
   activeExecutions?: ActiveAgentExecution[];
   onAbortAgent?: (agentId: string) => void;
+  onAbortAll?: () => void;
   onClose: () => void;
   onSendMessage: (topicId: string, content: string) => void;
   onResolveTopic: (topicId: string, decision: {
@@ -52,6 +53,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   agents,
   activeExecutions = [],
   onAbortAgent,
+  onAbortAll,
   onClose,
   onSendMessage,
   onResolveTopic,
@@ -227,7 +229,11 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
     if (isExecuting && e.key === 'Escape') {
       e.preventDefault();
-      if (activeTopicExecution) onAbortAgent?.(activeTopicExecution.agentId);
+      if (onAbortAll) {
+        onAbortAll();
+      } else if (onAbortAgent) {
+        topicExecutions.forEach((exec) => onAbortAgent(exec.agentId));
+      }
       return;
     }
 
@@ -303,10 +309,14 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   <CheckCircle2 className="w-3 h-3" />
                   <span>🟢 已达成共识 (Resolved)</span>
                 </span>
-              ) : isExecuting && activeTopicExecution ? (
+              ) : isExecuting && topicExecutions.length > 0 ? (
                 <span className="text-purple-500 font-semibold flex items-center gap-1.5 shrink-0">
                   <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
-                  <span>🟡 {activeTopicExecution.agentName} 正在推演 ({((now - activeTopicExecution.startedAt) / 1000).toFixed(1)}s)</span>
+                  {topicExecutions.length === 1 ? (
+                    <span>🟡 {topicExecutions[0].agentName} 正在推演 ({((now - topicExecutions[0].startedAt) / 1000).toFixed(1)}s)</span>
+                  ) : (
+                    <span>🟡 {topicExecutions.length} 位 Agent 正在并发推演 ({topicExecutions.map((e) => e.agentName).join('、')})</span>
+                  )}
                 </span>
               ) : (
                 <span className="text-purple-500 font-semibold flex items-center gap-1 shrink-0">
@@ -488,21 +498,50 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           })
         )}
 
-        {/* Topic In-Thread Live Thinking Stepper */}
-        {isExecuting && activeTopicExecution && (
-          <div className="p-3 rounded-xl bg-purple-500/10 border border-purple-500/30 text-xs space-y-1.5 animate-in fade-in duration-150">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-purple-600 dark:text-purple-400 flex items-center gap-1.5">
-                <BrainCircuit className="w-3.5 h-3.5 animate-pulse text-purple-500" />
-                <span>{activeTopicExecution.agentName} 正在论证推演中</span>
-              </span>
-              <span className="text-[10px] font-mono text-purple-500 font-semibold">
-                {((now - activeTopicExecution.startedAt) / 1000).toFixed(1)}s
-              </span>
-            </div>
-            <p className="text-[11px] text-fg-muted font-mono leading-relaxed">
-              {activeTopicExecution.currentActionDetail || '正在评估架构方案、校验多分支边界...'}
-            </p>
+        {/* Topic In-Thread Live Thinking Stepper (支持多 Agent 并发推演卡片) */}
+        {isExecuting && topicExecutions.length > 0 && (
+          <div className="space-y-2">
+            {topicExecutions.map((exec) => {
+              const isQueued = exec.status === 'queued';
+              return (
+                <div
+                  key={exec.agentId}
+                  className={`p-3 rounded-xl border text-xs space-y-1.5 animate-in fade-in duration-150 ${
+                    isQueued
+                      ? 'bg-surface border-border text-fg-muted'
+                      : 'bg-purple-500/10 border-purple-500/30 text-fg'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`font-semibold flex items-center gap-1.5 ${
+                      isQueued ? 'text-fg-muted' : 'text-purple-600 dark:text-purple-400'
+                    }`}>
+                      <span className="text-sm">{exec.agentAvatar || '🤖'}</span>
+                      <BrainCircuit className={`w-3.5 h-3.5 ${isQueued ? 'opacity-60' : 'animate-pulse text-purple-500'}`} />
+                      <span>{exec.agentName} {isQueued ? '排队等待接力' : '正在论证推演中'}</span>
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-mono font-semibold ${isQueued ? 'text-fg-muted' : 'text-purple-500'}`}>
+                        {((now - exec.startedAt) / 1000).toFixed(1)}s
+                      </span>
+                      {onAbortAgent && (
+                        <button
+                          type="button"
+                          onClick={() => onAbortAgent(exec.agentId)}
+                          className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/10 hover:bg-red-500/20 text-red-500 transition-colors cursor-pointer"
+                          title={`终止 ${exec.agentName} 的推演`}
+                        >
+                          终止
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-fg-muted font-mono leading-relaxed">
+                    {exec.currentActionDetail || (isQueued ? '排队等待协同推演中...' : '正在评估架构方案、校验多分支边界...')}
+                  </p>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -595,12 +634,18 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             {isExecuting ? (
               <button
                 type="button"
-                onClick={() => activeTopicExecution && onAbortAgent?.(activeTopicExecution.agentId)}
+                onClick={() => {
+                  if (onAbortAll) {
+                    onAbortAll();
+                  } else if (onAbortAgent) {
+                    topicExecutions.forEach((e) => onAbortAgent(e.agentId));
+                  }
+                }}
                 className="px-2 py-1 rounded-lg bg-red-500 hover:bg-red-600 text-white transition-all cursor-pointer shadow-xs flex items-center gap-1 text-[11px] font-medium animate-in fade-in"
-                title="终止推演 (Esc)"
+                title="终止全部推演 (Esc)"
               >
                 <Square className="w-3 h-3 fill-current" />
-                <span>终止</span>
+                <span>终止全部 ({topicExecutions.length})</span>
               </button>
             ) : (
               <button

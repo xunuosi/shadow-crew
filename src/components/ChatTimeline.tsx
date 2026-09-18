@@ -158,12 +158,18 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   }, [currentThreadExecutions.length]);
 
   const filteredMessages = messages.filter((m) => {
+    // 私聊模式防御性过滤：绝对不渲染议题卡片、共识卡片、频道准入拦截提示等频道专属系统消息
+    if (activeThread?.type === 'dm') {
+      if (m.type === 'topic' || m.agentBadge === 'Consensus Rollup' || m.agentBadge === 'Channel Guard') {
+        return false;
+      }
+    }
     if (filter === 'topics') return m.type === 'topic';
     if (filter === 'resolved') return m.type === 'topic' && m.topicData?.status === 'resolved';
     return true;
   });
 
-  const topicCount = messages.filter((m) => m.type === 'topic').length;
+  const topicCount = activeThread?.type === 'dm' ? 0 : messages.filter((m) => m.type === 'topic').length;
 
   if (!activeThread) {
     return (
@@ -242,29 +248,31 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           )}
 
           {/* Filter Pill Tabs */}
-          <div className="hidden lg:flex items-center bg-surface rounded-lg p-0.5 border border-border gap-0.5 ml-1 shrink-0">
-            <button
-              onClick={() => setFilter('all')}
-              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer ${
-                filter === 'all' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:text-fg'
-              }`}
-            >
-              全部
-            </button>
-            <button
-              onClick={() => setFilter('topics')}
-              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer flex items-center gap-1 ${
-                filter === 'topics' ? 'bg-purple-500/20 text-purple-600 dark:text-purple-300 font-semibold' : 'text-fg-muted hover:text-fg'
-              }`}
-            >
-              <span>议题</span>
-              {topicCount > 0 && (
-                <span className="px-1 py-0.5 rounded-full text-[9px] bg-purple-500/20 text-purple-500 font-mono">
-                  {topicCount}
-                </span>
-              )}
-            </button>
-          </div>
+          {activeThread.type !== 'dm' && (
+            <div className="hidden lg:flex items-center bg-surface rounded-lg p-0.5 border border-border gap-0.5 ml-1 shrink-0">
+              <button
+                onClick={() => setFilter('all')}
+                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer ${
+                  filter === 'all' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:text-fg'
+                }`}
+              >
+                全部
+              </button>
+              <button
+                onClick={() => setFilter('topics')}
+                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer flex items-center gap-1 ${
+                  filter === 'topics' ? 'bg-purple-500/20 text-purple-600 dark:text-purple-300 font-semibold' : 'text-fg-muted hover:text-fg'
+                }`}
+              >
+                <span>议题</span>
+                {topicCount > 0 && (
+                  <span className="px-1 py-0.5 rounded-full text-[9px] bg-purple-500/20 text-purple-500 font-mono">
+                    {topicCount}
+                  </span>
+                )}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Right Header Controls */}
@@ -284,7 +292,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           )}
 
           {/* + New Topic Button */}
-          {onOpenNewTopicModal && (
+          {onOpenNewTopicModal && activeThread.type !== 'dm' && (
             <button
               onClick={onOpenNewTopicModal}
               className="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium text-[11px] shadow-xs flex items-center gap-1 transition-all cursor-pointer whitespace-nowrap shrink-0"

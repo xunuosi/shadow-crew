@@ -144,14 +144,81 @@ export const buildStandingContext = buildCrewRosterGuidance;
  * 2. 坚决不复读 30 行系统级平台公约，避免上下文膨胀与指令稀释
  * 3. 仅附带单行轻量协同提示
  */
-export function buildCascadePrompt(options: {
+export interface TopicPromptContext {
+  topicId: string;
+  title: string;
+  description?: string;
+  channelName?: string;
+  status?: string;
+  participatingAgents?: Agent[];
+  recentHistory?: Array<{ author: string; content: string; isAgent?: boolean }>;
+}
+
+/**
+ * 构造议题（Topic Thread）开题与讨论推演的统一结构化提示词
+ * 确保即使在各自独立的 Session 中，Agent 也能完整获取议题标题、目标背景与前序讨论脉络
+ */
+export function buildTopicPrompt(options: {
+  topic: TopicPromptContext;
+  userContent: string;
+  targetAgent: Agent;
+  availableAgents: Agent[];
+}): string {
+  const { topic, userContent, targetAgent, availableAgents } = options;
+
+  const peers = availableAgents.filter((a) => a.id !== targetAgent.id);
+  const peerList = peers.length > 0
+    ? peers.map((p) => `${p.handle} (${p.name} · ${p.role})`).join('、')
+    : '(当前仅你独立在线)';
+
+  let historySection = '';
+  if (topic.recentHistory && topic.recentHistory.length > 0) {
+    const formattedHistory = topic.recentHistory
+      .map((h) => {
+        const preview = h.content.length > 300 ? `${h.content.slice(0, 300)}...` : h.content;
+        return `• [${h.author}]: ${preview}`;
+      })
+      .join('\n');
+    historySection = `\n【议题前序研讨脉络】:\n${formattedHistory}\n`;
+  }
+
+  const topicDesc = topic.description?.trim()
+    ? topic.description.trim()
+    : '（创建者未填写额外背景说明，请紧密围绕议题标题进行专业技术方案推演）';
+
+  return `[📌 议题研讨推演任务 (Topic Discussion Context)]
+【所属频道】: #${topic.channelName || '频道'}
+【议题编号】: ${topic.topicId}
+【议题标题】: ${topic.title}
+【议题背景与需求目标】:
+${topicDesc}
+【参与研讨成员】: ${peerList}
+${historySection}
+【用户开题 / 本轮诉求指令】:
+"${userContent}"
+
+请以你的专业角色定位【${targetAgent.name} (${targetAgent.handle}) · ${targetAgent.role}】针对上述议题目标与用户诉求展开技术推演与方案陈述。`;
+}
+
+export interface BuildCascadePromptOptions {
   targetAgent: Agent;
   invokingAgent: Agent;
   originalUserPrompt: string;
   invokingAgentReply: string;
   cascade: CollaborationCascade;
   availableAgents: Agent[];
-}): string {
+  topic?: TopicPromptContext;
+  isQueuedByUserInput?: boolean;
+}
+
+/**
+ * 构造跨智能体协同接力的结构化提示词
+ * 对标 Buzz 最佳实践：
+ * 1. 专注纯净业务接力信息（发起人、原议题、前序结论、具体审查诉求）
+ * 2. 坚决不复读 30 行系统级平台公约，避免上下文膨胀与指令稀释
+ * 3. 支持议题元数据带入与用户排队 @all / 串行接力语义区分
+ */
+export function buildCascadePrompt(options: BuildCascadePromptOptions): string {
   const {
     targetAgent,
     invokingAgent,
@@ -159,6 +226,8 @@ export function buildCascadePrompt(options: {
     invokingAgentReply,
     cascade,
     availableAgents,
+    topic,
+    isQueuedByUserInput = false,
   } = options;
 
   const currentHop = cascade.depth + 1;
@@ -168,9 +237,28 @@ export function buildCascadePrompt(options: {
       ? `\n\n[💡 协同指引：若完成本轮审查后仍需其他专家进一步研讨，可直接在正文中自然 @对方（当前频道可用：${peers.map((p) => p.handle).join(', ')}）；若方案已完备收敛，直接输出最终共识结论即可]`
       : '';
 
+  const topicHeader = topic
+    ? `【所属议题】: 【${topic.title}】 (ID: ${topic.topicId})\n【议题背景与目标】:\n${topic.description?.trim() || topic.title}\n\n`
+    : '';
+
+  // 区分：是由前序 Agent 显式点名请求代码审查，还是由用户 @all / 批量点名排队顺延陈述
+  const requestSection = isQueuedByUserInput
+    ? `【多智能体协同陈述 (用户排队协作)】:
+用户在上述讨论中同时指派了多位成员共同陈述观点。
+前序成员 (${invokingAgent.name}) 已完成其视角阐述（见上方结论）。现请基于你的专属角色定位（${targetAgent.role}${targetAgent.description ? ` - ${targetAgent.description}` : ''}）：
+1. 独立给出你针对该议题的技术方案或观点，避免重复前序已明确的常识；
+2. 结合前序成员的结论进行必要的补充、差异对比或共识确认；
+3. 如果方案已完备收敛，可直接给出最终共识确认；若仍需特定成员深入，可继续 @ 对应成员。`
+    : `【对你的协作诉求】:
+${invokingAgent.name} 在上述方案中明确点名了你 (${targetAgent.handle})。
+请基于你的专属角色定位（${targetAgent.role}${targetAgent.description ? ` - ${targetAgent.description}` : ''}）：
+1. 对上述方案进行针对性技术审查与评估；
+2. 提出你的专业补充、风险质疑或具体的落地步骤；
+3. 如果结论已经成熟收敛，请给出最终共识确认；如果依然需要其他领域专家，可继续 @ 对应成员。`;
+
   return `[🤝 团队协同协作请求 (第 ${currentHop}/${cascade.maxDepth} 轮接力)]
 
-【发起协同者】: ${invokingAgent.handle} (${invokingAgent.name} · ${invokingAgent.role})
+${topicHeader}【发起协同者】: ${invokingAgent.handle} (${invokingAgent.name} · ${invokingAgent.role})
 【原始用户议题/需求】:
 "${originalUserPrompt}"
 
@@ -179,11 +267,6 @@ export function buildCascadePrompt(options: {
 ${invokingAgentReply}
 """
 
-【对你的协作诉求】:
-${invokingAgent.name} 在上述方案中明确点名了你 (${targetAgent.handle})。
-请基于你的专属角色定位（${targetAgent.role}${targetAgent.description ? ` - ${targetAgent.description}` : ''}）：
-1. 对上述方案进行针对性技术审查与评估；
-2. 提出你的专业补充、风险质疑或具体的落地步骤；
-3. 如果结论已经成熟收敛，请给出最终共识确认；如果依然需要其他领域专家，可继续 @ 对应成员。${peerList}`;
+${requestSection}${peerList}`;
 }
 

@@ -2,9 +2,10 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Sun, Moon, Laptop, Palette, Check } from 'lucide-react';
 import { useTheme, ThemeMode, AccentColor } from '../context/ThemeContext';
 
-interface ThemeSwitcherProps {
+export interface ThemeSwitcherProps {
   variant?: 'compact' | 'full';
   className?: string;
+  placement?: 'auto' | 'top' | 'bottom' | 'top-start' | 'top-end' | 'bottom-start' | 'bottom-end';
 }
 
 const ACCENT_PRESETS: Array<{ id: AccentColor; label: string; colorHex: string }> = [
@@ -17,25 +18,110 @@ const ACCENT_PRESETS: Array<{ id: AccentColor; label: string; colorHex: string }
 export const ThemeSwitcher: React.FC<ThemeSwitcherProps> = ({
   variant = 'compact',
   className = '',
+  placement = 'auto',
 }) => {
   const { mode, resolvedMode, accent, setMode, setAccent, toggleMode } = useTheme();
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Close on outside click
+  // Smart placement state to prevent dropdown from clipping outside screen edges
+  const [computedPlacement, setComputedPlacement] = useState<{
+    vertical: 'top' | 'bottom';
+    horizontal: 'left' | 'right';
+  }>(() => {
+    // Initial guess based on explicit placement
+    const v = placement.includes('top') ? 'top' : placement.includes('bottom') ? 'bottom' : 'bottom';
+    const h = placement.includes('start') ? 'left' : placement.includes('end') ? 'right' : 'right';
+    return { vertical: v, horizontal: h };
+  });
+
+  // Calculate dynamic collision-free placement whenever opened
+  useEffect(() => {
+    if (!isOpen || !dropdownRef.current) return;
+
+    const updatePlacement = () => {
+      if (!dropdownRef.current) return;
+      const rect = dropdownRef.current.getBoundingClientRect();
+      const popupHeight = 180;
+      const popupWidth = 208; // w-52 is 208px
+      const padding = 12;
+
+      let v: 'top' | 'bottom' = 'bottom';
+      let h: 'left' | 'right' = 'right';
+
+      if (placement === 'top' || placement === 'top-start' || placement === 'top-end') {
+        v = 'top';
+      } else if (placement === 'bottom' || placement === 'bottom-start' || placement === 'bottom-end') {
+        v = 'bottom';
+      } else {
+        // Auto vertical collision detection:
+        const spaceBelow = window.innerHeight - rect.bottom;
+        const spaceAbove = rect.top;
+        if (spaceBelow < popupHeight + padding && spaceAbove > spaceBelow) {
+          v = 'top';
+        } else {
+          v = 'bottom';
+        }
+      }
+
+      if (placement === 'top-start' || placement === 'bottom-start') {
+        h = 'left';
+      } else if (placement === 'top-end' || placement === 'bottom-end') {
+        h = 'right';
+      } else {
+        // Auto horizontal collision detection:
+        const wouldOverflowLeft = rect.right - popupWidth < padding;
+        const wouldOverflowRight = rect.left + popupWidth > window.innerWidth - padding;
+
+        if (wouldOverflowLeft && !wouldOverflowRight) {
+          h = 'left';
+        } else {
+          h = 'right';
+        }
+      }
+
+      setComputedPlacement({ vertical: v, horizontal: h });
+    };
+
+    updatePlacement();
+    window.addEventListener('resize', updatePlacement);
+    window.addEventListener('scroll', updatePlacement, true);
+    return () => {
+      window.removeEventListener('resize', updatePlacement);
+      window.removeEventListener('scroll', updatePlacement, true);
+    };
+  }, [isOpen, placement]);
+
+  // Close on outside click or Escape key
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setIsOpen(false);
       }
     };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) {
+        setIsOpen(false);
+      }
+    };
+
     if (isOpen) {
       document.addEventListener('mousedown', handleClickOutside);
+      window.addEventListener('keydown', handleKeyDown);
     }
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [isOpen]);
 
   if (variant === 'compact') {
+    const verticalClass = computedPlacement.vertical === 'top' ? 'bottom-full mb-2' : 'top-full mt-2';
+    const horizontalClass = computedPlacement.horizontal === 'left' ? 'left-0' : 'right-0';
+    const originClass = computedPlacement.vertical === 'top'
+      ? (computedPlacement.horizontal === 'left' ? 'origin-bottom-left' : 'origin-bottom-right')
+      : (computedPlacement.horizontal === 'left' ? 'origin-top-left' : 'origin-top-right');
+
     return (
       <div className={`relative inline-block ${className}`} ref={dropdownRef}>
         <button
@@ -52,7 +138,7 @@ export const ThemeSwitcher: React.FC<ThemeSwitcherProps> = ({
         </button>
 
         {isOpen && (
-          <div className="absolute right-0 top-full mt-1.5 w-52 rounded-2xl border border-border bg-surface shadow-2xl p-3 z-50 text-xs text-fg animate-in fade-in zoom-in-95 duration-100">
+          <div className={`absolute ${verticalClass} ${horizontalClass} ${originClass} w-52 rounded-2xl border border-border bg-surface/98 dark:bg-surface-subtle/98 backdrop-blur-md shadow-2xl p-3 z-50 text-xs text-fg animate-in fade-in zoom-in-95 duration-100`}>
             {/* Mode Switcher */}
             <div className="mb-3">
               <div className="text-[11px] font-semibold text-fg-muted mb-1.5">明暗底色模式</div>
