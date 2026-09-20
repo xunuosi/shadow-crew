@@ -176,22 +176,22 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
 
         {/* Header */}
         <div className="h-12 px-5 border-b border-border flex items-center justify-between bg-surface-subtle select-none">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-600 dark:text-purple-300">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1 mr-2">
+            <div className="w-7 h-7 rounded-lg bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-600 dark:text-purple-300 shrink-0">
               <Edit3 className="w-4 h-4" />
             </div>
-            <div>
-              <h2 className="font-bold text-fg text-sm">编辑议题信息 (Edit Topic)</h2>
-              <p className="text-[10px] text-fg-muted font-mono">
+            <div className="min-w-0 flex-1">
+              <h2 className="font-bold text-fg text-sm truncate">编辑议题信息 (Edit Topic)</h2>
+              <p className="text-[10px] text-fg-muted font-mono truncate">
                 {channel ? `#${channel.name} · ` : ''}ID: {topic.id}
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
               onClick={toggleWidescreen}
-              className="p-1.5 rounded-lg hover:bg-surface-hover text-fg-muted hover:text-accent transition-colors cursor-pointer flex items-center gap-1 text-[11px] font-mono px-2 border border-border/50"
+              className="p-1.5 rounded-lg hover:bg-surface-hover text-fg-muted hover:text-accent transition-colors cursor-pointer flex items-center gap-1 text-[11px] font-mono px-2 border border-border/50 shrink-0"
               title={modalWidth > 700 ? '切换为标准宽度 (560px)' : '切换为宽屏视图 (880px)'}
             >
               {modalWidth > 700 ? (
@@ -208,7 +208,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
             </button>
             <button
               onClick={onClose}
-              className="p-1 rounded-lg hover:bg-surface-hover text-fg-muted hover:text-fg transition-colors cursor-pointer"
+              className="p-1 rounded-lg hover:bg-surface-hover text-fg-muted hover:text-fg transition-colors cursor-pointer shrink-0"
             >
               <X className="w-4 h-4" />
             </button>
@@ -274,43 +274,44 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
                 </p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
+              <div className={`grid ${modalWidth >= 520 ? 'grid-cols-2' : 'grid-cols-1'} gap-2 max-h-56 overflow-y-auto overflow-x-hidden pr-1.5 p-0.5`}>
                 {agents.map((agent) => {
                   const isSelected = selectedAgentIds.includes(agent.id);
                   return (
                     <div
                       key={agent.id}
                       onClick={() => toggleAgent(agent.id)}
-                      className={`flex items-center justify-between p-2 rounded-xl border transition-all cursor-pointer select-none ${
+                      className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer select-none min-w-0 ${
                         isSelected
-                          ? 'bg-purple-500/10 border-purple-500/40 text-fg'
+                          ? 'bg-purple-500/10 border-purple-500/40 text-fg shadow-2xs'
                           : 'bg-surface-subtle border-border hover:bg-surface-hover text-fg-secondary'
                       }`}
                     >
-                      <div className="flex items-center gap-2.5">
-                        <span className="text-base">{agent.avatar}</span>
-                        <div>
-                          <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
-                            <span>{agent.name}</span>
-                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface text-fg-muted border border-border font-mono shrink-0">
-                              {agent.handle}
-                            </span>
+                      <div className="flex items-center gap-2.5 min-w-0 flex-1 mr-2">
+                        <span className="text-base shrink-0 select-none">{agent.avatar}</span>
+                        <div className="min-w-0 flex-1 flex flex-col justify-center">
+                          <div className="font-semibold text-xs text-fg flex items-center gap-1.5 min-w-0">
+                            <span className="truncate">{agent.name}</span>
                             {agent.isManagedByYou && (
-                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface text-fg-muted border border-border font-mono shrink-0">
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-600 dark:text-purple-300 border border-purple-500/30 font-mono shrink-0 select-none leading-none">
                                 影替身
                               </span>
                             )}
                           </div>
-                          <div className="text-[10px] text-fg-muted truncate max-w-xs">{agent.role}</div>
+                          <div className="text-[10px] text-fg-muted truncate flex items-center gap-1 mt-0.5">
+                            <span className="font-mono text-fg-muted/80 shrink-0">{agent.handle}</span>
+                            <span className="text-fg-muted/40 shrink-0 select-none">•</span>
+                            <span className="truncate">{agent.role}</span>
+                          </div>
                         </div>
                       </div>
 
-                      <div className={`w-4 h-4 rounded-md border flex items-center justify-center transition-colors ${
+                      <div className={`w-4 h-4 rounded-md border flex items-center justify-center shrink-0 transition-colors ${
                         isSelected
                           ? 'bg-purple-600 border-purple-600 text-white'
                           : 'border-border bg-surface'
                       }`}>
-                        {isSelected && <Check className="w-3 h-3" />}
+                        {isSelected && <Check className="w-3 h-3 stroke-[2.5]" />}
                       </div>
                     </div>
                   );

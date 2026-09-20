@@ -163,15 +163,15 @@ export const AgentTeamsModal: React.FC<AgentTeamsModalProps> = ({
                           <div
                             key={ag.id}
                             onClick={() => handleToggleAgent(ag.id)}
-                            className={`p-2 rounded-lg border flex items-center justify-between cursor-pointer transition-all ${
+                            className={`p-2 rounded-lg border flex items-center justify-between cursor-pointer transition-all min-w-0 ${
                               isSelected
                                 ? 'bg-accent/15 border-accent text-fg'
                                 : 'bg-surface border-border text-fg-secondary hover:border-fg-muted'
                             }`}
                           >
-                            <div className="flex items-center gap-2 truncate">
-                              <span className="text-base">{ag.avatar}</span>
-                              <div className="truncate">
+                            <div className="flex items-center gap-2 min-w-0 flex-1 mr-2">
+                              <span className="text-base shrink-0">{ag.avatar}</span>
+                              <div className="min-w-0 flex-1">
                                 <div className="font-semibold text-xs truncate text-fg">{ag.name}</div>
                                 <div className="text-[10px] text-fg-muted truncate">{ag.modelBadge}</div>
                               </div>

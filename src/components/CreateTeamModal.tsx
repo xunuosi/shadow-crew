@@ -168,24 +168,24 @@ export const CreateTeamModal: React.FC<CreateTeamModalProps> = ({
               </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto p-1 bg-surface-subtle rounded-2xl border border-border">
+            <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto overflow-x-hidden p-1 bg-surface-subtle rounded-2xl border border-border">
               {agents.map((agent) => {
                 const isSelected = selectedAgentIds.includes(agent.id);
                 return (
                   <div
                     key={agent.id}
                     onClick={() => handleToggleAgent(agent.id)}
-                    className={`p-2.5 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
+                    className={`p-2.5 rounded-xl border flex items-center justify-between cursor-pointer transition-all min-w-0 ${
                       isSelected
                         ? 'bg-accent/15 border-accent text-fg shadow-xs'
                         : 'bg-surface border-border text-fg-secondary hover:border-fg-muted'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5 truncate">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1 mr-2">
                       <div className="w-8 h-8 shrink-0 flex items-center justify-center">
                         <AgentAvatarArtwork name={agent.name} className="w-8 h-8" />
                       </div>
-                      <div className="truncate">
+                      <div className="min-w-0 flex-1">
                         <div className="font-semibold text-xs truncate text-fg">{agent.name}</div>
                         <div className="text-[10px] text-fg-muted truncate">{agent.role}</div>
                       </div>
