@@ -6,7 +6,7 @@ export interface CollaborationCascade {
   roomId: string;
   originalPrompt: string;
   depth: number; // 1 表示首位响应者，2 表示第二跳响应者，依此类推
-  maxDepth: number; // 默认最大跳数限制 (如 4)
+  maxDepth: number; // 安全兜底跳数限制 (默认为 12)
   visitedAgentIds: string[];
   agentCallCounts: Record<string, number>;
   isAborted: boolean;
@@ -67,31 +67,42 @@ export function parseAgentMentions(
   return mentions;
 }
 
+export interface LoopGuardResult {
+  allowed: boolean;
+  reason?: string;
+  isSilentEnd?: boolean;
+}
+
 /**
- * 熔断检查：防止死循环、单 Agent 连续回环、超限与人工终止
+ * 协同防护检查 (对标 Buzz 静默收敛哲学)：
+ * 1. 废除生硬的低轮次回环熔断 (原 currentCount >= 2 导致多 Agent 正常辩论在第 3-4 步被强行掐断并弹刺眼卡片)；
+ * 2. 达到深度或频次安全兜底上限时，采用静默收敛 (isSilentEnd: true)，静悄悄终止级联，不向用户投递刺眼的熔断警报卡片；
+ * 3. 唯有人工显式中止时才显式标记并通知。
  */
 export function checkLoopGuard(
   cascade: CollaborationCascade,
   targetAgentId: string
-): { allowed: boolean; reason?: string } {
+): LoopGuardResult {
   if (cascade.isAborted) {
-    return { allowed: false, reason: '用户已手动终止多智能体协同' };
+    return { allowed: false, reason: '用户已手动终止多智能体协同', isSilentEnd: false };
   }
 
-  // 1. 深度限制 (Max Depth Limit)
+  // 1. 深度安全兜底 (Max Depth Invisible Backstop - 对标 Buzz 设计，静默兜底)
   if (cascade.depth >= cascade.maxDepth) {
     return {
       allowed: false,
-      reason: `多智能体协同已达安全轮次上限 (${cascade.maxDepth} 轮)，已触发熔断保护`,
+      reason: `多智能体协同已达安全轮次兜底上限 (${cascade.maxDepth} 轮)，静默收敛`,
+      isSilentEnd: true,
     };
   }
 
-  // 2. 回环频次限制 (Ping-Pong Loop Guard): 单链内同一 Agent 最多调用 2 次
+  // 2. 异常失控循环兜底 (单链内单 Agent 调用达到 8 次以上的极端异常兜底)
   const currentCount = cascade.agentCallCounts[targetAgentId] || 0;
-  if (currentCount >= 2) {
+  if (currentCount >= 8) {
     return {
       allowed: false,
-      reason: `目标 Agent 在本轮链条中已响应 ${currentCount} 次，触发回环熔断保护以避免无限循环`,
+      reason: `目标 Agent 在本轮链条中已响应 ${currentCount} 次，触发极端异常兜底`,
+      isSilentEnd: true,
     };
   }
 
@@ -100,10 +111,12 @@ export function checkLoopGuard(
 
 /**
  * 为任意提示词注入当前频道团队花名册与协同召唤指南
- * 注入【Shadow Crew 平台协同公约】：
- * 1. 明确告知 Agent 由宿主调度器负责消息路由
+ * 注入【Shadow Crew 平台协同公约 (对标 Buzz 增量价值与静默收敛哲学)】：
+ * 1. 明确告知 Agent 由宿主调度器负责消息路由与级联分发
  * 2. 严禁且无需在本地运行工具搜索其它 Agent
- * 3. 文本中包含 @handle 即可触发级联
+ * 3. 增量信息价值准则：唯有产生技术实质增量才发言接力
+ * 4. 静默即成功：共识达成时直接输出方案，严禁 @ 任何成员，自然结题
+ * 5. 严禁裸确认：禁止「收到/已对齐」等无意义社交客套
  */
 export function buildCrewRosterGuidance(
   availableAgents: Agent[],
@@ -121,7 +134,11 @@ export function buildCrewRosterGuidance(
   const exampleHandle = hasPeers ? peers[0].handle : '@agent';
 
   const collaborationDirective = hasPeers
-    ? `3. 【频道内 @ 协同接力】：若你需要向当前频道内的其他成员协作推演、请求代码审查或分工，**只需在你的回复文本中自然写出对方的 @handle**（例如「${exampleHandle} 请对此方案进行技术审查...」）。注意：**你只能 @ 上方【可用协同团队成员列表】中明确列出的当前频道成员，严禁 @ 任何未列出的外部 Agent**。平台的级联调度器会在你回复后自动提取有效 @ 并接力投递给目标成员！\n\n`
+    ? `3. 【频道内 @ 协同接力】：若你需要向当前频道内的其他成员协作推演、请求代码审查或分工，**只需在你的回复文本中自然写出对方的 @handle**（例如「${exampleHandle} 请对此方案进行底层安全性与并发审查...」）。注意：**你只能 @ 上方【可用协同团队成员列表】中明确列出的当前频道成员，严禁 @ 任何未列出的外部 Agent**。平台的级联调度器会在你回复后自动提取有效 @ 并接力投递给目标成员！\n` +
+      `4. 【增量信息价值准则 (Information Delta)】：唯有当你能提供实质性、非显而易见的技术增量、架构评测、代码实现或风险质疑时，才发言接力；严禁为了回复而回复。\n` +
+      `5. 【静默即成功与达成共识自然收敛 (Silence as Success)】：当推演方案已完备、各方达成技术共识或已无新的增量信息需要补充时，**直接给出你的最终技术总结与落地实施方案，切勿在正文中 @ 任何成员**。回复中不含任何成员的 @handle 即代表协同推演圆满收敛交付！\n` +
+      `6. 【严禁裸确认与客套回复 (No Bare Acks)】：严禁发送纯粹的礼貌性确认、赞同或声明自己不再回复的内容（如「收到」、「已对齐」、「完全赞同，我不再回复」、「${exampleHandle} 已知悉」等）。任何不含实质内容的回复都会再次唤醒其他 Agent 造成无效震荡。\n` +
+      `7. 【叙述性提及请勿加 @】：仅在真正需要对方介入推演时才使用 @handle。在叙述方案背景或引用他人观点时（例如「正如 ${peers[0]?.name || '专家'} 刚才所分析的架构」），请直接写成员姓名而**不要添加 @ 符号**，避免系统误触级联唤醒。\n\n`
     : `3. 【独立推演原则】：当前频道仅有你一名 Agent 在线。你应当独立完成本次任务推演与技术方案产出，**无需且严禁在回复中 @ 任何未加入当前频道的外部 Agent**。\n\n`;
 
   return (
@@ -234,7 +251,7 @@ export function buildCascadePrompt(options: BuildCascadePromptOptions): string {
   const peers = availableAgents.filter((a) => a.id !== targetAgent.id);
   const peerList =
     peers.length > 0
-      ? `\n\n[💡 协同指引：若完成本轮审查后仍需其他专家进一步研讨，可直接在正文中自然 @对方（当前频道可用：${peers.map((p) => p.handle).join(', ')}）；若方案已完备收敛，直接输出最终共识结论即可]`
+      ? `\n\n[💡 协同收敛指引：若完成本轮推演/审查后方案已成熟收敛或各方达成共识，请直接给出最终落地结论，**切勿 @ 任何人**（没有 @ 即代表协同圆满收敛完成）；若确实需要其他特定专家继续提供不可或缺的实质性增量，可精准 @ 对应成员：${peers.map((p) => p.handle).join(', ')}]`
       : '';
 
   const topicHeader = topic
@@ -246,15 +263,15 @@ export function buildCascadePrompt(options: BuildCascadePromptOptions): string {
     ? `【多智能体协同陈述 (用户排队协作)】:
 用户在上述讨论中同时指派了多位成员共同陈述观点。
 前序成员 (${invokingAgent.name}) 已完成其视角阐述（见上方结论）。现请基于你的专属角色定位（${targetAgent.role}${targetAgent.description ? ` - ${targetAgent.description}` : ''}）：
-1. 独立给出你针对该议题的技术方案或观点，避免重复前序已明确的常识；
-2. 结合前序成员的结论进行必要的补充、差异对比或共识确认；
-3. 如果方案已完备收敛，可直接给出最终共识确认；若仍需特定成员深入，可继续 @ 对应成员。`
+1. 独立给出你针对该议题的技术方案或观点，提供具有非显而易见增量价值的专业视角；
+2. 结合前序成员的结论进行必要的差异对比或补充；严禁纯客套的裸确认（如「收到/已对齐」）；
+3. 若方案已完备或形成最终共识，直接输出收敛结论（切勿 @ 任何人，以使协同自然交付结题）；仅在确实需要特定成员接力时才 @ 对应成员。`
     : `【对你的协作诉求】:
-${invokingAgent.name} 在上述方案中明确点名了你 (${targetAgent.handle})。
+${invokingAgent.name} 在上述方案中点名了你 (${targetAgent.handle}) 请求技术审查与协作。
 请基于你的专属角色定位（${targetAgent.role}${targetAgent.description ? ` - ${targetAgent.description}` : ''}）：
-1. 对上述方案进行针对性技术审查与评估；
-2. 提出你的专业补充、风险质疑或具体的落地步骤；
-3. 如果结论已经成熟收敛，请给出最终共识确认；如果依然需要其他领域专家，可继续 @ 对应成员。`;
+1. 对上述方案进行针对性技术审查与可行性评估，指出潜在风险与优化点；
+2. 提供实质性技术增量或落地实现步骤，严禁仅做「收到/已对齐」的裸确认；
+3. 若方案已成熟收敛达成共识，请直接总结最终结论（切勿 @ 任何人，以使协同自然交付完成）；若仍需其他特定专家介入，才精准 @ 对应成员。`;
 
   return `[🤝 团队协同协作请求 (第 ${currentHop}/${cascade.maxDepth} 轮接力)]
 

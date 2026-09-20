@@ -6,6 +6,7 @@ export interface UseResizableOptions {
   minWidth?: number;
   maxWidth?: number | (() => number);
   storageKey?: string;
+  panelRef?: React.RefObject<HTMLElement | null>;
 }
 
 export interface UseResizableReturn {
@@ -14,6 +15,7 @@ export interface UseResizableReturn {
   handlePointerDown: (e: React.PointerEvent) => void;
   resetWidth: () => void;
   setWidth: (width: number) => void;
+  panelRef: React.RefObject<HTMLElement | null>;
 }
 
 export function useResizablePanel({
@@ -22,6 +24,7 @@ export function useResizablePanel({
   minWidth = 240,
   maxWidth = 800,
   storageKey,
+  panelRef: externalPanelRef,
 }: UseResizableOptions): UseResizableReturn {
   // 1. Initialize width with localStorage cache or default
   const [width, setWidthState] = useState<number>(() => {
@@ -42,9 +45,19 @@ export function useResizablePanel({
     return defaultWidth;
   });
 
+  const internalPanelRef = useRef<HTMLElement | null>(null);
+  const panelRef = externalPanelRef || internalPanelRef;
+
   const [isDragging, setIsDragging] = useState(false);
   const startXRef = useRef(0);
   const startWidthRef = useRef(width);
+  const currentWidthRef = useRef(width);
+  const rafIdRef = useRef<number | null>(null);
+
+  // Keep currentWidthRef in sync
+  useEffect(() => {
+    currentWidthRef.current = width;
+  }, [width]);
 
   const getMaxWidth = useCallback(() => {
     if (typeof maxWidth === 'function') {
@@ -58,7 +71,13 @@ export function useResizablePanel({
     (newWidth: number) => {
       const max = getMaxWidth();
       const clamped = Math.min(max, Math.max(minWidth, newWidth));
+      currentWidthRef.current = clamped;
       setWidthState(clamped);
+
+      if (panelRef.current) {
+        panelRef.current.style.width = `${clamped}px`;
+      }
+
       if (storageKey) {
         try {
           localStorage.setItem(storageKey, String(clamped));
@@ -67,17 +86,28 @@ export function useResizablePanel({
         }
       }
     },
-    [minWidth, getMaxWidth, storageKey]
+    [minWidth, getMaxWidth, storageKey, panelRef]
   );
 
+  // Smooth reset with dedicated temporary transition (150ms)
   const resetWidth = useCallback(() => {
+    const el = panelRef.current;
+    if (el) {
+      el.style.transition = 'width 150ms cubic-bezier(0.4, 0, 0.2, 1)';
+      el.style.width = `${defaultWidth}px`;
+      setTimeout(() => {
+        if (el) {
+          el.style.transition = '';
+        }
+      }, 160);
+    }
     setWidth(defaultWidth);
-  }, [defaultWidth, setWidth]);
+  }, [defaultWidth, setWidth, panelRef]);
 
-  // Pointer event handlers
+  // Pointer event handlers with hardware-accelerated direct DOM tracking & rAF
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
-      // Only respond to main button
+      // Only respond to main mouse button
       if (e.button !== 0) return;
       e.preventDefault();
       e.stopPropagation();
@@ -91,8 +121,17 @@ export function useResizablePanel({
         }
       }
 
+      // 1. Instantly suppress any transitions on the panel element
+      const el = panelRef.current;
+      if (el) {
+        el.style.transition = 'none';
+        el.setAttribute('data-resizing', 'true');
+      }
+
       startXRef.current = e.clientX;
-      startWidthRef.current = width;
+      const initialWidth = el ? el.getBoundingClientRect().width : currentWidthRef.current;
+      startWidthRef.current = initialWidth;
+      currentWidthRef.current = initialWidth;
       setIsDragging(true);
 
       document.body.style.userSelect = 'none';
@@ -112,10 +151,26 @@ export function useResizablePanel({
         }
 
         const clamped = Math.min(max, Math.max(minWidth, Math.round(newWidth)));
-        setWidthState(clamped);
+        currentWidthRef.current = clamped;
+
+        // 2. Direct DOM manipulation in animation frame for smooth 60/120fps dragging
+        if (rafIdRef.current === null) {
+          rafIdRef.current = requestAnimationFrame(() => {
+            rafIdRef.current = null;
+            const targetEl = panelRef.current;
+            if (targetEl) {
+              targetEl.style.width = `${currentWidthRef.current}px`;
+            }
+          });
+        }
       };
 
       const handlePointerUp = (upEvent: PointerEvent) => {
+        if (rafIdRef.current !== null) {
+          cancelAnimationFrame(rafIdRef.current);
+          rafIdRef.current = null;
+        }
+
         setIsDragging(false);
         document.body.style.userSelect = '';
         document.body.style.cursor = '';
@@ -132,7 +187,7 @@ export function useResizablePanel({
         window.removeEventListener('pointerup', handlePointerUp);
         window.removeEventListener('pointercancel', handlePointerUp);
 
-        // Save to localStorage on drag completion
+        // 3. Finalize width calculation
         const deltaX = upEvent.clientX - startXRef.current;
         const max = getMaxWidth();
         let finalWidth: number;
@@ -142,6 +197,15 @@ export function useResizablePanel({
           finalWidth = startWidthRef.current + deltaX;
         }
         const clamped = Math.min(max, Math.max(minWidth, Math.round(finalWidth)));
+
+        const finalEl = panelRef.current;
+        if (finalEl) {
+          finalEl.style.width = `${clamped}px`;
+          finalEl.style.transition = '';
+          finalEl.removeAttribute('data-resizing');
+        }
+
+        // Commit final state to React and localStorage
         setWidthState(clamped);
         if (storageKey) {
           try {
@@ -152,16 +216,19 @@ export function useResizablePanel({
         }
       };
 
-      window.addEventListener('pointermove', handlePointerMove);
+      window.addEventListener('pointermove', handlePointerMove, { passive: true });
       window.addEventListener('pointerup', handlePointerUp);
       window.addEventListener('pointercancel', handlePointerUp);
     },
-    [direction, width, minWidth, getMaxWidth, storageKey]
+    [direction, minWidth, getMaxWidth, storageKey, panelRef]
   );
 
-  // Clean up global cursor if unmounted while dragging
+  // Clean up global cursor and pending rAF if unmounted while dragging
   useEffect(() => {
     return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
     };
@@ -173,5 +240,6 @@ export function useResizablePanel({
     handlePointerDown,
     resetWidth,
     setWidth,
+    panelRef,
   };
 }

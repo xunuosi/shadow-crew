@@ -1525,35 +1525,41 @@ export default function App() {
     const loopCheck = checkLoopGuard(cascade, targetAgent.id);
 
     if (!loopCheck.allowed) {
-      // 触发熔断保护，向消息流追加系统安全熔断卡片
-      const breakMsg: Message = {
-        id: `circuit-break-${Date.now()}`,
-        threadId: roomId,
-        channelId: targetChannelId,
-        authorId: 'system',
-        authorName: 'Shadow Crew 协同熔断保护',
-        authorHandle: '@loop-guard',
-        authorAvatar: '🛡️',
-        isAgent: true,
-        agentBadge: 'Circuit Breaker',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: `⚡ **多智能体协同已自动熔断**：${loopCheck.reason}\n\n已停止自动级联调用，等待人类主人进一步决策。`,
-        collaborationInfo: {
-          cascadeId,
-          hop: cascade.depth,
-          maxHops: cascade.maxDepth,
-          isCircuitBroken: true,
-          circuitBreakReason: loopCheck.reason,
-        },
-      };
+      console.log(`[CollaborationCascade] Cascade ${cascadeId} terminated:`, loopCheck.reason);
 
-      setMessages((prev) => {
-        const targetList = prev[roomId] || [];
-        return {
-          ...prev,
-          [roomId]: [...targetList, breakMsg],
+      // 对标 Buzz 静默收敛哲学：
+      // 常规轮次自然收敛兜底时，静默终止并清理级联状态，严禁向消息流注入打断人类思路的生硬熔断卡片。
+      // 仅在非静默场景（如人工显式终止）时才输出系统提示。
+      if (!loopCheck.isSilentEnd) {
+        const breakMsg: Message = {
+          id: `circuit-break-${Date.now()}`,
+          threadId: roomId,
+          channelId: targetChannelId,
+          authorId: 'system',
+          authorName: 'Shadow Crew 协同管控',
+          authorHandle: '@loop-guard',
+          authorAvatar: '🛡️',
+          isAgent: true,
+          agentBadge: 'Circuit Breaker',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `⚡ **多智能体协同已停止**：${loopCheck.reason}`,
+          collaborationInfo: {
+            cascadeId,
+            hop: cascade.depth,
+            maxHops: cascade.maxDepth,
+            isCircuitBroken: true,
+            circuitBreakReason: loopCheck.reason,
+          },
         };
-      });
+
+        setMessages((prev) => {
+          const targetList = prev[roomId] || [];
+          return {
+            ...prev,
+            [roomId]: [...targetList, breakMsg],
+          };
+        });
+      }
 
       setActiveCascades((prev) => {
         const next = { ...prev };
@@ -2036,7 +2042,7 @@ export default function App() {
         roomId: topicId,
         originalPrompt: content,
         depth: 1,
-        maxDepth: 8,
+        maxDepth: 12, // 对标 Buzz: 提升至 12 轮作为不可见安全兜底
         visitedAgentIds: [agent.id],
         agentCallCounts: { [agent.id]: 1 },
         isAborted: false,
@@ -2508,7 +2514,7 @@ export default function App() {
       roomId: activeThread.id,
       originalPrompt: content,
       depth: 1,
-      maxDepth: 8,
+      maxDepth: 12, // 对标 Buzz: 提升至 12 轮作为不可见安全兜底
       visitedAgentIds: [primaryResponder.id],
       agentCallCounts: { [primaryResponder.id]: 1 },
       isAborted: false,
