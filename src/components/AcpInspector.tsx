@@ -105,21 +105,20 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
     setNewMemContent('');
   };
 
-  const { width: drawerWidth, isDragging, handlePointerDown, resetWidth } = useResizablePanel({
+  const { width: drawerWidth, isDragging, handlePointerDown, resetWidth, panelRef } = useResizablePanel({
     direction: 'left',
     defaultWidth: 460,
     minWidth: 380,
-    maxWidth: () => (typeof window !== 'undefined' ? Math.min(1200, window.innerWidth * 0.9) : 800),
+    maxWidth: () => (typeof window !== 'undefined' ? Math.max(380, Math.min(1200, window.innerWidth - 320)) : 800),
     storageKey: 'shinobi_acp_inspector_width',
   });
 
   return (
     <aside
+      ref={panelRef as React.RefObject<HTMLElement>}
       id="buzz-acp-inspector"
       style={{ width: `${drawerWidth}px`, maxWidth: '100vw' }}
-      className={`relative bg-surface border-l border-border flex flex-col shrink-0 text-fg-secondary text-xs overflow-hidden select-none ${
-        isDragging ? '' : 'transition-[width] duration-150'
-      }`}
+      className="relative bg-surface border-l border-border flex flex-col shrink-0 text-fg-secondary text-xs overflow-hidden"
     >
       <ResizeHandle
         direction="left"
@@ -221,7 +220,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
       </div>
 
       {/* Tab Contents */}
-      <div className="flex-1 overflow-y-auto p-3 text-xs">
+      <div className="flex-1 overflow-y-auto p-3 text-xs select-text">
         {/* TAB 0: RUST + TAURI RUNTIME & ARCHITECTURE */}
         {activeTab === 'rust_tauri' && (
           <div className="space-y-3 font-sans">

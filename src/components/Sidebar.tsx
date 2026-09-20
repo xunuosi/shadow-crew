@@ -82,7 +82,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectMainView,
   onOpenStorageModal,
 }) => {
-  const { width: sidebarWidth, isDragging, handlePointerDown, resetWidth } = useResizablePanel({
+  const { width: sidebarWidth, isDragging, handlePointerDown, resetWidth, panelRef } = useResizablePanel({
     direction: 'right',
     defaultWidth: 260,
     minWidth: 200,
@@ -92,11 +92,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
+      ref={panelRef as React.RefObject<HTMLElement>}
       id="shinobi-primary-sidebar"
       style={{ width: `${sidebarWidth}px` }}
-      className={`relative bg-surface border-r border-border flex flex-col shrink-0 select-none text-fg-secondary text-xs select-none transition-colors duration-150 ${
-        isDragging ? '' : 'transition-[width] duration-150'
-      }`}
+      className="relative bg-surface border-r border-border flex flex-col shrink-0 select-none text-fg-secondary text-xs transition-colors duration-150"
     >
       {/* Draggable Right Resize Handle */}
       <ResizeHandle

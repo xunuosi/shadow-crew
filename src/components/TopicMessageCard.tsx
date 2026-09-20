@@ -114,13 +114,13 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
             <span className="text-purple-500 font-mono text-xs font-bold px-1.5 py-0.5 rounded bg-purple-500/10 border border-purple-500/20">
               TOPIC
             </span>
-            <h3 className="text-sm sm:text-base font-bold text-fg group-hover:text-accent transition-colors">
+            <h3 className="text-sm sm:text-base font-bold text-fg group-hover:text-accent transition-colors select-text">
               {topic.title}
             </h3>
           </div>
 
           {topic.description && (
-            <p className="mt-1.5 text-xs text-fg-secondary line-clamp-2 leading-relaxed font-sans">
+            <p className="mt-1.5 text-xs text-fg-secondary line-clamp-2 leading-relaxed font-sans select-text">
               {topic.description}
             </p>
           )}

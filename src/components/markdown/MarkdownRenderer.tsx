@@ -96,144 +96,147 @@ function extractAlert(children: React.ReactNode): { isAlert: boolean; type?: Ale
   };
 }
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className = '' }) => {
-  // 流式自愈保护：如果输出流中存在未闭合的 ``` 代码栅栏，自动在渲染时补齐
-  const healedContent = useMemo(() => {
-    if (!content) return '';
-    const fences = content.match(/```/g);
-    if (fences && fences.length % 2 !== 0) {
-      return content + '\n```';
-    }
-    return content;
-  }, [content]);
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
+  ({ content, className = '' }) => {
+    // 流式自愈保护：如果输出流中存在未闭合的 ``` 代码栅栏，自动在渲染时补齐
+    const healedContent = useMemo(() => {
+      if (!content) return '';
+      const fences = content.match(/```/g);
+      if (fences && fences.length % 2 !== 0) {
+        return content + '\n```';
+      }
+      return content;
+    }, [content]);
 
-  return (
-    <div className={`markdown-body text-xs text-fg leading-relaxed break-words ${className}`}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          // 1. 代码块与单行代码
-          pre: ({ children }) => <>{children}</>,
-          code: (props) => {
-            const { children, className = '' } = props;
-            const strContent = String(children || '');
-            const hasLang = /language-(\w+)/.test(className);
-            const isMultiLine = strContent.includes('\n');
+    return (
+      <div className={`markdown-body text-xs text-fg leading-relaxed break-words select-text ${className}`}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            // 1. 代码块与单行代码
+            pre: ({ children }) => <>{children}</>,
+            code: (props) => {
+              const { children, className = '' } = props;
+              const strContent = String(children || '');
+              const hasLang = /language-(\w+)/.test(className);
+              const isMultiLine = strContent.includes('\n');
 
-            if (hasLang || isMultiLine) {
-              return (
-                <CodeBlock
-                  code={strContent}
-                  language={className}
-                  showLineNumbers={true}
-                />
-              );
-            }
+              if (hasLang || isMultiLine) {
+                return (
+                  <CodeBlock
+                    code={strContent}
+                    language={className}
+                    showLineNumbers={true}
+                  />
+                );
+              }
 
-            return <InlineCode className={className}>{children}</InlineCode>;
-          },
+              return <InlineCode className={className}>{children}</InlineCode>;
+            },
 
-          // 2. 段落与提及 Badge 注入
-          p: ({ children }) => (
-            <p className="my-1.5 first:mt-0 last:mb-0 leading-relaxed text-xs">
-              {renderWithMentions(children)}
-            </p>
-          ),
-
-          // 3. 引用块与 GitHub Alerts (例如 > [!NOTE])
-          blockquote: ({ children }) => {
-            const alertInfo = extractAlert(children);
-            if (alertInfo.isAlert && alertInfo.type) {
-              return <GitHubAlert type={alertInfo.type}>{alertInfo.content}</GitHubAlert>;
-            }
-            return (
-              <blockquote className="border-l-2 border-accent/60 pl-3 py-1 my-2 bg-surface-subtle/50 text-fg-secondary italic text-xs rounded-r-md">
+            // 2. 段落与提及 Badge 注入
+            p: ({ children }) => (
+              <p className="my-1.5 first:mt-0 last:mb-0 leading-relaxed text-xs select-text">
                 {renderWithMentions(children)}
-              </blockquote>
-            );
-          },
+              </p>
+            ),
 
-          // 4. 标题规范化
-          h1: ({ children }) => (
-            <h1 className="text-sm md:text-base font-bold text-fg mt-3.5 mb-2 first:mt-0 pb-1 border-b border-border/50">
-              {children}
-            </h1>
-          ),
-          h2: ({ children }) => (
-            <h2 className="text-xs md:text-sm font-bold text-fg mt-3 mb-1.5 first:mt-0">
-              {children}
-            </h2>
-          ),
-          h3: ({ children }) => (
-            <h3 className="text-xs font-semibold text-fg mt-2.5 mb-1 first:mt-0">
-              {children}
-            </h3>
-          ),
+            // 3. 引用块与 GitHub Alerts (例如 > [!NOTE])
+            blockquote: ({ children }) => {
+              const alertInfo = extractAlert(children);
+              if (alertInfo.isAlert && alertInfo.type) {
+                return <GitHubAlert type={alertInfo.type}>{alertInfo.content}</GitHubAlert>;
+              }
+              return (
+                <blockquote className="border-l-2 border-accent/60 pl-3 py-1 my-2 bg-surface-subtle/50 text-fg-secondary italic text-xs rounded-r-md select-text">
+                  {renderWithMentions(children)}
+                </blockquote>
+              );
+            },
 
-          // 5. 列表与清单
-          ul: ({ children }) => (
-            <ul className="list-disc pl-4 space-y-1 my-2 text-xs text-fg marker:text-accent">
-              {children}
-            </ul>
-          ),
-          ol: ({ children }) => (
-            <ol className="list-decimal pl-4 space-y-1 my-2 text-xs text-fg marker:text-accent font-medium">
-              {children}
-            </ol>
-          ),
-          li: ({ children }) => (
-            <li className="leading-relaxed">
-              {renderWithMentions(children)}
-            </li>
-          ),
-
-          // 6. 表格 (支持横向滑动与卡片化样式)
-          table: ({ children }) => (
-            <div className="overflow-x-auto my-3 rounded-xl border border-border bg-surface shadow-xs">
-              <table className="min-w-full divide-y divide-border text-xs text-left">
+            // 4. 标题规范化
+            h1: ({ children }) => (
+              <h1 className="text-sm md:text-base font-bold text-fg mt-3.5 mb-2 first:mt-0 pb-1 border-b border-border/50 select-text">
                 {children}
-              </table>
-            </div>
-          ),
-          thead: ({ children }) => (
-            <thead className="bg-surface-subtle text-fg font-semibold select-none">
-              {children}
-            </thead>
-          ),
-          tbody: ({ children }) => (
-            <tbody className="divide-y divide-border/40 bg-surface">
-              {children}
-            </tbody>
-          ),
-          th: ({ children }) => (
-            <th className="px-3.5 py-2 text-fg font-semibold text-xs border-b border-border">
-              {children}
-            </th>
-          ),
-          td: ({ children }) => (
-            <td className="px-3.5 py-2 text-fg-secondary text-xs">
-              {children}
-            </td>
-          ),
+              </h1>
+            ),
+            h2: ({ children }) => (
+              <h2 className="text-xs md:text-sm font-bold text-fg mt-3 mb-1.5 first:mt-0 select-text">
+                {children}
+              </h2>
+            ),
+            h3: ({ children }) => (
+              <h3 className="text-xs font-semibold text-fg mt-2.5 mb-1 first:mt-0 select-text">
+                {children}
+              </h3>
+            ),
 
-          // 7. 外链优化
-          a: ({ href, children }) => (
-            <a
-              href={href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-accent hover:underline font-medium inline-flex items-center gap-0.5"
-            >
-              {children}
-            </a>
-          ),
+            // 5. 列表与清单
+            ul: ({ children }) => (
+              <ul className="list-disc pl-4 space-y-1 my-2 text-xs text-fg marker:text-accent select-text">
+                {children}
+              </ul>
+            ),
+            ol: ({ children }) => (
+              <ol className="list-decimal pl-4 space-y-1 my-2 text-xs text-fg marker:text-accent font-medium select-text">
+                {children}
+              </ol>
+            ),
+            li: ({ children }) => (
+              <li className="leading-relaxed select-text">
+                {renderWithMentions(children)}
+              </li>
+            ),
 
-          // 8. 分割线
-          hr: () => <hr className="my-3 border-border/70" />,
-        }}
-      >
-        {healedContent}
-      </ReactMarkdown>
-    </div>
-  );
-};
+            // 6. 表格 (支持横向滑动与卡片化样式)
+            table: ({ children }) => (
+              <div className="overflow-x-auto my-3 rounded-xl border border-border bg-surface shadow-xs select-text">
+                <table className="min-w-full divide-y divide-border text-xs text-left">
+                  {children}
+                </table>
+              </div>
+            ),
+            thead: ({ children }) => (
+              <thead className="bg-surface-subtle text-fg font-semibold select-none">
+                {children}
+              </thead>
+            ),
+            tbody: ({ children }) => (
+              <tbody className="divide-y divide-border/40 bg-surface select-text">
+                {children}
+              </tbody>
+            ),
+            th: ({ children }) => (
+              <th className="px-3.5 py-2 text-fg font-semibold text-xs border-b border-border">
+                {children}
+              </th>
+            ),
+            td: ({ children }) => (
+              <td className="px-3.5 py-2 text-fg-secondary text-xs select-text">
+                {children}
+              </td>
+            ),
+
+            // 7. 外链优化
+            a: ({ href, children }) => (
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-accent hover:underline font-medium inline-flex items-center gap-0.5 select-text"
+              >
+                {children}
+              </a>
+            ),
+
+            // 8. 分割线
+            hr: () => <hr className="my-3 border-border/70" />,
+          }}
+        >
+          {healedContent}
+        </ReactMarkdown>
+      </div>
+    );
+  },
+  (prev, next) => prev.content === next.content && prev.className === next.className
+);

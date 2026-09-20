@@ -67,7 +67,7 @@ export const GitHubAlert: React.FC<GitHubAlertProps> = ({ type, children }) => {
         <IconComponent className="w-4 h-4 shrink-0" />
         <span>{config.title}</span>
       </div>
-      <div className="text-xs text-fg leading-relaxed pl-6 [&>p]:my-1 [&>p:first-child]:mt-0 [&>p:last-child]:mb-0">
+      <div className="text-xs text-fg leading-relaxed pl-6 select-text [&>p]:my-1 [&>p:first-child]:mt-0 [&>p:last-child]:mb-0">
         {children}
       </div>
     </div>

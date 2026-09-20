@@ -401,11 +401,35 @@ export default function App() {
     }
   });
 
+  const [isSidebarTransitioning, setIsSidebarTransitioning] = useState(false);
+
+  const toggleSidebar = useCallback((targetState?: boolean) => {
+    setIsSidebarTransitioning(true);
+    setIsSidebarCollapsed((prev) => (typeof targetState === 'boolean' ? targetState : !prev));
+  }, []);
+
   useEffect(() => {
     try {
       localStorage.setItem('shinobi_sidebar_collapsed', String(isSidebarCollapsed));
     } catch {}
   }, [isSidebarCollapsed]);
+
+  // Split-screen & narrow layout protection: auto-collapse sidebar when topic drawer opens on narrow window (< 1024px)
+  useEffect(() => {
+    if (activeTopicId && typeof window !== 'undefined' && window.innerWidth < 1024 && !isSidebarCollapsed) {
+      toggleSidebar(true);
+    }
+  }, [activeTopicId]);
+
+  useEffect(() => {
+    const handleWindowResize = () => {
+      if (typeof window !== 'undefined' && window.innerWidth < 1024 && activeTopicId && !isSidebarCollapsed) {
+        toggleSidebar(true);
+      }
+    };
+    window.addEventListener('resize', handleWindowResize);
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, [activeTopicId, isSidebarCollapsed, toggleSidebar]);
 
   // Global Keyboard Shortcut: ⌘B / Ctrl+B to toggle sidebar (Antigravity & Cursor standard)
   useEffect(() => {
@@ -415,12 +439,12 @@ export default function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
         e.preventDefault();
-        setIsSidebarCollapsed((prev) => !prev);
+        toggleSidebar();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [toggleSidebar]);
 
   const [activeSubThreadId, setActiveSubThreadId] = useState<string | null>(null);
   const [isCodexDiffOpen, setIsCodexDiffOpen] = useState<boolean>(false);
@@ -2748,10 +2772,11 @@ export default function App() {
     <div className="h-full w-full flex bg-canvas text-fg overflow-hidden font-sans select-none antialiased transition-colors duration-150">
       {/* 1. Left Primary Sidebar (Antigravity-style Smooth Collapsible) */}
       <div
-        className={`h-full flex shrink-0 overflow-hidden transition-[width,opacity] duration-200 ease-in-out ${
-          isSidebarCollapsed ? 'w-0 opacity-0 pointer-events-none' : 'opacity-100'
-        }`}
+        className={`h-full flex shrink-0 overflow-hidden ${
+          isSidebarTransitioning ? 'transition-[width,opacity] duration-200 ease-in-out' : ''
+        } ${isSidebarCollapsed ? 'w-0 opacity-0 pointer-events-none' : 'opacity-100'}`}
         style={{ width: isSidebarCollapsed ? 0 : undefined }}
+        onTransitionEnd={() => setIsSidebarTransitioning(false)}
       >
         <Sidebar
           projects={projects}
@@ -2771,7 +2796,7 @@ export default function App() {
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
           isCollapsed={isSidebarCollapsed}
-          onToggleCollapse={() => setIsSidebarCollapsed(true)}
+          onToggleCollapse={() => toggleSidebar(true)}
           activeThreadId={activeThreadId}
           currentMainView={mainView}
           onSelectMainView={setMainView}
@@ -2786,7 +2811,7 @@ export default function App() {
           teams={teams}
           channels={channels}
           isSidebarCollapsed={isSidebarCollapsed}
-          onToggleSidebar={() => setIsSidebarCollapsed((prev) => !prev)}
+          onToggleSidebar={() => toggleSidebar()}
           onOpenConnectAgentModal={() => {
             setEditingAgent(null);
             setIsConnectModalOpen(true);
@@ -2902,7 +2927,7 @@ export default function App() {
       ) : (
         <>
           {/* 2. Middle Column: Channel Main Timeline & Composer (PRD Column 2) */}
-          <main className="flex-1 flex flex-col min-w-0 bg-canvas relative overflow-hidden transition-colors duration-150">
+          <main className="flex-1 flex flex-col min-w-[300px] bg-canvas relative overflow-hidden transition-colors duration-150">
             {activeThread && (activeThread.type === 'dm' || activeChannel) ? (
               <>
                 <ChatTimeline
@@ -2930,7 +2955,7 @@ export default function App() {
                   onQuoteMessage={(msg) => setQuotingMessage(msg)}
                   onEditTopic={(topic) => setEditingTopic(topic)}
                   isSidebarCollapsed={isSidebarCollapsed}
-                  onToggleSidebar={() => setIsSidebarCollapsed((prev) => !prev)}
+                  onToggleSidebar={() => toggleSidebar()}
                   currentWorkspace={activeProject?.name || 'shadow-crew'}
                 />
 

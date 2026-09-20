@@ -34,11 +34,11 @@ export const CodexDiffViewer: React.FC<CodexDiffViewerProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
 
-  const { width: drawerWidth, isDragging, handlePointerDown, resetWidth } = useResizablePanel({
+  const { width: drawerWidth, isDragging, handlePointerDown, resetWidth, panelRef } = useResizablePanel({
     direction: 'left',
     defaultWidth: 540,
     minWidth: 380,
-    maxWidth: () => (typeof window !== 'undefined' ? Math.min(1300, window.innerWidth * 0.9) : 800),
+    maxWidth: () => (typeof window !== 'undefined' ? Math.max(380, Math.min(1300, window.innerWidth - 320)) : 800),
     storageKey: 'shinobi_codex_diff_width',
   });
 
@@ -73,11 +73,10 @@ export const CodexDiffViewer: React.FC<CodexDiffViewerProps> = ({
 
   return (
     <aside
+      ref={panelRef as React.RefObject<HTMLElement>}
       id="shinobi-codex-diff-drawer"
       style={{ width: `${drawerWidth}px`, maxWidth: '100vw' }}
-      className={`relative bg-surface border-l border-border flex flex-col shrink-0 text-xs text-fg-secondary shadow-2xl z-40 font-mono ${
-        isDragging ? '' : 'transition-[width] duration-150'
-      }`}
+      className="relative bg-surface border-l border-border flex flex-col shrink-0 text-xs text-fg-secondary shadow-2xl z-40 font-mono"
     >
       <ResizeHandle
         direction="left"
@@ -134,7 +133,7 @@ export const CodexDiffViewer: React.FC<CodexDiffViewerProps> = ({
       </div>
 
       {/* 3. Diff Lines Stream */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-0.5 text-[11px] leading-relaxed bg-surface">
+      <div className="flex-1 overflow-y-auto p-2 space-y-0.5 text-[11px] leading-relaxed bg-surface select-text">
         {diffLines.map((line, idx) => {
           let bgClass = 'hover:bg-surface-hover text-fg-muted';
           if (line.startsWith('+')) {

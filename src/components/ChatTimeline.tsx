@@ -504,7 +504,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
         {activeThread.parentQuoteSnippet && (
           <div className="max-w-3xl mx-auto flex items-center gap-2 px-3.5 py-2 rounded-xl bg-surface-subtle border border-border text-fg-muted text-xs shadow-xs">
             <CornerDownRight className="w-3.5 h-3.5 text-accent shrink-0" />
-            <span className="truncate italic">
+            <span className="truncate italic select-text">
               {activeThread.parentQuoteSnippet}
             </span>
           </div>
@@ -688,22 +688,22 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
               </div>
 
               {/* Message Body */}
-              <div className="pl-10.5 space-y-3">
+              <div className="pl-10.5 space-y-3 select-text">
                 {/* Antigravity Thinking Chain Accordion */}
                 {message.thinkingProcess && (
                   activeThread.type === 'dm' ? (
-                    <div className="text-[11px] select-none my-1">
+                    <div className="text-[11px] my-1">
                       <button
                         onClick={() => toggleThinking(message.id)}
-                        className="inline-flex items-center gap-1.5 text-fg-muted hover:text-fg transition-colors cursor-pointer py-0.5 group"
+                        className="inline-flex items-center gap-1.5 text-fg-muted hover:text-fg transition-colors cursor-pointer py-0.5 group select-none"
                       >
                         <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-150 text-fg-muted/70 group-hover:text-fg ${isThinkingOpen ? '' : '-rotate-90'}`} />
                         <span className="font-mono text-fg-secondary">Thought for {message.thinkingProcess.duration}</span>
                       </button>
                       {isThinkingOpen && (
-                        <div className="pl-5 pt-1.5 pb-2 text-fg-muted font-mono text-[10px] leading-relaxed border-l-2 border-border/80 ml-1.5 space-y-1 animate-in fade-in">
-                          <p className="text-fg-secondary font-medium">{message.thinkingProcess.summary}</p>
-                          <pre className="whitespace-pre-wrap font-mono text-fg-muted/80">{message.thinkingProcess.detail}</pre>
+                        <div className="pl-5 pt-1.5 pb-2 text-fg-muted font-mono text-[10px] leading-relaxed border-l-2 border-border/80 ml-1.5 space-y-1 animate-in fade-in select-text">
+                          <p className="text-fg-secondary font-medium select-text">{message.thinkingProcess.summary}</p>
+                          <pre className="whitespace-pre-wrap font-mono text-fg-muted/80 select-text">{message.thinkingProcess.detail}</pre>
                         </div>
                       )}
                     </div>
@@ -711,7 +711,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                     <div className="rounded-xl bg-surface-subtle border border-border overflow-hidden text-[11px]">
                       <button
                         onClick={() => toggleThinking(message.id)}
-                        className="w-full px-3 py-2 flex items-center justify-between text-fg-muted hover:text-fg bg-surface-subtle transition-colors cursor-pointer"
+                        className="w-full px-3 py-2 flex items-center justify-between text-fg-muted hover:text-fg bg-surface-subtle transition-colors cursor-pointer select-none"
                       >
                         <div className="flex items-center gap-2">
                           <BrainCircuit className="w-3.5 h-3.5 text-accent" />
@@ -723,9 +723,9 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                       </button>
 
                       {isThinkingOpen && (
-                        <div className="p-3 border-t border-border font-mono text-[11px] text-fg-secondary bg-surface leading-relaxed whitespace-pre-wrap">
-                          <div className="text-accent font-bold mb-1">推理摘要: {message.thinkingProcess.summary}</div>
-                          <div className="text-fg-muted">{message.thinkingProcess.detail}</div>
+                        <div className="p-3 border-t border-border font-mono text-[11px] text-fg-secondary bg-surface leading-relaxed whitespace-pre-wrap select-text">
+                          <div className="text-accent font-bold mb-1 select-text">推理摘要: {message.thinkingProcess.summary}</div>
+                          <div className="text-fg-muted select-text">{message.thinkingProcess.detail}</div>
                         </div>
                       )}
                     </div>
@@ -738,10 +738,10 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 {/* Codex Style Unified Diff Card */}
                 {message.diffView && (
                   <div className="p-3 rounded-xl bg-surface-subtle border border-border font-mono text-[11px]">
-                    <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center justify-between mb-2 select-none">
                       <div className="flex items-center gap-2">
                         <FileCode2 className="w-3.5 h-3.5 text-emerald-500" />
-                        <span className="text-fg font-semibold">{message.diffView.filename}</span>
+                        <span className="text-fg font-semibold select-text">{message.diffView.filename}</span>
                       </div>
                       <div className="flex items-center gap-1.5">
                         <span className="text-emerald-500 font-bold">+{message.diffView.additions}</span>
@@ -755,7 +755,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                         </button>
                       </div>
                     </div>
-                    <pre className="p-2.5 rounded-lg bg-surface border border-border overflow-x-auto text-[10px] text-fg-secondary leading-relaxed">
+                    <pre className="p-2.5 rounded-lg bg-surface border border-border overflow-x-auto text-[10px] text-fg-secondary leading-relaxed select-text">
                       {message.diffView.diff}
                     </pre>
                   </div>

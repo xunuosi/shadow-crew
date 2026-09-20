@@ -25,7 +25,7 @@ interface CodeBlockProps {
 
 const COLLAPSE_LINE_THRESHOLD = 25;
 
-export const CodeBlock: React.FC<CodeBlockProps> = ({
+export const CodeBlock: React.FC<CodeBlockProps> = React.memo(({
   code,
   language = '',
   showLineNumbers = true,
@@ -158,9 +158,9 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
             )}
 
             {/* Code Content */}
-            <pre className="flex-1 font-mono m-0 p-0 overflow-x-auto bg-transparent">
+            <pre className="flex-1 font-mono m-0 p-0 overflow-x-auto bg-transparent select-text">
               <code
-                className={`language-${cleanLang} bg-transparent p-0 block`}
+                className={`language-${cleanLang} bg-transparent p-0 block select-text`}
                 dangerouslySetInnerHTML={{ __html: highlightedHtml }}
               />
             </pre>
@@ -196,4 +196,4 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
       )}
     </div>
   );
-};
+});

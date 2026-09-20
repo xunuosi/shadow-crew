@@ -33,11 +33,11 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
 }) => {
   const [replyContent, setReplyContent] = useState('');
 
-  const { width: drawerWidth, isDragging, handlePointerDown, resetWidth } = useResizablePanel({
+  const { width: drawerWidth, isDragging, handlePointerDown, resetWidth, panelRef } = useResizablePanel({
     direction: 'left',
     defaultWidth: 420,
     minWidth: 320,
-    maxWidth: () => (typeof window !== 'undefined' ? Math.min(900, window.innerWidth * 0.8) : 600),
+    maxWidth: () => (typeof window !== 'undefined' ? Math.max(320, Math.min(800, window.innerWidth - 320)) : 600),
     storageKey: 'shinobi_subthread_drawer_width',
   });
 
@@ -99,11 +99,10 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
 
   return (
     <aside
+      ref={panelRef as React.RefObject<HTMLElement>}
       id="shinobi-subthread-drawer"
       style={{ width: `${drawerWidth}px`, maxWidth: '100vw' }}
-      className={`relative bg-surface border-l border-border flex flex-col shrink-0 text-xs text-fg-secondary shadow-2xl z-40 ${
-        isDragging ? '' : 'transition-[width] duration-150'
-      }`}
+      className="relative bg-surface border-l border-border flex flex-col shrink-0 text-xs text-fg-secondary shadow-2xl z-40"
     >
       <ResizeHandle
         direction="left"
@@ -146,13 +145,13 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
           <CornerDownRight className="w-3 h-3" />
           <span>引用切片上下文:</span>
         </div>
-        <div className="p-2 rounded bg-surface border border-border text-fg-muted font-mono text-[10px] italic">
+        <div className="p-2 rounded bg-surface border border-border text-fg-muted font-mono text-[10px] italic select-text">
           "{subThread.quoteSnippet}"
         </div>
       </div>
 
       {/* 3. Sub-Thread Message Stream */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-3 space-y-3">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-3 space-y-3 select-text">
         {subThread.messages.map((msg) => (
           <div key={msg.id} className="p-2.5 rounded-xl bg-surface-subtle border border-border">
             <div className="flex items-center justify-between mb-1.5">
