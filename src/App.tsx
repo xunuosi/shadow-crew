@@ -32,7 +32,7 @@ import {
   INITIAL_RPC_LOGS, 
   MOCK_WORKSPACE_FILES 
 } from './data/mockData';
-import { PanelLeftOpen, Hash, Plus } from 'lucide-react';
+import { Hash, Plus } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
 import { ThreadList } from './components/ThreadList';
 import { ChatTimeline } from './components/ChatTimeline';
@@ -40,6 +40,7 @@ import { MessageInput } from './components/MessageInput';
 import { SubThreadDrawer } from './components/SubThreadDrawer';
 import { TopicThreadDrawer } from './components/TopicThreadDrawer';
 import { NewTopicModal } from './components/NewTopicModal';
+import { EditTopicModal } from './components/EditTopicModal';
 import { CodexDiffViewer } from './components/CodexDiffViewer';
 import { AcpInspector } from './components/AcpInspector';
 import { AgentTeamsModal } from './components/AgentTeamsModal';
@@ -49,11 +50,14 @@ import { DeleteChannelModal } from './components/DeleteChannelModal';
 import { ConnectAgentModal } from './components/ConnectAgentModal';
 import { CreateTeamModal } from './components/CreateTeamModal';
 import { AgentDefaultsModal } from './components/AgentDefaultsModal';
+import { StorageSettingsModal } from './components/StorageSettingsModal';
 import { RustTauriArchitectureHub } from './components/RustTauriArchitectureHub';
 import { AgentDashboard } from './components/AgentDashboard';
 import { MemoryExportModal } from './components/MemoryExportModal';
 import { MemoryImportModal } from './components/MemoryImportModal';
 import { sendPromptToAcpAgent } from './services/acpClient';
+import { saveMessagesBatchToDb, loadMessagesFromDb } from './services/dbClient';
+import { DEFAULT_MODEL_NAME } from './config/models';
 import {
   CollaborationCascade,
   parseAgentMentions,
@@ -304,10 +308,57 @@ export default function App() {
     return INITIAL_MESSAGES;
   });
 
+  // 首次启动从 SQLite 原生数据库加载与同步历史消息 (方案 3: 消除 5MB 限制)
   useEffect(() => {
+    let isMounted = true;
+    async function syncMessagesWithDb() {
+      try {
+        const dbMsgs = await loadMessagesFromDb();
+        if (!isMounted) return;
+        if (dbMsgs && dbMsgs.length > 0) {
+          setMessages((prev) => {
+            const next = { ...prev };
+            let hasNew = false;
+            for (const msg of dbMsgs) {
+              const key = msg.threadId || msg.channelId || 'general';
+              if (!next[key]) next[key] = [];
+              if (!next[key].some((m) => m.id === msg.id)) {
+                next[key].push(msg);
+                hasNew = true;
+              }
+            }
+            return hasNew ? next : prev;
+          });
+        } else {
+          // 若 SQLite 库暂无数据，则批量导入当前本地初始化消息
+          const currentList = Object.values(messages).flat();
+          if (currentList.length > 0) {
+            await saveMessagesBatchToDb(currentList);
+          }
+        }
+      } catch (err) {
+        console.error('[App] Failed to sync messages with SQLite:', err);
+      }
+    }
+    syncMessagesWithDb();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // 消息持久化 (原生 SQLite 优先，同步防护 LocalStorage)
+  useEffect(() => {
+    const allMsgs = Object.values(messages).flat();
+    if (allMsgs.length > 0) {
+      saveMessagesBatchToDb(allMsgs).catch((e) => {
+        console.error('[App] SQLite saveMessagesBatchToDb failed:', e);
+      });
+    }
     try {
       localStorage.setItem('shinobi_messages', JSON.stringify(messages));
-    } catch {}
+    } catch (err) {
+      console.warn('[App] LocalStorage quota exceeded, SQLite persistence safely active.');
+    }
   }, [messages]);
 
   // SubThreads State with Local Storage Persistence
@@ -334,6 +385,7 @@ export default function App() {
   // Topic States (PRD 三层半扁平拓扑：频道 ➔ Topic 消息卡片 ➔ 独立推演抽屉)
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
   const [isNewTopicModalOpen, setIsNewTopicModalOpen] = useState<boolean>(false);
+  const [editingTopic, setEditingTopic] = useState<TopicMessageData | null>(null);
   const [quotingMessage, setQuotingMessage] = useState<Message | null>(null);
 
   // Filters & Search
@@ -341,7 +393,35 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   // Side Drawers & Overlays
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('shinobi_sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('shinobi_sidebar_collapsed', String(isSidebarCollapsed));
+    } catch {}
+  }, [isSidebarCollapsed]);
+
+  // Global Keyboard Shortcut: ⌘B / Ctrl+B to toggle sidebar (Antigravity & Cursor standard)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) {
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        setIsSidebarCollapsed((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const [activeSubThreadId, setActiveSubThreadId] = useState<string | null>(null);
   const [isCodexDiffOpen, setIsCodexDiffOpen] = useState<boolean>(false);
   const [activeDiff, setActiveDiff] = useState<any>(null);
@@ -352,6 +432,7 @@ export default function App() {
   const [isAgentTeamsModalOpen, setIsAgentTeamsModalOpen] = useState<boolean>(false);
   const [isCreateTeamModalOpen, setIsCreateTeamModalOpen] = useState<boolean>(false);
   const [isAgentDefaultsModalOpen, setIsAgentDefaultsModalOpen] = useState<boolean>(false);
+  const [isStorageSettingsModalOpen, setIsStorageSettingsModalOpen] = useState<boolean>(false);
   const [isCreateChannelOpen, setIsCreateChannelOpen] = useState<boolean>(false);
   const [isChannelMembersModalOpen, setIsChannelMembersModalOpen] = useState<boolean>(false);
   const [isDeleteChannelModalOpen, setIsDeleteChannelModalOpen] = useState<boolean>(false);
@@ -413,6 +494,21 @@ export default function App() {
     ]);
     return agents.filter((a) => channelIds.has(a.id));
   }, [activeChannel, activeThread?.activeAgentIds, agents]);
+
+  // 当编辑议题时，计算该议题所属频道及该频道的可用 Agent 成员列表 (严格限定在对应频道准入成员)
+  const editingTopicChannel = useMemo(() => {
+    if (!editingTopic) return activeChannel;
+    return channels.find((c) => c.id === editingTopic.channelId) || activeChannel;
+  }, [editingTopic, channels, activeChannel]);
+
+  const editingTopicAgents = useMemo(() => {
+    if (!editingTopicChannel) return currentChannelAgents;
+    const channelIds = new Set([
+      ...(editingTopicChannel.assignedAgentIds || []),
+      ...(editingTopicChannel.memberIds || []),
+    ]);
+    return agents.filter((a) => channelIds.has(a.id));
+  }, [editingTopicChannel, currentChannelAgents, agents]);
 
   // Auto sync active IDs if state drifted (私聊模式下不自动回弹 channel ID)
   useEffect(() => {
@@ -558,13 +654,13 @@ export default function App() {
               if (isAlive) {
                 if (a.status === 'idle') {
                   hasChange = true;
-                  return { ...a, status: 'running' };
+                  return { ...a, status: 'running' as const };
                 }
                 return a;
               } else {
                 if (a.status === 'running') {
                   hasChange = true;
-                  return { ...a, status: 'idle' };
+                  return { ...a, status: 'idle' as const };
                 }
                 return a;
               }
@@ -1031,7 +1127,7 @@ export default function App() {
       description: guestAgent.description || 'Imported Guest Alter-Ego Agent',
       color: '#10b981',
       status: 'idle',
-      modelBadge: guestAgent.modelBadge || 'Claude 3.7 Sonnet',
+      modelBadge: guestAgent.modelBadge || DEFAULT_MODEL_NAME,
       isManagedByYou: true,
       isGuestClone: true,
       guestCloneFrom: guestAgent.guestCloneFrom,
@@ -1217,6 +1313,71 @@ export default function App() {
     }));
 
     setActiveTopicId(topicId);
+  };
+
+  const handleUpdateTopic = (
+    topicId: string,
+    updatedData: {
+      title: string;
+      description: string;
+      assignedAgentIds: string[];
+    }
+  ) => {
+    // 过滤出该议题频道内合法的 Agent ID，避免越界
+    const validAssignedAgentIds = updatedData.assignedAgentIds.filter((id) =>
+      editingTopicAgents.some((a) => a.id === id)
+    );
+
+    setMessages((prev) => {
+      const next = { ...prev };
+
+      // 1. 更新主时间线与各线程中存储的对应 topicData 卡片
+      for (const [tId, msgList] of Object.entries(next)) {
+        const idx = msgList.findIndex((m) => m.type === 'topic' && m.topicData?.id === topicId);
+        if (idx !== -1) {
+          const oldCard = msgList[idx];
+          const oldTopic = oldCard.topicData!;
+          const updatedTopic: TopicMessageData = {
+            ...oldTopic,
+            title: updatedData.title,
+            description: updatedData.description,
+            participatingAgentIds: validAssignedAgentIds,
+          };
+          const newMsgList = [...msgList];
+          newMsgList[idx] = {
+            ...oldCard,
+            topicData: updatedTopic,
+          };
+          next[tId] = newMsgList;
+          break;
+        }
+      }
+
+      // 2. 在议题讨论抽屉内追加一条更新审计记录
+      const auditMsg: Message = {
+        id: `topic-msg-edit-${Date.now()}`,
+        threadId: topicId,
+        authorId: 'system',
+        authorName: '系统通知',
+        authorHandle: '@system',
+        authorAvatar: '📝',
+        isAgent: false,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: `📝 **议题信息已更新**：\n- **议题标题**：${updatedData.title}\n- **背景目标**：${updatedData.description || '无'}\n- **协作成员**：${
+          validAssignedAgentIds.length > 0
+            ? validAssignedAgentIds
+                .map((id) => agents.find((a) => a.id === id)?.name)
+                .filter(Boolean)
+                .join('、')
+            : '暂无'
+        }`,
+      };
+
+      next[topicId] = [...(next[topicId] || []), auditMsg];
+      return next;
+    });
+
+    setEditingTopic(null);
   };
 
   // 多智能体跨 Agent 互相 @ 与自主级联调度器 (Cascading Agent Mention Dispatcher)
@@ -2579,8 +2740,13 @@ export default function App() {
 
   return (
     <div className="h-full w-full flex bg-canvas text-fg overflow-hidden font-sans select-none antialiased transition-colors duration-150">
-      {/* 1. Left Primary Sidebar (Buzz / macOS Navigation) */}
-      {!isSidebarCollapsed && (
+      {/* 1. Left Primary Sidebar (Antigravity-style Smooth Collapsible) */}
+      <div
+        className={`h-full flex shrink-0 overflow-hidden transition-[width,opacity] duration-200 ease-in-out ${
+          isSidebarCollapsed ? 'w-0 opacity-0 pointer-events-none' : 'opacity-100'
+        }`}
+        style={{ width: isSidebarCollapsed ? 0 : undefined }}
+      >
         <Sidebar
           projects={projects}
           activeProjectId={activeProjectId}
@@ -2598,22 +2764,14 @@ export default function App() {
           onSelectDirectMessage={handleSelectDirectMessage}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
+          isCollapsed={isSidebarCollapsed}
           onToggleCollapse={() => setIsSidebarCollapsed(true)}
           activeThreadId={activeThreadId}
           currentMainView={mainView}
           onSelectMainView={setMainView}
+          onOpenStorageModal={() => setIsStorageSettingsModalOpen(true)}
         />
-      )}
-
-      {isSidebarCollapsed && (
-        <button
-          onClick={() => setIsSidebarCollapsed(false)}
-          className="absolute top-2.5 left-2.5 z-30 p-1.5 bg-[#121824] hover:bg-[#1b2436] text-gray-300 hover:text-white rounded-lg border border-[#202c3e] shadow-lg cursor-pointer transition-colors"
-          title="展开侧边栏"
-        >
-          <PanelLeftOpen className="w-4 h-4 text-cyan-400" />
-        </button>
-      )}
+      </div>
 
       {/* Main View Switcher: Agents & Teams Dashboard vs Topic Chat Stream */}
       {mainView === 'agents' ? (
@@ -2621,6 +2779,8 @@ export default function App() {
           agents={agents}
           teams={teams}
           channels={channels}
+          isSidebarCollapsed={isSidebarCollapsed}
+          onToggleSidebar={() => setIsSidebarCollapsed((prev) => !prev)}
           onOpenConnectAgentModal={() => {
             setEditingAgent(null);
             setIsConnectModalOpen(true);
@@ -2736,7 +2896,7 @@ export default function App() {
       ) : (
         <>
           {/* 2. Middle Column: Channel Main Timeline & Composer (PRD Column 2) */}
-          <main className="flex-1 flex flex-col min-w-0 bg-canvas border-l border-border relative overflow-hidden transition-colors duration-150">
+          <main className="flex-1 flex flex-col min-w-0 bg-canvas relative overflow-hidden transition-colors duration-150">
             {activeThread && (activeThread.type === 'dm' || activeChannel) ? (
               <>
                 <ChatTimeline
@@ -2762,6 +2922,10 @@ export default function App() {
                   onOpenMembersModal={activeThread.type === 'dm' ? undefined : () => handleOpenMembersModal(activeChannel?.id)}
                   onOpenDeleteChannelModal={activeThread.type === 'dm' ? undefined : () => handleOpenDeleteChannelModal(activeChannel?.id)}
                   onQuoteMessage={(msg) => setQuotingMessage(msg)}
+                  onEditTopic={(topic) => setEditingTopic(topic)}
+                  isSidebarCollapsed={isSidebarCollapsed}
+                  onToggleSidebar={() => setIsSidebarCollapsed((prev) => !prev)}
+                  currentWorkspace={activeProject?.name || 'shadow-crew'}
                 />
 
                 <MessageInput
@@ -2824,6 +2988,7 @@ export default function App() {
               setActiveDiff(diff);
               setIsCodexDiffOpen(true);
             }}
+            onEditTopic={() => setEditingTopic(activeTopicData)}
           />
         </>
       )}
@@ -2922,6 +3087,21 @@ export default function App() {
       <AgentDefaultsModal
         isOpen={isAgentDefaultsModalOpen}
         onClose={() => setIsAgentDefaultsModalOpen(false)}
+        onOpenStorageSettings={() => setIsStorageSettingsModalOpen(true)}
+      />
+
+      {/* 7.3 Modal: Storage Architecture & Cache Management (Option 3: SQLite) */}
+      <StorageSettingsModal
+        isOpen={isStorageSettingsModalOpen}
+        onClose={() => setIsStorageSettingsModalOpen(false)}
+        messages={Object.values(messages).flat()}
+        onMessagesCleared={() => {
+          setMessages({});
+        }}
+        onOpenMemoryExport={() => {
+          setExportingAgent(agents[0] || null);
+          setIsMemoryExportModalOpen(true);
+        }}
       />
 
       {/* 8. Modals: Create Topic / Channel */}
@@ -3011,7 +3191,7 @@ export default function App() {
             description: agentData.description || agentData.role || 'Custom ACP Agent',
             color: '#06b6d4',
             status: 'idle',
-            modelBadge: agentData.modelBadge || 'Claude 3.7 Sonnet',
+            modelBadge: agentData.modelBadge || DEFAULT_MODEL_NAME,
             localAcpProfile: agentData.localAcpProfile,
             envVars: agentData.envVars,
             isManagedByYou: true,
@@ -3059,6 +3239,16 @@ export default function App() {
         channel={activeChannel}
         agents={currentChannelAgents}
         onCreateTopic={handleCreateTopic}
+      />
+
+      {/* 9.1.1 Modal: Edit Topic */}
+      <EditTopicModal
+        isOpen={Boolean(editingTopic)}
+        topic={editingTopic}
+        channel={editingTopicChannel}
+        agents={editingTopicAgents}
+        onClose={() => setEditingTopic(null)}
+        onUpdateTopic={handleUpdateTopic}
       />
 
       {/* 10. Rust + Tauri Architecture & Source Code Hub */}

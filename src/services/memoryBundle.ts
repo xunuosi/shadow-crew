@@ -1,4 +1,5 @@
 import { Agent, AcpMemoryBundle, MemoryCartridge, MemoryCartridgeItem } from '../types';
+import { DEFAULT_MODEL_NAME } from '../config/models';
 
 export interface MemoryExportOptions {
   includeCategories?: string[];
@@ -118,7 +119,7 @@ export function createMemoryBundle(
     exported_at: new Date().toISOString(),
     source_agent: {
       name: agent.name,
-      model: agent.modelBadge || 'Claude 3.7 Sonnet',
+      model: agent.modelBadge || DEFAULT_MODEL_NAME,
       role: agent.role,
     },
     checksum: computeBundleChecksum(sanitizedItems),
@@ -280,7 +281,7 @@ export function createGuestAgentFromBundle(
     description: `基于 ${sourceAgent.name} 导出的经验卡带 (${bundle.memories.length}条原子记忆) 构建的独立访客替身。`,
     color: '#8b5cf6',
     status: 'idle',
-    modelBadge: sourceAgent.model || 'Claude 3.7 Sonnet',
+    modelBadge: sourceAgent.model || DEFAULT_MODEL_NAME,
     isManagedByYou: false,
     isGuestClone: true,
     guestCloneFrom: sourceAgent.name,

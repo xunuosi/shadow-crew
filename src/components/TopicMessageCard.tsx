@@ -10,19 +10,22 @@ import {
   ShieldCheck, 
   UserCheck, 
   Sparkles,
-  ChevronRight
+  ChevronRight,
+  Edit3
 } from 'lucide-react';
 
 interface TopicMessageCardProps {
   topic: TopicMessageData;
   agents: Agent[];
   onClick: () => void;
+  onEdit?: () => void;
 }
 
 export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
   topic,
   agents,
   onClick,
+  onEdit,
 }) => {
   const isResolved = topic.status === 'resolved';
   const isInvestigating = topic.status === 'investigating';
@@ -83,10 +86,25 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
           </div>
 
           {/* Reply Count & Action Hint */}
-          <div className="flex items-center gap-1.5 text-xs text-fg-muted group-hover:text-accent transition-colors font-medium shrink-0 whitespace-nowrap">
-            <MessageSquare className="w-3.5 h-3.5" />
-            <span>{topic.repliesCount} 条讨论</span>
-            <ChevronRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
+          <div className="flex items-center gap-2 shrink-0">
+            {onEdit && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEdit();
+                }}
+                className="p-1 rounded-md text-fg-muted hover:text-accent hover:bg-surface-subtle transition-colors"
+                title="编辑议题"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <div className="flex items-center gap-1.5 text-xs text-fg-muted group-hover:text-accent transition-colors font-medium whitespace-nowrap">
+              <MessageSquare className="w-3.5 h-3.5" />
+              <span>{topic.repliesCount} 条讨论</span>
+              <ChevronRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
+            </div>
           </div>
         </div>
 

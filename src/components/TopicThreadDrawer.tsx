@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { TopicMessageData, Message, Agent, ActiveAgentExecution } from '../types';
 import { 
   X, 
@@ -20,10 +20,12 @@ import {
   AtSign,
   Copy,
   Check,
-  Square
+  Square,
+  Edit3
 } from 'lucide-react';
 import { MentionSuggestions } from './MentionSuggestions';
 import { renderFormattedContent } from '../utils/formatMentions';
+import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ResizeHandle } from './ResizeHandle';
 
@@ -44,6 +46,7 @@ interface TopicThreadDrawerProps {
   }) => void;
   onReopenTopic?: (topicId: string) => void;
   onOpenCodexDiff: (diff: any) => void;
+  onEditTopic?: () => void;
 }
 
 export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
@@ -59,6 +62,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   onResolveTopic,
   onReopenTopic,
   onOpenCodexDiff,
+  onEditTopic,
 }) => {
   const [replyContent, setReplyContent] = useState('');
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
@@ -138,6 +142,81 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     maxWidth: () => (typeof window !== 'undefined' ? Math.min(1200, window.innerWidth * 0.85) : 800),
     storageKey: 'shinobi_topic_drawer_width',
   });
+
+  // Scroll management: ensure entering a topic always positions to the latest message
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const prevTopicIdRef = useRef<string | null>(null);
+  const prevMsgCountRef = useRef<number>(0);
+  const isAtBottomRef = useRef<boolean>(true);
+
+  const handleScroll = useCallback(() => {
+    if (!scrollContainerRef.current) return;
+    const c = scrollContainerRef.current;
+    isAtBottomRef.current = c.scrollHeight - c.scrollTop - c.clientHeight <= 100;
+  }, []);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    const container = scrollContainerRef.current;
+    if (container) {
+      if (behavior === 'smooth') {
+        container.scrollTo({
+          top: container.scrollHeight,
+          behavior: 'smooth',
+        });
+      } else {
+        container.scrollTop = container.scrollHeight;
+      }
+      isAtBottomRef.current = true;
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+    }
+  }, []);
+
+  // 1. 进入议题（打开抽屉或切换议题 ID 时）：立即瞬移至最新消息位置，并用 rAF + 多级微任务防止 Markdown/代码块排版滞后
+  useEffect(() => {
+    if (!isOpen || !topic?.id) {
+      prevTopicIdRef.current = null;
+      prevMsgCountRef.current = 0;
+      return;
+    }
+
+    const isNewTopic = prevTopicIdRef.current !== topic.id;
+    prevTopicIdRef.current = topic.id;
+
+    if (isNewTopic) {
+      prevMsgCountRef.current = messages.length;
+      scrollToBottom('auto');
+      const raf = requestAnimationFrame(() => scrollToBottom('auto'));
+      const timer1 = setTimeout(() => scrollToBottom('auto'), 40);
+      const timer2 = setTimeout(() => scrollToBottom('auto'), 120);
+      const timer3 = setTimeout(() => scrollToBottom('auto'), 250);
+      return () => {
+        cancelAnimationFrame(raf);
+        clearTimeout(timer1);
+        clearTimeout(timer2);
+        clearTimeout(timer3);
+      };
+    }
+  }, [isOpen, topic?.id, scrollToBottom, messages.length]);
+
+  // 2. 议题收到新回复或 Agent 执行状态更新时：若用户位于底部附近则平滑跟随
+  useEffect(() => {
+    if (!isOpen) return;
+    const isFirst = prevMsgCountRef.current === 0;
+    const hasNewMessage = messages.length > prevMsgCountRef.current;
+    prevMsgCountRef.current = messages.length;
+
+    if (isFirst) {
+      scrollToBottom('auto');
+      const timer = setTimeout(() => scrollToBottom('auto'), 40);
+      return () => clearTimeout(timer);
+    } else if (hasNewMessage || topicExecutions.length > 0) {
+      if (isAtBottomRef.current) {
+        scrollToBottom('smooth');
+      }
+    }
+  }, [isOpen, messages.length, topicExecutions.length, scrollToBottom]);
 
   if (!isOpen || !topic) return null;
 
@@ -329,6 +408,16 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
+          {onEditTopic && (
+            <button
+              type="button"
+              onClick={onEditTopic}
+              className="p-1.5 rounded-lg text-fg-muted hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
+              title="编辑议题"
+            >
+              <Edit3 className="w-4 h-4" />
+            </button>
+          )}
           <button
             onClick={onClose}
             className="p-1.5 rounded-lg text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
@@ -353,9 +442,22 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             <CornerDownRight className="w-3 h-3" />
             <span>议题发起上下文与目标:</span>
           </span>
-          <span className="text-[10px] text-fg-muted font-mono">
-            发起人: {topic.authorName} · {topic.timestamp}
-          </span>
+          <div className="flex items-center gap-2">
+            {onEditTopic && (
+              <button
+                type="button"
+                onClick={onEditTopic}
+                className="text-[10px] text-accent hover:underline flex items-center gap-1 transition-colors cursor-pointer font-medium"
+                title="编辑议题内容与成员"
+              >
+                <Edit3 className="w-3 h-3" />
+                <span>编辑</span>
+              </button>
+            )}
+            <span className="text-[10px] text-fg-muted font-mono">
+              发起人: {topic.authorName} · {topic.timestamp}
+            </span>
+          </div>
         </div>
         <div className="p-2.5 rounded-xl bg-surface border border-border text-fg leading-relaxed">
           {topic.description || topic.title}
@@ -363,7 +465,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       </div>
 
       {/* 3. Topic Message Stream */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 font-sans">
+      <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-4 font-sans">
         {messages.length === 0 ? (
           <div className="text-center py-10 text-fg-muted">
             <div className="text-2xl mb-2">💬</div>
@@ -464,9 +566,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 )}
 
                 {/* Message Content */}
-                <div className="text-xs text-fg leading-relaxed whitespace-pre-wrap font-sans">
-                  {renderFormattedContent(msg.content)}
-                </div>
+                <MarkdownRenderer content={msg.content} />
 
                 {/* Unified Diff View */}
                 {msg.diffView && (
@@ -544,6 +644,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             })}
           </div>
         )}
+
+        {/* Bottom anchor for scrolling */}
+        <div ref={messagesEndRef} />
       </div>
 
       {/* 4. Consensus Rollup Banner / Action Button */}

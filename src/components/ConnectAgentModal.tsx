@@ -22,6 +22,7 @@ import {
 import { AgentAvatarArtwork } from './AgentAvatarArtwork';
 import { discoverLocalAcpRuntimes, FALLBACK_PRESET_RUNTIMES } from '../services/acpDiscovery';
 import { probeRemoteAcpConnection } from '../services/acpClient';
+import { DEFAULT_MODEL_NAME } from '../config/models';
 
 interface ConnectAgentModalProps {
   isOpen: boolean;
@@ -321,7 +322,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         modelBadge: isRemoteMode
           ? 'Remote ACP'
           : selectedAcp.id === 'claude_code'
-          ? 'Claude 3.7 Sonnet'
+          ? DEFAULT_MODEL_NAME
           : selectedAcp.id === 'codex'
           ? 'deepseek-v4-flash'
           : selectedAcp.id === 'kimi_code'

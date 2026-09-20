@@ -1,14 +1,25 @@
 import React, { useState } from 'react';
-import { X, Settings, Check, Database, Shield, Sliders, Palette } from 'lucide-react';
+import { X, Settings, Check, Database, Shield, Sliders, Palette, HardDrive } from 'lucide-react';
 import { ThemeSwitcher } from './ThemeSwitcher';
+import {
+  DEFAULT_MODEL_NAME,
+  getAvailableModels,
+  getPersistedDefaultModel,
+  setPersistedDefaultModel,
+} from '../config/models';
 
 interface AgentDefaultsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onOpenStorageSettings?: () => void;
 }
 
-export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({ isOpen, onClose }) => {
-  const [defaultModel, setDefaultModel] = useState('Claude 3.7 Sonnet');
+export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({
+  isOpen,
+  onClose,
+  onOpenStorageSettings,
+}) => {
+  const [defaultModel, setDefaultModel] = useState(() => getPersistedDefaultModel());
   const [memoryPath, setMemoryPath] = useState('~/.local/share/shinobi/memory.sqlite');
   const [defaultTimeout, setDefaultTimeout] = useState('60');
   const [sandboxMode, setSandboxMode] = useState('diff_only');
@@ -16,8 +27,11 @@ export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({ isOpen, 
 
   if (!isOpen) return null;
 
+  const availableModels = getAvailableModels();
+
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
+    setPersistedDefaultModel(defaultModel);
     setIsSaved(true);
     setTimeout(() => {
       setIsSaved(false);
@@ -65,11 +79,11 @@ export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({ isOpen, 
               onChange={(e) => setDefaultModel(e.target.value)}
               className="w-full bg-surface border border-border focus:border-accent focus:ring-1 focus:ring-accent/30 rounded-xl px-3 py-2 text-xs text-fg focus:outline-none transition-all cursor-pointer"
             >
-              <option value="Claude 3.7 Sonnet">Claude 3.7 Sonnet (推荐代码架构)</option>
-              <option value="DeepSeek R1">DeepSeek R1 (数学推演与逻辑论证)</option>
-              <option value="DeepSeek V3">DeepSeek V3 (通用全栈推理)</option>
-              <option value="GPT-4o">GPT-4o (多模态理解与执行)</option>
-              <option value="Shinobi-Engine 2.0">Shinobi-Engine 2.0 (本地私密引擎)</option>
+              {availableModels.map((model) => (
+                <option key={model.id} value={model.name}>
+                  {model.label}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -112,6 +126,31 @@ export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({ isOpen, 
               </select>
             </div>
           </div>
+
+          {/* Storage Architecture & Cache Management Entry */}
+          {onOpenStorageSettings && (
+            <div className="p-3.5 rounded-2xl bg-surface-subtle border border-border flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-xl bg-surface border border-border flex items-center justify-center text-emerald-400 shrink-0 shadow-xs">
+                  <HardDrive className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="font-semibold text-fg text-xs">存储架构与缓存管理 (Storage & Cache)</div>
+                  <div className="text-[10px] text-fg-muted">查看本地 SQLite 占用、管理会话历史并一键清空运行日志</div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenStorageSettings();
+                }}
+                className="px-3 py-1.5 rounded-xl bg-surface border border-border hover:border-accent text-xs text-accent font-semibold transition-colors cursor-pointer shrink-0"
+              >
+                打开管理中心
+              </button>
+            </div>
+          )}
 
           {/* Footer */}
           <div className="pt-3 border-t border-border flex items-center justify-end gap-2.5">

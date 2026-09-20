@@ -22,7 +22,8 @@ import {
   PanelLeftClose,
   PanelLeft,
   Trash2,
-  UserPlus
+  UserPlus,
+  HardDrive
 } from 'lucide-react';
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { ThemeSwitcher } from './ThemeSwitcher';
@@ -53,6 +54,7 @@ interface SidebarProps {
   currentWorkspace?: string;
   currentMainView?: 'chat' | 'agents';
   onSelectMainView?: (view: 'chat' | 'agents') => void;
+  onOpenStorageModal?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -78,6 +80,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   currentWorkspace = 'shadow-crew',
   currentMainView = 'chat',
   onSelectMainView,
+  onOpenStorageModal,
 }) => {
   const { width: sidebarWidth, isDragging, handlePointerDown, resetWidth } = useResizablePanel({
     direction: 'right',
@@ -103,13 +106,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
         isDragging={isDragging}
         title="拖动调整侧边栏宽度，双击恢复默认 260px"
       />
-      {/* 1. Window Controls & History Bar */}
-      <div className="h-10 px-3 flex items-center justify-between border-b border-border bg-surface-subtle">
-        {/* macOS window traffic lights */}
-        <div className="flex items-center gap-1.5">
-          <div className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] cursor-pointer hover:opacity-80" />
-          <div className="w-3 h-3 rounded-full bg-[#ffbd2e] border border-[#dea123] cursor-pointer hover:opacity-80" />
-          <div className="w-3 h-3 rounded-full bg-[#27c93f] border border-[#1aab29] cursor-pointer hover:opacity-80" />
+      {/* 1. Sidebar Top Header & Navigation */}
+      <div className="h-12 px-3 flex items-center justify-between border-b border-border bg-surface-subtle shrink-0">
+        {/* Brand & Workspace Indicator */}
+        <div className="flex items-center gap-1.5 select-none">
+          <NinjaIcon className="w-4 h-4 text-accent" />
+          <span className="font-mono text-xs font-bold tracking-widest text-fg">SHINOBI</span>
         </div>
 
         {/* Navigation & Toggle icons */}
@@ -117,7 +119,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <button 
             onClick={onToggleCollapse} 
             className="p-1 hover:text-fg rounded hover:bg-surface-hover transition-colors cursor-pointer"
-            title="收起/展开侧边栏"
+            title="收起侧边栏 (⌘B)"
           >
             <PanelLeftClose className="w-3.5 h-3.5" />
           </button>
@@ -456,6 +458,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5">
+            {onOpenStorageModal && (
+              <button
+                onClick={onOpenStorageModal}
+                className="p-1 text-fg-muted hover:text-accent transition-colors cursor-pointer"
+                title="存储架构与缓存管理 (SQLite & 日志)"
+              >
+                <HardDrive className="w-3.5 h-3.5" />
+              </button>
+            )}
             <ThemeSwitcher variant="compact" placement="top-start" />
             <div 
               className="p-1 text-fg-muted hover:text-accent transition-colors cursor-pointer"

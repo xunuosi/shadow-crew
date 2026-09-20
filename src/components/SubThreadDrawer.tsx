@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { SubThread, Agent } from '../types';
 import { 
   X, 
@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ResizeHandle } from './ResizeHandle';
+import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 
 interface SubThreadDrawerProps {
   isOpen: boolean;
@@ -39,6 +40,47 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
     maxWidth: () => (typeof window !== 'undefined' ? Math.min(900, window.innerWidth * 0.8) : 600),
     storageKey: 'shinobi_subthread_drawer_width',
   });
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const prevSubIdRef = useRef<string | null>(null);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    const container = scrollContainerRef.current;
+    if (container) {
+      if (behavior === 'smooth') {
+        container.scrollTo({
+          top: container.scrollHeight,
+          behavior: 'smooth',
+        });
+      } else {
+        container.scrollTop = container.scrollHeight;
+      }
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen || !subThread?.id) {
+      prevSubIdRef.current = null;
+      return;
+    }
+    const isNew = prevSubIdRef.current !== subThread.id;
+    prevSubIdRef.current = subThread.id;
+
+    if (isNew) {
+      scrollToBottom('auto');
+      const raf = requestAnimationFrame(() => scrollToBottom('auto'));
+      const timer = setTimeout(() => scrollToBottom('auto'), 50);
+      return () => {
+        cancelAnimationFrame(raf);
+        clearTimeout(timer);
+      };
+    } else {
+      scrollToBottom('smooth');
+    }
+  }, [isOpen, subThread?.id, subThread?.messages?.length, scrollToBottom]);
 
   if (!isOpen || !subThread) return null;
 
@@ -110,7 +152,7 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
       </div>
 
       {/* 3. Sub-Thread Message Stream */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-3 space-y-3">
         {subThread.messages.map((msg) => (
           <div key={msg.id} className="p-2.5 rounded-xl bg-surface-subtle border border-border">
             <div className="flex items-center justify-between mb-1.5">
@@ -120,11 +162,12 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
               </div>
               <span className="text-[10px] text-fg-muted font-mono">{msg.timestamp}</span>
             </div>
-            <p className="text-[11px] text-fg-secondary leading-relaxed font-sans whitespace-pre-wrap">
-              {msg.content}
-            </p>
+            <div className="mt-1">
+              <MarkdownRenderer content={msg.content} />
+            </div>
           </div>
         ))}
+        <div ref={messagesEndRef} />
       </div>
 
       {/* 4. Mini Composer */}

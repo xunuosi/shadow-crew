@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Message, Thread, Agent, Channel, ActiveAgentExecution } from '../types';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Message, Thread, Agent, Channel, ActiveAgentExecution, TopicMessageData } from '../types';
 import { TopicMessageCard } from './TopicMessageCard';
 import { ChannelComposerActivityBar } from './ChannelComposerActivityBar';
 import { 
@@ -29,9 +29,11 @@ import {
   Trash2,
   Lock,
   UserPlus,
-  Quote
+  Quote,
+  PanelLeft
 } from 'lucide-react';
 import { renderFormattedContent } from '../utils/formatMentions';
+import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 
 interface ChatTimelineProps {
   messages: Message[];
@@ -50,6 +52,10 @@ interface ChatTimelineProps {
   onOpenMembersModal?: () => void;
   onOpenDeleteChannelModal?: () => void;
   onQuoteMessage?: (message: Message) => void;
+  onEditTopic?: (topic: TopicMessageData) => void;
+  isSidebarCollapsed?: boolean;
+  onToggleSidebar?: () => void;
+  currentWorkspace?: string;
 }
 
 export const ChatTimeline: React.FC<ChatTimelineProps> = ({
@@ -69,6 +75,10 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   onOpenMembersModal,
   onOpenDeleteChannelModal,
   onQuoteMessage,
+  onEditTopic,
+  isSidebarCollapsed = false,
+  onToggleSidebar,
+  currentWorkspace,
 }) => {
   const [filter, setFilter] = useState<'all' | 'topics' | 'resolved'>('all');
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
@@ -136,7 +146,10 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   const [isDmThinkingOpen, setIsDmThinkingOpen] = useState(true);
   const [now, setNow] = useState(Date.now());
 
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const prevThreadIdRef = useRef<string | null>(null);
+  const prevMsgCountRef = useRef<number>(0);
 
   const activeAgents = agents.filter((a) => activeThread?.activeAgentIds?.includes(a.id));
   const dmTargetAgent = activeThread?.type === 'dm'
@@ -147,9 +160,76 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     (e) => e.threadId === activeThread?.id || (activeThread?.type === 'thread' && (!e.threadId || e.threadId === activeThread?.id))
   );
 
+  const isAtBottomRef = useRef(true);
+
+  const handleScroll = useCallback(() => {
+    if (!scrollContainerRef.current) return;
+    const c = scrollContainerRef.current;
+    isAtBottomRef.current = c.scrollHeight - c.scrollTop - c.clientHeight <= 100;
+  }, []);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    const container = scrollContainerRef.current;
+    if (container) {
+      if (behavior === 'smooth') {
+        container.scrollTo({
+          top: container.scrollHeight,
+          behavior: 'smooth',
+        });
+      } else {
+        container.scrollTop = container.scrollHeight;
+      }
+      isAtBottomRef.current = true;
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+    }
+  }, []);
+
+  // 1. 进入会话 / 切换线程时：立即无感知精准定位于最新消息位置（Auto 瞬移），辅以 rAF 及多级微任务防止动态 Markdown/代码块回流跳顶
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, currentThreadExecutions.length]);
+    if (!activeThread?.id) return;
+    const isNewThread = prevThreadIdRef.current !== activeThread.id;
+    prevThreadIdRef.current = activeThread.id;
+
+    if (isNewThread) {
+      prevMsgCountRef.current = messages.length;
+      scrollToBottom('auto');
+      const raf = requestAnimationFrame(() => scrollToBottom('auto'));
+      const timer1 = setTimeout(() => scrollToBottom('auto'), 40);
+      const timer2 = setTimeout(() => scrollToBottom('auto'), 120);
+      const timer3 = setTimeout(() => scrollToBottom('auto'), 250);
+      return () => {
+        cancelAnimationFrame(raf);
+        clearTimeout(timer1);
+        clearTimeout(timer2);
+        clearTimeout(timer3);
+      };
+    }
+  }, [activeThread?.id, scrollToBottom, messages.length]);
+
+  // 2. 切换过滤器（全部 / 议题）时，同样精准定位到当前筛选流的最新消息
+  useEffect(() => {
+    scrollToBottom('auto');
+    const timer = setTimeout(() => scrollToBottom('auto'), 40);
+    return () => clearTimeout(timer);
+  }, [filter, scrollToBottom]);
+
+  // 3. 当前会话收到新消息或 Agent 执行流推进时：如果用户位于底部附近则平滑跟随滚动
+  useEffect(() => {
+    const isInitial = prevMsgCountRef.current === 0;
+    const hasNewMessage = messages.length > prevMsgCountRef.current;
+    prevMsgCountRef.current = messages.length;
+
+    if (isInitial) {
+      scrollToBottom('auto');
+      const timer = setTimeout(() => scrollToBottom('auto'), 40);
+      return () => clearTimeout(timer);
+    } else if (hasNewMessage || currentThreadExecutions.length > 0) {
+      if (isAtBottomRef.current) {
+        scrollToBottom('smooth');
+      }
+    }
+  }, [messages.length, currentThreadExecutions.length, scrollToBottom]);
 
   useEffect(() => {
     if (currentThreadExecutions.length === 0) return;
@@ -188,8 +268,27 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
       className="flex-1 flex flex-col min-w-0 bg-canvas text-fg text-xs overflow-hidden transition-colors duration-150"
     >
       {/* 1. Top Channel / Thread Header */}
-      <header className="min-h-[48px] py-1.5 px-3 sm:px-4 border-b border-border flex items-center justify-between bg-surface-subtle select-none shrink-0 gap-2">
+      <header className="h-12 px-3 sm:px-4 border-b border-border flex items-center justify-between bg-surface-subtle select-none shrink-0 gap-2">
         <div className="flex items-center gap-2 truncate min-w-0 flex-1">
+          {/* Antigravity Sidebar Expand Button (Shown when sidebar is collapsed) */}
+          {isSidebarCollapsed && (
+            <button
+              onClick={onToggleSidebar}
+              className="p-1.5 rounded-lg text-fg-muted hover:text-fg hover:bg-surface border border-border/70 hover:border-border transition-all cursor-pointer flex items-center justify-center shrink-0 shadow-2xs group mr-0.5"
+              title="展开侧边栏 (⌘B)"
+            >
+              <PanelLeft className="w-4 h-4 text-fg-secondary group-hover:text-fg group-hover:scale-105 transition-transform" />
+            </button>
+          )}
+
+          {/* Antigravity Breadcrumbs: Workspace / Channel */}
+          {currentWorkspace && (
+            <div className="hidden sm:flex items-center gap-1.5 text-xs text-fg-muted shrink-0 select-none">
+              <span className="font-medium hover:text-fg transition-colors">{currentWorkspace}</span>
+              <span className="text-fg-muted/40 font-mono">/</span>
+            </div>
+          )}
+
           <span className="font-bold text-fg text-sm tracking-wide truncate flex items-center gap-2 shrink-0">
             {activeThread.type === 'dm' ? (
               <span className="flex items-center gap-2 truncate">
@@ -400,7 +499,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
       </header>
 
       {/* 2. Message Conversation Stream */}
-      <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
+      <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
         {/* Parent Quote Anchor (Identical to Screenshot) */}
         {activeThread.parentQuoteSnippet && (
           <div className="max-w-3xl mx-auto flex items-center gap-2 px-3.5 py-2 rounded-xl bg-surface-subtle border border-border text-fg-muted text-xs shadow-xs">
@@ -465,6 +564,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                   topic={message.topicData}
                   agents={agents}
                   onClick={() => onOpenTopic?.(message.topicData!.id)}
+                  onEdit={onEditTopic ? () => onEditTopic(message.topicData!) : undefined}
                 />
               </div>
             );
@@ -633,9 +733,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 )}
 
                 {/* Main Markdown Text with Code Formatting */}
-                <div className="text-fg leading-relaxed text-xs space-y-2 whitespace-pre-wrap font-sans">
-                  {renderFormattedContent(message.content)}
-                </div>
+                <MarkdownRenderer content={message.content} />
 
                 {/* Codex Style Unified Diff Card */}
                 {message.diffView && (

@@ -16,6 +16,7 @@ import {
   Upload,
   Download,
   Layers,
+  PanelLeft,
 } from 'lucide-react';
 import { AgentAvatarArtwork, TeamArtwork } from './AgentAvatarArtwork';
 import { ThemeSwitcher } from './ThemeSwitcher';
@@ -36,6 +37,8 @@ interface AgentDashboardProps {
   onDeleteTeam?: (teamId: string) => void;
   onExportAgentMemory?: (agent: Agent) => void;
   onImportMemoryCartridge?: () => void;
+  isSidebarCollapsed?: boolean;
+  onToggleSidebar?: () => void;
 }
 
 export const AgentDashboard: React.FC<AgentDashboardProps> = ({
@@ -54,6 +57,8 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   onDeleteTeam,
   onExportAgentMemory,
   onImportMemoryCartridge,
+  isSidebarCollapsed = false,
+  onToggleSidebar,
 }) => {
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [activeTeamMenuId, setActiveTeamMenuId] = useState<string | null>(null);
@@ -76,13 +81,24 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
     >
       {/* 1. Page Header (Exact Match to Design Screenshot + Theme Switcher) */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-fg tracking-tight">
-            Agents
-          </h1>
-          <p className="text-sm text-fg-secondary mt-1">
-            Set up and manage your agents.
-          </p>
+        <div className="flex items-center gap-3">
+          {isSidebarCollapsed && (
+            <button
+              onClick={onToggleSidebar}
+              className="p-2 rounded-xl text-fg-muted hover:text-fg hover:bg-surface border border-border transition-all cursor-pointer shadow-xs group shrink-0"
+              title="展开侧边栏 (⌘B)"
+            >
+              <PanelLeft className="w-5 h-5 group-hover:scale-105 transition-transform" />
+            </button>
+          )}
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-bold text-fg tracking-tight">
+              Agents
+            </h1>
+            <p className="text-sm text-fg-secondary mt-1">
+              Set up and manage your agents.
+            </p>
+          </div>
         </div>
 
         <div className="flex items-center gap-2.5">

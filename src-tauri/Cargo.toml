@@ -21,3 +21,4 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 chrono = "0.4"
+rusqlite.workspace = true

@@ -29,12 +29,6 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
     >
       {/* Left: Window Dots & Title */}
       <div className="flex items-center gap-3">
-        {/* macOS style window dots */}
-        <div className="flex items-center gap-1.5 mr-1">
-          <div className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] cursor-pointer hover:opacity-80" />
-          <div className="w-3 h-3 rounded-full bg-[#ffbd2e] border border-[#dea123] cursor-pointer hover:opacity-80" />
-          <div className="w-3 h-3 rounded-full bg-[#27c93f] border border-[#1aab29] cursor-pointer hover:opacity-80" />
-        </div>
 
         <div className="flex items-center gap-2 font-semibold text-fg">
           <span className="text-accent font-bold tracking-wider flex items-center gap-1.5 bg-accent/15 px-2 py-0.5 rounded border border-accent/30 shadow-xs">

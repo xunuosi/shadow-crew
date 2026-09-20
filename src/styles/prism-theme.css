@@ -1,0 +1,130 @@
+/* Prism.js Syntax Highlighting Theme - Adaptive for Shinobi */
+
+code[class*="language-"],
+pre[class*="language-"] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.8125rem; /* 13px */
+  line-height: 1.6;
+  text-align: left;
+  white-space: pre;
+  word-spacing: normal;
+  word-break: normal;
+  word-wrap: normal;
+  tab-size: 2;
+  hyphens: none;
+}
+
+/* Light Theme */
+:root,
+[data-theme="light"] {
+  --syntax-bg: #f8fafc;
+  --syntax-fg: #1e293b;
+  --syntax-comment: #94a3b8;
+  --syntax-punctuation: #64748b;
+  --syntax-keyword: #8b5cf6;
+  --syntax-builtin: #0284c7;
+  --syntax-string: #059669;
+  --syntax-function: #2563eb;
+  --syntax-number: #d97706;
+  --syntax-boolean: #ea580c;
+  --syntax-operator: #475569;
+  --syntax-variable: #0f172a;
+  --syntax-property: #0891b2;
+  --syntax-class: #0369a1;
+  --syntax-tag: #e11d48;
+}
+
+/* Dark Theme (Ninja Stealth) */
+[data-theme="dark"] {
+  --syntax-bg: #0b0f19;
+  --syntax-fg: #e2e8f0;
+  --syntax-comment: #64748b;
+  --syntax-punctuation: #94a3b8;
+  --syntax-keyword: #c084fc;
+  --syntax-builtin: #38bdf8;
+  --syntax-string: #34d399;
+  --syntax-function: #60a5fa;
+  --syntax-number: #fbbf24;
+  --syntax-boolean: #f97316;
+  --syntax-operator: #94a3b8;
+  --syntax-variable: #f8fafc;
+  --syntax-property: #22d3ee;
+  --syntax-class: #7dd3fc;
+  --syntax-tag: #fb7185;
+}
+
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+  color: var(--syntax-comment);
+  font-style: italic;
+}
+
+.token.punctuation {
+  color: var(--syntax-punctuation);
+}
+
+.token.namespace {
+  opacity: 0.7;
+}
+
+.token.property,
+.token.tag,
+.token.constant,
+.token.symbol,
+.token.deleted {
+  color: var(--syntax-tag);
+}
+
+.token.boolean,
+.token.number {
+  color: var(--syntax-number);
+}
+
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin,
+.token.inserted {
+  color: var(--syntax-string);
+}
+
+.token.operator,
+.token.entity,
+.token.url,
+.language-css .token.string,
+.style .token.string {
+  color: var(--syntax-operator);
+}
+
+.token.atrule,
+.token.attr-value,
+.token.keyword {
+  color: var(--syntax-keyword);
+  font-weight: 500;
+}
+
+.token.function,
+.token.class-name {
+  color: var(--syntax-function);
+}
+
+.token.regex,
+.token.important,
+.token.variable {
+  color: var(--syntax-variable);
+}
+
+.token.important,
+.token.bold {
+  font-weight: bold;
+}
+.token.italic {
+  font-style: italic;
+}
+
+.token.entity {
+  cursor: help;
+}
