@@ -2979,6 +2979,8 @@ export default function App() {
                   quotingMessage={quotingMessage}
                   onCancelQuote={() => setQuotingMessage(null)}
                   isDm={activeThread.type === 'dm'}
+                  draftType={activeThread.type === 'dm' ? 'dm' : 'channel'}
+                  draftId={activeThread.type === 'dm' ? (activeThread.authorId || activeThread.id.replace('thread-dm-', '')) : (activeChannel?.id || activeThread.channelId || 'general')}
                 />
               </>
             ) : (

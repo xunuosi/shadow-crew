@@ -8,11 +8,13 @@ import {
   CheckCircle2, 
   Sparkles,
   ArrowUpRight,
-  Bot
+  Bot,
+  Edit3
 } from 'lucide-react';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ResizeHandle } from './ResizeHandle';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
+import { getDraft, saveDraft, clearDraft } from '../services/draftService';
 
 interface SubThreadDrawerProps {
   isOpen: boolean;
@@ -32,6 +34,30 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
   onSyncBackToMainThread,
 }) => {
   const [replyContent, setReplyContent] = useState('');
+
+  // 切换子话题时，自动同步该子话题的独立草稿
+  useEffect(() => {
+    if (subThread?.id) {
+      setReplyContent(getDraft('subthread', subThread.id));
+    } else {
+      setReplyContent('');
+    }
+  }, [subThread?.id]);
+
+  const updateReplyContent = (valOrFn: string | ((prev: string) => string)) => {
+    const next = typeof valOrFn === 'function' ? valOrFn(replyContent) : valOrFn;
+    setReplyContent(next);
+    if (subThread?.id) {
+      saveDraft('subthread', subThread.id, next);
+    }
+  };
+
+  const handleClearSubDraft = () => {
+    setReplyContent('');
+    if (subThread?.id) {
+      clearDraft('subthread', subThread.id);
+    }
+  };
 
   const { width: drawerWidth, isDragging, handlePointerDown, resetWidth, panelRef } = useResizablePanel({
     direction: 'left',
@@ -88,6 +114,9 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
     if (!replyContent.trim()) return;
     onSendSubMessage(replyContent);
     setReplyContent('');
+    if (subThread?.id) {
+      clearDraft('subthread', subThread.id);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -174,14 +203,33 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
         <div className="relative bg-surface border border-border rounded-xl p-2 focus-within:border-purple-500 transition-all">
           <textarea
             value={replyContent}
-            onChange={(e) => setReplyContent(e.target.value)}
+            onChange={(e) => updateReplyContent(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="在子话题中回复... (⌘ + Enter 发送)"
             rows={2}
             className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none"
           />
           <div className="flex items-center justify-between pt-1 border-t border-border mt-1">
-            <span className="text-[10px] text-fg-muted font-mono">⌘ + Enter 发送</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-fg-muted font-mono">⌘ + Enter 发送</span>
+              {replyContent.trim().length > 0 && (
+                <div
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[10px] select-none"
+                  title="当前子话题草稿已暂存"
+                >
+                  <Edit3 className="w-2.5 h-2.5 shrink-0" />
+                  <span className="font-mono">草稿已暂存</span>
+                  <button
+                    type="button"
+                    onClick={handleClearSubDraft}
+                    className="p-0.5 rounded hover:text-red-400 transition-colors cursor-pointer"
+                    title="清空当前子话题草稿"
+                  >
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                </div>
+              )}
+            </div>
             <button
               onClick={handleSend}
               disabled={!replyContent.trim()}

@@ -16,9 +16,11 @@ import {
   X,
   Square,
   ChevronDown,
-  Users
+  Users,
+  Edit3
 } from 'lucide-react';
 import { MentionSuggestions, MentionItem } from './MentionSuggestions';
+import { getDraft, saveDraft, clearDraft, DraftType } from '../services/draftService';
 
 interface MessageInputProps {
   onSendMessage: (content: string, targetAgentId?: string) => void;
@@ -31,6 +33,8 @@ interface MessageInputProps {
   quotingMessage?: Message | null;
   onCancelQuote?: () => void;
   isDm?: boolean;
+  draftType?: DraftType;
+  draftId?: string;
 }
 
 export const MessageInput: React.FC<MessageInputProps> = ({
@@ -44,6 +48,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   quotingMessage,
   onCancelQuote,
   isDm = false,
+  draftType,
+  draftId,
 }) => {
   const [content, setContent] = useState('');
   const [selectedModel, setSelectedModel] = useState<'claude' | 'deepseek' | 'openai' | 'shinobi'>('claude');
@@ -53,6 +59,29 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const [isOverflowOpen, setIsOverflowOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overflowRef = useRef<HTMLDivElement>(null);
+
+  // 切换频道或私聊 Agent 时，自动加载对应维度的暂存草稿
+  useEffect(() => {
+    if (draftType && draftId) {
+      const savedDraft = getDraft(draftType, draftId);
+      setContent(savedDraft);
+    }
+  }, [draftType, draftId]);
+
+  const updateContent = (valOrFn: string | ((prev: string) => string)) => {
+    const next = typeof valOrFn === 'function' ? valOrFn(content) : valOrFn;
+    setContent(next);
+    if (draftType && draftId) {
+      saveDraft(draftType, draftId, next);
+    }
+  };
+
+  const handleClearDraft = () => {
+    setContent('');
+    if (draftType && draftId) {
+      clearDraft(draftType, draftId);
+    }
+  };
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -102,6 +131,9 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     }
     onSendMessage(finalContent);
     setContent('');
+    if (draftType && draftId) {
+      clearDraft(draftType, draftId);
+    }
     setIsMentionOpen(false);
   };
 
@@ -118,7 +150,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       const atStartPos = match.index! + (match[0].startsWith(' ') ? 1 : 0);
       const newBefore = textBefore.slice(0, atStartPos) + item.handle + ' ';
       const newContent = newBefore + textAfter;
-      setContent(newContent);
+      updateContent(newContent);
       setIsMentionOpen(false);
       setMentionQuery('');
       setMentionIndex(0);
@@ -178,7 +210,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
-    setContent(val);
+    updateContent(val);
 
     const cursor = e.target.selectionStart || 0;
     const textBefore = val.slice(0, cursor);
@@ -194,7 +226,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   };
 
   const addMention = (handle: string) => {
-    setContent((prev) => {
+    updateContent((prev) => {
       if (prev.includes(handle)) return prev;
       return `${handle} ${prev}`.trim() + ' ';
     });
@@ -207,7 +239,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     textarea.focus();
     const cursor = textarea.selectionStart || content.length;
     const newContent = content.slice(0, cursor) + '@' + content.slice(cursor);
-    setContent(newContent);
+    updateContent(newContent);
     setMentionQuery('');
     setIsMentionOpen(true);
     setMentionIndex(0);
@@ -448,6 +480,25 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
             {/* Right Action Button: Send or Stop */}
             <div className="flex items-center gap-1.5 shrink-0">
+              {/* Draft Status Badge */}
+              {content.trim().length > 0 && (
+                <div
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-500 dark:text-amber-400 text-[10px] select-none animate-in fade-in duration-150 mr-1"
+                  title={`草稿已独立暂存至【${isDm ? '私聊Agent' : '频道'}】，切换上下文不丢失`}
+                >
+                  <Edit3 className="w-2.5 h-2.5 shrink-0" />
+                  <span className="hidden xs:inline font-mono">草稿已暂存</span>
+                  <button
+                    type="button"
+                    onClick={handleClearDraft}
+                    className="p-0.5 rounded hover:text-red-400 transition-colors cursor-pointer"
+                    title="清空当前草稿"
+                  >
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                </div>
+              )}
+
               <span className="hidden sm:inline text-[10px] font-mono text-fg-muted select-none">
                 {isGenerating ? 'Esc 停止' : '⌘ + Enter'}
               </span>

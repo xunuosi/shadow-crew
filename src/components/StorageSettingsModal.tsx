@@ -22,6 +22,7 @@ import {
   exportMessagesAsJsonFile,
   formatBytes,
 } from '../services/dbClient';
+import { getDraftStats, clearAllDrafts } from '../services/draftService';
 import { Message } from '../types';
 
 interface StorageSettingsModalProps {
@@ -44,9 +45,11 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
   const [cleaning, setCleaning] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [confirmClearMessages, setConfirmClearMessages] = useState(false);
+  const [draftStats, setDraftStats] = useState<{ count: number; sizeBytes: number }>({ count: 0, sizeBytes: 0 });
 
   const loadStats = async () => {
     setLoading(true);
+    setDraftStats(getDraftStats());
     try {
       const data = await getStorageStats();
       setStats(data);
@@ -108,6 +111,12 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
     } finally {
       setCleaning(false);
     }
+  };
+
+  const handleClearDrafts = () => {
+    clearAllDrafts();
+    setDraftStats(getDraftStats());
+    showToast('已清空所有频道的未发送草稿');
   };
 
   const handleResetUiLayout = () => {
@@ -373,7 +382,7 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
               <div className="flex items-center justify-between">
                 <span className="font-bold text-xs text-fg flex items-center gap-1.5">
                   <Sliders className="w-3.5 h-3.5 text-fg-muted" />
-                  <span>UI 布局与偏好缓存 (LocalStorage)</span>
+                  <span>UI 布局、草稿与偏好缓存 (LocalStorage)</span>
                 </span>
                 <span className="font-mono text-xs text-fg-muted">
                   {formatBytes(stats?.localStorageUsageBytes || 0)} / ~5 MB (
@@ -385,9 +394,17 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-fg-secondary">
-                目前仅存放主题设置、面板拖拽宽度与当前选中的项目 ID。聊天消息已脱离此区，彻底远离 Quota 熔断上限。
+                目前存放主题设置、面板拖拽宽度、选中的项目 ID，以及未发送草稿暂存（频道/私聊/议题三维隔离，当前共 {draftStats.count} 处草稿，约 {formatBytes(draftStats.sizeBytes)}）。聊天消息已移入原生 SQLite，彻底远离配额上限。
               </p>
-              <div className="flex justify-end pt-1">
+              <div className="flex justify-end gap-2 pt-1">
+                {draftStats.count > 0 && (
+                  <button
+                    onClick={handleClearDrafts}
+                    className="px-2.5 py-1 rounded-lg bg-surface border border-amber-500/30 hover:border-amber-500 text-amber-500 text-xs transition-colors cursor-pointer"
+                  >
+                    清空未发送草稿 ({draftStats.count})
+                  </button>
+                )}
                 <button
                   onClick={handleResetUiLayout}
                   className="px-2.5 py-1 rounded-lg bg-surface border border-border hover:border-fg-muted text-fg text-xs transition-colors cursor-pointer"

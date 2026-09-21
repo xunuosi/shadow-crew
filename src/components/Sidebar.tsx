@@ -30,6 +30,7 @@ import { ThemeSwitcher } from './ThemeSwitcher';
 import { NinjaIcon } from './NinjaIcon';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ResizeHandle } from './ResizeHandle';
+import { useAllDrafts } from '../services/draftService';
 
 interface SidebarProps {
   projects?: Project[];
@@ -89,6 +90,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     maxWidth: 480,
     storageKey: 'shinobi_sidebar_width',
   });
+
+  const drafts = useAllDrafts();
 
   return (
     <aside
@@ -327,6 +330,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         {memberCount}人
                       </span>
 
+                      {drafts[`channel:${channel.id}`] && (
+                        <span 
+                          className="text-[9px] px-1 py-0.2 rounded bg-amber-500/15 text-amber-500 dark:text-amber-400 font-mono border border-amber-500/30 shrink-0" 
+                          title="此频道存在暂存未发送的草稿"
+                        >
+                          草稿
+                        </span>
+                      )}
+
                       {channel.unreadCount > 0 && (
                         <span className="text-[10px] bg-red-500/15 text-red-500 border border-red-500/30 px-1.5 py-0.5 rounded-full font-mono shrink-0">
                           {channel.unreadCount}
@@ -425,12 +437,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     </div>
                   </div>
 
-                  <span 
-                    className="text-[9px] text-fg-muted font-mono px-1.5 py-0.5 rounded bg-surface-subtle border border-border shrink-0 max-w-[68px] truncate"
-                    title={agent.modelBadge || 'ACP'}
-                  >
-                    {formatBadge(agent.modelBadge)}
-                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {drafts[`dm:${agent.id}`] && (
+                      <span 
+                        className="text-[9px] px-1 py-0.2 rounded bg-amber-500/15 text-amber-500 dark:text-amber-400 font-mono border border-amber-500/30 shrink-0"
+                        title="与此 Agent 存在未发送的私聊草稿"
+                      >
+                        草稿
+                      </span>
+                    )}
+                    <span 
+                      className="text-[9px] text-fg-muted font-mono px-1.5 py-0.5 rounded bg-surface-subtle border border-border shrink-0 max-w-[68px] truncate"
+                      title={agent.modelBadge || 'ACP'}
+                    >
+                      {formatBadge(agent.modelBadge)}
+                    </span>
+                  </div>
                 </button>
               );
             })}

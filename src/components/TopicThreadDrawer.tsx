@@ -28,6 +28,7 @@ import { renderFormattedContent } from '../utils/formatMentions';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ResizeHandle } from './ResizeHandle';
+import { getDraft, saveDraft, clearDraft } from '../services/draftService';
 
 interface TopicThreadDrawerProps {
   isOpen: boolean;
@@ -70,6 +71,31 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   const [solutionDraft, setSolutionDraft] = useState('');
   const [impactedFilesDraft, setImpactedFilesDraft] = useState('src/middleware/auth.ts, src/routes/oauth.ts');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // 切换议题时，自动载入该议题维度的独立回复草稿
+  useEffect(() => {
+    if (topic?.id) {
+      const saved = getDraft('topic', topic.id);
+      setReplyContent(saved);
+    } else {
+      setReplyContent('');
+    }
+  }, [topic?.id]);
+
+  const updateReplyContent = (valOrFn: string | ((prev: string) => string)) => {
+    const next = typeof valOrFn === 'function' ? valOrFn(replyContent) : valOrFn;
+    setReplyContent(next);
+    if (topic?.id) {
+      saveDraft('topic', topic.id, next);
+    }
+  };
+
+  const handleClearTopicDraft = () => {
+    setReplyContent('');
+    if (topic?.id) {
+      clearDraft('topic', topic.id);
+    }
+  };
 
   // @ Mention state for topic reply composer
   const [isMentionOpen, setIsMentionOpen] = useState(false);
@@ -115,7 +141,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
   const handleQuoteInDrawer = (message: Message) => {
     const clean = message.content.trim().split('\n')[0].slice(0, 80);
-    setReplyContent((prev) => `> **@${message.authorName}**: ${clean}...\n\n${prev}`);
+    updateReplyContent(`> **@${message.authorName}**: ${clean}...\n\n${replyContent}`);
     setTimeout(() => textareaRef.current?.focus(), 50);
     setContextMenu(null);
   };
@@ -241,9 +267,12 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   };
 
   const handleSend = () => {
-    if (!replyContent.trim()) return;
+    if (!replyContent.trim() || !topic?.id) return;
     onSendMessage(topic.id, replyContent);
     setReplyContent('');
+    if (topic?.id) {
+      clearDraft('topic', topic.id);
+    }
     setIsMentionOpen(false);
   };
 
@@ -260,7 +289,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       const atStartPos = match.index! + (match[0].startsWith(' ') ? 1 : 0);
       const newBefore = textBefore.slice(0, atStartPos) + item.handle + ' ';
       const newContent = newBefore + textAfter;
-      setReplyContent(newContent);
+      updateReplyContent(newContent);
       setIsMentionOpen(false);
       setMentionQuery('');
       setMentionIndex(0);
@@ -271,7 +300,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         textarea.setSelectionRange(newCursor, newCursor);
       }, 0);
     } else {
-      setReplyContent((prev) => (prev.includes(item.handle) ? prev : `${item.handle} ${prev}`.trim() + ' '));
+      updateReplyContent((prev) => (prev.includes(item.handle) ? prev : `${item.handle} ${prev}`.trim() + ' '));
       setIsMentionOpen(false);
     }
   };
@@ -324,7 +353,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
-    setReplyContent(val);
+    updateReplyContent(val);
 
     const cursor = e.target.selectionStart || 0;
     const textBefore = val.slice(0, cursor);
@@ -714,7 +743,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   textarea.focus();
                   const cursor = textarea.selectionStart || replyContent.length;
                   const newContent = replyContent.slice(0, cursor) + '@' + replyContent.slice(cursor);
-                  setReplyContent(newContent);
+                  updateReplyContent(newContent);
                   setMentionQuery('');
                   setIsMentionOpen(true);
                   setMentionIndex(0);
@@ -733,22 +762,42 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               </span>
             </div>
 
-            {isExecuting ? (
-              <button
-                type="button"
-                onClick={() => {
-                  if (onAbortAll) {
-                    onAbortAll();
-                  } else if (onAbortAgent) {
-                    topicExecutions.forEach((e) => onAbortAgent(e.agentId));
-                  }
-                }}
-                className="px-2 py-1 rounded-lg bg-red-500 hover:bg-red-600 text-white transition-all cursor-pointer shadow-xs flex items-center gap-1 text-[11px] font-medium animate-in fade-in"
-                title="终止全部推演 (Esc)"
-              >
-                <Square className="w-3 h-3 fill-current" />
-                <span>终止全部 ({topicExecutions.length})</span>
-              </button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {/* Topic Draft Status Badge */}
+              {replyContent.trim().length > 0 && (
+                <div
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[10px] select-none mr-1 animate-in fade-in"
+                  title="当前议题回复草稿已独立暂存，切换议题不丢失"
+                >
+                  <Edit3 className="w-2.5 h-2.5 shrink-0" />
+                  <span className="hidden xs:inline font-mono">草稿已暂存</span>
+                  <button
+                    type="button"
+                    onClick={handleClearTopicDraft}
+                    className="p-0.5 rounded hover:text-red-400 transition-colors cursor-pointer"
+                    title="清空当前议题草稿"
+                  >
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                </div>
+              )}
+
+              {isExecuting ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onAbortAll) {
+                      onAbortAll();
+                    } else if (onAbortAgent) {
+                      topicExecutions.forEach((e) => onAbortAgent(e.agentId));
+                    }
+                  }}
+                  className="px-2 py-1 rounded-lg bg-red-500 hover:bg-red-600 text-white transition-all cursor-pointer shadow-xs flex items-center gap-1 text-[11px] font-medium animate-in fade-in"
+                  title="终止全部推演 (Esc)"
+                >
+                  <Square className="w-3 h-3 fill-current" />
+                  <span>终止全部 ({topicExecutions.length})</span>
+                </button>
             ) : (
               <button
                 type="button"
@@ -763,6 +812,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           </div>
         </div>
       </div>
+    </div>
 
       {/* 5. Resolve & Merge Confirmation Modal */}
       {showResolveModal && (
