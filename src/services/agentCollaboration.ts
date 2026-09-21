@@ -1,4 +1,4 @@
-import { Agent, DiscussionMode, GameRolesConfig, GameRoleType } from '../types';
+import { Agent, DiscussionMode, GameRolesConfig, GameRoleType, GameTheoreticStage } from '../types';
 
 export interface CollaborationCascade {
   cascadeId: string;

@@ -140,6 +140,7 @@ export interface Agent {
   // Local ACP Profile & Environment Variables (ENV)
   localAcpProfile?: string;
   envVars?: Array<{ key: string; value: string }>;
+  tags?: string[];
   
   // Remote & Guest Clone Attributes
   isRemote?: boolean;

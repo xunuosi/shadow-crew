@@ -22,6 +22,8 @@ import {
   MemoryCartridge,
   DiscussionMode,
   GameRolesConfig,
+  GameRoleType,
+  GameTheoreticStage,
   RulingRecord
 } from './types';
 import { 
@@ -35,7 +37,7 @@ import {
   INITIAL_RPC_LOGS, 
   MOCK_WORKSPACE_FILES 
 } from './data/mockData';
-import { Hash, Plus } from 'lucide-react';
+import { Hash, Plus, PanelLeft } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
 import { ThreadList } from './components/ThreadList';
 import { ChatTimeline } from './components/ChatTimeline';
@@ -2040,6 +2042,31 @@ export default function App() {
         prev.map((a) => (a.id === challengerAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
       );
 
+      const challengerPendingId = `topic-pending-${Date.now()}-${challengerAgent.id}`;
+      const challengerPendingMsg: Message = {
+        id: challengerPendingId,
+        threadId: topicId,
+        channelId: topicChannel?.id,
+        authorId: challengerAgent.id,
+        authorName: challengerAgent.name,
+        authorHandle: challengerAgent.handle,
+        authorAvatar: challengerAgent.avatar,
+        isAgent: true,
+        isPending: true,
+        startedAt: Date.now(),
+        pendingHint: '正在检索私有记忆并对立论方案进行反例压测与边界证伪 (Stage: ⚔️ 反例压测)...',
+        agentBadge: `${challengerAgent.modelBadge?.split(' ')[0] || 'Local'} · ⚔️ 反例压测 (推演中...)`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: '',
+        gameStage: 'challenge',
+        gameRole: 'challenger',
+      };
+
+      setMessages((prev) => ({
+        ...prev,
+        [topicId]: [...(prev[topicId] || []), challengerPendingMsg],
+      }));
+
       const topicContext: TopicPromptContext = {
         topicId,
         title: currentTopic.title,
@@ -2089,6 +2116,7 @@ export default function App() {
           authorHandle: challengerAgent.handle,
           authorAvatar: challengerAgent.avatar,
           isAgent: true,
+          isPending: false,
           agentBadge: `${challengerAgent.modelBadge?.split(' ')[0] || 'Local'} · ⚔️ 反例压测`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           content: acpResp.textResponse,
@@ -2105,7 +2133,11 @@ export default function App() {
         };
 
         setMessages((prev) => {
-          const nextTopicMsgs = [...(prev[topicId] || []), challengerReply];
+          const existing = prev[topicId] || [];
+          const hasPending = existing.some((m) => m.id === challengerPendingId);
+          const nextTopicMsgs = hasPending
+            ? existing.map((m) => (m.id === challengerPendingId ? challengerReply : m))
+            : [...existing, challengerReply];
           let parentThreadId: string | null = null;
           for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
             if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
@@ -2120,7 +2152,7 @@ export default function App() {
                     ...m,
                     topicData: {
                       ...m.topicData,
-                      repliesCount: nextTopicMsgs.length,
+                      repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
                       latestReplyPreview: challengerReply.content.slice(0, 60),
                     },
                   };
@@ -2193,10 +2225,14 @@ export default function App() {
           content: `⚠️ **法定推演人数告警 (Quorum Alert)**：制衡方 ${challengerAgent.name} 发生异常未能完成反例压测。法定推演人数未达标 (Quorum Not Met)。\n\n根据三元博弈规约，进入仲裁定案前须由人类首席仲裁官签署「具名豁免」方可落槌定案。`,
         };
 
-        setMessages((prev) => ({
-          ...prev,
-          [topicId]: [...(prev[topicId] || []), errorMsg, quorumNotice],
-        }));
+        setMessages((prev) => {
+          const existing = prev[topicId] || [];
+          const filtered = existing.filter((m) => m.id !== challengerPendingId);
+          return {
+            ...prev,
+            [topicId]: [...filtered, errorMsg, quorumNotice],
+          };
+        });
 
         updateTopicDataInState(topicId, (old) => ({
           ...old,
@@ -2238,6 +2274,31 @@ export default function App() {
         setAgents((prev) =>
           prev.map((a) => (a.id === arbiterAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
         );
+
+        const arbiterPendingId = `topic-pending-${Date.now()}-${arbiterAgent.id}`;
+        const arbiterPendingMsg: Message = {
+          id: arbiterPendingId,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: arbiterAgent.id,
+          authorName: arbiterAgent.name,
+          authorHandle: arbiterAgent.handle,
+          authorAvatar: arbiterAgent.avatar,
+          isAgent: true,
+          isPending: true,
+          startedAt: Date.now(),
+          pendingHint: '正在权衡立论方案与反例要点，起草仲裁建议 (Stage: ⚖️ 仲裁定案)...',
+          agentBadge: `${arbiterAgent.modelBadge?.split(' ')[0] || 'Local'} · ⚖️ 仲裁建言 (审议中...)`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: '',
+          gameStage: 'arbitration',
+          gameRole: 'arbiter',
+        };
+
+        setMessages((prev) => ({
+          ...prev,
+          [topicId]: [...(prev[topicId] || []), arbiterPendingMsg],
+        }));
 
         const topicContext: TopicPromptContext = {
           topicId,
@@ -2285,6 +2346,7 @@ export default function App() {
             authorHandle: arbiterAgent.handle,
             authorAvatar: arbiterAgent.avatar,
             isAgent: true,
+            isPending: false,
             agentBadge: `${arbiterAgent.modelBadge?.split(' ')[0] || 'Local'} · ⚖️ 仲裁建言`,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             content: acpResp.textResponse,
@@ -2315,7 +2377,12 @@ export default function App() {
           };
 
           setMessages((prev) => {
-            const nextTopicMsgs = [...(prev[topicId] || []), arbiterReply, humanNotice];
+            const existing = prev[topicId] || [];
+            const hasPending = existing.some((m) => m.id === arbiterPendingId);
+            const baseMsgs = hasPending
+              ? existing.map((m) => (m.id === arbiterPendingId ? arbiterReply : m))
+              : [...existing, arbiterReply];
+            const nextTopicMsgs = [...baseMsgs, humanNotice];
             let parentThreadId: string | null = null;
             for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
               if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
@@ -2330,7 +2397,7 @@ export default function App() {
                       ...m,
                       topicData: {
                         ...m.topicData,
-                        repliesCount: nextTopicMsgs.length,
+                        repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
                         latestReplyPreview: arbiterReply.content.slice(0, 60),
                       },
                     };
@@ -2352,6 +2419,10 @@ export default function App() {
             return next;
           });
           console.error('AI Arbiter execution failed:', err);
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: (prev[topicId] || []).filter((m) => m.id !== arbiterPendingId),
+          }));
         }
       } else {
         if (currentTopic.gameRoles?.humanIsArbiter) {
@@ -2719,6 +2790,45 @@ export default function App() {
         params: { roomId: topicId, prompt: finalPrompt, channelId: topicChannel?.id },
       });
 
+      const pendingId = `topic-pending-${Date.now()}-${agent.id}`;
+      const pendingMsg: Message = {
+        id: pendingId,
+        threadId: topicId,
+        channelId: topicChannel?.id,
+        authorId: agent.id,
+        authorName: agent.name,
+        authorHandle: agent.handle,
+        authorAvatar: agent.avatar,
+        isAgent: true,
+        isPending: true,
+        startedAt: Date.now(),
+        pendingHint: isGameTheoretic
+          ? targetRoleType === 'proposer'
+            ? '正在构思核心立论方案与架构设计推演 (Stage: 🏛️ 方案立论)...'
+            : targetRoleType === 'challenger'
+            ? '正在对立论方案进行反例压测与边界证伪 (Stage: ⚔️ 反例压测)...'
+            : '正在权衡方案与反例要点并起草仲裁建议 (Stage: ⚖️ 仲裁定案)...'
+          : '正在思考并组织回复...',
+        agentBadge: isGameTheoretic
+          ? `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${
+              targetRoleType === 'proposer'
+                ? '🏛️ 方案立论 (思考中...)'
+                : targetRoleType === 'challenger'
+                ? '⚔️ 反例压测 (思考中...)'
+                : '⚖️ 仲裁建言 (思考中...)'
+            }`
+          : `${agent.modelBadge?.split(' ')[0] || 'Local'} · 思考中...`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: '',
+        gameStage: isGameTheoretic ? executionStage : undefined,
+        gameRole: isGameTheoretic ? targetRoleType : undefined,
+      };
+
+      setMessages((prev) => ({
+        ...prev,
+        [topicId]: [...(prev[topicId] || []), pendingMsg],
+      }));
+
       sendPromptToAcpAgent({
         agent,
         roomId: topicId,
@@ -2749,6 +2859,7 @@ export default function App() {
             authorHandle: agent.handle,
             authorAvatar: agent.avatar,
             isAgent: true,
+            isPending: false,
             gameStage: isGameTheoretic ? executionStage : undefined,
             gameRole: isGameTheoretic ? targetRoleType : undefined,
             agentBadge: isGameTheoretic
@@ -2778,7 +2889,11 @@ export default function App() {
           };
 
           setMessages((prev) => {
-            const nextTopicMsgs = [...(prev[topicId] || []), agentReply];
+            const existing = prev[topicId] || [];
+            const hasPending = existing.some((m) => m.id === pendingId);
+            const nextTopicMsgs = hasPending
+              ? existing.map((m) => (m.id === pendingId ? agentReply : m))
+              : [...existing, agentReply];
             let parentThreadId: string | null = null;
             for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
               if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
@@ -2794,7 +2909,7 @@ export default function App() {
                       ...m,
                       topicData: {
                         ...m.topicData,
-                        repliesCount: nextTopicMsgs.length,
+                        repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
                         latestReplyPreview: agentReply.content.slice(0, 60),
                       },
                     };
@@ -2892,6 +3007,7 @@ export default function App() {
             authorHandle: agent.handle,
             authorAvatar: agent.avatar,
             isAgent: true,
+            isPending: false,
             gameStage: isGameTheoretic ? executionStage : undefined,
             gameRole: isGameTheoretic ? targetRoleType : undefined,
             agentBadge: 'ACP Error',
@@ -2912,10 +3028,17 @@ export default function App() {
             }));
           }
 
-          setMessages((prev) => ({
-            ...prev,
-            [topicId]: [...(prev[topicId] || []), errorReply],
-          }));
+          setMessages((prev) => {
+            const existing = prev[topicId] || [];
+            const hasPending = existing.some((m) => m.id === pendingId);
+            const nextTopicMsgs = hasPending
+              ? existing.map((m) => (m.id === pendingId ? errorReply : m))
+              : [...existing, errorReply];
+            return {
+              ...prev,
+              [topicId]: nextTopicMsgs,
+            };
+          });
         });
     });
   };
@@ -2958,7 +3081,7 @@ export default function App() {
               gameStage: m.topicData.discussionMode === 'game_theoretic' ? 'concluded' : m.topicData.gameStage,
               gameTheoreticState: m.topicData.discussionMode === 'game_theoretic' ? {
                 ...m.topicData.gameTheoreticState,
-                currentStage: 'concluded',
+                currentStage: 'concluded' as GameTheoreticStage,
                 isArbiterExempted: Boolean(decision.rulingRecord?.exemptionReason),
                 exemptionReason: decision.rulingRecord?.exemptionReason,
               } : m.topicData.gameTheoreticState,
@@ -3045,6 +3168,26 @@ export default function App() {
     setAgents((prev) =>
       prev.map((a) => (a.id === agentId ? { ...a, status: 'idle' } : a))
     );
+
+    if (threadId) {
+      setMessages((prev) => {
+        const list = prev[threadId];
+        if (!list || !list.some((m) => m.authorId === agentId && m.isPending)) return prev;
+        return {
+          ...prev,
+          [threadId]: list.map((m) =>
+            m.authorId === agentId && m.isPending
+              ? {
+                  ...m,
+                  isPending: false,
+                  agentBadge: '已终止',
+                  content: (m.content || '') + '\n\n*(已由用户手动终止推演)*',
+                }
+              : m
+          ),
+        };
+      });
+    }
 
     if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
       (window as any).__TAURI_INTERNALS__.invoke('stop_acp_agent', { agentId }).catch(() => {});
@@ -3721,7 +3864,16 @@ export default function App() {
                 />
               </>
             ) : (
-              <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-canvas text-fg select-none">
+              <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-canvas text-fg select-none relative">
+                {isSidebarCollapsed && (
+                  <button
+                    onClick={() => toggleSidebar()}
+                    className="absolute top-3 left-3 p-1.5 rounded-lg text-fg-muted hover:text-fg hover:bg-surface border border-border/70 hover:border-border transition-all cursor-pointer flex items-center justify-center shadow-2xs group z-10"
+                    title="展开侧边栏 (⌘B)"
+                  >
+                    <PanelLeft className="w-4 h-4 text-fg-secondary group-hover:text-fg group-hover:scale-105 transition-transform" />
+                  </button>
+                )}
                 <div className="w-16 h-16 rounded-2xl bg-surface border border-border flex items-center justify-center text-accent mb-4 shadow-sm">
                   <Hash className="w-8 h-8 opacity-75" />
                 </div>

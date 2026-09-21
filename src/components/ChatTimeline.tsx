@@ -85,6 +85,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   const [expandedTraces, setExpandedTraces] = useState<Record<string, boolean>>({});
   const [expandedCitations, setExpandedCitations] = useState<Record<string, boolean>>({});
   const [showMembersPopover, setShowMembersPopover] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -93,11 +94,19 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   } | null>(null);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
 
-  // Close context menu on global click or Escape
+  // Close popovers and context menu on global click or Escape
   useEffect(() => {
-    const handleGlobalClick = () => setContextMenu(null);
+    const handleGlobalClick = () => {
+      setContextMenu(null);
+      setShowMembersPopover(false);
+      setShowMoreMenu(false);
+    };
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setContextMenu(null);
+      if (e.key === 'Escape') {
+        setContextMenu(null);
+        setShowMembersPopover(false);
+        setShowMoreMenu(false);
+      }
     };
     window.addEventListener('click', handleGlobalClick);
     window.addEventListener('keydown', handleGlobalKeyDown);
@@ -272,33 +281,33 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
       className="flex-1 flex flex-col min-w-0 bg-canvas text-fg text-xs overflow-hidden transition-colors duration-150"
     >
       {/* 1. Top Channel / Thread Header */}
-      <header className="h-12 px-3 sm:px-4 border-b border-border flex items-center justify-between bg-surface-subtle select-none shrink-0 gap-2">
-        <div className="flex items-center gap-2 truncate min-w-0 flex-1">
-          {/* Antigravity Sidebar Expand Button (Shown when sidebar is collapsed) */}
-          {isSidebarCollapsed && (
-            <button
-              onClick={onToggleSidebar}
-              className="p-1.5 rounded-lg text-fg-muted hover:text-fg hover:bg-surface border border-border/70 hover:border-border transition-all cursor-pointer flex items-center justify-center shrink-0 shadow-2xs group mr-0.5"
-              title="展开侧边栏 (⌘B)"
-            >
-              <PanelLeft className="w-4 h-4 text-fg-secondary group-hover:text-fg group-hover:scale-105 transition-transform" />
-            </button>
-          )}
+      <header className="@container h-12 px-2.5 sm:px-4 border-b border-border flex items-center justify-between bg-surface-subtle select-none shrink-0 gap-1.5 sm:gap-2 relative">
+        {/* Antigravity Sidebar Expand Button (Always pinned in dedicated shrink-0 slot when sidebar is collapsed) */}
+        {isSidebarCollapsed && (
+          <button
+            onClick={onToggleSidebar}
+            className="p-1.5 rounded-lg text-fg-muted hover:text-fg hover:bg-surface border border-border/70 hover:border-border transition-all cursor-pointer flex items-center justify-center shrink-0 shadow-2xs group z-10 mr-0.5"
+            title="展开侧边栏 (⌘B)"
+          >
+            <PanelLeft className="w-4 h-4 text-fg-secondary group-hover:text-fg group-hover:scale-105 transition-transform" />
+          </button>
+        )}
 
+        <div className="flex items-center gap-1.5 sm:gap-2 truncate min-w-0 flex-1">
           {/* Antigravity Breadcrumbs: Workspace / Channel */}
           {currentWorkspace && (
-            <div className="hidden sm:flex items-center gap-1.5 text-xs text-fg-muted shrink-0 select-none">
+            <div className="hidden @xl:flex items-center gap-1.5 text-xs text-fg-muted shrink-0 select-none">
               <span className="font-medium hover:text-fg transition-colors">{currentWorkspace}</span>
               <span className="text-fg-muted/40 font-mono">/</span>
             </div>
           )}
 
-          <span className="font-bold text-fg text-sm tracking-wide truncate flex items-center gap-2 shrink-0">
+          <div className="font-bold text-fg text-sm tracking-wide truncate flex items-center gap-2 min-w-0">
             {activeThread.type === 'dm' ? (
-              <span className="flex items-center gap-2 truncate">
-                <span>DM with <span className="text-accent font-semibold">{activeThread.authorName}</span></span>
+              <span className="flex items-center gap-2 truncate min-w-0">
+                <span className="truncate">DM with <span className="text-accent font-semibold">{activeThread.authorName}</span></span>
                 {dmTargetAgent && dmTargetAgent.status === 'idle' && (
-                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 border border-zinc-500/25 text-[10px] font-mono shrink-0" title="通信未开启，请先在 Agents 面板点击 Start 开启连接">
+                  <span className="hidden @md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 border border-zinc-500/25 text-[10px] font-mono shrink-0" title="通信未开启，请先在 Agents 面板点击 Start 开启连接">
                     <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500" />
                     <span>未开启通信 (Offline)</span>
                   </span>
@@ -306,14 +315,14 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 {dmTargetAgent && (dmTargetAgent.status === 'running' || dmTargetAgent.status === 'thinking') && currentThreadExecutions.length === 0 && (
                   isTargetAgentActiveElsewhere ? (
                     <span 
-                      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 text-[10px] font-mono shrink-0 animate-in fade-in"
+                      className="hidden @md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 text-[10px] font-mono shrink-0 animate-in fade-in"
                       title="该 Agent 正在其他议题推演中，私聊随时可独立发送并即时响应"
                     >
                       <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
                       <span>议题推演中 · 私聊就绪</span>
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 text-[10px] font-mono shrink-0">
+                    <span className="hidden @md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 text-[10px] font-mono shrink-0">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                       <span>通信就绪 (Online)</span>
                     </span>
@@ -322,7 +331,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 {currentThreadExecutions.length > 0 && (
                   <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-[10px] font-mono shrink-0 animate-in fade-in">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="truncate max-w-[150px] sm:max-w-[220px]">
+                    <span className="truncate max-w-[120px] sm:max-w-[200px]">
                       {currentThreadExecutions[0].currentActionDetail ||
                         ((now - currentThreadExecutions[0].startedAt) / 1000 > 60
                           ? '大模型深度推理中'
@@ -335,8 +344,8 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 )}
               </span>
             ) : (
-              <span className="flex items-center gap-1.5">
-                <span className="text-accent font-mono font-bold">#{channel?.name || activeThread.channelName}</span>
+              <span className="flex items-center gap-1.5 truncate min-w-0">
+                <span className="text-accent font-mono font-bold truncate">#{channel?.name || activeThread.channelName}</span>
                 {channel?.kind && (
                   <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-mono font-semibold border shrink-0 ${
                     channel.kind === 'feature'
@@ -350,11 +359,11 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 )}
               </span>
             )}
-          </span>
+          </div>
 
           {/* Git Branch Badge */}
           {channel?.gitBranch && (
-            <span className="hidden xl:inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-surface text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-mono shrink-0">
+            <span className="hidden @3xl:inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-surface text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-mono shrink-0">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
               <span className="max-w-[120px] truncate">{channel.gitBranch}</span>
             </span>
@@ -362,7 +371,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
 
           {/* Filter Pill Tabs */}
           {activeThread.type !== 'dm' && (
-            <div className="hidden lg:flex items-center bg-surface rounded-lg p-0.5 border border-border gap-0.5 ml-1 shrink-0">
+            <div className="hidden @2xl:flex items-center bg-surface rounded-lg p-0.5 border border-border gap-0.5 ml-1 shrink-0">
               <button
                 onClick={() => setFilter('all')}
                 className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer ${
@@ -389,7 +398,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
         </div>
 
         {/* Right Header Controls */}
-        <div className="flex items-center gap-1.5 text-fg-muted relative shrink-0">
+        <div className="flex items-center gap-1 sm:gap-1.5 text-fg-muted relative shrink-0">
           {/* Members / Invite Agent Admission Button */}
           {onOpenMembersModal && channel && (
             <button
@@ -398,8 +407,8 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
               title="邀请专职 Agent 或管理受邀成员"
             >
               <UserPlus className="w-3.5 h-3.5 shrink-0" />
-              <span className="hidden 2xl:inline">邀请/管理 Agent</span>
-              <span className="hidden sm:inline 2xl:hidden">成员</span>
+              <span className="hidden @2xl:inline">邀请/管理 Agent</span>
+              <span className="hidden @md:inline @2xl:hidden">成员</span>
               <span>({channel.memberIds?.length || 1})</span>
             </button>
           )}
@@ -408,58 +417,42 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           {onOpenNewTopicModal && activeThread.type !== 'dm' && (
             <button
               onClick={onOpenNewTopicModal}
-              className="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium text-[11px] shadow-xs flex items-center gap-1 transition-all cursor-pointer whitespace-nowrap shrink-0"
+              className="px-2 sm:px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium text-[11px] shadow-xs flex items-center gap-1 transition-all cursor-pointer whitespace-nowrap shrink-0"
               title="在当前频道发起独立推演议题"
             >
               <Plus className="w-3.5 h-3.5 shrink-0" />
-              <span className="hidden sm:inline">新建议题</span>
-            </button>
-          )}
-
-          {/* Delete Channel Button */}
-          {onOpenDeleteChannelModal && channel && (
-            <button
-              onClick={onOpenDeleteChannelModal}
-              className="p-1 sm:px-2 sm:py-1 rounded-lg hover:text-red-500 hover:bg-red-500/10 text-fg-muted border border-border hover:border-red-500/30 transition-colors flex items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
-              title="删除此频道 (级联清理)"
-            >
-              <Trash2 className="w-3.5 h-3.5 text-red-500 shrink-0" />
-              <span className="hidden 2xl:inline text-red-500 font-medium">删除</span>
+              <span className="hidden @sm:inline">新建议题</span>
             </button>
           )}
 
           {/* Codex Diff Toggle */}
           <button
             onClick={() => onOpenCodexDiff(null)}
-            className="px-2 py-1 rounded-lg hover:text-emerald-500 hover:bg-surface-hover border border-transparent hover:border-emerald-500/30 transition-all flex items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
+            className="hidden @lg:flex px-2 py-1 rounded-lg hover:text-emerald-500 hover:bg-surface-hover border border-transparent hover:border-emerald-500/30 transition-all items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
             title="查看代码变更与 Unified Diff (Codex 视图)"
           >
             <GitCompare className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-            <span className="hidden sm:inline font-mono">Diff</span>
+            <span className="hidden @xl:inline font-mono">Diff</span>
           </button>
 
           {/* ACP Inspector Toggle */}
           <button
             onClick={onOpenAcpInspector}
-            className="px-2 py-1 rounded-lg hover:text-accent hover:bg-surface-hover border border-transparent hover:border-accent/30 transition-all flex items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
+            className="hidden @lg:flex px-2 py-1 rounded-lg hover:text-accent hover:bg-surface-hover border border-transparent hover:border-accent/30 transition-all items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
             title="打开 ACP 协议与私有记忆观测面板 (Antigravity 视图)"
           >
             <Terminal className="w-3.5 h-3.5 text-accent shrink-0" />
-            <span className="hidden sm:inline font-mono">ACP</span>
-          </button>
-
-          {/* Popout button */}
-          <button 
-            className="p-1.5 rounded-lg hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
-            title="在新窗口打开此讨论"
-          >
-            <ExternalLink className="w-3.5 h-3.5" />
+            <span className="hidden @xl:inline font-mono">ACP</span>
           </button>
 
           {/* Collaborator Count & List */}
-          <div className="relative shrink-0">
+          <div className="hidden @xl:block relative shrink-0">
             <button 
-              onClick={() => setShowMembersPopover(!showMembersPopover)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowMembersPopover(!showMembersPopover);
+                setShowMoreMenu(false);
+              }}
               className="px-2 py-1 rounded-lg hover:text-fg hover:bg-surface-hover transition-colors flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
               title="当前协同成员"
             >
@@ -468,7 +461,10 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             </button>
 
             {showMembersPopover && (
-              <div className="absolute right-0 top-9 w-52 bg-surface border border-border rounded-xl shadow-2xl p-2.5 z-50">
+              <div 
+                onClick={(e) => e.stopPropagation()}
+                className="absolute right-0 top-9 w-52 bg-surface border border-border rounded-xl shadow-2xl p-2.5 z-50 animate-in fade-in slide-in-from-top-1"
+              >
                 <div className="text-[10px] text-fg-muted uppercase font-semibold mb-1.5 px-1">
                   当前讨论协同成员
                 </div>
@@ -494,21 +490,76 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             )}
           </div>
 
-          {/* Voice Room */}
-          <button 
-            className="p-1.5 rounded-lg hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer"
-            title="进入音频流协作"
-          >
-            <Headphones className="w-3.5 h-3.5" />
-          </button>
+          {/* More options with dropdown menu */}
+          <div className="relative shrink-0">
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowMoreMenu(!showMoreMenu);
+                setShowMembersPopover(false);
+              }}
+              className="p-1.5 rounded-lg hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer"
+              title="更多操作与工具"
+            >
+              <MoreVertical className="w-3.5 h-3.5" />
+            </button>
 
-          {/* More options */}
-          <button 
-            className="p-1.5 rounded-lg hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer"
-            title="更多选项"
-          >
-            <MoreVertical className="w-3.5 h-3.5" />
-          </button>
+            {showMoreMenu && (
+              <div 
+                onClick={(e) => e.stopPropagation()}
+                className="absolute right-0 top-9 w-52 bg-surface border border-border rounded-xl shadow-2xl p-1.5 z-50 animate-in fade-in slide-in-from-top-1 text-xs"
+              >
+                <button
+                  onClick={() => {
+                    onOpenCodexDiff(null);
+                    setShowMoreMenu(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-hover text-fg transition-colors cursor-pointer"
+                >
+                  <GitCompare className="w-4 h-4 text-emerald-500 shrink-0" />
+                  <span>Codex 代码 Diff 视图</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    onOpenAcpInspector();
+                    setShowMoreMenu(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-hover text-fg transition-colors cursor-pointer"
+                >
+                  <Terminal className="w-4 h-4 text-accent shrink-0" />
+                  <span>ACP 协议与记忆观测</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowMembersPopover(true);
+                    setShowMoreMenu(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-hover text-fg transition-colors cursor-pointer"
+                >
+                  <Users className="w-4 h-4 text-fg-muted shrink-0" />
+                  <span>查看协同成员 ({activeAgents.length + 1})</span>
+                </button>
+
+                {onOpenDeleteChannelModal && channel && (
+                  <>
+                    <div className="my-1 border-t border-border/60" />
+                    <button
+                      onClick={() => {
+                        onOpenDeleteChannelModal();
+                        setShowMoreMenu(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-red-500/10 text-red-500 transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4 shrink-0" />
+                      <span>删除当前频道</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </header>
 

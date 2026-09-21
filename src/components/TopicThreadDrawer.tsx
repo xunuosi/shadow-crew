@@ -262,12 +262,15 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   const isExecuting = topicExecutions.length > 0;
   const activeTopicExecution = topicExecutions[0];
 
+  const hasPendingMessage = messages.some((m) => m.isPending);
+  const shouldTick = isExecuting || hasPendingMessage;
+
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    if (!isExecuting) return;
-    const interval = setInterval(() => setNow(Date.now()), 200);
+    if (!shouldTick) return;
+    const interval = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(interval);
-  }, [isExecuting]);
+  }, [shouldTick]);
 
   // Resizable drawer width (persisted in localStorage)
   const { width: drawerWidth, isDragging, handlePointerDown, resetWidth, panelRef } = useResizablePanel({
@@ -335,7 +338,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     }
   }, [isOpen, topic?.id, scrollToBottom, messages.length]);
 
-  // 2. 议题收到新回复或 Agent 执行状态更新时：若用户位于底部附近则平滑跟随
+  const lastMessage = messages[messages.length - 1];
+  const lastMessageContentLength = lastMessage?.content?.length || 0;
+
+  // 2. 议题收到新回复、流式 chunk 更新或 Agent 执行状态更新时：若用户位于底部附近则平滑跟随
   useEffect(() => {
     if (!isOpen) return;
     const isFirst = prevMsgCountRef.current === 0;
@@ -346,12 +352,12 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       scrollToBottom('auto');
       const timer = setTimeout(() => scrollToBottom('auto'), 40);
       return () => clearTimeout(timer);
-    } else if (hasNewMessage || topicExecutions.length > 0) {
+    } else if (hasNewMessage || topicExecutions.length > 0 || hasPendingMessage) {
       if (isAtBottomRef.current) {
         scrollToBottom('smooth');
       }
     }
-  }, [isOpen, messages.length, topicExecutions.length, scrollToBottom]);
+  }, [isOpen, messages.length, topicExecutions.length, hasPendingMessage, lastMessageContentLength, scrollToBottom]);
 
   if (!isOpen || !topic) return null;
 
@@ -843,13 +849,19 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               <div
                 key={msg.id}
                 onContextMenu={(e) => handleContextMenu(e, msg)}
-                className="space-y-2 p-3 rounded-2xl bg-surface border border-border transition-all hover:border-purple-500/40 group relative"
+                className={`space-y-2.5 p-3.5 rounded-2xl border transition-all relative ${
+                  msg.isPending
+                    ? 'bg-purple-500/[0.04] dark:bg-purple-950/20 border-purple-500/40 shadow-xs ring-1 ring-purple-500/20'
+                    : 'bg-surface border-border hover:border-purple-500/40 group'
+                }`}
               >
                 {/* Message Header */}
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-start gap-2 min-w-0 flex-1">
-                    <div className="w-6 h-6 rounded-lg bg-surface border border-border flex items-center justify-center text-xs shadow-xs shrink-0 mt-0.5">
-                      {msg.authorAvatar}
+                    <div className={`w-6 h-6 rounded-lg bg-surface border flex items-center justify-center text-xs shadow-xs shrink-0 mt-0.5 ${
+                      msg.isPending ? 'border-purple-500/40 animate-pulse' : 'border-border'
+                    }`}>
+                      {msg.authorAvatar || '🤖'}
                     </div>
                     <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">
                       <span className="font-bold text-fg text-xs whitespace-nowrap shrink-0">{msg.authorName}</span>
@@ -869,14 +881,22 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                           {msg.gameStage === 'proposal' ? '🏛️ 方案立论' : msg.gameStage === 'challenge' ? '⚔️ 反例压测' : '⚖️ 仲裁建言'}
                         </span>
                       )}
-                      {msg.agentBadge && (
+                      {msg.isPending ? (
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-600 dark:text-purple-300 font-mono border border-purple-500/30 flex items-center gap-1 shrink-0 animate-pulse">
+                          <span className="relative flex h-1.5 w-1.5">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-purple-500"></span>
+                          </span>
+                          <span>{msg.agentBadge || '推演中...'}</span>
+                        </span>
+                      ) : msg.agentBadge ? (
                         <span
                           className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-600 dark:text-purple-300 font-mono border border-purple-500/30 truncate max-w-[180px] shrink-0"
                           title={msg.agentBadge}
                         >
                           {msg.agentBadge}
                         </span>
-                      )}
+                      ) : null}
                       {msg.collaborationInfo && (
                         <span
                           className={`text-[9px] px-1.5 py-0.5 rounded font-mono border shrink-0 flex items-center gap-1 max-w-[220px] ${
@@ -899,31 +919,51 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0 ml-auto self-start">
-                    <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 bg-surface/90 backdrop-blur-xs rounded-md px-1 py-0.5 border border-border/50 shadow-xs">
-                      <button
-                        onClick={() => handleCopyMessage(msg)}
-                        className="p-1 hover:text-fg hover:bg-surface-hover rounded transition-colors cursor-pointer"
-                        title="复制内容 (右键亦可)"
-                      >
-                        {copiedMsgId === msg.id ? (
-                          <Check className="w-3 h-3 text-emerald-500" />
-                        ) : (
-                          <Copy className="w-3 h-3 text-fg-muted" />
+                    {msg.isPending ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-purple-500 font-mono font-semibold bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/20">
+                          ⏱️ {((now - (msg.startedAt || now)) / 1000).toFixed(0)}s
+                        </span>
+                        {onAbortAgent && (
+                          <button
+                            type="button"
+                            onClick={() => onAbortAgent(msg.authorId)}
+                            className="px-2 py-0.5 rounded text-[10px] bg-red-500/10 hover:bg-red-500/20 text-red-500 transition-colors cursor-pointer border border-red-500/20 font-sans"
+                            title={`终止 ${msg.authorName} 的推演`}
+                          >
+                            终止
+                          </button>
                         )}
-                      </button>
-                      <button
-                        onClick={() => handleQuoteInDrawer(msg)}
-                        className="p-1 hover:text-accent hover:bg-accent/10 rounded transition-colors cursor-pointer"
-                        title="引用回复 (右键亦可)"
-                      >
-                        <CornerDownRight className="w-3 h-3 text-fg-muted hover:text-accent" />
-                      </button>
-                    </div>
-                    <span className="text-[10px] text-fg-muted font-mono shrink-0 whitespace-nowrap">{msg.timestamp}</span>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 bg-surface/90 backdrop-blur-xs rounded-md px-1 py-0.5 border border-border/50 shadow-xs">
+                          <button
+                            onClick={() => handleCopyMessage(msg)}
+                            className="p-1 hover:text-fg hover:bg-surface-hover rounded transition-colors cursor-pointer"
+                            title="复制内容 (右键亦可)"
+                          >
+                            {copiedMsgId === msg.id ? (
+                              <Check className="w-3 h-3 text-emerald-500" />
+                            ) : (
+                              <Copy className="w-3 h-3 text-fg-muted" />
+                            )}
+                          </button>
+                          <button
+                            onClick={() => handleQuoteInDrawer(msg)}
+                            className="p-1 hover:text-accent hover:bg-accent/10 rounded transition-colors cursor-pointer"
+                            title="引用回复 (右键亦可)"
+                          >
+                            <CornerDownRight className="w-3 h-3 text-fg-muted hover:text-accent" />
+                          </button>
+                        </div>
+                        <span className="text-[10px] text-fg-muted font-mono shrink-0 whitespace-nowrap">{msg.timestamp}</span>
+                      </>
+                    )}
                   </div>
                 </div>
 
-                {/* Thinking Process Accordion */}
+                {/* Thinking Process Accordion (Finalized messages) */}
                 {msg.thinkingProcess && (
                   <div className="rounded-lg bg-surface border border-border overflow-hidden text-[10px]">
                     <button
@@ -948,85 +988,116 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   </div>
                 )}
 
-                {/* Message Content */}
-                <MarkdownRenderer content={msg.content} />
-
-                {/* Unified Diff View */}
-                {msg.diffView && (
-                  <div className="p-2.5 rounded-lg bg-surface border border-border font-mono text-[10px]">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <FileCode2 className="w-3.5 h-3.5 text-emerald-500" />
-                        <span className="text-fg font-semibold">{msg.diffView.filename}</span>
+                {/* Message Content: Streaming / Pending or Finalized */}
+                {msg.isPending ? (
+                  <div className="space-y-2">
+                    {msg.content && msg.content.trim().length > 0 ? (
+                      <div className="relative">
+                        <MarkdownRenderer content={msg.content} />
+                        <span className="inline-block w-2 h-4 ml-0.5 align-middle bg-purple-500 animate-pulse rounded-xs" />
+                        <div className="flex items-center gap-1.5 text-[10px] text-purple-500/80 font-mono mt-2 pt-2 border-t border-purple-500/15">
+                          <BrainCircuit className="w-3 h-3 animate-pulse" />
+                          <span>实时流式生成中 ({msg.content.length} 字符) · 正在持续输出...</span>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-1">
-                        <span className="text-emerald-500 font-bold">+{msg.diffView.additions}</span>
-                        <span className="text-red-500 font-bold">-{msg.diffView.deletions}</span>
-                        <button
-                          onClick={() => onOpenCodexDiff(msg.diffView)}
-                          className="px-1.5 py-0.5 rounded bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-600 dark:text-emerald-300 text-[9px] font-sans flex items-center gap-0.5 ml-1 transition-colors cursor-pointer shrink-0"
-                        >
-                          <span>Codex 视图</span>
-                          <ArrowRight className="w-2.5 h-2.5" />
-                        </button>
+                    ) : (
+                      <div className="py-3.5 px-4 rounded-xl bg-surface border border-purple-500/20 text-xs text-fg-secondary space-y-2">
+                        <div className="flex items-center gap-2 text-purple-600 dark:text-purple-400 font-medium">
+                          <BrainCircuit className="w-4 h-4 animate-pulse text-purple-500 shrink-0" />
+                          <span>{msg.pendingHint || '正在进行私有检索与技术推演...'}</span>
+                        </div>
+                        <div className="text-[11px] text-fg-muted leading-relaxed font-sans pl-6">
+                          💡 提示：深度思考与反例边界证伪耗时较长（通常需要 1~5 分钟）。ACP 正在分析项目上下文，生成内容将实时流式渲染于此处。
+                        </div>
                       </div>
-                    </div>
-                    <pre className="p-2 rounded bg-surface-subtle border border-border overflow-x-auto text-[10px] text-fg-secondary leading-relaxed select-text">
-                      {msg.diffView.diff}
-                    </pre>
+                    )}
                   </div>
+                ) : (
+                  <>
+                    <MarkdownRenderer content={msg.content} />
+                    {/* Unified Diff View */}
+                    {msg.diffView && (
+                      <div className="p-2.5 rounded-lg bg-surface border border-border font-mono text-[10px]">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <FileCode2 className="w-3.5 h-3.5 text-emerald-500" />
+                            <span className="text-fg font-semibold">{msg.diffView.filename}</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="text-emerald-500 font-bold">+{msg.diffView.additions}</span>
+                            <span className="text-red-500 font-bold">-{msg.diffView.deletions}</span>
+                            <button
+                              onClick={() => onOpenCodexDiff(msg.diffView)}
+                              className="px-1.5 py-0.5 rounded bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-600 dark:text-emerald-300 text-[9px] font-sans flex items-center gap-0.5 ml-1 transition-colors cursor-pointer shrink-0"
+                            >
+                              <span>Codex 视图</span>
+                              <ArrowRight className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        </div>
+                        <pre className="p-2 rounded bg-surface-subtle border border-border overflow-x-auto text-[10px] text-fg-secondary leading-relaxed select-text">
+                          {msg.diffView.diff}
+                        </pre>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             );
           })
         )}
 
-        {/* Topic In-Thread Live Thinking Stepper (支持多 Agent 并发推演卡片) */}
-        {isExecuting && topicExecutions.length > 0 && (
-          <div className="space-y-2">
-            {topicExecutions.map((exec) => {
-              const isQueued = exec.status === 'queued';
-              return (
-                <div
-                  key={exec.agentId}
-                  className={`p-3 rounded-xl border text-xs space-y-1.5 animate-in fade-in duration-150 ${
-                    isQueued
-                      ? 'bg-surface border-border text-fg-muted'
-                      : 'bg-purple-500/10 border-purple-500/30 text-fg'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className={`font-semibold flex items-center gap-1.5 ${
-                      isQueued ? 'text-fg-muted' : 'text-purple-600 dark:text-purple-400'
-                    }`}>
-                      <span className="text-sm">{exec.agentAvatar || '🤖'}</span>
-                      <BrainCircuit className={`w-3.5 h-3.5 ${isQueued ? 'opacity-60' : 'animate-pulse text-purple-500'}`} />
-                      <span>{exec.agentName} {isQueued ? '排队等待接力' : '正在论证推演中'}</span>
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[10px] font-mono font-semibold ${isQueued ? 'text-fg-muted' : 'text-purple-500'}`}>
-                        {((now - exec.startedAt) / 1000).toFixed(1)}s
+        {/* Topic In-Thread Live Thinking Stepper (仅显示尚未在消息流中渲染 isPending 卡片的执行中 Agent) */}
+        {(() => {
+          const pendingAuthorIds = new Set(messages.filter((m) => m.isPending).map((m) => m.authorId));
+          const unrenderedExecutions = topicExecutions.filter((exec) => !pendingAuthorIds.has(exec.agentId));
+          if (!isExecuting || unrenderedExecutions.length === 0) return null;
+          return (
+            <div className="space-y-2">
+              {unrenderedExecutions.map((exec) => {
+                const isQueued = exec.status === 'queued';
+                return (
+                  <div
+                    key={exec.agentId}
+                    className={`p-3 rounded-xl border text-xs space-y-1.5 animate-in fade-in duration-150 ${
+                      isQueued
+                        ? 'bg-surface border-border text-fg-muted'
+                        : 'bg-purple-500/10 border-purple-500/30 text-fg'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className={`font-semibold flex items-center gap-1.5 ${
+                        isQueued ? 'text-fg-muted' : 'text-purple-600 dark:text-purple-400'
+                      }`}>
+                        <span className="text-sm">{exec.agentAvatar || '🤖'}</span>
+                        <BrainCircuit className={`w-3.5 h-3.5 ${isQueued ? 'opacity-60' : 'animate-pulse text-purple-500'}`} />
+                        <span>{exec.agentName} {isQueued ? '排队等待接力' : '正在论证推演中'}</span>
                       </span>
-                      {onAbortAgent && (
-                        <button
-                          type="button"
-                          onClick={() => onAbortAgent(exec.agentId)}
-                          className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/10 hover:bg-red-500/20 text-red-500 transition-colors cursor-pointer"
-                          title={`终止 ${exec.agentName} 的推演`}
-                        >
-                          终止
-                        </button>
-                      )}
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-mono font-semibold ${isQueued ? 'text-fg-muted' : 'text-purple-500'}`}>
+                          {((now - exec.startedAt) / 1000).toFixed(1)}s
+                        </span>
+                        {onAbortAgent && (
+                          <button
+                            type="button"
+                            onClick={() => onAbortAgent(exec.agentId)}
+                            className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/10 hover:bg-red-500/20 text-red-500 transition-colors cursor-pointer"
+                            title={`终止 ${exec.agentName} 的推演`}
+                          >
+                            终止
+                          </button>
+                        )}
+                      </div>
                     </div>
+                    <p className="text-[11px] text-fg-muted font-mono leading-relaxed">
+                      {exec.currentActionDetail || (isQueued ? '排队等待协同推演中...' : '正在评估架构方案、校验多分支边界...')}
+                    </p>
                   </div>
-                  <p className="text-[11px] text-fg-muted font-mono leading-relaxed">
-                    {exec.currentActionDetail || (isQueued ? '排队等待协同推演中...' : '正在评估架构方案、校验多分支边界...')}
-                  </p>
-                </div>
-              );
-            })}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          );
+        })()}
 
         {/* Bottom anchor for scrolling */}
         <div ref={messagesEndRef} />
