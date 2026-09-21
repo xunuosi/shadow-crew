@@ -160,6 +160,10 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     (e) => e.threadId === activeThread?.id || (activeThread?.type === 'thread' && (!e.threadId || e.threadId === activeThread?.id))
   );
 
+  const isTargetAgentActiveElsewhere = dmTargetAgent
+    ? activeExecutions.some((e) => e.agentId === dmTargetAgent.id && e.threadId !== activeThread?.id)
+    : false;
+
   const isAtBottomRef = useRef(true);
 
   const handleScroll = useCallback(() => {
@@ -300,10 +304,20 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                   </span>
                 )}
                 {dmTargetAgent && (dmTargetAgent.status === 'running' || dmTargetAgent.status === 'thinking') && currentThreadExecutions.length === 0 && (
-                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 text-[10px] font-mono shrink-0">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    <span>通信就绪 (Online)</span>
-                  </span>
+                  isTargetAgentActiveElsewhere ? (
+                    <span 
+                      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 text-[10px] font-mono shrink-0 animate-in fade-in"
+                      title="该 Agent 正在其他议题推演中，私聊随时可独立发送并即时响应"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                      <span>议题推演中 · 私聊就绪</span>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 text-[10px] font-mono shrink-0">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                      <span>通信就绪 (Online)</span>
+                    </span>
+                  )
                 )}
                 {currentThreadExecutions.length > 0 && (
                   <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-[10px] font-mono shrink-0 animate-in fade-in">

@@ -19,7 +19,10 @@ import {
   TopicStatus,
   ActiveAgentExecution,
   AgentRuntimeStatus,
-  MemoryCartridge
+  MemoryCartridge,
+  DiscussionMode,
+  GameRolesConfig,
+  RulingRecord
 } from './types';
 import { 
   INITIAL_PROJECTS,
@@ -414,16 +417,16 @@ export default function App() {
     } catch {}
   }, [isSidebarCollapsed]);
 
-  // Split-screen & narrow layout protection: auto-collapse sidebar when topic drawer opens on narrow window (< 1024px)
+  // Split-screen & narrow layout protection: auto-collapse sidebar when topic drawer opens on narrow window (< 1120px)
   useEffect(() => {
-    if (activeTopicId && typeof window !== 'undefined' && window.innerWidth < 1024 && !isSidebarCollapsed) {
+    if (activeTopicId && typeof window !== 'undefined' && window.innerWidth < 1120 && !isSidebarCollapsed) {
       toggleSidebar(true);
     }
   }, [activeTopicId]);
 
   useEffect(() => {
     const handleWindowResize = () => {
-      if (typeof window !== 'undefined' && window.innerWidth < 1024 && activeTopicId && !isSidebarCollapsed) {
+      if (typeof window !== 'undefined' && window.innerWidth < 1120 && activeTopicId && !isSidebarCollapsed) {
         toggleSidebar(true);
       }
     };
@@ -472,6 +475,10 @@ export default function App() {
   const [activeCascades, setActiveCascades] = useState<Record<string, CollaborationCascade>>({});
   const activeCascadesRef = useRef<Record<string, CollaborationCascade>>({});
   activeCascadesRef.current = activeCascades;
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const agentsRef = useRef(agents);
+  agentsRef.current = agents;
 
   // 对标 Buzz: 记录每个会话/房间与 Agent 之间的立足上下文 (Standing Context) 交付状态
   // 保证整套平台公约与团队花名册只在 Session 建立时/第 1 轮传递，后续日常交互均为纯净指令
@@ -507,6 +514,12 @@ export default function App() {
   const activeMessages = activeThread ? messages[activeThread.id] || [] : [];
   const activeSubThread = activeSubThreadId ? subThreads[activeSubThreadId] : null;
   const selectedAgent = agents.find((a) => a.id === selectedAgentId) || agents[0];
+
+  // 双轨分流架构：基于会话级（Session-scoped）精准判定当前活跃视图/线程是否正在推演
+  // 彻底解耦议题推演与私聊输入，防止议题后台运行锁死私聊输入框
+  const isCurrentThreadGenerating = activeThread
+    ? Object.values(activeExecutions).some((e: any) => e.threadId === activeThread.id)
+    : false;
 
   // 当前频道的专属受邀成员 Agent 列表 (严格限定在当前频道的受邀成员范围内，杜绝非成员 Agent 渗入)
   const currentChannelAgents = useMemo(() => {
@@ -762,14 +775,73 @@ export default function App() {
           }
           return updated ? next : prev;
         });
+
+        // 同步更新议题流中处于推演态 (isPending) 卡片的提示信息
+        setMessages((prev) => {
+          let updated = false;
+          const next = { ...prev };
+          for (const threadId in next) {
+            const list = next[threadId];
+            if (!list || list.length === 0) continue;
+            const pendingIdx = list.findIndex(
+              (m) => m.authorId === payload.agent_id && m.isPending
+            );
+            if (pendingIdx !== -1 && list[pendingIdx].pendingHint !== hint) {
+              const updatedList = [...list];
+              updatedList[pendingIdx] = {
+                ...list[pendingIdx],
+                pendingHint: hint,
+              };
+              next[threadId] = updatedList;
+              updated = true;
+            }
+          }
+          return updated ? next : prev;
+        });
       }
     }).then((fn: any) => {
       unlistenHeartbeat = fn;
     }).catch(() => {});
 
+    // 实时监听 Agent 流式 chunk 吐字，就地注入 isPending 占位卡
+    let unlistenChunk: (() => void) | undefined;
+    tauriListen('acp:chunk', (event: any) => {
+      const payload = event?.payload;
+      if (payload && payload.agent_id && payload.chunk) {
+        const agentId = payload.agent_id;
+        const chunkText = payload.chunk;
+
+        setMessages((prev) => {
+          let updated = false;
+          const next = { ...prev };
+          for (const threadId in next) {
+            const list = next[threadId];
+            if (!list || list.length === 0) continue;
+            const pendingIdx = list.findIndex(
+              (m) => m.authorId === agentId && m.isPending
+            );
+            if (pendingIdx !== -1) {
+              const target = list[pendingIdx];
+              const updatedList = [...list];
+              updatedList[pendingIdx] = {
+                ...target,
+                content: (target.content || '') + chunkText,
+              };
+              next[threadId] = updatedList;
+              updated = true;
+            }
+          }
+          return updated ? next : prev;
+        });
+      }
+    }).then((fn: any) => {
+      unlistenChunk = fn;
+    }).catch(() => {});
+
     return () => {
       if (unlisten) unlisten();
       if (unlistenHeartbeat) unlistenHeartbeat();
+      if (unlistenChunk) unlistenChunk();
     };
   }, []);
 
@@ -1279,18 +1351,30 @@ export default function App() {
     title: string;
     description: string;
     assignedAgentIds: string[];
+    discussionMode?: DiscussionMode;
+    gameRoles?: GameRolesConfig;
   }) => {
     if (!activeChannel) return; // 私聊模式下不创建频道议题
     const topicId = `topic-${Date.now()}`;
     const validAssignedAgentIds = topicData.assignedAgentIds.filter((id) =>
       currentChannelAgents.some((a) => a.id === id)
     );
+    const isGame = topicData.discussionMode === 'game_theoretic';
     const newTopic: TopicMessageData = {
       id: topicId,
       channelId: activeChannel.id,
       title: topicData.title,
       description: topicData.description,
       status: 'open',
+      discussionMode: topicData.discussionMode || 'standard',
+      gameRoles: topicData.gameRoles,
+      gameStage: isGame ? 'proposal' : undefined,
+      gameTheoreticState: isGame
+        ? {
+            currentStage: 'proposal',
+            isChallengerResponded: false,
+          }
+        : undefined,
       authorId: 'user-norris',
       authorName: 'Norris_M5Pro',
       authorAvatar: '👨‍💻',
@@ -1318,6 +1402,10 @@ export default function App() {
       content: '',
     };
 
+    const initContent = isGame && topicData.gameRoles
+      ? `已发起博弈讨论议题【${topicData.title}】。\n目标背景：${topicData.description || '开始三元博弈论证。'}\n【三元博弈配置】：\n- 🏛️ 主导者：${topicData.gameRoles.proposers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- ⚔️ 挑战者：${topicData.gameRoles.challengers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- ⚖️ 仲裁者：${topicData.gameRoles.humanIsArbiter ? 'Norris_M5Pro (人类首席仲裁官, 持法槌) · ' : ''}${topicData.gameRoles.arbiters.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || (topicData.gameRoles.humanIsArbiter ? '' : '未指定')}`
+      : `已发起议题【${topicData.title}】。\n目标背景：${topicData.description || '开始方案推演。'}\n指派 Agent：${validAssignedAgentIds.length > 0 ? validAssignedAgentIds.map(id => agents.find(a => a.id === id)?.name).filter(Boolean).join('、') : '暂无 (可在抽屉中指派)'}。`;
+
     setMessages((prev) => ({
       ...prev,
       [targetChannelThread.id]: [...(prev[targetChannelThread.id] || []), topicCardMsg],
@@ -1331,7 +1419,7 @@ export default function App() {
           authorAvatar: '👨‍💻',
           isAgent: false,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `已发起议题【${topicData.title}】。\n目标背景：${topicData.description || '开始方案推演。'}\n指派 Agent：${validAssignedAgentIds.length > 0 ? validAssignedAgentIds.map(id => agents.find(a => a.id === id)?.name).filter(Boolean).join('、') : '暂无 (可在抽屉中指派)'}。`,
+          content: initContent,
         },
       ],
     }));
@@ -1345,6 +1433,8 @@ export default function App() {
       title: string;
       description: string;
       assignedAgentIds: string[];
+      discussionMode?: DiscussionMode;
+      gameRoles?: GameRolesConfig;
     }
   ) => {
     // 过滤出该议题频道内合法的 Agent ID，避免越界
@@ -1366,6 +1456,8 @@ export default function App() {
             title: updatedData.title,
             description: updatedData.description,
             participatingAgentIds: validAssignedAgentIds,
+            discussionMode: updatedData.discussionMode ?? oldTopic.discussionMode,
+            gameRoles: updatedData.gameRoles !== undefined ? updatedData.gameRoles : oldTopic.gameRoles,
           };
           const newMsgList = [...msgList];
           newMsgList[idx] = {
@@ -1387,7 +1479,7 @@ export default function App() {
         authorAvatar: '📝',
         isAgent: false,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: `📝 **议题信息已更新**：\n- **议题标题**：${updatedData.title}\n- **背景目标**：${updatedData.description || '无'}\n- **协作成员**：${
+        content: `📝 **议题信息已更新**：\n- **议题标题**：${updatedData.title}\n- **议题模式**：${(updatedData.discussionMode || 'standard') === 'game_theoretic' ? '♟️ 博弈讨论模式' : '标准研讨模式'}\n- **背景目标**：${updatedData.description || '无'}\n- **协作成员**：${
           validAssignedAgentIds.length > 0
             ? validAssignedAgentIds
                 .map((id) => agents.find((a) => a.id === id)?.name)
@@ -1617,6 +1709,8 @@ export default function App() {
           description: activeTopicData.description,
           channelName: topicTargetChannel?.name || 'chat',
           status: activeTopicData.status,
+          discussionMode: activeTopicData.discussionMode,
+          gameRoles: activeTopicData.gameRoles,
           participatingAgents: candidateAgents,
         }
       : undefined;
@@ -1653,7 +1747,8 @@ export default function App() {
       },
     }));
 
-    setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'thinking' } : a)));
+    // 维持 Agent 在线基线状态 ('running')，具体推演任务由 activeExecutions 独立追踪，杜绝状态跨会话污染
+    setAgents((prev) => prev.map((a) => (a.id === targetAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a)));
 
     const sessionKey = `${roomId}:${targetAgent.id}`;
     const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
@@ -1794,6 +1889,492 @@ export default function App() {
         ...prev,
         [roomId]: [...(prev[roomId] || []), errorReply],
       }));
+    }
+  };
+
+  const getTopicData = (topicId: string): TopicMessageData | null => {
+    for (const msgList of Object.values(messagesRef.current) as Message[][]) {
+      for (const m of msgList) {
+        if (m.type === 'topic' && m.topicData?.id === topicId) {
+          return m.topicData;
+        }
+      }
+    }
+    return null;
+  };
+
+  const updateTopicDataInState = (topicId: string, updater: (oldTopic: TopicMessageData) => TopicMessageData) => {
+    setMessages((prev) => {
+      let parentThreadId: string | null = null;
+      for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+        if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+          parentThreadId = tId;
+          break;
+        }
+      }
+      if (!parentThreadId) return prev;
+      return {
+        ...prev,
+        [parentThreadId]: (prev[parentThreadId] || []).map((m) => {
+          if (m.type === 'topic' && m.topicData?.id === topicId) {
+            return {
+              ...m,
+              topicData: updater(m.topicData),
+            };
+          }
+          return m;
+        }),
+      };
+    });
+  };
+
+  const triggerGameTheoreticStageHandover = async (options: {
+    topicId: string;
+    nextStage: 'challenge' | 'arbitration';
+    targetProposalText?: string;
+    targetChallengeText?: string;
+  }) => {
+    const { topicId, nextStage, targetProposalText, targetChallengeText } = options;
+    const currentTopic = getTopicData(topicId);
+    if (!currentTopic || currentTopic.status === 'resolved') return;
+
+    const topicChannel = channels.find((c) => c.id === currentTopic.channelId) || activeChannel;
+    const channelAgents = (topicChannel?.assignedAgentIds || [])
+      .map((id) => agentsRef.current.find((a) => a.id === id))
+      .filter((a): a is Agent => Boolean(a));
+    const topicAgents = (currentTopic.participatingAgentIds || [])
+      .map((id) => agentsRef.current.find((a) => a.id === id))
+      .filter((a): a is Agent => Boolean(a));
+    const candidateAgents = topicAgents.length > 0 ? topicAgents : channelAgents;
+
+    if (nextStage === 'challenge') {
+      const challengerIds = currentTopic.gameRoles?.challengers || [];
+      const challengerAgent = candidateAgents.find((a) => challengerIds.includes(a.id));
+
+      if (!challengerAgent) {
+        updateTopicDataInState(topicId, (old) => ({
+          ...old,
+          gameStage: 'arbitration',
+          gameTheoreticState: {
+            ...old.gameTheoreticState,
+            currentStage: 'arbitration',
+            targetProposalContent: targetProposalText,
+            isChallengerResponded: false,
+            quorumAlert: '当前议题未指定或未找到可用的挑战者 (Challenger)。法定推演缺席 (Quorum Not Met)。',
+          },
+        }));
+
+        const quorumNotice: Message = {
+          id: `msg-quorum-alert-${Date.now()}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: 'system',
+          authorName: 'Shinobi 仲裁法定人数守护',
+          authorHandle: '@quorum-guard',
+          authorAvatar: '⚖️',
+          isAgent: true,
+          agentBadge: 'Quorum Alert',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `⚠️ **法定推演人数告警 (Quorum Alert)**：未指派或未匹配到制衡方 (Challenger)，法定对抗缺席。\n\n根据三元博弈规约，若无挑战者反例压测，人类首席仲裁官在终局定案时必须执行【具名豁免制衡方缺席 (Exemption)】方可敲响法槌。`,
+        };
+
+        setMessages((prev) => ({
+          ...prev,
+          [topicId]: [...(prev[topicId] || []), quorumNotice],
+        }));
+        return;
+      }
+
+      if (challengerAgent.status === 'idle') {
+        updateTopicDataInState(topicId, (old) => ({
+          ...old,
+          gameStage: 'arbitration',
+          gameTheoreticState: {
+            ...old.gameTheoreticState,
+            currentStage: 'arbitration',
+            targetProposalContent: targetProposalText,
+            isChallengerResponded: false,
+            quorumAlert: `挑战者 ${challengerAgent.name} 处于离线/未连接状态。`,
+          },
+        }));
+
+        const offlineNotice: Message = {
+          id: `msg-offline-challenger-${Date.now()}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: 'system',
+          authorName: 'Shinobi 仲裁法定人数守护',
+          authorHandle: '@connection-guard',
+          authorAvatar: '🔌',
+          isAgent: true,
+          agentBadge: 'Communication Required',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `🔌 **制衡方通信尚未开启**：挑战者 **${challengerAgent.name}** 处于离线/未连接状态，无法接力反例压测。\n\n如需其完成对抗，请先在左侧面板点击【Start】开启 ACP 通信；或由人类首席仲裁官执行具名豁免后直接落槌。`,
+        };
+
+        setMessages((prev) => ({
+          ...prev,
+          [topicId]: [...(prev[topicId] || []), offlineNotice],
+        }));
+        return;
+      }
+
+      const execKey = `${topicId}:${challengerAgent.id}`;
+      setIsGenerating(true);
+      setActiveExecutions((prev) => ({
+        ...prev,
+        [execKey]: {
+          agentId: challengerAgent.id,
+          agentName: challengerAgent.name,
+          agentAvatar: challengerAgent.avatar,
+          threadId: topicId,
+          topicId,
+          status: 'thinking',
+          currentActionDetail: `正在对立论方案进行反例压测与边界证伪 (Stage: ⚔️ 反例压测)...`,
+          startedAt: Date.now(),
+          cascadeHop: 2,
+        },
+      }));
+
+      setAgents((prev) =>
+        prev.map((a) => (a.id === challengerAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
+      );
+
+      const topicContext: TopicPromptContext = {
+        topicId,
+        title: currentTopic.title,
+        description: currentTopic.description,
+        channelName: topicChannel?.name || 'chat',
+        status: currentTopic.status,
+        discussionMode: 'game_theoretic',
+        gameRoles: currentTopic.gameRoles,
+        gameStage: 'challenge',
+        targetProposalText,
+        participatingAgents: candidateAgents,
+      };
+
+      const challengePrompt = buildTopicPrompt({
+        topic: topicContext,
+        userContent: targetProposalText || currentTopic.description || currentTopic.title,
+        targetAgent: challengerAgent,
+        availableAgents: candidateAgents,
+      });
+
+      try {
+        const acpResp = await sendPromptToAcpAgent({
+          agent: challengerAgent,
+          roomId: topicId,
+          prompt: challengePrompt,
+          projectId: activeProjectId,
+          channelId: topicChannel?.id,
+        });
+
+        setActiveExecutions((prev) => {
+          const next = { ...prev };
+          delete next[execKey];
+          if (Object.keys(next).length === 0) setIsGenerating(false);
+          return next;
+        });
+
+        if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
+          throw new Error(acpResp.isError ? acpResp.textResponse : '制衡方返回空响应，未生成有效反例压测。');
+        }
+
+        const challengerReply: Message = {
+          id: `topic-reply-${Date.now()}-${challengerAgent.id}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: challengerAgent.id,
+          authorName: challengerAgent.name,
+          authorHandle: challengerAgent.handle,
+          authorAvatar: challengerAgent.avatar,
+          isAgent: true,
+          agentBadge: `${challengerAgent.modelBadge?.split(' ')[0] || 'Local'} · ⚔️ 反例压测`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: acpResp.textResponse,
+          gameStage: 'challenge',
+          gameRole: 'challenger',
+          thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
+            duration: `${acpResp.durationMs}ms`,
+            tokens: Math.round(acpResp.textResponse.length * 1.3),
+            summary: `已完成反例边界与架构证伪推演`,
+            detail: acpResp.memoryActions.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n'),
+          } : undefined,
+          diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
+          cartridgeCitation: acpResp.cartridgeCitation,
+        };
+
+        setMessages((prev) => {
+          const nextTopicMsgs = [...(prev[topicId] || []), challengerReply];
+          let parentThreadId: string | null = null;
+          for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+            if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+              parentThreadId = tId;
+              break;
+            }
+          }
+          const updatedChannelMsgs = parentThreadId
+            ? (prev[parentThreadId] || []).map((m) => {
+                if (m.type === 'topic' && m.topicData?.id === topicId) {
+                  return {
+                    ...m,
+                    topicData: {
+                      ...m.topicData,
+                      repliesCount: nextTopicMsgs.length,
+                      latestReplyPreview: challengerReply.content.slice(0, 60),
+                    },
+                  };
+                }
+                return m;
+              })
+            : [];
+          return {
+            ...prev,
+            [topicId]: nextTopicMsgs,
+            ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
+          };
+        });
+
+        updateTopicDataInState(topicId, (old) => ({
+          ...old,
+          gameStage: 'arbitration',
+          gameTheoreticState: {
+            ...old.gameTheoreticState,
+            currentStage: 'arbitration',
+            targetProposalContent: targetProposalText,
+            targetChallengeContent: acpResp.textResponse,
+            isChallengerResponded: true,
+            quorumAlert: undefined,
+          },
+        }));
+
+        triggerGameTheoreticStageHandover({
+          topicId,
+          nextStage: 'arbitration',
+          targetProposalText,
+          targetChallengeText: acpResp.textResponse,
+        });
+      } catch (err) {
+        setActiveExecutions((prev) => {
+          const next = { ...prev };
+          delete next[execKey];
+          if (Object.keys(next).length === 0) setIsGenerating(false);
+          return next;
+        });
+
+        console.error('Challenger execution failed:', err);
+        const errorMsg: Message = {
+          id: `topic-reply-err-${Date.now()}-${challengerAgent.id}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: challengerAgent.id,
+          authorName: challengerAgent.name,
+          authorHandle: challengerAgent.handle,
+          authorAvatar: challengerAgent.avatar,
+          isAgent: true,
+          agentBadge: 'ACP Error',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `⚠️ **制衡方压测异常**：${err instanceof Error ? err.message : String(err)}`,
+          gameStage: 'challenge',
+          gameRole: 'challenger',
+        };
+
+        const quorumNotice: Message = {
+          id: `msg-quorum-alert-${Date.now()}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: 'system',
+          authorName: 'Shinobi 仲裁法定人数守护',
+          authorHandle: '@quorum-guard',
+          authorAvatar: '⚖️',
+          isAgent: true,
+          agentBadge: 'Quorum Alert',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `⚠️ **法定推演人数告警 (Quorum Alert)**：制衡方 ${challengerAgent.name} 发生异常未能完成反例压测。法定推演人数未达标 (Quorum Not Met)。\n\n根据三元博弈规约，进入仲裁定案前须由人类首席仲裁官签署「具名豁免」方可落槌定案。`,
+        };
+
+        setMessages((prev) => ({
+          ...prev,
+          [topicId]: [...(prev[topicId] || []), errorMsg, quorumNotice],
+        }));
+
+        updateTopicDataInState(topicId, (old) => ({
+          ...old,
+          gameStage: 'arbitration',
+          gameTheoreticState: {
+            ...old.gameTheoreticState,
+            currentStage: 'arbitration',
+            targetProposalContent: targetProposalText,
+            isChallengerResponded: false,
+            quorumAlert: `制衡方 (${challengerAgent.name}) 反例压测异常：${err instanceof Error ? err.message : String(err)}`,
+          },
+        }));
+      }
+      return;
+    }
+
+    if (nextStage === 'arbitration') {
+      const arbiterIds = currentTopic.gameRoles?.arbiters || [];
+      const arbiterAgent = candidateAgents.find((a) => arbiterIds.includes(a.id));
+
+      if (arbiterAgent && arbiterAgent.status !== 'idle') {
+        const execKey = `${topicId}:${arbiterAgent.id}`;
+        setIsGenerating(true);
+        setActiveExecutions((prev) => ({
+          ...prev,
+          [execKey]: {
+            agentId: arbiterAgent.id,
+            agentName: arbiterAgent.name,
+            agentAvatar: arbiterAgent.avatar,
+            threadId: topicId,
+            topicId,
+            status: 'thinking',
+            currentActionDetail: `正在权衡方案与反例要点并起草仲裁建议 (Stage: ⚖️ 仲裁定案)...`,
+            startedAt: Date.now(),
+            cascadeHop: 3,
+          },
+        }));
+
+        setAgents((prev) =>
+          prev.map((a) => (a.id === arbiterAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
+        );
+
+        const topicContext: TopicPromptContext = {
+          topicId,
+          title: currentTopic.title,
+          description: currentTopic.description,
+          channelName: topicChannel?.name || 'chat',
+          status: currentTopic.status,
+          discussionMode: 'game_theoretic',
+          gameRoles: currentTopic.gameRoles,
+          gameStage: 'arbitration',
+          targetProposalText,
+          targetChallengeText,
+          participatingAgents: candidateAgents,
+        };
+
+        const arbiterPrompt = buildTopicPrompt({
+          topic: topicContext,
+          userContent: `主导方案与反例压测已就绪，请给出客观中立的仲裁权衡矩阵与裁决建言。`,
+          targetAgent: arbiterAgent,
+          availableAgents: candidateAgents,
+        });
+
+        try {
+          const acpResp = await sendPromptToAcpAgent({
+            agent: arbiterAgent,
+            roomId: topicId,
+            prompt: arbiterPrompt,
+            projectId: activeProjectId,
+            channelId: topicChannel?.id,
+          });
+
+          setActiveExecutions((prev) => {
+            const next = { ...prev };
+            delete next[execKey];
+            if (Object.keys(next).length === 0) setIsGenerating(false);
+            return next;
+          });
+
+          const arbiterReply: Message = {
+            id: `topic-reply-${Date.now()}-${arbiterAgent.id}`,
+            threadId: topicId,
+            channelId: topicChannel?.id,
+            authorId: arbiterAgent.id,
+            authorName: arbiterAgent.name,
+            authorHandle: arbiterAgent.handle,
+            authorAvatar: arbiterAgent.avatar,
+            isAgent: true,
+            agentBadge: `${arbiterAgent.modelBadge?.split(' ')[0] || 'Local'} · ⚖️ 仲裁建言`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: acpResp.textResponse,
+            gameStage: 'arbitration',
+            gameRole: 'arbiter',
+            thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
+              duration: `${acpResp.durationMs}ms`,
+              tokens: Math.round(acpResp.textResponse.length * 1.3),
+              summary: `已完成立论与反例要点仲裁审查`,
+              detail: acpResp.memoryActions.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n'),
+            } : undefined,
+            diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
+            cartridgeCitation: acpResp.cartridgeCitation,
+          };
+
+          const humanNotice: Message = {
+            id: `msg-human-gavel-notice-${Date.now()}`,
+            threadId: topicId,
+            channelId: topicChannel?.id,
+            authorId: 'system',
+            authorName: 'Shinobi 仲裁法槌提示',
+            authorHandle: '@arbiter-gavel',
+            authorAvatar: '⚖️',
+            isAgent: true,
+            agentBadge: 'Gavel Ready',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `⚖️ **AI 仲裁建言已生成**：立论与制衡反例要点已完成裁决审查。请人类首席仲裁官查阅双方交锋要点，点击抽屉右上角【法槌/裁决定案】敲响法槌签署仲裁裁决书。`,
+          };
+
+          setMessages((prev) => {
+            const nextTopicMsgs = [...(prev[topicId] || []), arbiterReply, humanNotice];
+            let parentThreadId: string | null = null;
+            for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+              if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+                parentThreadId = tId;
+                break;
+              }
+            }
+            const updatedChannelMsgs = parentThreadId
+              ? (prev[parentThreadId] || []).map((m) => {
+                  if (m.type === 'topic' && m.topicData?.id === topicId) {
+                    return {
+                      ...m,
+                      topicData: {
+                        ...m.topicData,
+                        repliesCount: nextTopicMsgs.length,
+                        latestReplyPreview: arbiterReply.content.slice(0, 60),
+                      },
+                    };
+                  }
+                  return m;
+                })
+              : [];
+            return {
+              ...prev,
+              [topicId]: nextTopicMsgs,
+              ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
+            };
+          });
+        } catch (err) {
+          setActiveExecutions((prev) => {
+            const next = { ...prev };
+            delete next[execKey];
+            if (Object.keys(next).length === 0) setIsGenerating(false);
+            return next;
+          });
+          console.error('AI Arbiter execution failed:', err);
+        }
+      } else {
+        if (currentTopic.gameRoles?.humanIsArbiter) {
+          const humanNotice: Message = {
+            id: `msg-human-gavel-notice-${Date.now()}`,
+            threadId: topicId,
+            channelId: topicChannel?.id,
+            authorId: 'system',
+            authorName: 'Shinobi 仲裁法槌提示',
+            authorHandle: '@arbiter-gavel',
+            authorAvatar: '⚖️',
+            isAgent: true,
+            agentBadge: 'Gavel Ready',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `⚖️ **博弈推演已进入仲裁裁决阶段**：立论方案与反例压测已就绪。请人类首席仲裁官点击抽屉右上角【法槌/裁决定案】敲响法槌签署仲裁裁决书。`,
+          };
+
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: [...(prev[topicId] || []), humanNotice],
+          }));
+        }
+      }
     }
   };
 
@@ -1940,13 +2521,56 @@ export default function App() {
       }
     }
 
+    const isGameTheoretic = activeTopicData?.discussionMode === 'game_theoretic';
+    const currentTopicStage: GameTheoreticStage = activeTopicData?.gameStage || activeTopicData?.gameTheoreticState?.currentStage || 'proposal';
+    let executionStage: GameTheoreticStage = currentTopicStage;
+    let targetRoleType: GameRoleType = 'proposer';
+
     const candidateAgents = topicAssigned.length > 0 ? topicAssigned : channelAssigned;
     let respondingAgents: Agent[] = [];
 
-    if (userMentionedAgents.length > 0) {
-      respondingAgents = userMentionedAgents;
-    } else if (candidateAgents.length > 0) {
-      respondingAgents = [candidateAgents[0]];
+    if (isGameTheoretic) {
+      if (userMentionedAgents.length > 0 && !isAllMention) {
+        respondingAgents = userMentionedAgents;
+        const id = userMentionedAgents[0].id;
+        if (activeTopicData?.gameRoles?.proposers?.includes(id)) {
+          targetRoleType = 'proposer';
+          executionStage = 'proposal';
+        } else if (activeTopicData?.gameRoles?.challengers?.includes(id)) {
+          targetRoleType = 'challenger';
+          executionStage = 'challenge';
+        } else if (activeTopicData?.gameRoles?.arbiters?.includes(id)) {
+          targetRoleType = 'arbiter';
+          executionStage = 'arbitration';
+        }
+      } else {
+        // 根据三元博弈当前所处阶段分配角色，绝不并发广播给全员
+        if (currentTopicStage === 'proposal') {
+          const proposerIds = activeTopicData?.gameRoles?.proposers || [];
+          respondingAgents = candidateAgents.filter((a) => proposerIds.includes(a.id));
+          targetRoleType = 'proposer';
+          executionStage = 'proposal';
+        } else if (currentTopicStage === 'challenge') {
+          const challengerIds = activeTopicData?.gameRoles?.challengers || [];
+          respondingAgents = candidateAgents.filter((a) => challengerIds.includes(a.id));
+          targetRoleType = 'challenger';
+          executionStage = 'challenge';
+        } else if (currentTopicStage === 'arbitration') {
+          const arbiterIds = activeTopicData?.gameRoles?.arbiters || [];
+          respondingAgents = candidateAgents.filter((a) => arbiterIds.includes(a.id));
+          targetRoleType = 'arbiter';
+          executionStage = 'arbitration';
+        }
+        if (respondingAgents.length === 0 && candidateAgents.length > 0) {
+          respondingAgents = [candidateAgents[0]];
+        }
+      }
+    } else {
+      if (userMentionedAgents.length > 0) {
+        respondingAgents = userMentionedAgents;
+      } else if (candidateAgents.length > 0) {
+        respondingAgents = [candidateAgents[0]];
+      }
     }
 
     if (respondingAgents.length === 0) {
@@ -1964,7 +2588,7 @@ export default function App() {
           threadId: topicId,
           channelId: topicChannel?.id,
           authorId: 'system',
-          authorName: 'Shadow Crew 通信管控',
+          authorName: isGameTheoretic ? 'Shinobi 博弈协同管控' : 'Shadow Crew 通信管控',
           authorHandle: '@connection-guard',
           authorAvatar: '🔌',
           isAgent: true,
@@ -1986,7 +2610,7 @@ export default function App() {
     const now = Date.now();
     setIsGenerating(true);
 
-    // 1. 同时在 UI activeExecutions 中注册所有并行的推演任务
+    // 1. 在 UI activeExecutions 中注册推演任务
     const newExecs: Record<string, ActiveAgentExecution> = {};
     onlineAgents.forEach((agent, idx) => {
       const execKey = `${topicId}:${agent.id}`;
@@ -1997,11 +2621,17 @@ export default function App() {
         threadId: topicId,
         topicId: topicId,
         status: 'thinking',
-        currentActionDetail: onlineAgents.length > 1 
-          ? `正在并发独立推演方案与系统共识 (并行 Hop 1)...`
-          : `正在深度推演议题方案与系统共识 (Hop 1)...`,
+        currentActionDetail: isGameTheoretic
+          ? (executionStage === 'proposal'
+              ? '正在推演并起草主导立论方案 (Stage: 🏛️ 方案立论)...'
+              : executionStage === 'challenge'
+              ? '正在对立论方案进行反例压测与证伪 (Stage: ⚔️ 反例压测)...'
+              : '正在进行立论与反例要点审查并起草仲裁建议 (Stage: ⚖️ 仲裁定案)...')
+          : onlineAgents.length > 1 
+            ? `正在并发独立推演方案与系统共识 (并行 Hop 1)...`
+            : `正在深度推演议题方案与系统共识 (Hop 1)...`,
         startedAt: now + idx * 50,
-        cascadeHop: 1,
+        cascadeHop: isGameTheoretic ? (executionStage === 'proposal' ? 1 : executionStage === 'challenge' ? 2 : 3) : 1,
       };
     });
 
@@ -2010,12 +2640,12 @@ export default function App() {
       ...newExecs,
     }));
 
-    // 更新全局 agents 状态为 thinking
+    // 维持 Agent 在线基线状态 ('running')
     setAgents((prev) =>
-      prev.map((a) => (onlineAgents.some((oa) => oa.id === a.id) ? { ...a, status: 'thinking' } : a))
+      prev.map((a) => (onlineAgents.some((oa) => oa.id === a.id) && a.status !== 'running' ? { ...a, status: 'running' } : a))
     );
 
-    // 提取议题前序研讨记录（取最近 4 条非系统防护类消息，为独立 Session 提供前序共识脉络）
+    // 提取议题前序研讨记录
     const existingTopicMsgs = messages[topicId] || [];
     const recentHistory = existingTopicMsgs
       .filter((m) => m.authorId !== 'system' && !m.agentBadge?.includes('Guard'))
@@ -2032,11 +2662,20 @@ export default function App() {
       description: activeTopicData?.description,
       channelName: topicChannel?.name || 'chat',
       status: activeTopicData?.status || 'open',
+      discussionMode: activeTopicData?.discussionMode,
+      gameRoles: activeTopicData?.gameRoles,
+      gameStage: isGameTheoretic ? executionStage : undefined,
+      targetProposalText: isGameTheoretic && executionStage === 'challenge'
+        ? activeTopicData?.gameTheoreticState?.targetProposalContent
+        : undefined,
+      targetChallengeText: isGameTheoretic && executionStage === 'arbitration'
+        ? activeTopicData?.gameTheoreticState?.targetChallengeContent
+        : undefined,
       participatingAgents: candidateAgents,
       recentHistory,
     };
 
-    // 2. 并发向所有已就绪的 onlineAgents 下发 prompt
+    // 2. 向 onlineAgents 下发 prompt
     onlineAgents.forEach((agent) => {
       const execKey = `${topicId}:${agent.id}`;
       const sessionKey = `${topicId}:${agent.id}`;
@@ -2058,7 +2697,7 @@ export default function App() {
 
       deliveredStandingContextRef.current.add(sessionKey);
 
-      // 为每个推演分支初始化级联状态
+      // 初始化级联状态
       const cascadeId = `cascade-topic-${Date.now()}-${agent.id}`;
       const newCascade: CollaborationCascade = {
         cascadeId,
@@ -2066,7 +2705,7 @@ export default function App() {
         roomId: topicId,
         originalPrompt: content,
         depth: 1,
-        maxDepth: 12, // 对标 Buzz: 提升至 12 轮作为不可见安全兜底
+        maxDepth: 12,
         visitedAgentIds: [agent.id],
         agentCallCounts: { [agent.id]: 1 },
         isAborted: false,
@@ -2110,14 +2749,24 @@ export default function App() {
             authorHandle: agent.handle,
             authorAvatar: agent.avatar,
             isAgent: true,
-            agentBadge: `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : agent.isRemote ? 'ACP Remote' : '协作'}`,
+            gameStage: isGameTheoretic ? executionStage : undefined,
+            gameRole: isGameTheoretic ? targetRoleType : undefined,
+            agentBadge: isGameTheoretic
+              ? `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${
+                  targetRoleType === 'proposer'
+                    ? '🏛️ 方案立论'
+                    : targetRoleType === 'challenger'
+                    ? '⚔️ 反例压测'
+                    : '⚖️ 仲裁建言'
+                }`
+              : `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : agent.isRemote ? 'ACP Remote' : '协作'}`,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             content: acpResp.textResponse,
             thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
               duration: `${acpResp.durationMs}ms`,
               tokens: Math.round(acpResp.textResponse.length * 1.3),
-              summary: `已检索私有记忆库并完成技术边界考量`,
-              detail: acpResp.memoryActions.map(m => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n')
+              summary: isGameTheoretic ? `已完成博弈推演与技术边界审定` : `已检索私有记忆库并完成技术边界考量`,
+              detail: acpResp.memoryActions.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n'),
             } : undefined,
             diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
             cartridgeCitation: acpResp.cartridgeCitation,
@@ -2167,15 +2816,61 @@ export default function App() {
             result: acpResp,
           });
 
-          // 若此 Agent 在回复正文中主动 @ 了其他同行（例如 "@Architect 我补充了鉴权逻辑"），触发后续串行级联辩论接力
-          dispatchCascadingAgentResponse({
-            cascadeId,
-            invokingAgent: agent,
-            replyContent: acpResp.textResponse,
-            roomId: topicId,
-            isTopic: true,
-            topicId,
-          });
+          if (isGameTheoretic) {
+            // 三元博弈协议驱动状态机接力 (Protocol FSM Handover)
+            if (executionStage === 'proposal') {
+              if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
+                console.warn('Proposer returned empty/error turn, pausing handover.');
+              } else {
+                updateTopicDataInState(topicId, (old) => ({
+                  ...old,
+                  gameStage: 'challenge',
+                  gameTheoreticState: {
+                    ...old.gameTheoreticState,
+                    currentStage: 'challenge',
+                    targetProposalContent: acpResp.textResponse,
+                    isChallengerResponded: false,
+                  },
+                }));
+                triggerGameTheoreticStageHandover({
+                  topicId,
+                  nextStage: 'challenge',
+                  targetProposalText: acpResp.textResponse,
+                });
+              }
+            } else if (executionStage === 'challenge') {
+              if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
+                console.warn('Challenger returned empty/error turn, pausing handover.');
+              } else {
+                updateTopicDataInState(topicId, (old) => ({
+                  ...old,
+                  gameStage: 'arbitration',
+                  gameTheoreticState: {
+                    ...old.gameTheoreticState,
+                    currentStage: 'arbitration',
+                    targetChallengeContent: acpResp.textResponse,
+                    isChallengerResponded: true,
+                  },
+                }));
+                triggerGameTheoreticStageHandover({
+                  topicId,
+                  nextStage: 'arbitration',
+                  targetProposalText: activeTopicData?.gameTheoreticState?.targetProposalContent,
+                  targetChallengeText: acpResp.textResponse,
+                });
+              }
+            }
+          } else {
+            // 标准讨论模式：常规自然语言 @ 级联接力
+            dispatchCascadingAgentResponse({
+              cascadeId,
+              invokingAgent: agent,
+              replyContent: acpResp.textResponse,
+              roomId: topicId,
+              isTopic: true,
+              topicId,
+            });
+          }
         })
         .catch((err) => {
           setActiveExecutions((prev) => {
@@ -2197,10 +2892,25 @@ export default function App() {
             authorHandle: agent.handle,
             authorAvatar: agent.avatar,
             isAgent: true,
+            gameStage: isGameTheoretic ? executionStage : undefined,
+            gameRole: isGameTheoretic ? targetRoleType : undefined,
             agentBadge: 'ACP Error',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             content: `⚠️ **ACP 通信异常**：${err instanceof Error ? err.message : String(err)}\n\n请检查 Agent 命令配置或相关依赖环境。`,
           };
+
+          if (isGameTheoretic && executionStage === 'challenge') {
+            updateTopicDataInState(topicId, (old) => ({
+              ...old,
+              gameStage: 'arbitration',
+              gameTheoreticState: {
+                ...old.gameTheoreticState,
+                currentStage: 'arbitration',
+                isChallengerResponded: false,
+                quorumAlert: `制衡方 (${agent.name}) 发生通信异常：${err instanceof Error ? err.message : String(err)}`,
+              },
+            }));
+          }
 
           setMessages((prev) => ({
             ...prev,
@@ -2212,11 +2922,16 @@ export default function App() {
 
   const handleResolveTopic = (
     topicId: string,
-    decision: { solution: string; impactedFiles: string[]; approvers: string[] }
+    decision: {
+      solution: string;
+      impactedFiles: string[];
+      approvers: string[];
+      rulingRecord?: RulingRecord;
+    }
   ) => {
     const resolvedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const decisionRecord: DecisionRecord = {
-      summary: '架构方案达成一致并收敛',
+      summary: decision.rulingRecord ? decision.rulingRecord.summary : '架构方案达成一致并收敛',
       solution: decision.solution,
       impactedFiles: decision.impactedFiles,
       approvers: decision.approvers,
@@ -2240,25 +2955,44 @@ export default function App() {
             topicData: {
               ...m.topicData,
               status: 'resolved' as TopicStatus,
+              gameStage: m.topicData.discussionMode === 'game_theoretic' ? 'concluded' : m.topicData.gameStage,
+              gameTheoreticState: m.topicData.discussionMode === 'game_theoretic' ? {
+                ...m.topicData.gameTheoreticState,
+                currentStage: 'concluded',
+                isArbiterExempted: Boolean(decision.rulingRecord?.exemptionReason),
+                exemptionReason: decision.rulingRecord?.exemptionReason,
+              } : m.topicData.gameTheoreticState,
               decisionRecord,
+              rulingRecord: decision.rulingRecord,
             },
           };
         }
         return m;
       });
 
+      let rollupContent = `🎉 **议题已达成共识并解决 (Resolved & Merged)**\n\n**决策方案**：${decision.solution}\n**影响文件**：${decision.impactedFiles.join('、') || '无'}\n**签署人**：${decision.approvers.join('、')}\n\n*详细推演过程已在议题抽屉归档保存。*`;
+
+      if (decision.rulingRecord) {
+        const typeText = decision.rulingRecord.decisionType === 'adopt_proposer'
+          ? '⚖️ 采纳主导方案'
+          : decision.rulingRecord.decisionType === 'reject_rebuild'
+          ? '🔄 采纳挑战驳回重构'
+          : '📊 达成架构权衡矩阵';
+        rollupContent = `⚖️ **博弈讨论仲裁定案 (${typeText})**\n\n**仲裁裁决官**：${decision.rulingRecord.arbiterName}\n**裁决结论**：${decision.rulingRecord.summary}\n${decision.solution ? `**实施/重构方案**：${decision.solution}\n` : ''}${decision.rulingRecord.tradeOffPoints && decision.rulingRecord.tradeOffPoints.length > 0 ? `**关键权衡要点**：\n${decision.rulingRecord.tradeOffPoints.map((p) => `- ${p}`).join('\n')}\n` : ''}${decision.rulingRecord.exemptionReason ? `**特权豁免记录**：⚠️ 已执行人类首席仲裁官具名豁免 (${decision.rulingRecord.exemptionReason})\n` : ''}**影响文件**：${decision.impactedFiles.join('、') || '无'}\n**签署裁决**：${decision.approvers.join('、')}\n\n*博弈论证与仲裁全过程已归档。*`;
+      }
+
       const rollupNotice: Message = {
         id: `msg-rollup-${Date.now()}`,
         threadId: parentThreadId,
         channelId: activeTopicData?.channelId || activeChannel?.id,
         authorId: 'system',
-        authorName: 'Shinobi 共识引擎',
+        authorName: decision.rulingRecord ? 'Shinobi 仲裁法槌' : 'Shinobi 共识引擎',
         authorHandle: '@shinobi',
-        authorAvatar: '🥷',
+        authorAvatar: decision.rulingRecord ? '⚖️' : '🥷',
         isAgent: true,
-        agentBadge: 'Consensus Rollup',
+        agentBadge: decision.rulingRecord ? 'Arbiter Ruling' : 'Consensus Rollup',
         timestamp: resolvedAt,
-        content: `🎉 **议题已达成共识并解决 (Resolved & Merged)**\n\n**决策方案**：${decision.solution}\n**影响文件**：${decision.impactedFiles.join('、') || '无'}\n**签署人**：${decision.approvers.join('、')}\n\n*详细推演过程已在议题抽屉归档保存。*`,
+        content: rollupContent,
       };
 
       return {
@@ -2349,14 +3083,16 @@ export default function App() {
           delete next[key];
         }
       });
+      if (!threadId || Object.keys(next).length === 0) {
+        setIsGenerating(false);
+      }
       return next;
     });
 
+    // 重点：中止执行后 Agent 维持在线就绪状态 ('running')，绝对不能设为 'idle' (离线) 导致必须重新点击 Start
     setAgents((prev) =>
-      prev.map((a) => (agentsToReset.includes(a.id) ? { ...a, status: 'idle' } : a))
+      prev.map((a) => (agentsToReset.includes(a.id) && a.status !== 'idle' ? { ...a, status: 'running' } : a))
     );
-
-    setIsGenerating(false);
   };
 
   // Send Message in active thread
@@ -2547,7 +3283,8 @@ export default function App() {
 
     const newExecs: Record<string, ActiveAgentExecution> = {};
     respondingAgents.forEach((ag, idx) => {
-      setAgents((prev) => prev.map((a) => (a.id === ag.id ? { ...a, status: 'thinking' } : a)));
+      // 维持 Agent 在线基线状态 ('running')，具体推演任务由 activeExecutions 独立追踪
+      setAgents((prev) => prev.map((a) => (a.id === ag.id && a.status !== 'running' ? { ...a, status: 'running' } : a)));
       logRpc(ag.name, 'client_to_agent', 'session/prompt', {
         jsonrpc: '2.0',
         id: Date.now() + idx,
@@ -2927,7 +3664,7 @@ export default function App() {
       ) : (
         <>
           {/* 2. Middle Column: Channel Main Timeline & Composer (PRD Column 2) */}
-          <main className="flex-1 flex flex-col min-w-[300px] bg-canvas relative overflow-hidden transition-colors duration-150">
+          <main className="flex-1 flex flex-col min-w-[260px] bg-canvas relative overflow-hidden transition-colors duration-150">
             {activeThread && (activeThread.type === 'dm' || activeChannel) ? (
               <>
                 <ChatTimeline
@@ -2935,7 +3672,7 @@ export default function App() {
                   activeThread={activeThread}
                   channel={activeThread.type === 'dm' ? undefined : activeChannel}
                   agents={agents}
-                  activeExecutions={activeThread ? Object.values(activeExecutions).filter((e: any) => e.threadId === activeThread.id) : []}
+                  activeExecutions={Object.values(activeExecutions)}
                   onAbortAgent={(agentId) => activeThread && handleAbortAgent(agentId, activeThread.id)}
                   onAddReaction={handleAddReaction}
                   onInspectAgent={(id) => {
@@ -2973,7 +3710,7 @@ export default function App() {
                         return channelIds.has(a.id);
                       })}
                   allAgents={agents}
-                  isGenerating={isGenerating}
+                  isGenerating={isCurrentThreadGenerating}
                   channelName={activeThread.type === 'dm' ? (activeThread.authorName || 'Agent') : (activeChannel?.name || 'chat')}
                   onOpenNewTopicModal={activeThread.type === 'dm' ? undefined : () => setIsNewTopicModalOpen(true)}
                   quotingMessage={quotingMessage}

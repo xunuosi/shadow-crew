@@ -26,23 +26,31 @@ export function useResizablePanel({
   storageKey,
   panelRef: externalPanelRef,
 }: UseResizableOptions): UseResizableReturn {
-  // 1. Initialize width with localStorage cache or default
+  const getMaxWidth = useCallback(() => {
+    if (typeof maxWidth === 'function') {
+      return maxWidth();
+    }
+    return maxWidth;
+  }, [maxWidth]);
+
+  // 1. Initialize width with localStorage cache or default, clamped to valid range
   const [width, setWidthState] = useState<number>(() => {
-    if (typeof window === 'undefined') return defaultWidth;
+    const max = typeof maxWidth === 'function' ? maxWidth() : maxWidth;
+    if (typeof window === 'undefined') return Math.min(max, Math.max(minWidth, defaultWidth));
     if (storageKey) {
       try {
         const saved = localStorage.getItem(storageKey);
         if (saved) {
           const parsed = Number(saved);
           if (!isNaN(parsed) && parsed > 50) {
-            return parsed;
+            return Math.min(max, Math.max(minWidth, parsed));
           }
         }
       } catch {
         // Ignore localStorage error
       }
     }
-    return defaultWidth;
+    return Math.min(max, Math.max(minWidth, defaultWidth));
   });
 
   const internalPanelRef = useRef<HTMLElement | null>(null);
@@ -59,12 +67,22 @@ export function useResizablePanel({
     currentWidthRef.current = width;
   }, [width]);
 
-  const getMaxWidth = useCallback(() => {
-    if (typeof maxWidth === 'function') {
-      return maxWidth();
-    }
-    return maxWidth;
-  }, [maxWidth]);
+  // Synchronize with bounds when window resizes
+  useEffect(() => {
+    const handleWindowResize = () => {
+      if (isDragging) return;
+      const max = getMaxWidth();
+      if (currentWidthRef.current > max) {
+        currentWidthRef.current = max;
+        setWidthState(max);
+        if (panelRef.current) {
+          panelRef.current.style.width = `${max}px`;
+        }
+      }
+    };
+    window.addEventListener('resize', handleWindowResize);
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, [getMaxWidth, isDragging, panelRef]);
 
   // Synchronize with bounds if window resizes or default changes
   const setWidth = useCallback(

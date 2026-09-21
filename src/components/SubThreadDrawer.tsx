@@ -62,8 +62,7 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
   const { width: drawerWidth, isDragging, handlePointerDown, resetWidth, panelRef } = useResizablePanel({
     direction: 'left',
     defaultWidth: 420,
-    minWidth: 320,
-    maxWidth: () => (typeof window !== 'undefined' ? Math.max(320, Math.min(800, window.innerWidth - 320)) : 600),
+    maxWidth: () => (typeof window !== 'undefined' ? Math.max(320, Math.min(800, window.innerWidth - 260)) : 600),
     storageKey: 'shinobi_subthread_drawer_width',
   });
 
@@ -130,8 +129,12 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
     <aside
       ref={panelRef as React.RefObject<HTMLElement>}
       id="shinobi-subthread-drawer"
-      style={{ width: `${drawerWidth}px`, maxWidth: '100vw' }}
-      className="relative bg-surface border-l border-border flex flex-col shrink-0 text-xs text-fg-secondary shadow-2xl z-40"
+      style={{ 
+        width: `${drawerWidth}px`, 
+        maxWidth: 'calc(100vw - 260px)',
+        minWidth: '320px'
+      }}
+      className="relative bg-surface border-l border-border flex flex-col shrink min-w-[320px] max-sm:!fixed max-sm:!inset-0 max-sm:!w-full max-sm:!max-w-full max-sm:!z-50 text-xs text-fg-secondary shadow-2xl z-40"
     >
       <ResizeHandle
         direction="left"

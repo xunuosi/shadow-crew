@@ -237,6 +237,45 @@ export interface Channel {
 // PRD 规范：Topic 议题状态与共识决策记录
 export type TopicStatus = 'open' | 'investigating' | 'resolved';
 
+export type DiscussionMode = 'standard' | 'game_theoretic';
+
+export type GameRoleType = 'proposer' | 'challenger' | 'arbiter';
+
+export type GameTheoreticStage = 'proposal' | 'challenge' | 'defense' | 'arbitration' | 'concluded';
+
+export interface GameTheoreticState {
+  currentStage: GameTheoreticStage;
+  targetProposalMessageId?: string;
+  targetProposalContent?: string;
+  targetChallengeMessageId?: string;
+  targetChallengeContent?: string;
+  isChallengerResponded?: boolean;
+  isArbiterExempted?: boolean;
+  exemptionReason?: string;
+  quorumAlert?: string;
+}
+
+export interface GameRolesConfig {
+  proposers: string[];      // 主导者 Agent IDs
+  challengers: string[];    // 挑战者 Agent IDs
+  arbiters: string[];       // AI 仲裁者 Agent IDs
+  humanIsArbiter: boolean;  // 人类开发者本人是否担任仲裁者 (持有最终裁决法槌)
+}
+
+export type RulingDecisionType = 'adopt_proposer' | 'reject_rebuild' | 'trade_off_matrix';
+
+export interface RulingRecord {
+  decisionType: RulingDecisionType;
+  arbiterId: string;
+  arbiterName: string;
+  summary: string;
+  solution?: string;
+  tradeOffPoints?: string[];
+  impactedFiles?: string[];
+  decidedAt: string;
+  exemptionReason?: string;
+}
+
 export interface DecisionRecord {
   summary: string;
   solution: string;
@@ -251,6 +290,11 @@ export interface TopicMessageData {
   title: string;
   description?: string;
   status: TopicStatus;
+  discussionMode?: DiscussionMode;
+  gameRoles?: GameRolesConfig;
+  gameStage?: GameTheoreticStage;
+  gameTheoreticState?: GameTheoreticState;
+  rulingRecord?: RulingRecord;
   authorId: string;
   authorName: string;
   authorAvatar: string;
@@ -379,6 +423,11 @@ export interface Message {
   acpTrace?: AcpTrace;
   collaborationInfo?: CollaborationInfo;
   reactions?: MessageReaction[];
+  gameRole?: GameRoleType;
+  gameStage?: GameTheoreticStage;
+  isPending?: boolean; // 正在推演/流式输出中的临时占位卡
+  pendingHint?: string; // 实时推演/心跳动作描述提示
+  startedAt?: number; // 任务发起时间戳
   codeSnippets?: Array<{
     language: string;
     filename: string;

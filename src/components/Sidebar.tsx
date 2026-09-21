@@ -374,7 +374,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
               };
 
               const isSelected = activeThreadId === `thread-dm-${agent.id}`;
-              const isAgentActive = activeExecutions.some((e) => e.agentId === agent.id);
+              const dmThreadId = `thread-dm-${agent.id}`;
+              const isAgentActiveInThisDm = activeExecutions.some(
+                (e) => e.agentId === agent.id && e.threadId === dmThreadId
+              );
+              const isAgentActiveElsewhere = activeExecutions.some(
+                (e) => e.agentId === agent.id && e.threadId !== dmThreadId
+              );
               const isOnline = agent.status === 'running' || agent.status === 'thinking' || agent.status === 'using_skill' || agent.status === 'accessing_workspace' || agent.status === 'querying_memory';
               const isStarting = agent.status === 'starting';
               const isError = agent.status === 'error';
@@ -410,7 +416,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         }`}
                         title={
                           isOnline
-                            ? '在线 (通信已建立)'
+                            ? (isAgentActiveElsewhere ? '在线 (正在其他议题推演中 · 私聊随时可发)' : '在线 (通信已建立)')
                             : isStarting
                             ? '正在连接...'
                             : isAuth
@@ -420,8 +426,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             : '未开启通信 (离线 · 点击 Start 开启)'
                         }
                       />
-                      {isAgentActive && (
+                      {isAgentActiveInThisDm && (
                         <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 animate-ping opacity-80" />
+                      )}
+                      {!isAgentActiveInThisDm && isAgentActiveElsewhere && (
+                        <span 
+                          className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-400 animate-pulse opacity-90"
+                          title="正在其他议题推演中，私聊随时可独立发送"
+                        />
                       )}
                     </div>
                     <div className="truncate min-w-0 flex-1">
@@ -438,6 +450,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   </div>
 
                   <div className="flex items-center gap-1.5 shrink-0">
+                    {isAgentActiveElsewhere && (
+                      <span 
+                        className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-500 dark:text-amber-400 font-mono border border-amber-500/30 shrink-0 flex items-center gap-1 animate-pulse"
+                        title="该 Agent 正在议题中推演，私聊随时可独立发送"
+                      >
+                        <span className="w-1 h-1 rounded-full bg-amber-400" />
+                        推演中
+                      </span>
+                    )}
+                    {isAgentActiveInThisDm && (
+                      <span 
+                        className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 font-mono border border-emerald-500/30 shrink-0 flex items-center gap-1"
+                        title="正在当前私聊中响应"
+                      >
+                        <span className="w-1 h-1 rounded-full bg-emerald-400 animate-ping" />
+                        思考中
+                      </span>
+                    )}
                     {drafts[`dm:${agent.id}`] && (
                       <span 
                         className="text-[9px] px-1 py-0.2 rounded bg-amber-500/15 text-amber-500 dark:text-amber-400 font-mono border border-amber-500/30 shrink-0"

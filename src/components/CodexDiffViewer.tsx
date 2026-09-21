@@ -37,8 +37,7 @@ export const CodexDiffViewer: React.FC<CodexDiffViewerProps> = ({
   const { width: drawerWidth, isDragging, handlePointerDown, resetWidth, panelRef } = useResizablePanel({
     direction: 'left',
     defaultWidth: 540,
-    minWidth: 380,
-    maxWidth: () => (typeof window !== 'undefined' ? Math.max(380, Math.min(1300, window.innerWidth - 320)) : 800),
+    maxWidth: () => (typeof window !== 'undefined' ? Math.max(320, Math.min(1300, window.innerWidth - 260)) : 800),
     storageKey: 'shinobi_codex_diff_width',
   });
 
@@ -75,8 +74,12 @@ export const CodexDiffViewer: React.FC<CodexDiffViewerProps> = ({
     <aside
       ref={panelRef as React.RefObject<HTMLElement>}
       id="shinobi-codex-diff-drawer"
-      style={{ width: `${drawerWidth}px`, maxWidth: '100vw' }}
-      className="relative bg-surface border-l border-border flex flex-col shrink-0 text-xs text-fg-secondary shadow-2xl z-40 font-mono"
+      style={{ 
+        width: `${drawerWidth}px`, 
+        maxWidth: 'calc(100vw - 260px)',
+        minWidth: '320px'
+      }}
+      className="relative bg-surface border-l border-border flex flex-col shrink min-w-[320px] max-sm:!fixed max-sm:!inset-0 max-sm:!w-full max-sm:!max-w-full max-sm:!z-50 text-xs text-fg-secondary shadow-2xl z-40 font-mono"
     >
       <ResizeHandle
         direction="left"

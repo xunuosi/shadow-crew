@@ -132,10 +132,10 @@ body,
     transform: translateX(-100%);
   }
   100% {
-    transform: translateX(100%);
+    transform: translateX(300%);
   }
 }
 
 .animate-streamline {
-  animation: streamline 1.6s infinite ease-in-out;
+  animation: streamline 1.8s infinite ease-in-out;
 }

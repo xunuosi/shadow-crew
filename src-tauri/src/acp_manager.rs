@@ -436,16 +436,15 @@ impl AcpProcessManager {
                                                 let mut chunks = active_chunks_clone.lock().await;
                                                 chunks.entry(req_id).or_default().push_str(&text);
                                             }
-                                            // 触发前端细粒度 chunk 事件
+                                            // 触发前端细粒度 chunk 事件与全局通用 chunk 事件
                                             let chunk_event = format!("acp:chunk:{}", agent_id_clone);
-                                            let _ = app_handle_clone.emit(
-                                                &chunk_event,
-                                                serde_json::json!({
-                                                    "agent_id": &agent_id_clone,
-                                                    "sessionId": sess_id,
-                                                    "chunk": text
-                                                }),
-                                            );
+                                            let payload = serde_json::json!({
+                                                "agent_id": &agent_id_clone,
+                                                "sessionId": sess_id,
+                                                "chunk": text
+                                            });
+                                            let _ = app_handle_clone.emit(&chunk_event, &payload);
+                                            let _ = app_handle_clone.emit("acp:chunk", &payload);
                                         }
                                     }
                                 }
@@ -811,6 +810,16 @@ impl AcpProcessManager {
             agent.is_alive.store(false, Ordering::SeqCst);
             anyhow::bail!("Failed to write to agent stdin channel: {}", e);
         }
+
+        // 关键修复：重置 agent.last_activity 为当前发送时间戳！
+        // 只有在当前轮次发出 prompt 之后、Agent 没有任何 stdout 吐字/日志的持续空闲时间，
+        // 才能被计入空闲超时。若不重置，当 Agent 两次对话之间停顿超过 idle_timeout (默认 300s) 时，
+        // 等待循环在第 1 帧就会把“两轮对话之间的用户/系统静默时间”误判为“当前轮次响应超时”，导致毫秒级闪退假告警。
+        let prompt_start_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        agent.last_activity.store(prompt_start_ms, Ordering::Relaxed);
 
         // 4. 等待 Agent 响应 (对标 Buzz 架构: 动态空闲超时 300s~1500s + 最大硬上限 1800s)
         // 允许通过环境变量 SHADOW_CREW_ACP_IDLE_TIMEOUT 与 SHADOW_CREW_ACP_MAX_DURATION 动态配置

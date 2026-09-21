@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Agent, Channel, TopicMessageData } from '../types';
-import { X, Save, Bot, Check, GitBranch, Maximize2, Minimize2, Edit3 } from 'lucide-react';
+import { Agent, Channel, TopicMessageData, DiscussionMode, GameRolesConfig, GameRoleType } from '../types';
+import { X, Save, Bot, Check, GitBranch, Maximize2, Minimize2, Edit3, Swords, Scale, Sparkles } from 'lucide-react';
 import { ResizeHandle } from './ResizeHandle';
 
 interface EditTopicModalProps {
@@ -15,6 +15,8 @@ interface EditTopicModalProps {
       title: string;
       description: string;
       assignedAgentIds: string[];
+      discussionMode?: DiscussionMode;
+      gameRoles?: GameRolesConfig;
     }
   ) => void;
 }
@@ -30,6 +32,9 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
+  const [discussionMode, setDiscussionMode] = useState<DiscussionMode>('standard');
+  const [agentRoles, setAgentRoles] = useState<Record<string, GameRoleType>>({});
+  const [humanIsArbiter, setHumanIsArbiter] = useState<boolean>(true);
   const prevTopicIdRef = useRef<string | null>(null);
 
   // 当弹窗打开或 topic 变更时预填表单
@@ -38,6 +43,16 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
       setTitle(topic.title || '');
       setDescription(topic.description || '');
       setSelectedAgentIds(topic.participatingAgentIds || []);
+      setDiscussionMode(topic.discussionMode || 'standard');
+      setHumanIsArbiter(topic.gameRoles?.humanIsArbiter ?? true);
+
+      const roles: Record<string, GameRoleType> = {};
+      if (topic.gameRoles) {
+        (topic.gameRoles.proposers || []).forEach((id) => { roles[id] = 'proposer'; });
+        (topic.gameRoles.challengers || []).forEach((id) => { roles[id] = 'challenger'; });
+        (topic.gameRoles.arbiters || []).forEach((id) => { roles[id] = 'arbiter'; });
+      }
+      setAgentRoles(roles);
       prevTopicIdRef.current = topic.id;
     }
   }, [isOpen, topic?.id]);
@@ -137,12 +152,26 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) return;
+    if (!title.trim() || !topic) return;
+
+    const isGame = discussionMode === 'game_theoretic';
+    const proposers = selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'proposer');
+    const challengers = selectedAgentIds.filter((id) => agentRoles[id] === 'challenger');
+    const arbiters = selectedAgentIds.filter((id) => agentRoles[id] === 'arbiter');
 
     onUpdateTopic(topic.id, {
       title: title.trim(),
       description: description.trim(),
       assignedAgentIds: selectedAgentIds,
+      discussionMode,
+      gameRoles: isGame
+        ? {
+            proposers,
+            challengers,
+            arbiters,
+            humanIsArbiter,
+          }
+        : undefined,
     });
 
     onClose();
@@ -152,7 +181,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
       <div 
         style={{ width: `${modalWidth}px`, maxWidth: '95vw' }}
-        className={`relative bg-surface border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col text-xs text-fg-secondary ${
+        className={`relative bg-surface border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col text-xs text-fg-secondary max-h-[90vh] ${
           isDraggingEdge ? '' : 'transition-[width] duration-150'
         }`}
       >
@@ -175,7 +204,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
         />
 
         {/* Header */}
-        <div className="h-12 px-5 border-b border-border flex items-center justify-between bg-surface-subtle select-none">
+        <div className="h-12 px-5 border-b border-border flex items-center justify-between bg-surface-subtle select-none shrink-0">
           <div className="flex items-center gap-2.5 min-w-0 flex-1 mr-2">
             <div className="w-7 h-7 rounded-lg bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-600 dark:text-purple-300 shrink-0">
               <Edit3 className="w-4 h-4" />
@@ -183,7 +212,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
             <div className="min-w-0 flex-1">
               <h2 className="font-bold text-fg text-sm truncate">编辑议题信息 (Edit Topic)</h2>
               <p className="text-[10px] text-fg-muted font-mono truncate">
-                {channel ? `#${channel.name} · ` : ''}ID: {topic.id}
+                {channel ? `#${channel.name} · ` : ''}ID: {topic ? topic.id : ''}
               </p>
             </div>
           </div>
@@ -216,7 +245,65 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+        <form onSubmit={handleSubmit} className="p-5 space-y-4 overflow-y-auto flex-1">
+          {/* Discussion Mode Selector */}
+          <div>
+            <label className="block text-xs font-semibold text-fg mb-1.5 flex items-center justify-between">
+              <span>讨论模式选择</span>
+              <span className="text-[10px] text-fg-muted font-normal">
+                {discussionMode === 'game_theoretic' ? '♟️ 主导/挑战/仲裁三元攻防' : '💬 轮流自由发言推演'}
+              </span>
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setDiscussionMode('standard')}
+                className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                  discussionMode === 'standard'
+                    ? 'bg-purple-500/10 border-purple-500/50 text-fg shadow-xs ring-1 ring-purple-500/20'
+                    : 'bg-surface-subtle border-border hover:bg-surface-hover text-fg-secondary'
+                }`}
+              >
+                <div className={`p-1.5 rounded-lg shrink-0 mt-0.5 ${
+                  discussionMode === 'standard' ? 'bg-purple-500/20 text-purple-600 dark:text-purple-300' : 'bg-surface text-fg-muted'
+                }`}>
+                  <Sparkles className="w-3.5 h-3.5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
+                    <span>标准协作模式</span>
+                    {discussionMode === 'standard' && <Check className="w-3 h-3 text-purple-500 stroke-[2.5]" />}
+                  </div>
+                  <p className="text-[10px] text-fg-muted mt-0.5 leading-snug">自由轮流发言，适合日常头脑风暴与轻量交流</p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setDiscussionMode('game_theoretic')}
+                className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                  discussionMode === 'game_theoretic'
+                    ? 'bg-amber-500/10 border-amber-500/50 text-fg shadow-xs ring-1 ring-amber-500/20'
+                    : 'bg-surface-subtle border-border hover:bg-surface-hover text-fg-secondary'
+                }`}
+              >
+                <div className={`p-1.5 rounded-lg shrink-0 mt-0.5 ${
+                  discussionMode === 'game_theoretic' ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : 'bg-surface text-fg-muted'
+                }`}>
+                  <Swords className="w-3.5 h-3.5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
+                    <span>博弈讨论模式</span>
+                    <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-mono">推荐</span>
+                    {discussionMode === 'game_theoretic' && <Check className="w-3 h-3 text-amber-500 stroke-[2.5]" />}
+                  </div>
+                  <p className="text-[10px] text-fg-muted mt-0.5 leading-snug">主导-挑战-仲裁三元攻防，高保真架构决策</p>
+                </div>
+              </button>
+            </div>
+          </div>
+
           {/* Topic Title */}
           <div>
             <label className="block text-xs font-semibold text-fg mb-1.5">
@@ -244,7 +331,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
               推演目标 / 需求说明
             </label>
             <textarea
-              rows={4}
+              rows={3}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="简要描述核心痛点、技术约束或需要协同 Agent 解决的问题..."
@@ -252,11 +339,47 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
             />
           </div>
 
+          {/* Game-Theoretic: Human Arbiter Privilege Toggle */}
+          {discussionMode === 'game_theoretic' && (
+            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                <div className="w-7 h-7 rounded-lg bg-amber-500/20 flex items-center justify-center text-amber-600 dark:text-amber-400 shrink-0">
+                  <Scale className="w-4 h-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
+                    <span>👤 我自己担任中立仲裁者 (持有最终裁决法槌)</span>
+                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-mono">
+                      终审特权
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-fg-muted mt-0.5 leading-snug">
+                    观战攻防推演，专属仲裁法槌，可随时敲锤采纳主导、驳回重构或生成权衡矩阵。
+                  </p>
+                </div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={humanIsArbiter}
+                  onChange={(e) => setHumanIsArbiter(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-border after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-600"></div>
+              </label>
+            </div>
+          )}
+
           {/* Participating Agents Checkbox List */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-semibold text-fg">
-                指派协同推演 Agent <span className="text-[10px] text-fg-muted font-normal">(受限于所属频道已准入成员)</span>
+              <label className="text-xs font-semibold text-fg flex items-center gap-1.5">
+                <span>指派协同推演 Agent</span>
+                {discussionMode === 'game_theoretic' && (
+                  <span className="text-[10px] text-amber-600 dark:text-amber-400 font-normal">
+                    (可为各 Agent 指派三元博弈角色)
+                  </span>
+                )}
               </label>
               <span className="text-[10px] text-fg-muted font-mono">
                 已选中 {selectedAgentIds.length} / {agents.length} 位
@@ -277,42 +400,85 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
               <div className={`grid ${modalWidth >= 520 ? 'grid-cols-2' : 'grid-cols-1'} gap-2 max-h-56 overflow-y-auto overflow-x-hidden pr-1.5 p-0.5`}>
                 {agents.map((agent) => {
                   const isSelected = selectedAgentIds.includes(agent.id);
+                  const currentRole = agentRoles[agent.id] || 'proposer';
                   return (
                     <div
                       key={agent.id}
                       onClick={() => toggleAgent(agent.id)}
-                      className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer select-none min-w-0 ${
+                      className={`flex flex-col p-2.5 rounded-xl border transition-all cursor-pointer select-none min-w-0 ${
                         isSelected
-                          ? 'bg-purple-500/10 border-purple-500/40 text-fg shadow-2xs'
+                          ? discussionMode === 'game_theoretic'
+                            ? currentRole === 'proposer'
+                              ? 'bg-blue-500/5 border-blue-500/40 text-fg shadow-2xs'
+                              : currentRole === 'challenger'
+                              ? 'bg-rose-500/5 border-rose-500/40 text-fg shadow-2xs'
+                              : 'bg-purple-500/5 border-purple-500/40 text-fg shadow-2xs'
+                            : 'bg-purple-500/10 border-purple-500/40 text-fg shadow-2xs'
                           : 'bg-surface-subtle border-border hover:bg-surface-hover text-fg-secondary'
                       }`}
                     >
-                      <div className="flex items-center gap-2.5 min-w-0 flex-1 mr-2">
-                        <span className="text-base shrink-0 select-none">{agent.avatar}</span>
-                        <div className="min-w-0 flex-1 flex flex-col justify-center">
-                          <div className="font-semibold text-xs text-fg flex items-center gap-1.5 min-w-0">
-                            <span className="truncate">{agent.name}</span>
-                            {agent.isManagedByYou && (
-                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-600 dark:text-purple-300 border border-purple-500/30 font-mono shrink-0 select-none leading-none">
-                                影替身
-                              </span>
-                            )}
+                      <div className="flex items-center justify-between min-w-0">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1 mr-2">
+                          <span className="text-base shrink-0 select-none">{agent.avatar}</span>
+                          <div className="min-w-0 flex-1 flex flex-col justify-center">
+                            <div className="font-semibold text-xs text-fg flex items-center gap-1.5 min-w-0">
+                              <span className="truncate">{agent.name}</span>
+                              {agent.isManagedByYou && (
+                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-600 dark:text-purple-300 border border-purple-500/30 font-mono shrink-0 select-none leading-none">
+                                  影替身
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[10px] text-fg-muted truncate flex items-center gap-1 mt-0.5">
+                              <span className="font-mono text-fg-muted/80 shrink-0">{agent.handle}</span>
+                              <span className="text-fg-muted/40 shrink-0 select-none">•</span>
+                              <span className="truncate">{agent.role}</span>
+                            </div>
                           </div>
-                          <div className="text-[10px] text-fg-muted truncate flex items-center gap-1 mt-0.5">
-                            <span className="font-mono text-fg-muted/80 shrink-0">{agent.handle}</span>
-                            <span className="text-fg-muted/40 shrink-0 select-none">•</span>
-                            <span className="truncate">{agent.role}</span>
-                          </div>
+                        </div>
+
+                        <div className={`w-4 h-4 rounded-md border flex items-center justify-center shrink-0 transition-colors ${
+                          isSelected
+                            ? 'bg-purple-600 border-purple-600 text-white'
+                            : 'border-border bg-surface'
+                        }`}>
+                          {isSelected && <Check className="w-3 h-3 stroke-[2.5]" />}
                         </div>
                       </div>
 
-                      <div className={`w-4 h-4 rounded-md border flex items-center justify-center shrink-0 transition-colors ${
-                        isSelected
-                          ? 'bg-purple-600 border-purple-600 text-white'
-                          : 'border-border bg-surface'
-                      }`}>
-                        {isSelected && <Check className="w-3 h-3 stroke-[2.5]" />}
-                      </div>
+                      {/* Game-Theoretic: Per-Agent Role Switcher */}
+                      {discussionMode === 'game_theoretic' && isSelected && (
+                        <div
+                          className="flex items-center gap-1 mt-2 pt-1.5 border-t border-border/40"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <span className="text-[10px] text-fg-muted shrink-0 mr-1 font-mono">博弈角色:</span>
+                          {(['proposer', 'challenger', 'arbiter'] as GameRoleType[]).map((r) => {
+                            const isCurrent = currentRole === r;
+                            const label = r === 'proposer' ? '🏛️ 主导' : r === 'challenger' ? '⚔️ 挑战' : '⚖️ 仲裁';
+                            const activeStyle =
+                              r === 'proposer'
+                                ? 'bg-blue-500/20 text-blue-600 dark:text-blue-300 border-blue-500/50 font-semibold'
+                                : r === 'challenger'
+                                ? 'bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/50 font-semibold'
+                                : 'bg-purple-500/20 text-purple-600 dark:text-purple-300 border-purple-500/50 font-semibold';
+                            return (
+                              <button
+                                key={r}
+                                type="button"
+                                onClick={() => setAgentRoles((prev) => ({ ...prev, [agent.id]: r }))}
+                                className={`text-[10px] px-1.5 py-0.5 rounded-md border transition-all cursor-pointer ${
+                                  isCurrent
+                                    ? activeStyle
+                                    : 'bg-surface-subtle text-fg-muted border-border hover:bg-surface-hover hover:text-fg'
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -321,7 +487,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
           </div>
 
           {/* Buttons */}
-          <div className="flex items-center justify-end gap-2 pt-2 border-t border-border mt-2">
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-border mt-2 shrink-0">
             <button
               type="button"
               onClick={onClose}

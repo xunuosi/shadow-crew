@@ -16,6 +16,9 @@ export interface AcpAgentResponse {
   workspaceDiffs?: Array<{ filename: string; diff: string; additions: number; deletions: number }>;
   durationMs: number;
   isRealProcess: boolean;
+  isEmptyTurn?: boolean;
+  isError?: boolean;
+  stopReason?: string;
   raw?: any;
 }
 
@@ -466,13 +469,13 @@ export async function sendPromptToAcpAgent(
       // 解析 JSON-RPC 2.0 返回格式
       if (response && response.result) {
         const res = response.result;
-        const text =
-          res.text_response ||
-          (res.stopReason
-            ? `【${agent.name}】ACP 任务已完成 (stopReason: ${res.stopReason})`
-            : JSON.stringify(res));
+        const rawText = res.text_response || '';
+        const isEmpty = !rawText.trim();
+        const text = rawText || (res.stopReason ? `【${agent.name}】ACP 任务已完成 (stopReason: ${res.stopReason})` : JSON.stringify(res));
         return {
           textResponse: text,
+          isEmptyTurn: isEmpty,
+          stopReason: res.stopReason,
           memoryActions: res.memory_actions || [],
           cartridgeCitation: citation,
           workspaceDiffs: res.workspace_diffs || [],
@@ -524,6 +527,7 @@ export async function sendPromptToAcpAgent(
           cartridgeCitation: citation,
           durationMs,
           isRealProcess: true,
+          isError: true,
           raw: response,
         };
       }

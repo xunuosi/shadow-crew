@@ -1,4 +1,4 @@
-import { Agent } from '../types';
+import { Agent, DiscussionMode, GameRolesConfig, GameRoleType } from '../types';
 
 export interface CollaborationCascade {
   cascadeId: string;
@@ -167,8 +167,24 @@ export interface TopicPromptContext {
   description?: string;
   channelName?: string;
   status?: string;
+  discussionMode?: DiscussionMode;
+  gameRoles?: GameRolesConfig;
+  gameStage?: GameTheoreticStage;
+  targetProposalText?: string;
+  targetChallengeText?: string;
   participatingAgents?: Agent[];
   recentHistory?: Array<{ author: string; content: string; isAgent?: boolean }>;
+}
+
+/**
+ * 获取 Agent 在三元博弈中的角色定位
+ */
+export function getAgentGameRole(agentId: string, gameRoles?: GameRolesConfig): GameRoleType | null {
+  if (!gameRoles) return null;
+  if ((gameRoles.proposers || []).includes(agentId)) return 'proposer';
+  if ((gameRoles.challengers || []).includes(agentId)) return 'challenger';
+  if ((gameRoles.arbiters || []).includes(agentId)) return 'arbiter';
+  return null;
 }
 
 /**
@@ -203,9 +219,67 @@ export function buildTopicPrompt(options: {
     ? topic.description.trim()
     : '（创建者未填写额外背景说明，请紧密围绕议题标题进行专业技术方案推演）';
 
+  let gameModeDirective = '';
+  if (topic.discussionMode === 'game_theoretic' && topic.gameRoles) {
+    const role = getAgentGameRole(targetAgent.id, topic.gameRoles);
+    const stage = topic.gameStage || (role === 'proposer' ? 'proposal' : role === 'challenger' ? 'challenge' : 'arbitration');
+
+    if (role === 'proposer') {
+      if (stage === 'defense') {
+        gameModeDirective = `\n\n【博弈编排 - 🏛️ 阶段 3: 主导者答辩与防御修正 (Defense)】:
+挑战者已对你的主导方案提出针对性反例与边界质询（见下方【挑战者反例质询】）。
+请针对挑战者指出的并发/极端场景进行针对性答辩：
+1. 若挑战有效，提供架构补丁防御设计、降级方案或代码修正；
+2. 若挑战存在前提误解，基于代码事实与确定性逻辑给出技术抗辩。
+无需在正文 @ 任何人，平台状态机将自动汇总攻防论据并提交仲裁。
+
+【挑战者反例质询 (攻击靶点)】:
+<<<CHALLENGER_CRITIQUE_START>>>
+${topic.targetChallengeText || '（详见前序讨论脉络中的挑战者发言）'}
+<<<CHALLENGER_CRITIQUE_END>>>`;
+      } else {
+        gameModeDirective = `\n\n【博弈编排 - 🏛️ 阶段 1: 主导方案立论起草 (Proposer)】:
+你是本议题的主导方案提出者。请基于议题目标与需求，设计全局架构首选技术方案，明确关键选型、核心接口、组件拆分与设计假设。
+注意：你的方案落库后将被平台直接递交至批判性挑战者进行极限反例压测，请尽可能清晰完备地陈述方案逻辑与潜在风险边界。无需在正文 @ 任何人，平台状态机将自动递交方案。`;
+      }
+    } else if (role === 'challenger') {
+      gameModeDirective = `\n\n【博弈编排 - ⚔️ 阶段 2: 方案反例压测与反向质询 (Challenger)】:
+你是本议题的批判性挑战者。主导者已提交初始方案（见下方【攻击标的方案】）。
+【作战守则】:
+坚决执行对抗性挑错，寻找隐藏假设漏洞、极端并发死锁、网络抖动失效场景或过度设计问题。严禁盲目附和与套话认同！
+请必须遵循以下四段论输出结构：
+1. [质疑靶点]: 明确指出主导方案中的具体选型、代码设计或逻辑假设；
+2. [失效反例]: 构造具体的极端工况、恶意并发、故障注入或边界数据场景；
+3. [连锁反应]: 推演在此场景下系统为何崩溃、数据如何失真；
+4. [防御检验]: 要求主导者提供补丁防御设计或实证说明。
+无需在正文 @ 任何人，平台将自动流转至抗辩/仲裁阶段。
+
+【被质询主导方案 (攻击标的)】:
+<<<PROPOSER_SOLUTION_START>>>
+${topic.targetProposalText || '（暂未提取到前序主导方案，请围绕前序讨论脉络展开边界质询）'}
+<<<PROPOSER_SOLUTION_END>>>`;
+    } else if (role === 'arbiter') {
+      gameModeDirective = `\n\n【博弈编排 - ⚖️ 阶段 3: 中立仲裁与权衡矩阵起草 (Arbiter)】:
+你是本议题的中立仲裁者。主导方案与挑战反例已就绪。
+【仲裁守则】:
+保持客观公正，依据可行性、健壮性与 ROI：
+1. 梳理双方分歧焦点与核心论据；
+2. 输出客观的《架构决策权衡矩阵 (Trade-off Matrix)》；
+3. 给出建议采纳方案或重构要求（若人类开发者持有最终裁决法槌，你的分析将作为定案的核心依据）。
+无需在正文 @ 任何人。
+
+【主导方案】:
+${topic.targetProposalText || '详见前序脉络'}
+
+【挑战反例】:
+${topic.targetChallengeText || '详见前序脉络'}`;
+    }
+  }
+
   return `[📌 议题研讨推演任务 (Topic Discussion Context)]
 【所属频道】: #${topic.channelName || '频道'}
 【议题编号】: ${topic.topicId}
+【议题模式】: ${topic.discussionMode === 'game_theoretic' ? '♟️ 博弈讨论模式 (三元制衡：主导/挑战/仲裁)' : '标准研讨模式'}
 【议题标题】: ${topic.title}
 【议题背景与需求目标】:
 ${topicDesc}
@@ -213,6 +287,7 @@ ${topicDesc}
 ${historySection}
 【用户开题 / 本轮诉求指令】:
 "${userContent}"
+${gameModeDirective}
 
 请以你的专业角色定位【${targetAgent.name} (${targetAgent.handle}) · ${targetAgent.role}】针对上述议题目标与用户诉求展开技术推演与方案陈述。`;
 }
@@ -248,30 +323,49 @@ export function buildCascadePrompt(options: BuildCascadePromptOptions): string {
   } = options;
 
   const currentHop = cascade.depth + 1;
+  const isGameTheoretic = topic?.discussionMode === 'game_theoretic';
   const peers = availableAgents.filter((a) => a.id !== targetAgent.id);
   const peerList =
     peers.length > 0
-      ? `\n\n[💡 协同收敛指引：若完成本轮推演/审查后方案已成熟收敛或各方达成共识，请直接给出最终落地结论，**切勿 @ 任何人**（没有 @ 即代表协同圆满收敛完成）；若确实需要其他特定专家继续提供不可或缺的实质性增量，可精准 @ 对应成员：${peers.map((p) => p.handle).join(', ')}]`
+      ? (isGameTheoretic
+          ? `\n\n[💡 博弈编排协议：当前议题处于主导-挑战-仲裁三元制衡流转中，方案提交后平台协调器将自动按协议推动下一阶段，无需在正文手动 @ 任何人]`
+          : `\n\n[💡 协同收敛指引：若完成本轮推演/审查后方案已成熟收敛或各方达成共识，请直接给出最终落地结论，**切勿 @ 任何人**（没有 @ 即代表协同圆满收敛完成）；若确实需要其他特定专家继续提供不可或缺的实质性增量，可精准 @ 对应成员：${peers.map((p) => p.handle).join(', ')}]`)
       : '';
 
   const topicHeader = topic
-    ? `【所属议题】: 【${topic.title}】 (ID: ${topic.topicId})\n【议题背景与目标】:\n${topic.description?.trim() || topic.title}\n\n`
+    ? `【所属议题】: 【${topic.title}】 (ID: ${topic.topicId})\n【议题模式】: ${topic.discussionMode === 'game_theoretic' ? '♟️ 博弈讨论模式' : '标准研讨模式'}\n【议题背景与目标】:\n${topic.description?.trim() || topic.title}\n\n`
     : '';
 
+  let gameRoleAddon = '';
+  if (topic?.discussionMode === 'game_theoretic' && topic.gameRoles) {
+    const role = getAgentGameRole(targetAgent.id, topic.gameRoles);
+    if (role === 'proposer') {
+      gameRoleAddon = `\n【你的博弈定位】: 🏛️ 主导者 (Proposer)。请主导技术方案的架构设计与关键路径，并就挑战者提出的质疑进行技术抗辩与落地修正。无需手动 @，平台将自动流转。`;
+    } else if (role === 'challenger') {
+      gameRoleAddon = `\n【你的博弈定位】: ⚔️ 挑战者 (Challenger)。请执行对抗性挑错，寻找极端边界缺陷与隐藏风险，拒绝盲目认同。无需手动 @，平台将自动流转。`;
+    } else if (role === 'arbiter') {
+      gameRoleAddon = `\n【你的博弈定位】: ⚖️ 中立仲裁者 (Arbiter)。请评估主导与挑战双方论据，提炼权衡矩阵，提供公正客观的仲裁裁决建议。无需手动 @。`;
+    }
+  }
+
   // 区分：是由前序 Agent 显式点名请求代码审查，还是由用户 @all / 批量点名排队顺延陈述
+  const conclusionTip = isGameTheoretic
+    ? '若当前阶段方案或反例已输出完毕，直接输出专业分析（平台协调器将按协议自动推动下一阶段，无需手动 @）'
+    : '若方案已完备或形成最终共识，直接输出收敛结论（切勿 @ 任何人，以使协同自然交付结题）；仅在确实需要特定成员接力时才 @ 对应成员';
+
   const requestSection = isQueuedByUserInput
     ? `【多智能体协同陈述 (用户排队协作)】:
 用户在上述讨论中同时指派了多位成员共同陈述观点。
-前序成员 (${invokingAgent.name}) 已完成其视角阐述（见上方结论）。现请基于你的专属角色定位（${targetAgent.role}${targetAgent.description ? ` - ${targetAgent.description}` : ''}）：
+前序成员 (${invokingAgent.name}) 已完成其视角阐述（见上方结论）。现请基于你的专属角色定位（${targetAgent.role}${targetAgent.description ? ` - ${targetAgent.description}` : ''}）：${gameRoleAddon}
 1. 独立给出你针对该议题的技术方案或观点，提供具有非显而易见增量价值的专业视角；
 2. 结合前序成员的结论进行必要的差异对比或补充；严禁纯客套的裸确认（如「收到/已对齐」）；
-3. 若方案已完备或形成最终共识，直接输出收敛结论（切勿 @ 任何人，以使协同自然交付结题）；仅在确实需要特定成员接力时才 @ 对应成员。`
+3. ${conclusionTip}。`
     : `【对你的协作诉求】:
 ${invokingAgent.name} 在上述方案中点名了你 (${targetAgent.handle}) 请求技术审查与协作。
-请基于你的专属角色定位（${targetAgent.role}${targetAgent.description ? ` - ${targetAgent.description}` : ''}）：
+请基于你的专属角色定位（${targetAgent.role}${targetAgent.description ? ` - ${targetAgent.description}` : ''}）：${gameRoleAddon}
 1. 对上述方案进行针对性技术审查与可行性评估，指出潜在风险与优化点；
 2. 提供实质性技术增量或落地实现步骤，严禁仅做「收到/已对齐」的裸确认；
-3. 若方案已成熟收敛达成共识，请直接总结最终结论（切勿 @ 任何人，以使协同自然交付完成）；若仍需其他特定专家介入，才精准 @ 对应成员。`;
+3. ${conclusionTip}。`;
 
   return `[🤝 团队协同协作请求 (第 ${currentHop}/${cascade.maxDepth} 轮接力)]
 
