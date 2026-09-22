@@ -563,7 +563,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         maxWidth: 'calc(100vw - 260px)',
         minWidth: '320px'
       }}
-      className="relative bg-surface border-l border-border flex flex-col shrink min-w-[320px] max-sm:!fixed max-sm:!inset-0 max-sm:!w-full max-sm:!max-w-full max-sm:!z-50 text-xs text-fg-secondary shadow-2xl z-40"
+      className="relative bg-surface border-l border-border flex flex-col shrink-0 min-w-[320px] max-sm:!fixed max-sm:!inset-0 max-sm:!w-full max-sm:!max-w-full max-sm:!z-50 text-xs text-fg-secondary shadow-2xl z-40"
     >
       {/* Draggable Left Resize Handle */}
       <ResizeHandle
@@ -574,7 +574,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         title="拖动调整议题抽屉宽度，双击恢复默认"
       />
       {/* 1. Drawer Header */}
-      <div className="min-h-[52px] py-2 px-3 sm:px-4 border-b border-border flex items-center justify-between bg-surface-subtle select-none shrink-0 gap-2">
+      <div className="h-12 px-3 sm:px-4 border-b border-border flex items-center justify-between bg-surface-subtle select-none shrink-0 gap-2">
         <div className="flex items-center gap-2 truncate min-w-0 flex-1">
           <div className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 ${
             topic.discussionMode === 'game_theoretic'
@@ -891,7 +891,11 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                         </span>
                       ) : msg.agentBadge ? (
                         <span
-                          className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-600 dark:text-purple-300 font-mono border border-purple-500/30 truncate max-w-[180px] shrink-0"
+                          className={`text-[9px] px-1.5 py-0.5 rounded font-mono border truncate max-w-[180px] shrink-0 font-medium ${
+                            msg.agentBadge === 'Gavel Ready'
+                              ? 'bg-amber-500/20 text-amber-800 dark:text-amber-200 border-amber-500/40 font-semibold'
+                              : 'bg-purple-500/15 text-purple-600 dark:text-purple-300 border-purple-500/30'
+                          }`}
                           title={msg.agentBadge}
                         >
                           {msg.agentBadge}
@@ -1197,13 +1201,13 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           )
         ) : topic.discussionMode === 'game_theoretic' ? (
           (topic.gameRoles?.humanIsArbiter ?? true) ? (
-            <div className="space-y-2 p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30">
+            <div className="space-y-2 p-2.5 rounded-xl bg-amber-50/90 dark:bg-amber-950/25 border border-amber-300/80 dark:border-amber-700/50 shadow-xs">
               <div className="flex items-center justify-between text-[11px]">
-                <div className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
-                  <Gavel className="w-3.5 h-3.5 text-amber-500" />
+                <div className="flex items-center gap-1.5 font-bold text-amber-950 dark:text-amber-100">
+                  <Gavel className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                   <span>仲裁者专属法槌控制台 (Arbiter's Gavel)</span>
                 </div>
-                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30">
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-amber-600 dark:bg-amber-500 text-white font-bold shadow-2xs flex items-center gap-1 tracking-tight">
                   👑 单向定案权
                 </span>
               </div>

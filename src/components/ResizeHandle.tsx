@@ -24,10 +24,10 @@ export const ResizeHandle: React.FC<ResizeHandleProps> = ({
       title={title}
       onPointerDown={onPointerDown}
       onDoubleClick={onDoubleClick}
-      className={`absolute top-0 bottom-0 z-30 flex items-center justify-center cursor-col-resize group select-none transition-colors duration-150 touch-none ${
+      className={`absolute top-0 bottom-0 z-50 flex items-center justify-center cursor-col-resize group select-none transition-colors duration-150 touch-none ${
         direction === 'left'
-          ? '-left-1.5 w-3 hover:bg-accent/10 active:bg-accent/20'
-          : '-right-1.5 w-3 hover:bg-accent/10 active:bg-accent/20'
+          ? '-left-2.5 w-5 hover:bg-accent/10 active:bg-accent/20'
+          : '-right-2.5 w-5 hover:bg-accent/10 active:bg-accent/20'
       } ${isDragging ? 'bg-accent/20' : ''} ${className}`}
     >
       {/* Visual Indicator Line */}

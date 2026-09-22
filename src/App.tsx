@@ -485,6 +485,8 @@ export default function App() {
   // 对标 Buzz: 记录每个会话/房间与 Agent 之间的立足上下文 (Standing Context) 交付状态
   // 保证整套平台公约与团队花名册只在 Session 建立时/第 1 轮传递，后续日常交互均为纯净指令
   const deliveredStandingContextRef = useRef<Set<string>>(new Set());
+  // 记录正在执行中的三元博弈阶段交接，杜绝并发重入与重复下发 Prompt
+  const inFlightHandoverRef = useRef<Set<string>>(new Set());
 
   const currentUserId = 'user-norris';
 
@@ -1940,6 +1942,13 @@ export default function App() {
     const currentTopic = getTopicData(topicId);
     if (!currentTopic || currentTopic.status === 'resolved') return;
 
+    const handoverKey = `${topicId}:${nextStage}`;
+    if (inFlightHandoverRef.current.has(handoverKey)) {
+      console.warn(`[GameTheoretic] Handover for ${handoverKey} is already in-flight, skipping duplicate trigger.`);
+      return;
+    }
+    inFlightHandoverRef.current.add(handoverKey);
+
     const topicChannel = channels.find((c) => c.id === currentTopic.channelId) || activeChannel;
     const channelAgents = (topicChannel?.assignedAgentIds || [])
       .map((id) => agentsRef.current.find((a) => a.id === id))
@@ -1954,6 +1963,7 @@ export default function App() {
       const challengerAgent = candidateAgents.find((a) => challengerIds.includes(a.id));
 
       if (!challengerAgent) {
+        inFlightHandoverRef.current.delete(handoverKey);
         updateTopicDataInState(topicId, (old) => ({
           ...old,
           gameStage: 'arbitration',
@@ -1988,6 +1998,7 @@ export default function App() {
       }
 
       if (challengerAgent.status === 'idle') {
+        inFlightHandoverRef.current.delete(handoverKey);
         updateTopicDataInState(topicId, (old) => ({
           ...old,
           gameStage: 'arbitration',
@@ -2245,6 +2256,8 @@ export default function App() {
             quorumAlert: `制衡方 (${challengerAgent.name}) 反例压测异常：${err instanceof Error ? err.message : String(err)}`,
           },
         }));
+      } finally {
+        inFlightHandoverRef.current.delete(handoverKey);
       }
       return;
     }
@@ -2252,6 +2265,10 @@ export default function App() {
     if (nextStage === 'arbitration') {
       const arbiterIds = currentTopic.gameRoles?.arbiters || [];
       const arbiterAgent = candidateAgents.find((a) => arbiterIds.includes(a.id));
+
+      if (!arbiterAgent || arbiterAgent.status === 'idle') {
+        inFlightHandoverRef.current.delete(handoverKey);
+      }
 
       if (arbiterAgent && arbiterAgent.status !== 'idle') {
         const execKey = `${topicId}:${arbiterAgent.id}`;
@@ -2337,6 +2354,10 @@ export default function App() {
             return next;
           });
 
+          if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
+            throw new Error(acpResp.isError ? acpResp.textResponse : '仲裁者返回空响应，未生成有效仲裁建言。');
+          }
+
           const arbiterReply: Message = {
             id: `topic-reply-${Date.now()}-${arbiterAgent.id}`,
             threadId: topicId,
@@ -2373,7 +2394,7 @@ export default function App() {
             isAgent: true,
             agentBadge: 'Gavel Ready',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `⚖️ **AI 仲裁建言已生成**：立论与制衡反例要点已完成裁决审查。请人类首席仲裁官查阅双方交锋要点，点击抽屉右上角【法槌/裁决定案】敲响法槌签署仲裁裁决书。`,
+            content: `⚖️ **AI 仲裁建言已生成**：立论与制衡反例要点已完成裁决审查。请人类首席仲裁官查阅双方交锋要点，在下方【仲裁法槌控制台】选择【采纳主导】、【采纳挑战】或【权衡矩阵】敲响法槌定案。`,
           };
 
           setMessages((prev) => {
@@ -2419,10 +2440,47 @@ export default function App() {
             return next;
           });
           console.error('AI Arbiter execution failed:', err);
-          setMessages((prev) => ({
-            ...prev,
-            [topicId]: (prev[topicId] || []).filter((m) => m.id !== arbiterPendingId),
-          }));
+
+          const errorMsg: Message = {
+            id: `topic-reply-err-${Date.now()}-${arbiterAgent.id}`,
+            threadId: topicId,
+            channelId: topicChannel?.id,
+            authorId: arbiterAgent.id,
+            authorName: arbiterAgent.name,
+            authorHandle: arbiterAgent.handle,
+            authorAvatar: arbiterAgent.avatar,
+            isAgent: true,
+            agentBadge: 'Arbiter Error',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `⚠️ **仲裁推演异常**：${err instanceof Error ? err.message : String(err)}\n\n人类首席仲裁官可查看上方交锋内容，执行具名豁免后直接落槌。`,
+            gameStage: 'arbitration',
+            gameRole: 'arbiter',
+          };
+
+          const humanNotice: Message = {
+            id: `msg-human-gavel-notice-${Date.now()}`,
+            threadId: topicId,
+            channelId: topicChannel?.id,
+            authorId: 'system',
+            authorName: 'Shinobi 仲裁法槌提示',
+            authorHandle: '@arbiter-gavel',
+            authorAvatar: '⚖️',
+            isAgent: true,
+            agentBadge: 'Gavel Ready',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `⚖️ **仲裁阶段异常提示**：AI 仲裁推演中断。双方立论与反例要点已就绪，人类首席仲裁官可在下方【仲裁法槌控制台】敲响法槌签署终局裁决。`,
+          };
+
+          setMessages((prev) => {
+            const existing = prev[topicId] || [];
+            const filtered = existing.filter((m) => m.id !== arbiterPendingId);
+            return {
+              ...prev,
+              [topicId]: [...filtered, errorMsg, humanNotice],
+            };
+          });
+        } finally {
+          inFlightHandoverRef.current.delete(handoverKey);
         }
       } else {
         if (currentTopic.gameRoles?.humanIsArbiter) {
@@ -2437,7 +2495,7 @@ export default function App() {
             isAgent: true,
             agentBadge: 'Gavel Ready',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `⚖️ **博弈推演已进入仲裁裁决阶段**：立论方案与反例压测已就绪。请人类首席仲裁官点击抽屉右上角【法槌/裁决定案】敲响法槌签署仲裁裁决书。`,
+            content: `⚖️ **博弈推演已进入仲裁裁决阶段**：立论方案与反例压测已就绪。请人类首席仲裁官在下方【仲裁法槌控制台】选择【采纳主导】、【采纳挑战】或【权衡矩阵】敲响法槌签署仲裁裁决书。`,
           };
 
           setMessages((prev) => ({

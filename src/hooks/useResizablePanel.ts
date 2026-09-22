@@ -171,7 +171,7 @@ export function useResizablePanel({
         const clamped = Math.min(max, Math.max(minWidth, Math.round(newWidth)));
         currentWidthRef.current = clamped;
 
-        // 2. Direct DOM manipulation in animation frame for smooth 60/120fps dragging
+        // 2. Direct DOM manipulation and React state sync in animation frame
         if (rafIdRef.current === null) {
           rafIdRef.current = requestAnimationFrame(() => {
             rafIdRef.current = null;
@@ -179,6 +179,7 @@ export function useResizablePanel({
             if (targetEl) {
               targetEl.style.width = `${currentWidthRef.current}px`;
             }
+            setWidthState(currentWidthRef.current);
           });
         }
       };
@@ -201,6 +202,9 @@ export function useResizablePanel({
           }
         }
 
+        target.removeEventListener('pointermove', handlePointerMove);
+        target.removeEventListener('pointerup', handlePointerUp);
+        target.removeEventListener('pointercancel', handlePointerUp);
         window.removeEventListener('pointermove', handlePointerMove);
         window.removeEventListener('pointerup', handlePointerUp);
         window.removeEventListener('pointercancel', handlePointerUp);
@@ -234,6 +238,9 @@ export function useResizablePanel({
         }
       };
 
+      target.addEventListener('pointermove', handlePointerMove);
+      target.addEventListener('pointerup', handlePointerUp);
+      target.addEventListener('pointercancel', handlePointerUp);
       window.addEventListener('pointermove', handlePointerMove, { passive: true });
       window.addEventListener('pointerup', handlePointerUp);
       window.addEventListener('pointercancel', handlePointerUp);

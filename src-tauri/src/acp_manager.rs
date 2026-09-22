@@ -347,8 +347,14 @@ impl AcpProcessManager {
         // 异步任务 1: 处理写往 Agent 的指令
         let agent_id_in = agent_id.to_string();
         let mut async_stdin = stdin;
+        let last_activity_stdin = last_activity.clone();
         tokio::spawn(async move {
             while let Some(msg) = stdin_rx.recv().await {
+                let current_ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                last_activity_stdin.store(current_ts, Ordering::Relaxed);
                 log_acp_event(&agent_id_in, "STDIN >>>", &msg);
                 if let Err(e) = async_stdin.write_all(msg.as_bytes()).await {
                     log_acp_event(&agent_id_in, "STDIN_ERR", &format!("Error writing to agent stdin: {}", e));
@@ -432,7 +438,14 @@ impl AcpProcessManager {
                                         };
 
                                         if let Some(text) = text_opt {
-                                            if let Some(req_id) = active_req_id {
+                                            let target_req_id = if let Some(req_id) = active_req_id {
+                                                Some(req_id)
+                                            } else {
+                                                let pending = pending_requests_clone.lock().await;
+                                                pending.keys().cloned().max()
+                                            };
+
+                                            if let Some(req_id) = target_req_id {
                                                 let mut chunks = active_chunks_clone.lock().await;
                                                 chunks.entry(req_id).or_default().push_str(&text);
                                             }
@@ -826,7 +839,7 @@ impl AcpProcessManager {
         let idle_timeout_secs = std::env::var("SHADOW_CREW_ACP_IDLE_TIMEOUT")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(300);
+            .unwrap_or(600);
         let max_duration_secs = std::env::var("SHADOW_CREW_ACP_MAX_DURATION")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -934,7 +947,9 @@ impl AcpProcessManager {
                 let mut map = agent.pending_requests.lock().await;
                 map.remove(&req_id);
                 let mut active_reqs = agent.session_active_req.lock().await;
-                active_reqs.remove(&current_session_id);
+                if active_reqs.get(&current_session_id) == Some(&req_id) {
+                    active_reqs.remove(&current_session_id);
+                }
                 Ok(serde_json::json!({
                     "status": "timeout",
                     "error": timeout_err_msg
@@ -942,10 +957,12 @@ impl AcpProcessManager {
             }
         };
 
-        // 清理 session_active_req
+        // 清理 session_active_req (仅当本请求依然为该 session 当前绑定的活跃请求时才执行清理，严防覆盖后被早退请求误删)
         {
             let mut active_reqs = agent.session_active_req.lock().await;
-            active_reqs.remove(&current_session_id);
+            if active_reqs.get(&current_session_id) == Some(&req_id) {
+                active_reqs.remove(&current_session_id);
+            }
         }
 
         response
