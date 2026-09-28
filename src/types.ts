@@ -95,6 +95,19 @@ export interface AgentMemoryBank {
   sessionCacheCount: number;
 }
 
+export type ModelProviderType = 'openai_compatible' | 'deepseek' | 'anthropic' | 'ollama' | 'custom';
+
+export interface AgentModelConfig {
+  provider: ModelProviderType;
+  modelId: string;
+  modelName?: string;
+  apiKey?: string;
+  baseUrl?: string;
+  temperature?: number;
+  maxTokens?: number;
+  useGlobalDefault?: boolean;
+}
+
 export interface AgentWorkspaceConfig {
   rootPath: string;
   repoName: string;
@@ -123,6 +136,7 @@ export interface Agent {
     | 'querying_memory';
   statusDetail?: string;
   modelBadge?: string; // e.g., 'DeepSeek V3', 'Claude 3.7 Sonnet', 'Gemini 2.5 Pro'
+  modelConfig?: AgentModelConfig;
   isManagedByYou?: boolean;
   
   // ACP Protocol Config
@@ -242,7 +256,7 @@ export type DiscussionMode = 'standard' | 'game_theoretic';
 
 export type GameRoleType = 'proposer' | 'challenger' | 'verifier' | 'arbiter';
 
-export type GameTheoreticStage = 'proposal' | 'challenge' | 'verification' | 'defense' | 'arbitration' | 'concluded';
+export type GameTheoreticStage = 'proposal' | 'challenge' | 'verification' | 'defense' | 'arbitration' | 'concluded' | 'stageFailed';
 
 export interface GameTheoreticState {
   currentStage: GameTheoreticStage;
@@ -266,6 +280,9 @@ export interface GameTheoreticState {
   sprtState?: SprtGovernorState;
   minorityReport?: MinorityReport;
   cognoNexus?: CognoNexusState;
+  roundCount?: number;                   // 当前博弈轮次计数 (P2 回边使用)
+  isSafetyCharterSigned?: boolean;       // 人类是否已签署 T2 高危工具执行安全宪章
+  telemetryLogIds?: string[];
 }
 
 // ==================== CognoNexus 工业级认知决策引擎类型 ====================
@@ -279,6 +296,7 @@ export interface ArgumentNode {
   dependencies?: string[];      // 依赖的前置论点节点 ID
   confidence: number;           // 自评置信度 (0~1)
   evidenceRefs?: string[];      // 关联的证据标识
+  status?: 'supported' | 'disputed' | 'refuted'; // 三态脱水事实状态 (R-5)
 }
 
 export interface GroundingEvidence {
@@ -288,6 +306,8 @@ export interface GroundingEvidence {
   rawOutput: string;
   truthValue: boolean;         // 反事实检验真值判定
   verifierReport: string;
+  tier?: 'T1' | 'T2';          // T1: 只读建议 (权重<=0.3), T2: 宪章授权执行沙箱 (R-3)
+  isAdvisory?: boolean;        // 是否为 T1 Advisory 建议性证据
 }
 
 export interface DisputeSpanPacket {
@@ -317,8 +337,10 @@ export interface McdaDecisionPayload {
   othersToWorst: number[];      // 其他准则相对于最差准则的偏好度 (1~9)
   computedWeights: Record<string, number>; // 线性规划求解得出的各准则确定性权重
   consistencyIndex: number;     // 逻辑一致性标度 ξ* (越接近 0 逻辑越严密一致)
-  consistencyPassed: boolean;   // 是否通过一致性阈值检验 (ξ* <= 0.1)
+  consistencyPassed: boolean;   // 是否通过一致性阈值检验 (ξ* <= 0.12)
   ranking: { alternative: string; totalUtility: number; rank: number }[]; // 最终数学综合得分排序
+  status?: 'optimal' | 'rejected'; // 求解状态 (R-2 退化拒绝支持)
+  rejectionReason?: 'insufficient_information' | 'inconsistent_matrix';
 }
 
 export interface SprtGovernorState {
@@ -330,6 +352,8 @@ export interface SprtGovernorState {
   latestAlignmentScore: number; // 最新一轮综合对齐分数 Sr (0~1)
   decisionState: 'continue' | 'early_exit' | 'deadlock_escalation';
   statusDescription: string;
+  groundedTrueRatio?: number;   // 显式注入的物理接地真值率 (0~1)
+  calibrationStatus?: 'uncalibrated' | 'calibrated' | 'fallback'; // 校准状态 (R-4)
 }
 
 export interface MinorityReport {

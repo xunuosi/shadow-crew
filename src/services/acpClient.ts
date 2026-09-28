@@ -1,4 +1,5 @@
 import { Agent, CartridgeCitation, MemoryCartridgeItem } from '../types';
+import { resolveAgentModelConfig, isModelConfigReady, callLlmModel } from './llmService';
 
 export interface AcpSendPromptOptions {
   agent: Agent;
@@ -536,8 +537,58 @@ export async function sendPromptToAcpAgent(
     }
   }
 
-  // 4. Web 预览或进程故障时的智能兜底拟真响应
-  await new Promise((resolve) => setTimeout(resolve, 2800 + Math.random() * 500));
+  // 4. Web 预览、直连大模型运行时或进程离线时的智能处理
+  const modelConfig = resolveAgentModelConfig(agent);
+  if (isModelConfigReady(modelConfig)) {
+    try {
+      console.log(`[ACP Client] Invoking direct LLM runtime for ${agent.name} with model: ${modelConfig.modelName || modelConfig.modelId}`);
+      const llmSystemPrompt = options.systemPrompt ||
+        `你是 ${agent.name}，角色为「${agent.role || '高级全栈架构师'}」。\n` +
+        `设定描述：${agent.description || '协助开发者进行深度技术推演、方案论证与代码审查。'}\n` +
+        `请遵循专业、严谨、高可操作性的工程规范，代表用户或团队进行深入回答。`;
+
+      const llmResult = await callLlmModel(modelConfig, enhancedPrompt, llmSystemPrompt);
+      const durationMs = Date.now() - startTime;
+
+      return {
+        textResponse: llmResult.textResponse,
+        memoryActions: [
+          {
+            action: 'recall',
+            key: 'llm_inference',
+            detail: `底座模型「${modelConfig.modelName || modelConfig.modelId}」推演完成 (${llmResult.durationMs}ms)`,
+          },
+        ],
+        cartridgeCitation: citation,
+        workspaceDiffs: [],
+        durationMs,
+        isRealProcess: true,
+      };
+    } catch (llmErr: any) {
+      console.warn('[ACP Client] Real LLM call failed:', llmErr);
+      const errMsg = llmErr?.message || String(llmErr);
+      // 若属于鉴权或配额硬错误，直接向用户展示精准排障面板
+      if (
+        errMsg.toLowerCase().includes('key') ||
+        errMsg.includes('401') ||
+        errMsg.toLowerCase().includes('auth') ||
+        errMsg.toLowerCase().includes('unauthorized') ||
+        errMsg.includes('403') ||
+        errMsg.toLowerCase().includes('quota')
+      ) {
+        return {
+          textResponse: `⚠️【${agent.name}】底座大模型认证或调用失败：${errMsg}\n\n💡 **排障建议**：\n• 当前模型：\`${modelConfig.modelName || modelConfig.modelId}\` (提供商: \`${modelConfig.provider}\`)\n• 当前 Base URL: \`${modelConfig.baseUrl || '默认'}\`\n• 请点击当前 Agent 卡片右侧【配置】或右上角【Set agent defaults】重新校验 API Key 与网络连接。`,
+          cartridgeCitation: citation,
+          durationMs: Date.now() - startTime,
+          isRealProcess: false,
+          isError: true,
+        };
+      }
+    }
+  }
+
+  // 5. 兜底拟真响应 (无 Key 或调试模拟态)
+  await new Promise((resolve) => setTimeout(resolve, 2000 + Math.random() * 500));
   const durationMs = Date.now() - startTime;
 
   let simulatedText = '';
@@ -560,7 +611,8 @@ export async function sendPromptToAcpAgent(
       `【${agent.name}】已就绪并完成需求分析：\n` +
       `针对关于「${prompt.slice(0, 40)}${prompt.length > 40 ? '...' : ''}」的指令，已调取私有 SQLite 记忆库与外挂卡带。\n` +
       `• **架构策略**：遵循单一职责与零拷贝设计，中间件层全面基于 Tokio 异步通道挂载。\n` +
-      `• **下一步建议**：随时可在当前频道发起单层独立推演议题（Topic），或直接分派 Unified Diff 变更任务。`;
+      `• **下一步建议**：随时可在当前频道发起单层独立推演议题（Topic），或直接分派 Unified Diff 变更任务。\n\n` +
+      `*(💡 提示：当前 Agent 处于拟真回放模式。点击卡片右侧「配置模型」或右上角「Set agent defaults」填入 API Key 即可接入真实 DeepSeek / Claude / OpenAI / Ollama 等大模型)*`;
 
     memoryActions.push({
       action: 'recall',
@@ -571,7 +623,8 @@ export async function sendPromptToAcpAgent(
     simulatedText =
       `【${agent.name}】ACP 网关协同响应：\n` +
       `收到开发指令：\`${prompt}\`。\n` +
-      `已连接到 OpenClaw Gateway 进程，模型参数 \`${agent.modelBadge || 'deepseek'}\` 已加载，已完成上下文对齐。`;
+      `已连接到 OpenClaw Gateway 进程，模型参数 \`${agent.modelBadge || 'deepseek'}\` 已加载，已完成上下文对齐。\n\n` +
+      `*(💡 提示：当前 Agent 处于拟真回放模式。可在卡片配置中填入真实模型 API Key)*`;
 
     memoryActions.push({
       action: 'query',
@@ -582,7 +635,8 @@ export async function sendPromptToAcpAgent(
     simulatedText =
       `【${agent.name} (${agent.role})】推演反馈：\n` +
       `已接收到来自研讨频道的指令：「${prompt}」。\n` +
-      `ACP 独立推演就绪，已融合上下文信息。随时可以开展代码审查与方案校验。`;
+      `ACP 独立推演就绪，已融合上下文信息。随时可以开展代码审查与方案校验。\n\n` +
+      `*(💡 提示：当前 Agent 处于拟真回放模式。可在卡片配置中填入真实模型 API Key)*`;
   }
 
   return {

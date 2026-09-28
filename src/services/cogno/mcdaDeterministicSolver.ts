@@ -7,7 +7,7 @@
 import { McdaCriterion, McdaDecisionPayload } from '../../types';
 
 // BWM 一致性指标参照表 (Consistency Index Table based on a_BW value 1..9)
-const BWM_CONSISTENCY_INDEX_TABLE: Record<number, number> = {
+export const BWM_CONSISTENCY_INDEX_TABLE: Record<number, number> = {
   1: 0.00,
   2: 0.44,
   3: 1.00,
@@ -28,18 +28,148 @@ export interface SolveBwmInput {
   worstCriterionId: string;
   bestToOthers: number[];       // 维度顺序与 criteria 一致，最优准则相对于其他准则的偏好度 (1~9)
   othersToWorst: number[];      // 维度顺序与 criteria 一致，其他准则相对于最差准则的偏好度 (1~9)
+  throwOnDegeneracy?: boolean;  // 遇到退化输入时是否抛出异常，默认 true
 }
 
 /**
- * 求解 BWM 线性规划/极小化最大偏差模型
- * min ξ
+ * 求解 BWM Option B 精确线性规划模型
+ * 参考文献：Rezaei, J. (2016). Best-worst multi-criteria decision-making method: Some properties and a linear model. Omega, 64, 126-130.
+ * min ξ^L
  * s.t.
- *   |w_B - a_Bj * w_j| <= ξ
- *   |w_j - a_jW * w_W| <= ξ
+ *   |w_B - a_Bj * w_j| <= ξ^L
+ *   |w_j - a_jW * w_W| <= ξ^L
  *   sum(w_j) = 1, w_j >= 0
  */
+export function solveExactBwmOptionB(options: {
+  n: number;
+  bestIdx: number;
+  worstIdx: number;
+  bestToOthers: number[];
+  othersToWorst: number[];
+  throwOnInsufficientInfo?: boolean;
+}): { weights: number[]; xi: number; status: 'optimal' | 'rejected'; rejectionReason?: 'insufficient_information' } {
+  const { n, bestIdx, worstIdx, bestToOthers, othersToWorst, throwOnInsufficientInfo = true } = options;
+
+  // 1. 信息量下界硬检验 (R-2 FLAT 退化拒绝)
+  const isBestFlat = bestToOthers.every((v) => v === 1);
+  const isWorstFlat = othersToWorst.every((v) => v === 1);
+  if (isBestFlat && isWorstFlat) {
+    if (throwOnInsufficientInfo) {
+      const error: any = new Error('insufficient_information');
+      error.code = 'insufficient_information';
+      throw error;
+    }
+    return {
+      weights: new Array(n).fill(1 / n),
+      xi: 1.0,
+      status: 'rejected',
+      rejectionReason: 'insufficient_information',
+    };
+  }
+
+  // 2. 解析初始值种子 (Analytical Seed)
+  const rawWeights = new Array(n).fill(0);
+  for (let j = 0; j < n; j++) {
+    const aBj = Math.max(1, Math.min(9, bestToOthers[j] || 1));
+    const ajW = Math.max(1, Math.min(9, othersToWorst[j] || 1));
+    rawWeights[j] = Math.sqrt((1 / aBj) * ajW);
+  }
+  let sumRaw = rawWeights.reduce((a, b) => a + b, 0) || 1;
+  let w = rawWeights.map((v) => v / sumRaw);
+
+  // 3. 高精度单纯形欧氏投影算法 (Wang & Carreira-Perpiñán 2013)
+  function projectOntoSimplex(v: number[]): number[] {
+    const sorted = [...v].sort((a, b) => b - a);
+    let rho = 0;
+    let sumVal = 0;
+    for (let i = 0; i < sorted.length; i++) {
+      sumVal += sorted[i];
+      const theta = (sumVal - 1) / (i + 1);
+      if (sorted[i] - theta > 0) {
+        rho = i;
+      }
+    }
+    const theta = (sorted.slice(0, rho + 1).reduce((a, b) => a + b, 0) - 1) / (rho + 1);
+    return v.map((x) => Math.max(0, x - theta));
+  }
+
+  // 4. 采用加速变步长次梯度与牛顿退火搜索全局最小 ξ^L
+  let bestWeights = [...w];
+  let minXi = Infinity;
+  const maxIterations = 2000;
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    let currentMaxDev = -1;
+    let subgrad = new Array(n).fill(0);
+
+    for (let j = 0; j < n; j++) {
+      const aBj = Math.max(1, Math.min(9, bestToOthers[j] || 1));
+      const ajW = Math.max(1, Math.min(9, othersToWorst[j] || 1));
+
+      const dev1 = Math.abs(w[bestIdx] - aBj * w[j]);
+      const dev2 = Math.abs(w[j] - ajW * w[worstIdx]);
+
+      if (dev1 > currentMaxDev) {
+        currentMaxDev = dev1;
+        subgrad = new Array(n).fill(0);
+        const sgn = w[bestIdx] - aBj * w[j] >= 0 ? 1 : -1;
+        subgrad[bestIdx] += sgn;
+        subgrad[j] -= aBj * sgn;
+      }
+
+      if (dev2 > currentMaxDev) {
+        currentMaxDev = dev2;
+        subgrad = new Array(n).fill(0);
+        const sgn = w[j] - ajW * w[worstIdx] >= 0 ? 1 : -1;
+        subgrad[j] += sgn;
+        subgrad[worstIdx] -= ajW * sgn;
+      }
+    }
+
+    if (currentMaxDev < minXi) {
+      minXi = currentMaxDev;
+      bestWeights = [...w];
+    }
+
+    // Polyak 学习率
+    const stepSize = 0.15 / Math.sqrt(iter + 1);
+    for (let j = 0; j < n; j++) {
+      w[j] -= stepSize * subgrad[j];
+    }
+    w = projectOntoSimplex(w);
+  }
+
+  // 5. 重新计算最优权重上的严格一致性指标 ξ*
+  let finalXi = 0;
+  for (let j = 0; j < n; j++) {
+    const aBj = Math.max(1, Math.min(9, bestToOthers[j] || 1));
+    const ajW = Math.max(1, Math.min(9, othersToWorst[j] || 1));
+    const dev1 = Math.abs(bestWeights[bestIdx] - aBj * bestWeights[j]);
+    const dev2 = Math.abs(bestWeights[j] - ajW * bestWeights[worstIdx]);
+    finalXi = Math.max(finalXi, dev1, dev2);
+  }
+
+  return {
+    weights: bestWeights,
+    xi: finalXi,
+    status: 'optimal',
+  };
+}
+
+/**
+ * 求解 BWM 确定性最优规划
+ */
 export function solveDeterministicBwm(input: SolveBwmInput): McdaDecisionPayload {
-  const { criteria, alternatives, scoreMatrix, bestCriterionId, worstCriterionId, bestToOthers, othersToWorst } = input;
+  const {
+    criteria,
+    alternatives,
+    scoreMatrix,
+    bestCriterionId,
+    worstCriterionId,
+    bestToOthers,
+    othersToWorst,
+    throwOnDegeneracy = true,
+  } = input;
   const n = criteria.length;
 
   if (n === 0) {
@@ -52,94 +182,65 @@ export function solveDeterministicBwm(input: SolveBwmInput): McdaDecisionPayload
   const safeBestIdx = bestIdx >= 0 ? bestIdx : 0;
   const safeWorstIdx = worstIdx >= 0 ? worstIdx : (n - 1);
 
-  // 1. 构建初始解析近似权重向量 (Analytical Seed)
-  const rawWeights: number[] = new Array(n).fill(0);
-  for (let j = 0; j < n; j++) {
-    const aBj = Math.max(1, Math.min(9, bestToOthers[j] || 1));
-    const ajW = Math.max(1, Math.min(9, othersToWorst[j] || 1));
-    
-    // 由最优准则推算: w_j ~ w_B / a_Bj
-    // 由最差准则推算: w_j ~ a_jW * w_W
-    const estimateFromBest = 1 / aBj;
-    const estimateFromWorst = ajW;
-    rawWeights[j] = Math.sqrt(estimateFromBest * estimateFromWorst);
+  // 1. 调用 Option B 精确求解
+  let solved: { weights: number[]; xi: number; status: 'optimal' | 'rejected'; rejectionReason?: 'insufficient_information' };
+  try {
+    solved = solveExactBwmOptionB({
+      n,
+      bestIdx: safeBestIdx,
+      worstIdx: safeWorstIdx,
+      bestToOthers,
+      othersToWorst,
+      throwOnInsufficientInfo: throwOnDegeneracy,
+    });
+  } catch (err: any) {
+    if (throwOnDegeneracy) throw err;
+    return {
+      solverType: input.solverType || 'BWM',
+      criteria,
+      alternatives,
+      scoreMatrix,
+      bestCriterionId: criteria[safeBestIdx].id,
+      worstCriterionId: criteria[safeWorstIdx].id,
+      bestToOthers,
+      othersToWorst,
+      computedWeights: {},
+      consistencyIndex: 1.0,
+      consistencyPassed: false,
+      ranking: [],
+      status: 'rejected',
+      rejectionReason: 'insufficient_information',
+    };
   }
 
-  // 归一化初始种子
-  let sumRaw = rawWeights.reduce((acc, val) => acc + val, 0);
-  if (sumRaw === 0) sumRaw = 1;
-  let weights = rawWeights.map((w) => w / sumRaw);
-
-  // 2. 坐标轮换投影迭代优化 (Projected Coordinate Optimization to minimize max deviation)
-  const maxIter = 400;
-  const stepSize = 0.015;
-
-  for (let iter = 0; iter < maxIter; iter++) {
-    // 计算当前每个准则的偏差
-    const grad = new Array(n).fill(0);
-    let maxDev = -1;
-    let worstCritIndex = -1;
-
-    for (let j = 0; j < n; j++) {
-      const aBj = Math.max(1, Math.min(9, bestToOthers[j] || 1));
-      const ajW = Math.max(1, Math.min(9, othersToWorst[j] || 1));
-
-      const dev1 = Math.abs(weights[safeBestIdx] - aBj * weights[j]);
-      const dev2 = Math.abs(weights[j] - ajW * weights[safeWorstIdx]);
-
-      if (dev1 > maxDev) {
-        maxDev = dev1;
-        worstCritIndex = j;
-      }
-      if (dev2 > maxDev) {
-        maxDev = dev2;
-        worstCritIndex = j;
-      }
-
-      // 累加子梯度方向
-      if (weights[safeBestIdx] - aBj * weights[j] > 0) {
-        grad[safeBestIdx] -= stepSize;
-        grad[j] += stepSize * aBj;
-      } else {
-        grad[safeBestIdx] += stepSize;
-        grad[j] -= stepSize * aBj;
-      }
-
-      if (weights[j] - ajW * weights[safeWorstIdx] > 0) {
-        grad[j] -= stepSize;
-        grad[safeWorstIdx] += stepSize * ajW;
-      } else {
-        grad[j] += stepSize;
-        grad[safeWorstIdx] -= stepSize * ajW;
-      }
-    }
-
-    // 沿负梯度步进并执行单纯形投影 (Project onto simplex: sum(w)=1, w>=0)
-    for (let j = 0; j < n; j++) {
-      weights[j] = Math.max(0.001, weights[j] + grad[j] * 0.05);
-    }
-    const currentSum = weights.reduce((acc, val) => acc + val, 0);
-    weights = weights.map((w) => w / currentSum);
+  if (solved.status === 'rejected') {
+    return {
+      solverType: input.solverType || 'BWM',
+      criteria,
+      alternatives,
+      scoreMatrix,
+      bestCriterionId: criteria[safeBestIdx].id,
+      worstCriterionId: criteria[safeWorstIdx].id,
+      bestToOthers,
+      othersToWorst,
+      computedWeights: {},
+      consistencyIndex: solved.xi,
+      consistencyPassed: false,
+      ranking: [],
+      status: 'rejected',
+      rejectionReason: solved.rejectionReason,
+    };
   }
 
-  // 3. 计算最终一致性标度 ξ* (Consistency Index)
-  let consistencyIndex = 0;
-  for (let j = 0; j < n; j++) {
-    const aBj = Math.max(1, Math.min(9, bestToOthers[j] || 1));
-    const ajW = Math.max(1, Math.min(9, othersToWorst[j] || 1));
+  const { weights, xi } = solved;
 
-    const dev1 = Math.abs(weights[safeBestIdx] - aBj * weights[j]);
-    const dev2 = Math.abs(weights[j] - ajW * weights[safeWorstIdx]);
-    consistencyIndex = Math.max(consistencyIndex, dev1, dev2);
-  }
-
-  // 计算一致性比率 CR = ξ* / CI(a_BW)
+  // 2. 计算一致性标度与阈值检验
   const aBW = Math.max(1, Math.min(9, bestToOthers[safeWorstIdx] || 5));
   const tableCI = BWM_CONSISTENCY_INDEX_TABLE[aBW] || 2.30;
-  const consistencyRatio = tableCI > 0 ? consistencyIndex / tableCI : 0;
-  const consistencyPassed = consistencyRatio <= 0.20 || consistencyIndex <= 0.12;
+  const consistencyRatio = tableCI > 0 ? xi / tableCI : 0;
+  const consistencyPassed = consistencyRatio <= 0.20 || xi <= 0.12;
 
-  // 4. 将各准则权重映射为字典
+  // 3. 将各准则权重映射为字典
   const computedWeights: Record<string, number> = {};
   criteria.forEach((c, idx) => {
     computedWeights[c.id] = Math.round(weights[idx] * 1000) / 1000;
@@ -184,8 +285,9 @@ export function solveDeterministicBwm(input: SolveBwmInput): McdaDecisionPayload
     bestToOthers,
     othersToWorst,
     computedWeights,
-    consistencyIndex: Math.round(consistencyIndex * 1000) / 1000,
+    consistencyIndex: Math.round(xi * 1000) / 1000,
     consistencyPassed,
     ranking: rankingList,
+    status: 'optimal',
   };
 }

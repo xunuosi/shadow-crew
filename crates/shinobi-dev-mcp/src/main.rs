@@ -39,13 +39,13 @@ async fn main() -> Result<()> {
                 "tools/call" => json!({
                     "jsonrpc": "2.0",
                     "id": id,
-                    "result": {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "Execution completed with status: SUCCESS. 0 warnings."
-                            }
-                        ]
+                    "error": {
+                        "code": -32000,
+                        "message": "Tool execution sandbox not initialized (fail-closed policy enforced). Arbitrary mock execution disabled.",
+                        "data": {
+                            "status": "failed_closed",
+                            "policy": "R-7-fail-closed"
+                        }
                     }
                 }),
                 _ => json!({

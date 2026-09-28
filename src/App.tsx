@@ -60,9 +60,10 @@ import { RustTauriArchitectureHub } from './components/RustTauriArchitectureHub'
 import { AgentDashboard } from './components/AgentDashboard';
 import { MemoryExportModal } from './components/MemoryExportModal';
 import { MemoryImportModal } from './components/MemoryImportModal';
-import { sendPromptToAcpAgent } from './services/acpClient';
+import { sendPromptToAcpAgent, probeRemoteAcpConnection } from './services/acpClient';
 import { saveMessagesBatchToDb, loadMessagesFromDb } from './services/dbClient';
 import { DEFAULT_MODEL_NAME } from './config/models';
+import { resolveAgentModelConfig, isModelConfigReady } from './services/llmService';
 import {
   CollaborationCascade,
   parseAgentMentions,
@@ -79,6 +80,9 @@ import {
   stepSprtGovernor,
   estimateRoundAlignmentScore,
   TopicPromptContext,
+  logGameTheoreticTelemetry,
+  validateStageContract,
+  STAGE_CONTRACT_MAX_RETRIES,
 } from './services/agentCollaboration';
 
 export default function App() {
@@ -116,6 +120,14 @@ export default function App() {
               if (a.id === 'agent-shinobi-core') {
                 return {
                   ...baseAgent,
+                  modelBadge: a.modelBadge === 'Rust Native' ? 'DeepSeek V3' : (a.modelBadge || 'DeepSeek V3'),
+                  modelConfig: a.modelConfig || {
+                    provider: 'deepseek',
+                    modelId: 'deepseek-chat',
+                    modelName: 'DeepSeek V3',
+                    baseUrl: 'https://api.deepseek.com/v1',
+                    useGlobalDefault: true,
+                  },
                   acpCommandOrUrl: './target/debug/shinobi-agent',
                   workspace: updatedWorkspace || {
                     rootPath: '/Users/xunuosi/Code/Lx/AI/shadow-crew',
@@ -495,6 +507,21 @@ export default function App() {
   const deliveredStandingContextRef = useRef<Set<string>>(new Set());
   // 记录正在执行中的三元博弈阶段交接，杜绝并发重入与重复下发 Prompt
   const inFlightHandoverRef = useRef<Set<string>>(new Set());
+  // 记录各阶段 Self-Refine 重试次数 (硬门禁: 上限为 STAGE_CONTRACT_MAX_RETRIES)
+  const stageRefineRetriesRef = useRef<Record<string, number>>({});
+
+  // 提取接地实证真值率 (0.0~1.0)
+  const extractGroundedTrueRatio = (verificationText: string): number => {
+    if (!verificationText) return 0.5;
+    const passTokens = ['[PASS]', '[VERIFIED]', '[TRUE]', '通过', '证实', '成立', '符合预期', '有效', '支持'];
+    const failTokens = ['[FAIL]', '[REFUTED]', '[FALSE]', '未通过', '失败', '证伪', '不成立', '冲突', '异常', '驳回'];
+    let passCount = 0;
+    let failCount = 0;
+    passTokens.forEach((t) => { if (verificationText.includes(t)) passCount++; });
+    failTokens.forEach((t) => { if (verificationText.includes(t)) failCount++; });
+    if (passCount === 0 && failCount === 0) return 0.5;
+    return Math.max(0.05, Math.min(0.95, Math.round((passCount / (passCount + failCount)) * 100) / 100));
+  };
 
   const currentUserId = 'user-norris';
 
@@ -2192,7 +2219,86 @@ export default function App() {
           };
         });
 
-        // CognoNexus 阶段 2: 提取论点因果节点、定位最早冲突切片与上下文脱水
+        // CognoNexus 阶段 2: 阶段契约门禁强校验 (R-1 / M4)
+        const contractValidation = validateStageContract('challenge', acpResp.textResponse, challengerAgent.name);
+        logGameTheoreticTelemetry('stage_contract_validation', topicId, {
+          stage: 'challenge',
+          agentId: challengerAgent.id,
+          isValid: contractValidation.isValid,
+          missingRequirements: contractValidation.missingRequirements,
+        });
+
+        if (!contractValidation.isValid) {
+          const refineKey = `${topicId}:challenge`;
+          const currentRetries = stageRefineRetriesRef.current[refineKey] || 0;
+          if (currentRetries < STAGE_CONTRACT_MAX_RETRIES) {
+            stageRefineRetriesRef.current[refineKey] = currentRetries + 1;
+            const refineNotice: Message = {
+              id: `msg-refine-notice-${Date.now()}`,
+              threadId: topicId,
+              channelId: topicChannel?.id,
+              authorId: 'system',
+              authorName: '阶段契约质检官',
+              authorHandle: '@contract-guard',
+              authorAvatar: '🛡️',
+              isAgent: true,
+              agentBadge: `Self-Refine (${currentRetries + 1}/${STAGE_CONTRACT_MAX_RETRIES})`,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: contractValidation.refinePrompt || '阶段契约未达标，触发 Self-Refine',
+              gameStage: 'challenge',
+              gameRole: 'challenger',
+            };
+            setMessages((prev) => ({
+              ...prev,
+              [topicId]: [...(prev[topicId] || []), refineNotice],
+            }));
+            triggerGameTheoreticStageHandover({
+              topicId,
+              nextStage: 'challenge',
+              targetProposalText,
+            });
+            return;
+          } else {
+            // 超过最大重试次数，进入 stageFailed 熔断交人类
+            delete stageRefineRetriesRef.current[refineKey];
+            updateTopicDataInState(topicId, (old) => ({
+              ...old,
+              gameStage: 'stageFailed',
+              gameTheoreticState: {
+                ...old.gameTheoreticState,
+                currentStage: 'stageFailed',
+                quorumAlert: `红队挑战者 (${challengerAgent.name}) 经 ${STAGE_CONTRACT_MAX_RETRIES} 轮 Self-Refine 仍未满足契约规范，推演阻断转人工`,
+              },
+            }));
+            logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
+              stage: 'challenge',
+              reason: 'stage_contract_failure_max_retries',
+            });
+            const failMsg: Message = {
+              id: `msg-stage-failed-${Date.now()}`,
+              threadId: topicId,
+              channelId: topicChannel?.id,
+              authorId: 'system',
+              authorName: 'Shinobi 契约熔断中枢',
+              authorHandle: '@contract-guard',
+              authorAvatar: '⚠️',
+              isAgent: true,
+              agentBadge: 'Stage Failed',
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：挑战官 ${challengerAgent.name} 经 ${STAGE_CONTRACT_MAX_RETRIES} 次 Self-Refine 仍未满足结构化批判规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
+              gameStage: 'stageFailed',
+              gameRole: 'challenger',
+            };
+            setMessages((prev) => ({
+              ...prev,
+              [topicId]: [...(prev[topicId] || []), failMsg],
+            }));
+            return;
+          }
+        }
+        delete stageRefineRetriesRef.current[`${topicId}:challenge`];
+
+        // 提取论点因果节点、定位最早冲突切片与上下文脱水
         const argumentNodes = extractArgumentNodes(targetProposalText);
         const disputePacket = localizeEarliestDispute(targetProposalText, acpResp.textResponse, argumentNodes);
         const committedStates = dehydrateContextToCommittedStates(targetProposalText, acpResp.textResponse, argumentNodes);
@@ -2205,10 +2311,90 @@ export default function App() {
           alignmentScore: sprtScore,
         });
 
-        const hasVerifiers = (currentTopic.gameRoles?.verifiers || []).length > 0;
-        const nextStageTarget = hasVerifiers ? 'verification' : 'defense';
+        // 记录 SPRT 似然比迁移打点 (R-1)
+        logGameTheoreticTelemetry('decisionState_transition', topicId, {
+          stage: 'challenge',
+          decisionState: sprtState.decisionState,
+          round: 2,
+          logLikelihoodRatio: sprtState.logLikelihoodRatio,
+          alignmentScore: sprtScore,
+        });
 
-        // 阶段 2 反例压测完成后，转入【阶段 3: 接地验证 (Verification)】或【阶段 4: 答辩修正 (Defense)】
+        // 关键接线：非 UI 控制流消费 decisionState (R-1)
+        if (sprtState.decisionState === 'deadlock_escalation') {
+          // SPRT 死锁熔断：攻防严重分歧，阻断自动流转，上报人类
+          updateTopicDataInState(topicId, (old) => ({
+            ...old,
+            gameStage: 'arbitration',
+            gameTheoreticState: {
+              ...old.gameTheoreticState,
+              currentStage: 'arbitration',
+              targetProposalContent: targetProposalText,
+              targetChallengeContent: acpResp.textResponse,
+              isChallengerResponded: true,
+              quorumAlert: '⚠️ SPRT 似然比跌破死锁下界 (Deadlock Escalation)，攻防陷入深层价值对立，已熔断自动推演',
+              sprtState,
+              cognoNexus: {
+                committedStates,
+                currentDispute: disputePacket,
+                sprtState,
+              },
+            },
+          }));
+
+          logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
+            stage: 'challenge',
+            reason: 'sprt_deadlock_escalation',
+          });
+
+          const deadlockMsg: Message = {
+            id: `msg-deadlock-alert-${Date.now()}`,
+            threadId: topicId,
+            channelId: topicChannel?.id,
+            authorId: 'system',
+            authorName: 'SPRT 序贯计算调控器',
+            authorHandle: '@sprt-governor',
+            authorAvatar: '⚡',
+            isAgent: true,
+            agentBadge: 'Deadlock Escalation',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `⚠️ **SPRT 死锁熔断告警 (Deadlock Escalation)**：攻防分歧已突破置信区间下界 ($LHR \\le B$)，系统判定两造陷入不可调和死锁。自动推演已阻断，请人类首席仲裁官查阅上方交锋点，在下方控制台敲响法槌直接裁决。`,
+          };
+
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: [...(prev[topicId] || []), deadlockMsg],
+          }));
+          return;
+        }
+
+        const hasVerifiers = (currentTopic.gameRoles?.verifiers || []).length > 0;
+        // 若触发 Early Exit 则直接跳过冗余辩论进入仲裁，否则正常推进
+        const nextStageTarget = sprtState.decisionState === 'early_exit'
+          ? 'arbitration'
+          : (hasVerifiers ? 'verification' : 'defense');
+
+        if (sprtState.decisionState === 'early_exit') {
+          const earlyExitMsg: Message = {
+            id: `msg-early-exit-${Date.now()}`,
+            threadId: topicId,
+            channelId: topicChannel?.id,
+            authorId: 'system',
+            authorName: 'SPRT 序贯计算调控器',
+            authorHandle: '@sprt-governor',
+            authorAvatar: '⚡',
+            isAgent: true,
+            agentBadge: 'Early Exit',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `⚡ **SPRT 序贯检验早停 (Early Exit)**：攻防两造论据已突破置信上限 ($LHR \\ge A$)，达成高质对齐。系统自动短路后续冗余轮次，直接流转至终局仲裁！`,
+          };
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: [...(prev[topicId] || []), earlyExitMsg],
+          }));
+        }
+
+        // 阶段 2 反例压测完成后，转入【阶段 3: 接地验证 (Verification)】或【阶段 4: 答辩修正 (Defense)】或【阶段 5: 仲裁】
         updateTopicDataInState(topicId, (old) => ({
           ...old,
           gameStage: nextStageTarget,
@@ -2497,6 +2683,93 @@ export default function App() {
           };
         });
 
+        // 阶段契约门禁强校验 (R-1 / M4)
+        const contractValidation = validateStageContract('verification', acpResp.textResponse, verifierAgent.name);
+        logGameTheoreticTelemetry('stage_contract_validation', topicId, {
+          stage: 'verification',
+          agentId: verifierAgent.id,
+          isValid: contractValidation.isValid,
+          missingRequirements: contractValidation.missingRequirements,
+        });
+
+        if (!contractValidation.isValid) {
+          const refineKey = `${topicId}:verification`;
+          const currentRetries = stageRefineRetriesRef.current[refineKey] || 0;
+          if (currentRetries < STAGE_CONTRACT_MAX_RETRIES) {
+            stageRefineRetriesRef.current[refineKey] = currentRetries + 1;
+            const refineNotice: Message = {
+              id: `msg-refine-notice-${Date.now()}`,
+              threadId: topicId,
+              channelId: topicChannel?.id,
+              authorId: 'system',
+              authorName: '阶段契约质检官',
+              authorHandle: '@contract-guard',
+              authorAvatar: '🛡️',
+              isAgent: true,
+              agentBadge: `Self-Refine (${currentRetries + 1}/${STAGE_CONTRACT_MAX_RETRIES})`,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: contractValidation.refinePrompt || '验证契约未达标，触发 Self-Refine',
+              gameStage: 'verification',
+              gameRole: 'verifier',
+            };
+            setMessages((prev) => ({
+              ...prev,
+              [topicId]: [...(prev[topicId] || []), refineNotice],
+            }));
+            triggerGameTheoreticStageHandover({
+              topicId,
+              nextStage: 'verification',
+              targetProposalText,
+              targetChallengeText,
+            });
+            return;
+          } else {
+            delete stageRefineRetriesRef.current[refineKey];
+            updateTopicDataInState(topicId, (old) => ({
+              ...old,
+              gameStage: 'stageFailed',
+              gameTheoreticState: {
+                ...old.gameTheoreticState,
+                currentStage: 'stageFailed',
+                quorumAlert: `接地验证官 (${verifierAgent.name}) 经 ${STAGE_CONTRACT_MAX_RETRIES} 轮 Self-Refine 仍未满足实证规范，推演阻断转人工`,
+              },
+            }));
+            logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
+              stage: 'verification',
+              reason: 'stage_contract_failure_max_retries',
+            });
+            const failMsg: Message = {
+              id: `msg-stage-failed-${Date.now()}`,
+              threadId: topicId,
+              channelId: topicChannel?.id,
+              authorId: 'system',
+              authorName: 'Shinobi 契约熔断中枢',
+              authorHandle: '@contract-guard',
+              authorAvatar: '⚠️',
+              isAgent: true,
+              agentBadge: 'Stage Failed',
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：接地验证官 ${verifierAgent.name} 经 ${STAGE_CONTRACT_MAX_RETRIES} 次 Self-Refine 仍未满足实证真值规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
+              gameStage: 'stageFailed',
+              gameRole: 'verifier',
+            };
+            setMessages((prev) => ({
+              ...prev,
+              [topicId]: [...(prev[topicId] || []), failMsg],
+            }));
+            return;
+          }
+        }
+        delete stageRefineRetriesRef.current[`${topicId}:verification`];
+
+        // 显式提取接地实证真值率并记录打点 (R-1 接线三件套)
+        const groundedTrueRatio = extractGroundedTrueRatio(acpResp.textResponse);
+        logGameTheoreticTelemetry('grounded_ratio_injected', topicId, {
+          stage: 'verification',
+          groundedTrueRatio,
+          verifierId: verifierAgent.id,
+        });
+
         // 阶段 3 验证完成后，转入【阶段 4: 答辩修正 (defense)】
         updateTopicDataInState(topicId, (old) => ({
           ...old,
@@ -2780,17 +3053,248 @@ export default function App() {
           };
         });
 
+        // 阶段契约门禁强校验 (R-1 / M4)
+        const contractValidation = validateStageContract('defense', acpResp.textResponse, proposerAgent.name);
+        logGameTheoreticTelemetry('stage_contract_validation', topicId, {
+          stage: 'defense',
+          agentId: proposerAgent.id,
+          isValid: contractValidation.isValid,
+          missingRequirements: contractValidation.missingRequirements,
+        });
+
+        if (!contractValidation.isValid) {
+          const refineKey = `${topicId}:defense`;
+          const currentRetries = stageRefineRetriesRef.current[refineKey] || 0;
+          if (currentRetries < STAGE_CONTRACT_MAX_RETRIES) {
+            stageRefineRetriesRef.current[refineKey] = currentRetries + 1;
+            const refineNotice: Message = {
+              id: `msg-refine-notice-${Date.now()}`,
+              threadId: topicId,
+              channelId: topicChannel?.id,
+              authorId: 'system',
+              authorName: '阶段契约质检官',
+              authorHandle: '@contract-guard',
+              authorAvatar: '🛡️',
+              isAgent: true,
+              agentBadge: `Self-Refine (${currentRetries + 1}/${STAGE_CONTRACT_MAX_RETRIES})`,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: contractValidation.refinePrompt || '答辩补丁契约未达标，触发 Self-Refine',
+              gameStage: 'defense',
+              gameRole: 'proposer',
+            };
+            setMessages((prev) => ({
+              ...prev,
+              [topicId]: [...(prev[topicId] || []), refineNotice],
+            }));
+            triggerGameTheoreticStageHandover({
+              topicId,
+              nextStage: 'defense',
+              targetProposalText,
+              targetChallengeText,
+              targetVerificationText,
+            });
+            return;
+          } else {
+            delete stageRefineRetriesRef.current[refineKey];
+            updateTopicDataInState(topicId, (old) => ({
+              ...old,
+              gameStage: 'stageFailed',
+              gameTheoreticState: {
+                ...old.gameTheoreticState,
+                currentStage: 'stageFailed',
+                quorumAlert: `提案官 (${proposerAgent.name}) 经 ${STAGE_CONTRACT_MAX_RETRIES} 轮 Self-Refine 仍未满足答辩补丁契约规范，推演阻断转人工`,
+              },
+            }));
+            logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
+              stage: 'defense',
+              reason: 'stage_contract_failure_max_retries',
+            });
+            const failMsg: Message = {
+              id: `msg-stage-failed-${Date.now()}`,
+              threadId: topicId,
+              channelId: topicChannel?.id,
+              authorId: 'system',
+              authorName: 'Shinobi 契约熔断中枢',
+              authorHandle: '@contract-guard',
+              authorAvatar: '⚠️',
+              isAgent: true,
+              agentBadge: 'Stage Failed',
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：提案官 ${proposerAgent.name} 经 ${STAGE_CONTRACT_MAX_RETRIES} 次 Self-Refine 仍未满足答辩补丁契约规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
+              gameStage: 'stageFailed',
+              gameRole: 'proposer',
+            };
+            setMessages((prev) => ({
+              ...prev,
+              [topicId]: [...(prev[topicId] || []), failMsg],
+            }));
+            return;
+          }
+        }
+        delete stageRefineRetriesRef.current[`${topicId}:defense`];
+
+        // 显式提取接地实证真值率并显式注入 SPRT (R-1 接线三件套)
+        const verificationText = targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent || '';
+        const groundedTrueRatio = extractGroundedTrueRatio(verificationText);
+        logGameTheoreticTelemetry('grounded_ratio_injected', topicId, {
+          stage: 'defense',
+          groundedTrueRatio,
+        });
+
         // CognoNexus 阶段 3: 评估答辩修正后的对齐分数与似然比
         const sprtScoreAfterDefense = estimateRoundAlignmentScore({
           proposalText: targetProposalText,
           critiqueText: targetChallengeText,
           defenseText: acpResp.textResponse,
+          groundedTrueRatio,
         });
         const sprtStateAfterDefense = stepSprtGovernor({
           priorState: currentTopic.gameTheoreticState?.sprtState,
-          currentRound: 3,
+          currentRound: (currentTopic.gameTheoreticState?.roundCount || 1) + 2,
           alignmentScore: sprtScoreAfterDefense,
+          groundedTrueRatio,
         });
+
+        logGameTheoreticTelemetry('decisionState_transition', topicId, {
+          stage: 'defense',
+          decisionState: sprtStateAfterDefense.decisionState,
+          round: sprtStateAfterDefense.currentRound,
+          logLikelihoodRatio: sprtStateAfterDefense.logLikelihoodRatio,
+          alignmentScore: sprtScoreAfterDefense,
+          groundedTrueRatio,
+        });
+
+        // 关键接线：消费 decisionState (R-1)
+        if (sprtStateAfterDefense.decisionState === 'deadlock_escalation') {
+          updateTopicDataInState(topicId, (old) => ({
+            ...old,
+            gameStage: 'arbitration',
+            gameTheoreticState: {
+              ...old.gameTheoreticState,
+              currentStage: 'arbitration',
+              targetProposalContent: targetProposalText,
+              targetChallengeContent: targetChallengeText,
+              targetDefenseContent: acpResp.textResponse,
+              isDefenseResponded: true,
+              quorumAlert: '⚠️ SPRT 似然比跌破死锁下界 (Deadlock Escalation)，答辩未能化解分歧，已熔断流转',
+              sprtState: sprtStateAfterDefense,
+              cognoNexus: {
+                ...old.gameTheoreticState?.cognoNexus,
+                committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
+                sprtState: sprtStateAfterDefense,
+              },
+            },
+          }));
+
+          logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
+            stage: 'defense',
+            reason: 'sprt_deadlock_escalation',
+          });
+
+          const deadlockMsg: Message = {
+            id: `msg-deadlock-alert-${Date.now()}`,
+            threadId: topicId,
+            channelId: topicChannel?.id,
+            authorId: 'system',
+            authorName: 'SPRT 序贯计算调控器',
+            authorHandle: '@sprt-governor',
+            authorAvatar: '⚡',
+            isAgent: true,
+            agentBadge: 'Deadlock Escalation',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `⚠️ **SPRT 死锁熔断告警 (Deadlock Escalation)**：答辩后攻防对齐度依然处于死锁区间 ($LHR \\le B$)。系统已阻断纯 AI 自动推演，请人类首席仲裁官在下方控制台敲响法槌定案。`,
+          };
+
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: [...(prev[topicId] || []), deadlockMsg],
+          }));
+          return;
+        }
+
+        // P2 二次对抗回边判定 (4 项硬条件守卫，不满足 4 条件不得回退，防止死循环) (R-4/R-6)
+        const currentRoundCount = currentTopic.gameTheoreticState?.roundCount || 1;
+        const originalClaims = extractArgumentNodes(targetProposalText);
+        const defenseClaims = extractArgumentNodes(acpResp.textResponse);
+        const hasNewUnverifiedClaims = defenseClaims.some(
+          (dc) => !originalClaims.some((oc) => oc.claim === dc.claim || (oc.claim && dc.claim && (oc.claim.includes(dc.claim) || dc.claim.includes(oc.claim))))
+        ) || (defenseClaims.length > 0 && defenseClaims.some((dc) => dc.status === 'disputed' || dc.status === 'refuted'));
+
+        const shouldTriggerP2Loopback =
+          sprtScoreAfterDefense < 0.45 &&
+          currentRoundCount < 2 &&
+          hasNewUnverifiedClaims &&
+          groundedTrueRatio < 0.5;
+
+        if (shouldTriggerP2Loopback) {
+          const nextRound = currentRoundCount + 1;
+          logGameTheoreticTelemetry('p2_loopback_triggered', topicId, {
+            nextRound,
+            sprtScoreAfterDefense,
+            currentRoundCount,
+            hasNewUnverifiedClaims,
+            groundedTrueRatio,
+          });
+
+          updateTopicDataInState(topicId, (old) => ({
+            ...old,
+            gameStage: 'challenge',
+            gameTheoreticState: {
+              ...old.gameTheoreticState,
+              currentStage: 'challenge',
+              roundCount: nextRound,
+              targetProposalContent: targetProposalText,
+              targetChallengeContent: targetChallengeText,
+              targetDefenseContent: acpResp.textResponse,
+              isChallengerResponded: false,
+              isVerifierResponded: false,
+              isDefenseResponded: false,
+              sprtState: sprtStateAfterDefense,
+              cognoNexus: {
+                ...old.gameTheoreticState?.cognoNexus,
+                committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
+                sprtState: sprtStateAfterDefense,
+              },
+            },
+          }));
+
+          const loopbackNotice: Message = {
+            id: `msg-p2-loopback-${Date.now()}`,
+            threadId: topicId,
+            channelId: topicChannel?.id,
+            authorId: 'system',
+            authorName: 'CognoNexus 博弈引擎',
+            authorHandle: '@p2-loopback-guard',
+            authorAvatar: '🔄',
+            isAgent: true,
+            agentBadge: `P2 回边 (第 ${nextRound} 轮对抗)`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `🔄 **触发 P2 二次对抗回边 (Round ${nextRound})**：
+系统完成 4 项二次对抗硬性条件准入校验（满足全部 4 项）：
+1. ✓ **对齐度未收敛**：当前综合对齐分 ${(sprtScoreAfterDefense * 100).toFixed(0)}% (< 45%)
+2. ✓ **安全轮次下界**：当前处于第 ${currentRoundCount} 轮 (< 2 轮)
+3. ✓ **引入未核验新断言**：答辩提出新补丁设计，需受二次深度质询
+4. ✓ **实证存在冲突反例**：客观真值率 ${(groundedTrueRatio * 100).toFixed(0)}% (< 50%)
+
+正在将答辩补丁移交 ⚔️ **红队对抗官** 发起第 ${nextRound} 轮反向质询...`,
+            gameStage: 'challenge',
+          };
+
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: [...(prev[topicId] || []), loopbackNotice],
+          }));
+
+          triggerGameTheoreticStageHandover({
+            topicId,
+            nextStage: 'challenge',
+            targetProposalText: acpResp.textResponse, // 答辩补丁作为第 2 轮审查标的
+            targetChallengeText,
+            targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
+            targetDefenseText: acpResp.textResponse,
+          });
+          return;
+        }
 
         // 阶段 3 答辩修正完成后，自动携攻防两造论据与答辩补丁转入【阶段 4: 中立仲裁】
         updateTopicDataInState(topicId, (old) => ({
@@ -3004,6 +3508,41 @@ export default function App() {
             cartridgeCitation: acpResp.cartridgeCitation,
           };
 
+          // 契约门禁校验
+          const contractValidation = validateStageContract('arbitration', acpResp.textResponse, arbiterAgent.name);
+          logGameTheoreticTelemetry('stage_contract_validation', topicId, {
+            stage: 'arbitration',
+            agentId: arbiterAgent.id,
+            isValid: contractValidation.isValid,
+            missingRequirements: contractValidation.missingRequirements,
+          });
+
+          // 求解确定性运筹决策矩阵并进行一致性硬门禁检验 (R-1)
+          const mcdaPayload = generateDeterministicMcdaPayload({
+            proposalText: targetProposalText,
+            critiqueText: targetChallengeText,
+            defenseText: targetDefenseText,
+          });
+
+          logGameTheoreticTelemetry('consistency_gate_evaluation', topicId, {
+            passed: mcdaPayload.consistencyPassed,
+            consistencyIndex: mcdaPayload.consistencyIndex,
+            solverType: mcdaPayload.solverType,
+          });
+
+          // 将求解出的 MCDA 矩阵持久化至议题博弈状态中
+          updateTopicDataInState(topicId, (old) => ({
+            ...old,
+            gameTheoreticState: {
+              ...old.gameTheoreticState,
+              mcdaPayload,
+              cognoNexus: {
+                ...old.gameTheoreticState?.cognoNexus,
+                mcdaPayload,
+              },
+            },
+          }));
+
           const humanNotice: Message = {
             id: `msg-human-gavel-notice-${Date.now()}`,
             threadId: topicId,
@@ -3013,9 +3552,11 @@ export default function App() {
             authorHandle: '@arbiter-gavel',
             authorAvatar: '⚖️',
             isAgent: true,
-            agentBadge: 'Gavel Ready',
+            agentBadge: mcdaPayload.consistencyPassed ? 'Gavel Ready' : 'Consistency Warning',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `⚖️ **AI 仲裁建言已生成**：立论、反例压测与答辩补丁已完成审查。请人类首席仲裁官查阅交锋要点，在下方【仲裁法槌控制台】选择【采纳主导】、【采纳挑战】或【权衡矩阵】敲响法槌定案，并可指派 Agent 进入工程代码落地实施。`,
+            content: mcdaPayload.consistencyPassed
+              ? `⚖️ **AI 仲裁建言已生成 (✓ 逻辑严密一致, ξ* = ${mcdaPayload.consistencyIndex})**：立论、反例压测、接地实证与答辩补丁已完成审查。请人类首席仲裁官查阅交锋要点，在下方【仲裁法槌控制台】选择【采纳提案】、【采纳红队】或【权衡矩阵】敲响法槌定案，并可指派 Agent 进入工程代码落地实施。`
+              : `⚖️ **AI 仲裁建言已生成 (⚠️ 运筹逻辑一致性未通过, ξ* = ${mcdaPayload.consistencyIndex} > 0.12)**：准则偏好存在传递性冲突。系统已硬锁定直接批准，请人类首席仲裁官查阅要点，在下方【仲裁法槌控制台】勾选特权豁免，或重新调校准则权重后定案。`,
           };
 
           setMessages((prev) => {
@@ -4783,6 +5324,14 @@ export default function App() {
           onToggleAgentStatus={(agentId) => {
             const currentAgent = agents.find((a) => a.id === agentId);
             if (!currentAgent) return;
+
+            // 如果当前处于 auth_required 状态，直接打开配置弹窗
+            if (currentAgent.status === 'auth_required') {
+              setEditingAgent(currentAgent);
+              setIsConnectModalOpen(true);
+              return;
+            }
+
             const isCurrentlyRunning = currentAgent.status !== 'idle';
 
             if (!isCurrentlyRunning) {
@@ -4793,26 +5342,46 @@ export default function App() {
                     a.id === agentId ? { ...a, status: 'starting', statusDetail: '连接远程 ACP 节点中...' } : a
                   )
                 );
-                import('./services/acpClient').then(({ probeRemoteAcpConnection }) => {
-                  probeRemoteAcpConnection(currentAgent.remoteUrl || currentAgent.acpCommandOrUrl, currentAgent.authToken)
-                    .then((probe) => {
-                      if (probe.ok) {
-                        setAgents((prev) =>
-                          prev.map((a) =>
-                            a.id === agentId
-                              ? { ...a, status: 'running', remoteLatencyMs: probe.latencyMs, statusDetail: `远程连接正常 (${probe.latencyMs}ms)` }
-                              : a
-                          )
-                        );
-                      } else {
-                        setAgents((prev) =>
-                          prev.map((a) =>
-                            a.id === agentId ? { ...a, status: 'error', statusDetail: probe.error || '远程连接失败' } : a
-                          )
-                        );
-                      }
-                    });
-                });
+                probeRemoteAcpConnection(currentAgent.remoteUrl || currentAgent.acpCommandOrUrl, currentAgent.authToken)
+                  .then((probe) => {
+                    if (probe.ok) {
+                      setAgents((prev) =>
+                        prev.map((a) =>
+                          a.id === agentId
+                            ? { ...a, status: 'running', remoteLatencyMs: probe.latencyMs, statusDetail: `远程连接正常 (${probe.latencyMs}ms)` }
+                            : a
+                        )
+                      );
+                    } else {
+                      setAgents((prev) =>
+                        prev.map((a) =>
+                          a.id === agentId ? { ...a, status: 'error', statusDetail: probe.error || '远程连接失败' } : a
+                        )
+                      );
+                    }
+                  });
+                return;
+              }
+
+              // 本地 Agent 启动前置前瞻校验：检查大模型与 Key 是否就绪
+              const resolvedConfig = resolveAgentModelConfig(currentAgent);
+              const isReady = isModelConfigReady(resolvedConfig);
+
+              if (!isReady) {
+                // 未配置底座大模型或未填 Key，标记为 auth_required 并打开配置面板
+                setAgents((prev) =>
+                  prev.map((a) =>
+                    a.id === agentId
+                      ? {
+                          ...a,
+                          status: 'auth_required',
+                          statusDetail: '未检测到底座大模型 API Key，请点击配置',
+                        }
+                      : a
+                  )
+                );
+                setEditingAgent(currentAgent);
+                setIsConnectModalOpen(true);
                 return;
               }
 
@@ -4822,12 +5391,44 @@ export default function App() {
                   a.id === agentId ? { ...a, status: 'starting', statusDetail: 'ACP 进程启动与协议握手中...' } : a
                 )
               );
+
               if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke) {
+                // Tauri 桌面端：自动组装并注入模型环境变量
+                const mergedEnvVars = [...(currentAgent.envVars || [])];
+                const injectEnv = (key: string, val?: string) => {
+                  if (!val) return;
+                  const idx = mergedEnvVars.findIndex((e) => e.key === key);
+                  if (idx >= 0) {
+                    mergedEnvVars[idx] = { key, value: val };
+                  } else {
+                    mergedEnvVars.push({ key, value: val });
+                  }
+                };
+
+                if (resolvedConfig.apiKey) {
+                  if (resolvedConfig.provider === 'deepseek') {
+                    injectEnv('DEEPSEEK_API_KEY', resolvedConfig.apiKey);
+                    injectEnv('OPENAI_API_KEY', resolvedConfig.apiKey);
+                  } else if (resolvedConfig.provider === 'anthropic') {
+                    injectEnv('ANTHROPIC_API_KEY', resolvedConfig.apiKey);
+                  } else {
+                    injectEnv('OPENAI_API_KEY', resolvedConfig.apiKey);
+                  }
+                }
+                if (resolvedConfig.baseUrl) {
+                  injectEnv('OPENAI_BASE_URL', resolvedConfig.baseUrl);
+                  injectEnv('ANTHROPIC_BASE_URL', resolvedConfig.baseUrl);
+                }
+                if (resolvedConfig.modelId) {
+                  injectEnv('SHINOBI_MODEL', resolvedConfig.modelId);
+                  injectEnv('LLM_MODEL', resolvedConfig.modelId);
+                }
+
                 (window as any).__TAURI_INTERNALS__.invoke('spawn_acp_agent', {
                   agentId: currentAgent.id,
                   command: currentAgent.acpCommandOrUrl,
                   cwd: currentAgent.workspace?.rootPath || activeProject?.localWorkspaceRoot || '.',
-                  envVars: currentAgent.envVars || [],
+                  envVars: mergedEnvVars,
                 }).then(() => {
                   syncRunningAgentsWithBackend();
                 }).catch((err: any) => {
@@ -4838,6 +5439,21 @@ export default function App() {
                     )
                   );
                 });
+              } else {
+                // Web 浏览器环境：平滑转入 running，接入 Web LLM 运行时
+                setTimeout(() => {
+                  setAgents((prev) =>
+                    prev.map((a) =>
+                      a.id === agentId
+                        ? {
+                            ...a,
+                            status: 'running',
+                            statusDetail: `就绪 · ${resolvedConfig.modelName || resolvedConfig.modelId} (Web 运行时)`,
+                          }
+                        : a
+                    )
+                  );
+                }, 500);
               }
             } else {
               // 终止 Agent 进程
@@ -5180,7 +5796,7 @@ export default function App() {
             id: `agent-${Date.now()}`,
             name: agentData.name || 'Custom Agent',
             handle: agentData.handle || `@${(agentData.name || 'agent').toLowerCase()}`,
-            avatar: agentData.avatar || '🤖',
+            avatar: agentData.avatar || '🥷',
             role: agentData.role || 'Specialized Agent',
             description: agentData.description || agentData.role || 'Custom ACP Agent',
             color: '#06b6d4',

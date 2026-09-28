@@ -49,6 +49,7 @@ import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ResizeHandle } from './ResizeHandle';
 import { getDraft, saveDraft, clearDraft } from '../services/draftService';
+import { logGameTheoreticTelemetry, generateDynamicRulingDraft } from '../services/agentCollaboration';
 
 interface TopicThreadDrawerProps {
   isOpen: boolean;
@@ -107,11 +108,8 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   const [rulingType, setRulingType] = useState<RulingDecisionType>('adopt_proposer');
   const [rulingSummary, setRulingSummary] = useState('');
   const [rulingSolution, setRulingSolution] = useState('');
-  const [rulingImpactedFiles, setRulingImpactedFiles] = useState('src/middleware/auth.ts, src/routes/oauth.ts');
-  const [tradeOffPoints, setTradeOffPoints] = useState<string[]>([
-    '以轻量延迟换取 100% 幂等与重试防穿透',
-    '限制最大重试次数为 3 次，超时自动转死信队列'
-  ]);
+  const [rulingImpactedFiles, setRulingImpactedFiles] = useState('');
+  const [tradeOffPoints, setTradeOffPoints] = useState<string[]>([]);
   const [newPointInput, setNewPointInput] = useState('');
   const [exemptionChecked, setExemptionChecked] = useState(false);
   const [exemptionReason, setExemptionReason] = useState('');
@@ -131,16 +129,24 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       : (topic?.gameRoles?.proposers?.[0] || topic?.gameRoles?.arbiters?.[0] || '');
     setSelectedExecutorId(defaultExecutor);
 
-    if (type === 'adopt_proposer') {
-      setRulingSummary('经博弈讨论验证，主导方案具备完整落地可行性与性能优势，补充边界校验后准予合并实施。');
-      setRulingSolution('采纳主导者架构设计方案，补齐分布式锁与熔断兜底。');
-    } else if (type === 'reject_rebuild') {
-      setRulingSummary('挑战者提出的极端并发竞争与数据不一致隐患属实，原主导方案在关键路径存在不可逆风险，予以驳回重构。');
-      setRulingSolution('驳回直连设计，重构为基于消息队列与补偿事务的最终一致性架构。');
-    } else {
-      setRulingSummary('主导方案与挑战意见各有权衡取舍，通过妥协折中构建架构权衡矩阵，实施分阶段演进。');
-      setRulingSolution('阶段一推进极简核心流；阶段二落地挑战者要求的审计流水与异常补偿。');
-    }
+    // 基于本议题真实讨论脉络、MCDA 运筹权重分布与冲突切片，动态生成专属裁决草案
+    const draft = generateDynamicRulingDraft({
+      topicTitle: topic?.title || '当前研讨议题',
+      topicDescription: topic?.description,
+      rulingType: type,
+      targetProposalContent: topic?.gameTheoreticState?.targetProposalContent,
+      targetChallengeContent: topic?.gameTheoreticState?.targetChallengeContent,
+      targetVerificationContent: topic?.gameTheoreticState?.targetVerificationContent,
+      targetDefenseContent: topic?.gameTheoreticState?.targetDefenseContent,
+      mcdaPayload: topic?.gameTheoreticState?.mcdaPayload,
+      currentDispute: topic?.gameTheoreticState?.cognoNexus?.currentDispute,
+      messages: (messages || []).map((m) => ({ content: m.content, authorName: m.authorName })),
+    });
+
+    setRulingSummary(draft.rulingSummary);
+    setRulingSolution(draft.rulingSolution);
+    setRulingImpactedFiles(draft.rulingImpactedFiles);
+    setTradeOffPoints(draft.tradeOffPoints);
     setShowRulingModal(true);
   };
 
@@ -153,15 +159,24 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       : (topic?.gameRoles?.proposers?.[0] || topic?.gameRoles?.arbiters?.[0] || '');
     setSelectedExecutorId(defaultExecutor);
 
-    if (type === 'adopt_proposer') {
-      setRulingSummary('经博弈讨论验证，主导方案具备完整落地可行性与性能优势，补充边界校验后准予合并实施。');
-      setRulingSolution('采纳主导者架构设计方案，补齐分布式锁与熔断兜底。');
-    } else if (type === 'reject_rebuild') {
-      setRulingSummary('挑战者提出的极端并发竞争与数据不一致隐患属实，原主导方案在关键路径存在不可逆风险，予以驳回重构。');
-      setRulingSolution('驳回直连设计，重构为基于消息队列与补偿事务的最终一致性架构。');
-    } else {
-      setRulingSummary('主导方案与挑战意见各有权衡取舍，通过妥协折中构建架构权衡矩阵，实施分阶段演进。');
-      setRulingSolution('阶段一推进极简核心流；阶段二落地挑战者要求的审计流水与异常补偿。');
+    // 动态适应切换后的裁决类型
+    const draft = generateDynamicRulingDraft({
+      topicTitle: topic?.title || '当前研讨议题',
+      topicDescription: topic?.description,
+      rulingType: type,
+      targetProposalContent: topic?.gameTheoreticState?.targetProposalContent,
+      targetChallengeContent: topic?.gameTheoreticState?.targetChallengeContent,
+      targetVerificationContent: topic?.gameTheoreticState?.targetVerificationContent,
+      targetDefenseContent: topic?.gameTheoreticState?.targetDefenseContent,
+      mcdaPayload: topic?.gameTheoreticState?.mcdaPayload,
+      currentDispute: topic?.gameTheoreticState?.cognoNexus?.currentDispute,
+      messages: (messages || []).map((m) => ({ content: m.content, authorName: m.authorName })),
+    });
+
+    setRulingSummary(draft.rulingSummary);
+    setRulingSolution(draft.rulingSolution);
+    if (draft.tradeOffPoints.length > 0) {
+      setTradeOffPoints(draft.tradeOffPoints);
     }
   };
 
@@ -187,6 +202,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       ? 'Norris_M5Pro (人类首席仲裁官)' 
       : (aiArbiterNames[0] || 'Shinobi 仲裁官');
 
+    const isConsistencyPassed = topic.gameTheoreticState?.mcdaPayload?.consistencyPassed ?? true;
+    const isExempted = (!isChallengerQuorumMet || !isConsistencyPassed) && exemptionChecked;
+    const finalExemptionReason = isExempted ? (exemptionReason.trim() || '人类首席仲裁官具名特权豁免') : undefined;
+
     const rulingRecord: RulingRecord = {
       decisionType: rulingType,
       arbiterId: 'user-norris',
@@ -196,12 +215,23 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       tradeOffPoints: tradeOffPoints.filter((p) => p.trim().length > 0),
       impactedFiles: finalImpactedFiles,
       decidedAt: resolvedAt,
-      exemptionReason: !isChallengerQuorumMet ? (exemptionReason.trim() || '人类首席仲裁官具名特权豁免') : undefined,
+      exemptionReason: finalExemptionReason,
       executorId: selectedExecutorId || undefined,
       mcdaPayload: topic.gameTheoreticState?.mcdaPayload,
       minorityReport: topic.gameTheoreticState?.minorityReport,
       sprtState: topic.gameTheoreticState?.sprtState,
     };
+
+    // 记录仲裁与三率度量打点 (R-1/R-4)
+    logGameTheoreticTelemetry('topic_arbitration_concluded', topic.id, {
+      decisionType: rulingType,
+      arbiterName,
+      executorId: selectedExecutorId,
+      autoArbitrated: !topic.gameRoles?.humanIsArbiter && !isExempted,
+      autoExecuted: Boolean(selectedExecutorId),
+      consistencyPassed: isConsistencyPassed,
+      hasExemption: Boolean(isExempted),
+    });
 
     onResolveTopic(topic.id, {
       solution: rulingSolution.trim() || rulingSummary.trim(),
@@ -977,7 +1007,22 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   轮次 {topic.gameTheoreticState.sprtState.currentRound} · 对齐分 {(topic.gameTheoreticState.sprtState.latestAlignmentScore * 100).toFixed(0)}% · 似然比 Λ={topic.gameTheoreticState.sprtState.logLikelihoodRatio.toFixed(2)}
                 </span>
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5">
+                {topic.gameTheoreticState.sprtState.calibrationStatus && (
+                  <span className={`px-1.5 py-0.5 rounded font-mono text-[9px] ${
+                    topic.gameTheoreticState.sprtState.calibrationStatus === 'calibrated'
+                      ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400 font-medium'
+                      : topic.gameTheoreticState.sprtState.calibrationStatus === 'fallback'
+                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 font-medium'
+                      : 'bg-zinc-500/15 text-zinc-500 font-medium'
+                  }`}>
+                    {topic.gameTheoreticState.sprtState.calibrationStatus === 'calibrated'
+                      ? '🎯 动态已校准'
+                      : topic.gameTheoreticState.sprtState.calibrationStatus === 'fallback'
+                      ? '⚠️ 兜底校准'
+                      : '⏳ 初始未校准'}
+                  </span>
+                )}
                 {topic.gameTheoreticState.sprtState.decisionState === 'early_exit' && (
                   <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-medium font-sans">
                     ⚡ 高置信早停收敛
@@ -1018,6 +1063,35 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   <span className="font-semibold text-rose-600">反例: </span>
                   {topic.gameTheoreticState.cognoNexus.currentDispute.challengerCritique}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* R-5 三态事实脱水看板 (Tri-State Dehydration) */}
+          {topic.gameTheoreticState?.cognoNexus?.committedStates && topic.gameTheoreticState.cognoNexus.committedStates.length > 0 && (
+            <div className="p-2 rounded-lg bg-surface border border-border/80 space-y-1 shadow-2xs">
+              <div className="flex items-center justify-between text-fg font-medium">
+                <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold text-[10px]">
+                  <ShieldCheck className="w-3 h-3" />
+                  <span>三态事实脱水看板 ({topic.gameTheoreticState.cognoNexus.committedStates.length} 项论点收敛)</span>
+                </span>
+                <span className="text-[9px] font-mono text-fg-muted">Tri-State Dehydration</span>
+              </div>
+              <div className="space-y-1 pt-0.5">
+                {topic.gameTheoreticState.cognoNexus.committedStates.slice(0, 3).map((node) => (
+                  <div key={node.id} className="flex items-center justify-between gap-1.5 px-1.5 py-0.5 rounded bg-surface-subtle text-[9px]">
+                    <span className="text-fg truncate flex-1" title={node.claim}>{node.claim}</span>
+                    <span className={`px-1.5 py-0.2 rounded font-mono shrink-0 text-[8px] ${
+                      node.status === 'refuted' 
+                        ? 'bg-rose-500/15 text-rose-600 font-bold' 
+                        : node.status === 'disputed' 
+                        ? 'bg-amber-500/15 text-amber-600 font-bold' 
+                        : 'bg-emerald-500/15 text-emerald-600 font-medium'
+                    }`}>
+                      {node.status === 'refuted' ? '✗ 已证伪' : node.status === 'disputed' ? '⚠️ 争议中' : '✓ 已证实'}
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -1583,10 +1657,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               <div className="flex items-center justify-between text-[11px]">
                 <div className="flex items-center gap-1.5 font-bold text-amber-950 dark:text-amber-100">
                   <Gavel className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                  <span>仲裁者专属法槌控制台 (Arbiter's Gavel)</span>
+                  <span>人类首席仲裁官法槌控制台 (Chief Arbiter's Gavel)</span>
                 </div>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-amber-600 dark:bg-amber-500 text-white font-bold shadow-2xs flex items-center gap-1 tracking-tight">
-                  👑 单向定案权
+                  👑 终局裁决权
                 </span>
               </div>
               <div className="grid grid-cols-3 gap-1.5">
@@ -1594,24 +1668,24 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   type="button"
                   onClick={() => handleOpenRuling('adopt_proposer')}
                   className="py-1.5 px-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[11px] shadow-sm flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer text-center"
-                  title="认可主导者方案的可行性与完整度，直接定案"
+                  title="认可提案官方案的可行性与完整度，直接定案"
                 >
                   <div className="flex items-center gap-1">
                     <CheckCircle2 className="w-3 h-3 shrink-0" />
-                    <span>采纳主导</span>
+                    <span>采纳提案</span>
                   </div>
-                  <span className="text-[9px] font-normal opacity-85">通过主导方案</span>
+                  <span className="text-[9px] font-normal opacity-85">通过提案方案</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => handleOpenRuling('reject_rebuild')}
                   className="py-1.5 px-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-[11px] shadow-sm flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer text-center"
-                  title="认可挑战者指出的严重隐患，裁定推倒重构"
+                  title="认可红队指出的严重隐患与反例，裁定驳回重构"
                 >
                   <div className="flex items-center gap-1">
                     <RotateCcw className="w-3 h-3 shrink-0" />
-                    <span>采纳挑战</span>
+                    <span>采纳红队</span>
                   </div>
                   <span className="text-[9px] font-normal opacity-85">驳回重构架构</span>
                 </button>
@@ -1620,7 +1694,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   type="button"
                   onClick={() => handleOpenRuling('trade_off_matrix')}
                   className="py-1.5 px-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-semibold text-[11px] shadow-sm flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer text-center"
-                  title="主导与挑战各具合理性，生成权衡折中矩阵并定案"
+                  title="提案与红队各具合理性，生成权衡折中矩阵并定案"
                 >
                   <div className="flex items-center gap-1">
                     <SlidersHorizontal className="w-3 h-3 shrink-0" />
@@ -1960,17 +2034,30 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
               {/* Trade-off Points (Dynamic list) */}
               <div>
-                <label className="block text-xs font-semibold text-fg mb-1">
-                  关键权衡折中要点 (Trade-off Matrix)
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-semibold text-fg flex items-center gap-1.5">
+                    <span>关键权衡折中要点 (Trade-off Matrix)</span>
+                    <span className="text-[10px] font-normal text-purple-600 dark:text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded font-mono">
+                      动态提炼
+                    </span>
+                  </label>
+                  <span className="text-[10px] text-fg-muted font-sans">
+                    可编辑 / 支持自由删减
+                  </span>
+                </div>
                 <div className="space-y-1.5 mb-2">
+                  {tradeOffPoints.length === 0 && (
+                    <div className="p-2.5 rounded-lg bg-surface-subtle/60 border border-dashed border-border text-[11px] text-fg-muted text-center">
+                      暂无提取的权衡要点，可在下方输入框手动输入添加
+                    </div>
+                  )}
                   {tradeOffPoints.map((pt, idx) => (
                     <div key={idx} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-surface-subtle border border-border text-[11px]">
-                      <span className="text-fg flex-1">• {pt}</span>
+                      <span className="text-fg flex-1 leading-relaxed">• {pt}</span>
                       <button
                         type="button"
                         onClick={() => handleRemoveTradeOffPoint(idx)}
-                        className="p-1 hover:text-red-500 text-fg-muted transition-colors cursor-pointer"
+                        className="p-1 hover:text-red-500 text-fg-muted transition-colors cursor-pointer shrink-0"
                         title="删除要点"
                       >
                         <Trash2 className="w-3 h-3" />
@@ -1990,7 +2077,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                       }
                     }}
                     placeholder="输入一条权衡考量（如：以 5% 网络延迟换取 100% 强幂等），按回车添加..."
-                    className="flex-1 px-3 py-1.5 rounded-lg bg-surface-subtle border border-border focus:border-amber-500 text-fg text-xs focus:outline-none transition-all"
+                    className="flex-1 px-3 py-1.5 rounded-lg bg-surface-subtle border border-border focus:border-amber-500 text-fg text-xs focus:outline-none transition-all placeholder:text-fg-muted"
                   />
                   <button
                     type="button"
@@ -2005,14 +2092,25 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
               {/* Impacted Files */}
               <div>
-                <label className="block text-xs font-semibold text-fg mb-1">
-                  涉及受影响文件 (逗号分隔)
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-semibold text-fg flex items-center gap-1.5">
+                    <span>涉及受影响文件 (逗号分隔)</span>
+                    {rulingImpactedFiles.trim() && (
+                      <span className="text-[10px] font-normal text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded font-mono">
+                        正文识别
+                      </span>
+                    )}
+                  </label>
+                  <span className="text-[10px] text-fg-muted font-sans">
+                    约束落地安全爆炸半径
+                  </span>
+                </div>
                 <input
                   type="text"
                   value={rulingImpactedFiles}
                   onChange={(e) => setRulingImpactedFiles(e.target.value)}
-                  className="w-full px-3 py-1.5 rounded-xl bg-surface-subtle border border-border focus:border-amber-500 text-fg text-xs focus:outline-none transition-all font-mono"
+                  placeholder="自动从研讨中识别涉及文件；或手动输入，逗号分隔 (如: src/services/order.ts)"
+                  className="w-full px-3 py-1.5 rounded-xl bg-surface-subtle border border-border focus:border-amber-500 text-fg text-xs focus:outline-none transition-all font-mono placeholder:text-fg-muted"
                 />
               </div>
 
@@ -2069,6 +2167,41 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 </div>
               )}
 
+              {/* Consistency Gate Hard Check (R-1) */}
+              {topic.gameTheoreticState?.mcdaPayload && !topic.gameTheoreticState.mcdaPayload.consistencyPassed && (
+                <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-900 dark:text-rose-200 text-xs space-y-2">
+                  <div className="flex items-center gap-1.5 font-bold text-rose-700 dark:text-rose-300">
+                    <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0" />
+                    <span>MCDA 运筹逻辑一致性未达标硬门禁 (Consistency Check Failed, ξ* &gt; 0.12)</span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-fg-secondary">
+                    当前多准则偏好矩阵存在逻辑传递性矛盾 (当前标度 ξ* = {topic.gameTheoreticState.mcdaPayload.consistencyIndex} &gt; 0.12)。根据工程控制法规，系统已硬锁定直接批准。如确需定案，人类首席仲裁官须勾选下方的特权豁免，承担一致性缺陷责任。
+                  </p>
+                  <label className="flex items-start gap-2 pt-1 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={exemptionChecked}
+                      onChange={(e) => setExemptionChecked(e.target.checked)}
+                      className="mt-0.5 rounded border-rose-500 text-rose-600 focus:ring-rose-500"
+                    />
+                    <span className="text-[11px] font-semibold text-fg">
+                      我已知晓一致性逻辑矛盾风险，并执行人类首席仲裁官具名特权豁免 (Exemption)
+                    </span>
+                  </label>
+                  {exemptionChecked && (
+                    <div className="pt-1">
+                      <input
+                        type="text"
+                        value={exemptionReason}
+                        onChange={(e) => setExemptionReason(e.target.value)}
+                        placeholder="请输入一致性豁免理由（如：已人工核对并对冲冲突准则）..."
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-surface border border-rose-500/40 text-fg text-xs focus:outline-none"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Quorum Gate Alert & Exemption Checkbox */}
               {!isChallengerQuorumMet && (
                 <div className="p-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-900 dark:text-amber-200 text-xs space-y-2">
@@ -2077,7 +2210,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     <span>法定推演人数未达标告警 (Quorum Not Met)</span>
                   </div>
                   <p className="text-[11px] leading-relaxed text-fg-secondary">
-                    制衡方 (Challenger) 未能成功生成有效反例压测或发生离线/异常。根据博弈推演治理规约，如需定案，人类首席仲裁官须行使具名特权豁免。
+                    红队对抗方 (Challenger) 未能成功生成有效反例压测或发生离线/异常。根据博弈推演治理规约，如需定案，人类首席仲裁官须行使具名特权豁免。
                   </p>
                   <label className="flex items-start gap-2 pt-1 cursor-pointer select-none">
                     <input
@@ -2087,7 +2220,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                       className="mt-0.5 rounded border-amber-500 text-amber-600 focus:ring-amber-500"
                     />
                     <span className="text-[11px] font-semibold text-fg">
-                      我已知晓制衡方缺席风险，并执行人类首席仲裁官具名特权豁免 (Exemption)
+                      我已知晓红队缺席风险，并执行人类首席仲裁官具名特权豁免 (Exemption)
                     </span>
                   </label>
                   {exemptionChecked && (
@@ -2096,7 +2229,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                         type="text"
                         value={exemptionReason}
                         onChange={(e) => setExemptionReason(e.target.value)}
-                        placeholder="请输入具名豁免理由（如：制衡方超时，时间紧迫先行动行采纳）..."
+                        placeholder="请输入具名豁免理由（如：红队超时，时间紧迫先行动行采纳）..."
                         className="w-full px-2.5 py-1.5 rounded-lg bg-surface border border-amber-500/40 text-fg text-xs focus:outline-none"
                       />
                     </div>
@@ -2109,7 +2242,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 <div className="flex items-center gap-1.5 font-medium">
                   <Scale className="w-3.5 h-3.5 shrink-0" />
                   <span>
-                    仲裁署名: {topic.gameRoles?.humanIsArbiter ? 'Norris_M5Pro (人类首席仲裁官, 持法槌)' : 'AI 仲裁组'}
+                    仲裁署名: {topic.gameRoles?.humanIsArbiter ? 'Norris_M5Pro (人类首席仲裁官, 持法槌)' : 'AI 综合仲裁组'}
                     {topic.gameRoles?.arbiters && topic.gameRoles.arbiters.length > 0 && (
                       <span className="opacity-75">
                         {' '}协同: {topic.gameRoles.arbiters.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、')}
@@ -2132,9 +2265,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               <button
                 type="button"
                 onClick={handleConfirmRuling}
-                disabled={!isChallengerQuorumMet && !exemptionChecked}
+                disabled={(!isChallengerQuorumMet || (topic.gameTheoreticState?.mcdaPayload && !topic.gameTheoreticState.mcdaPayload.consistencyPassed)) && !exemptionChecked}
                 className={`px-4 py-1.5 rounded-xl font-semibold text-xs shadow-md transition-all flex items-center gap-1.5 ${
-                  !isChallengerQuorumMet && !exemptionChecked
+                  (!isChallengerQuorumMet || (topic.gameTheoreticState?.mcdaPayload && !topic.gameTheoreticState.mcdaPayload.consistencyPassed)) && !exemptionChecked
                     ? 'bg-fg-muted/20 text-fg-muted cursor-not-allowed'
                     : rulingType === 'adopt_proposer'
                     ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer'

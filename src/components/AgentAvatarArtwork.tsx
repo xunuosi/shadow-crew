@@ -11,35 +11,41 @@ export function resolveArtworkType(avatar?: string, type?: string, name?: string
   // 1. Check explicit avatar emoji or id first
   if (avatar) {
     if (avatar === '🥷' || avatar === 'shinobi') return 'shinobi';
-    if (avatar === '🪷' || avatar === 'claudecode') return 'claudecode';
     if (avatar === '🤖' || avatar === 'codex') return 'codex';
-    if (avatar === '🎨' || avatar === 'palette') return 'palette';
-    if (avatar === '🐞' || avatar === 'alien' || avatar === 'deepseek') return 'alien';
+    if (avatar === '✨' || avatar === '🪷' || avatar === 'claudecode' || avatar === 'claude') return 'claudecode';
+    if (avatar === '🐳' || avatar === '🐋' || avatar === '🐞' || avatar === 'deepseek' || avatar === 'alien') return 'deepseek';
+    if (avatar === '🦗' || avatar === 'openclaw' || avatar === 'mantis') return 'openclaw';
+    if (avatar === '⚡' || avatar === 'bolt' || avatar === 'turbo') return 'bolt';
+    if (avatar === '🛡️' || avatar === 'sentinel' || avatar === 'shield') return 'sentinel';
     if (avatar === '🧭' || avatar === 'astra') return 'astra';
-    if (avatar === '🦗' || avatar === 'openclaw') return 'openclaw';
+    if (avatar === '🎨' || avatar === 'palette' || avatar === 'artisan') return 'palette';
   }
 
   // 2. Check type prop
   if (type) {
     const t = type.toLowerCase();
     if (t === 'shinobi' || t.includes('ninja')) return 'shinobi';
-    if (t === 'claudecode' || t.includes('claude')) return 'claudecode';
-    if (t === 'codex' || t.includes('openai')) return 'codex';
-    if (t === 'palette' || t.includes('art') || t.includes('paint')) return 'palette';
-    if (t === 'alien' || t.includes('deepseek')) return 'alien';
+    if (t === 'codex' || t.includes('openai') || t.includes('gpt')) return 'codex';
+    if (t === 'claudecode' || t.includes('claude') || t.includes('anthropic')) return 'claudecode';
+    if (t === 'deepseek' || t.includes('whale') || t === 'alien') return 'deepseek';
+    if (t === 'openclaw' || t.includes('mantis') || t.includes('claw')) return 'openclaw';
+    if (t === 'bolt' || t.includes('lightning') || t.includes('turbo')) return 'bolt';
+    if (t === 'sentinel' || t.includes('shield') || t.includes('guard')) return 'sentinel';
     if (t === 'astra' || t.includes('compass') || t.includes('star')) return 'astra';
-    if (t === 'openclaw' || t.includes('claw')) return 'openclaw';
+    if (t === 'palette' || t.includes('art') || t.includes('paint') || t.includes('artisan')) return 'palette';
   }
 
   // 3. Fallback to name heuristic only if avatar/type did not match a preset
   const n = (name || '').toLowerCase();
-  if (n.includes('deepseek') || n.includes('alien')) return 'alien';
-  if (n.includes('astra') || n.includes('compass')) return 'astra';
-  if (n.includes('claudecode') || n.includes('claude')) return 'claudecode';
-  if (n.includes('codex') || n.includes('openai')) return 'codex';
-  if (n.includes('openclaw') || n.includes('claw')) return 'openclaw';
   if (n.includes('shinobi') || n.includes('ninja')) return 'shinobi';
-  if (n.includes('artistry') || n.includes('palette')) return 'palette';
+  if (n.includes('codex') || n.includes('openai')) return 'codex';
+  if (n.includes('claudecode') || n.includes('claude')) return 'claudecode';
+  if (n.includes('deepseek') || n.includes('whale') || n.includes('alien')) return 'deepseek';
+  if (n.includes('openclaw') || n.includes('claw') || n.includes('mantis')) return 'openclaw';
+  if (n.includes('bolt') || n.includes('turbo') || n.includes('speed')) return 'bolt';
+  if (n.includes('sentinel') || n.includes('shield') || n.includes('guard')) return 'sentinel';
+  if (n.includes('astra') || n.includes('compass')) return 'astra';
+  if (n.includes('artistry') || n.includes('palette') || n.includes('artisan')) return 'palette';
 
   return 'other';
 }
@@ -52,57 +58,293 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
 }) => {
   const artwork = resolveArtworkType(avatar, type, name);
 
-  // 1. MyDeepSeek - Terracotta Multi-Eyed Alien Bust (Matching Screenshot)
-  if (artwork === 'alien') {
+  // 1. Shinobi - Cyber Stealth Ninja Mask (DEFAULT)
+  if (artwork === 'shinobi') {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#38262c] to-[#1a1216] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#18263a] via-[#0d1624] to-[#060a10] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
           <defs>
-            <radialGradient id="alienSkin" cx="40%" cy="30%" r="70%">
-              <stop offset="0%" stopColor="#d9777f" />
-              <stop offset="50%" stopColor="#a34b54" />
-              <stop offset="100%" stopColor="#5e262c" />
-            </radialGradient>
-            <radialGradient id="eyeGlow" cx="35%" cy="35%" r="60%">
-              <stop offset="0%" stopColor="#ffffff" />
-              <stop offset="40%" stopColor="#e2e8f0" />
-              <stop offset="80%" stopColor="#475569" />
-              <stop offset="100%" stopColor="#0f172a" />
+            <linearGradient id="shinoBg" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#1e293b" />
+              <stop offset="50%" stopColor="#0f172a" />
+              <stop offset="100%" stopColor="#020617" />
+            </linearGradient>
+            <linearGradient id="shinoCyan" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="#06b6d4" />
+              <stop offset="50%" stopColor="#22d3ee" />
+              <stop offset="100%" stopColor="#38bdf8" />
+            </linearGradient>
+            <linearGradient id="shinoMetal" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#64748b" />
+              <stop offset="100%" stopColor="#334155" />
+            </linearGradient>
+            <radialGradient id="shinoGlow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.8" />
+              <stop offset="100%" stopColor="#0891b2" stopOpacity="0" />
             </radialGradient>
           </defs>
-          {/* Head & Cranium */}
-          <ellipse cx="50" cy="46" rx="28" ry="32" fill="url(#alienSkin)" />
-          {/* Temporal Nodes / Ears */}
-          <ellipse cx="20" cy="38" rx="8" ry="14" fill="#a34b54" />
-          <ellipse cx="80" cy="38" rx="8" ry="14" fill="#a34b54" />
-          <ellipse cx="20" cy="38" rx="5" ry="9" fill="#5e262c" />
-          <ellipse cx="80" cy="38" rx="5" ry="9" fill="#5e262c" />
-          {/* Top Center Eye */}
-          <ellipse cx="50" cy="32" rx="7" ry="5.5" fill="url(#eyeGlow)" stroke="#381318" strokeWidth="1.5" />
-          <circle cx="50" cy="32" r="2.5" fill="#0f172a" />
-          <circle cx="51.5" cy="31" r="0.8" fill="#ffffff" />
-          {/* Left Main Eye */}
-          <ellipse cx="37" cy="45" rx="8" ry="6.5" fill="url(#eyeGlow)" stroke="#381318" strokeWidth="1.5" />
-          <circle cx="37" cy="45" r="3" fill="#0f172a" />
-          <circle cx="38.5" cy="43.5" r="1" fill="#ffffff" />
-          {/* Right Main Eye */}
-          <ellipse cx="63" cy="45" rx="8" ry="6.5" fill="url(#eyeGlow)" stroke="#381318" strokeWidth="1.5" />
-          <circle cx="63" cy="45" r="3" fill="#0f172a" />
-          <circle cx="64.5" cy="43.5" r="1" fill="#ffffff" />
-          {/* Subtle Snout & Mouth */}
-          <path d="M47 56 Q50 58 53 56" stroke="#4a1a20" strokeWidth="2" strokeLinecap="round" fill="none" />
-          <path d="M44 65 Q50 69 56 65" stroke="#381318" strokeWidth="2.5" strokeLinecap="round" fill="none" />
-          {/* Neck & Shoulders */}
-          <path d="M41 74 L32 95 L68 95 L59 74 Z" fill="#873c44" />
+          {/* Outer Rim */}
+          <circle cx="50" cy="50" r="46" fill="url(#shinoBg)" stroke="#1e293b" strokeWidth="1.5" />
+          {/* Stealth Hood / Cowl */}
+          <path d="M24 46 C24 22 76 22 76 46 C76 76 66 86 50 86 C34 86 24 76 24 46 Z" fill="#090d16" stroke="#1e293b" strokeWidth="1.5" />
+          {/* Inner Shadow / Folds */}
+          <path d="M28 44 C28 26 72 26 72 44 C72 68 64 78 50 78 C36 78 28 68 28 44 Z" fill="#0f172a" />
+          {/* Stealth Headband Plate */}
+          <path d="M26 36 Q50 32 74 36 L72 44 Q50 40 28 44 Z" fill="url(#shinoMetal)" stroke="#475569" strokeWidth="1" />
+          {/* Headband Shuriken Star Crest */}
+          <g transform="translate(50, 38) scale(0.65)">
+            <polygon points="0,-8 3,-3 8,0 3,3 0,8 -3,3 -8,0 -3,-3" fill="#22d3ee" />
+            <circle cx="0" cy="0" r="2" fill="#0f172a" />
+          </g>
+          {/* Face Mask Void */}
+          <path d="M30 46 Q50 44 70 46 L68 56 Q50 59 32 56 Z" fill="#020617" />
+          {/* Glowing Visor Aura */}
+          <ellipse cx="50" cy="50" rx="16" ry="6" fill="url(#shinoGlow)" />
+          {/* Twin Cybernetic Optic Visor Slits */}
+          <path d="M34 49 L46 51" stroke="url(#shinoCyan)" strokeWidth="3" strokeLinecap="round" />
+          <path d="M54 51 L66 49" stroke="url(#shinoCyan)" strokeWidth="3" strokeLinecap="round" />
+          <circle cx="44" cy="50.8" r="1" fill="#ffffff" />
+          <circle cx="56" cy="50.8" r="1" fill="#ffffff" />
+          {/* Lower Mask / Carbon Faceplate */}
+          <polygon points="32,58 68,58 64,74 50,82 36,74" fill="#090d16" stroke="#334155" strokeWidth="1.2" />
+          {/* Stealth Cyber Vents */}
+          <line x1="43" y1="65" x2="47" y2="65" stroke="#06b6d4" strokeWidth="1.2" strokeLinecap="round" opacity="0.8" />
+          <line x1="53" y1="65" x2="57" y2="65" stroke="#06b6d4" strokeWidth="1.2" strokeLinecap="round" opacity="0.8" />
+          <line x1="45" y1="70" x2="55" y2="70" stroke="#06b6d4" strokeWidth="1.2" strokeLinecap="round" opacity="0.8" />
         </svg>
       </div>
     );
   }
 
-  // 2. Astra - Ornate Golden Compass Star (Matching Screenshot)
+  // 2. DeepSeek - Oceanic Quantum Whale (Breaching in Sonar Telemetry)
+  if (artwork === 'deepseek') {
+    return (
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#061826] via-[#04111c] to-[#02080e] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+        <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
+          <defs>
+            <radialGradient id="deepOcean" cx="50%" cy="40%" r="60%">
+              <stop offset="0%" stopColor="#0284c7" />
+              <stop offset="60%" stopColor="#0369a1" />
+              <stop offset="100%" stopColor="#082f49" />
+            </radialGradient>
+            <linearGradient id="whaleSkin" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#e0f2fe" />
+              <stop offset="40%" stopColor="#38bdf8" />
+              <stop offset="100%" stopColor="#0284c7" />
+            </linearGradient>
+            <linearGradient id="whaleBelly" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#ffffff" />
+              <stop offset="100%" stopColor="#bae6fd" />
+            </linearGradient>
+          </defs>
+          {/* Abyssal Ocean Core */}
+          <circle cx="50" cy="50" r="46" fill="#041826" stroke="#0e3f61" strokeWidth="1.5" />
+          {/* Sonar Telemetry Waves */}
+          <circle cx="50" cy="50" r="40" fill="none" stroke="#0284c7" strokeWidth="1" strokeDasharray="3 3" opacity="0.4" />
+          <circle cx="50" cy="50" r="28" fill="none" stroke="#38bdf8" strokeWidth="0.8" strokeDasharray="2 3" opacity="0.5" />
+          {/* Bioluminescent Oceanic Glow */}
+          <circle cx="50" cy="46" r="32" fill="url(#deepOcean)" opacity="0.4" />
+          {/* Sleek Cyber Whale */}
+          <g transform="translate(50, 48) scale(0.85)">
+            {/* Whale Body Arc */}
+            <path d="M-36 6 C-30 -16 6 -24 34 -4 C38 -1 36 8 26 12 C10 18 -14 20 -28 14 Z" fill="url(#whaleSkin)" stroke="#38bdf8" strokeWidth="1.2" />
+            {/* Whale White Belly */}
+            <path d="M-26 12 C-14 18 10 16 26 10 C22 13 14 16 0 16 C-14 16 -22 14 -26 12 Z" fill="url(#whaleBelly)" />
+            {/* Dorsal Fin */}
+            <path d="M-6 8 C-10 18 -2 22 2 12 Z" fill="#0284c7" />
+            {/* Whale Tail Flukes */}
+            <path d="M-34 4 C-44 -4 -48 2 -42 6 C-46 10 -42 16 -34 8 Z" fill="url(#whaleSkin)" />
+            {/* Whale Optic Eye */}
+            <circle cx="24" cy="2" r="2.5" fill="#ffffff" />
+            <circle cx="24.5" cy="2" r="1.2" fill="#0284c7" />
+            {/* Spout Pulse Node */}
+            <ellipse cx="14" cy="-14" rx="2" ry="4" fill="#7dd3fc" opacity="0.9" />
+            <ellipse cx="18" cy="-20" rx="1.5" ry="3" fill="#bae6fd" opacity="0.7" />
+          </g>
+        </svg>
+      </div>
+    );
+  }
+
+  // 3. Codex - OpenAI Neural Code Core with Interlocking Aperture Loop
+  if (artwork === 'codex') {
+    return (
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#102a24] via-[#0b1714] to-[#050b09] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+        <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
+          <defs>
+            <linearGradient id="codexNeon" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#10b981" />
+              <stop offset="50%" stopColor="#06b6d4" />
+              <stop offset="100%" stopColor="#3b82f6" />
+            </linearGradient>
+            <radialGradient id="codexCoreGlow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#34d399" stopOpacity="0.85" />
+              <stop offset="50%" stopColor="#059669" stopOpacity="0.3" />
+              <stop offset="100%" stopColor="#042f2e" stopOpacity="0" />
+            </radialGradient>
+          </defs>
+          {/* Cyber Hex Outer Frame */}
+          <polygon points="50,10 84,29 84,71 50,90 16,71 16,29" fill="#071318" stroke="#134e4a" strokeWidth="2" strokeDasharray="4 2" />
+          {/* Neural Core Radial Glow */}
+          <circle cx="50" cy="50" r="32" fill="url(#codexCoreGlow)" />
+          {/* OpenAI-inspired Spiraling Neural Aperture Loop */}
+          <g transform="translate(50, 50)">
+            {[0, 60, 120, 180, 240, 300].map((deg) => (
+              <path
+                key={deg}
+                d="M 0 -22 C 12 -22 20 -12 20 0 C 20 12 12 20 0 16"
+                fill="none"
+                stroke="url(#codexNeon)"
+                strokeWidth="3.2"
+                strokeLinecap="round"
+                transform={`rotate(${deg})`}
+              />
+            ))}
+            <circle cx="0" cy="0" r="4.5" fill="#a7f3d0" stroke="#064e3b" strokeWidth="1.5" />
+          </g>
+          {/* Code Prompt Indicator Bracket */}
+          <path d="M 37 77 L 43 81 L 37 85" fill="none" stroke="#34d399" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          <line x1="47" y1="85" x2="57" y2="85" stroke="#34d399" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      </div>
+    );
+  }
+
+  // 4. Claude Code - Anthropic Lumina Sparkburst & Crystal Intelligence
+  if (artwork === 'claudecode') {
+    return (
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#2d1b14] via-[#1c0f0a] to-[#0c0604] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+        <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
+          <defs>
+            <radialGradient id="claudeSpark" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#ffffff" />
+              <stop offset="25%" stopColor="#fdba74" />
+              <stop offset="60%" stopColor="#ea580c" />
+              <stop offset="100%" stopColor="#9a3412" stopOpacity="0" />
+            </radialGradient>
+            <linearGradient id="claudeFacet" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#fb923c" />
+              <stop offset="100%" stopColor="#c2410c" />
+            </linearGradient>
+          </defs>
+          {/* Dark Amber Abyss Backing */}
+          <circle cx="50" cy="50" r="46" fill="#1c0f0a" stroke="#431407" strokeWidth="1.5" />
+          {/* Radiant Core Glow */}
+          <circle cx="50" cy="50" r="38" fill="url(#claudeSpark)" opacity="0.65" />
+          {/* Crystalline Anthropic Sparkburst Geometry */}
+          <g transform="translate(50, 50)">
+            <polygon points="0,-36 8,-12 36,0 12,8 0,36 -8,12 -36,0 -12,-8" fill="url(#claudeFacet)" stroke="#ffedd5" strokeWidth="1" />
+            <polygon points="0,-24 5,-8 24,0 8,5 0,24 -5,8 -24,0 -8,-5" fill="#f97316" />
+            <polygon points="0,-16 16,-16 0,0" fill="#fed7aa" opacity="0.6" />
+            <polygon points="0,16 -16,16 0,0" fill="#ea580c" opacity="0.6" />
+            <polygon points="-16,-16 0,-16 0,0" fill="#f97316" opacity="0.6" />
+            <polygon points="16,16 0,16 0,0" fill="#c2410c" opacity="0.6" />
+            <circle cx="0" cy="0" r="4" fill="#ffffff" />
+            <circle cx="0" cy="0" r="7" fill="none" stroke="#fff7ed" strokeWidth="1" strokeDasharray="2 2" />
+          </g>
+        </svg>
+      </div>
+    );
+  }
+
+  // 5. OpenClaw - Aerodynamic Cyber Mantis Recon Strike
+  if (artwork === 'openclaw') {
+    return (
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#0d2a1d] via-[#081b12] to-[#040e0a] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+        <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
+          <defs>
+            <linearGradient id="clawArmor" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#10b981" />
+              <stop offset="60%" stopColor="#059669" />
+              <stop offset="100%" stopColor="#064e3b" />
+            </linearGradient>
+            <linearGradient id="clawVisor" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="#a7f3d0" />
+              <stop offset="50%" stopColor="#34d399" />
+              <stop offset="100%" stopColor="#10b981" />
+            </linearGradient>
+          </defs>
+          <circle cx="50" cy="50" r="46" fill="#061f16" stroke="#065f46" strokeWidth="1.5" />
+          {/* Twin Aerodynamic Blade-Antennae */}
+          <path d="M42 24 Q30 8 16 14 Q26 24 38 32 Z" fill="#10b981" stroke="#34d399" strokeWidth="1" />
+          <path d="M58 24 Q70 8 84 14 Q74 24 62 32 Z" fill="#10b981" stroke="#34d399" strokeWidth="1" />
+          {/* Mecha Mantis Helmet Shield */}
+          <polygon points="50,22 76,40 68,76 50,88 32,76 24,40" fill="url(#clawArmor)" stroke="#34d399" strokeWidth="1.5" />
+          <polygon points="50,24 55,50 50,68 45,50" fill="#047857" />
+          {/* Angular Cyber Optic Visors */}
+          <polygon points="32,46 45,50 43,60 30,56" fill="url(#clawVisor)" stroke="#d1fae5" strokeWidth="0.8" />
+          <polygon points="68,46 55,50 57,60 70,56" fill="url(#clawVisor)" stroke="#d1fae5" strokeWidth="0.8" />
+          {/* Mandible Chin Guard Pincher */}
+          <path d="M43 68 L50 78 L57 68" stroke="#a7f3d0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          <circle cx="50" cy="62" r="2.5" fill="#34d399" />
+        </svg>
+      </div>
+    );
+  }
+
+  // 6. Bolt - Overclocked Turbo Lightning Surge
+  if (artwork === 'bolt') {
+    return (
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#2a2007] via-[#181203] to-[#0c0901] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+        <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
+          <defs>
+            <linearGradient id="boltGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#fef08a" />
+              <stop offset="40%" stopColor="#eab308" />
+              <stop offset="100%" stopColor="#ca8a04" />
+            </linearGradient>
+            <radialGradient id="boltGlow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#facc15" stopOpacity="0.7" />
+              <stop offset="100%" stopColor="#854d0e" stopOpacity="0" />
+            </radialGradient>
+          </defs>
+          <circle cx="50" cy="50" r="46" fill="#191303" stroke="#422006" strokeWidth="1.5" />
+          <circle cx="50" cy="50" r="32" fill="url(#boltGlow)" />
+          {/* Carbon Octagon Frame */}
+          <polygon points="50,14 78,26 86,54 70,80 50,86 30,80 14,54 22,26" fill="#0d0a02" stroke="#eab308" strokeWidth="1.5" strokeDasharray="6 3" />
+          {/* High Voltage Neon Lightning Crest */}
+          <path d="M54 18 L28 50 L48 50 L42 82 L72 46 L52 46 Z" fill="url(#boltGrad)" stroke="#fef9c3" strokeWidth="1.5" strokeLinejoin="round" />
+          <circle cx="26" cy="46" r="2" fill="#fef08a" />
+          <circle cx="74" cy="54" r="2" fill="#fef08a" />
+        </svg>
+      </div>
+    );
+  }
+
+  // 7. Sentinel - Aegis Security Guardian Shield
+  if (artwork === 'sentinel') {
+    return (
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#191e3e] via-[#0f1226] to-[#070914] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+        <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
+          <defs>
+            <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#818cf8" />
+              <stop offset="50%" stopColor="#6366f1" />
+              <stop offset="100%" stopColor="#4338ca" />
+            </linearGradient>
+          </defs>
+          <circle cx="50" cy="50" r="46" fill="#0d1124" stroke="#1e1b4b" strokeWidth="1.5" />
+          {/* Hexagonal Forcefield Grid */}
+          <polygon points="50,14 78,26 86,54 70,80 50,86 30,80 14,54 22,26" fill="none" stroke="#4f46e5" strokeWidth="1" strokeDasharray="3 2" opacity="0.6" />
+          {/* Aegis Shield */}
+          <path d="M50 20 L74 32 C74 58 64 74 50 82 C36 74 26 58 26 32 Z" fill="url(#shieldGrad)" stroke="#a5b4fc" strokeWidth="1.5" />
+          {/* Inner Core */}
+          <path d="M50 28 L66 38 C66 58 58 68 50 74 C42 68 34 58 34 38 Z" fill="#1e1b4b" stroke="#818cf8" strokeWidth="1" />
+          {/* Security Crest */}
+          <g transform="translate(50, 48) scale(0.85)">
+            <rect x="-8" y="-2" width="16" height="14" rx="3" fill="#c7d2fe" />
+            <path d="M-5 -2 V-7 C-5 -10 5 -10 5 -7 V-2" fill="none" stroke="#c7d2fe" strokeWidth="2.5" strokeLinecap="round" />
+            <circle cx="0" cy="5" r="1.5" fill="#312e81" />
+          </g>
+        </svg>
+      </div>
+    );
+  }
+
+  // 8. Astra - Ornate Golden Compass Star
   if (artwork === 'astra') {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#16273e] via-[#0d1726] to-[#070b12] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#16273e] via-[#0d1726] to-[#070b12] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
           <defs>
             <linearGradient id="goldLight" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -120,10 +362,9 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
               <stop offset="100%" stopColor="#0f172a" />
             </linearGradient>
           </defs>
-          {/* Outer Ring with Gold Ribs */}
           <circle cx="50" cy="50" r="38" fill="none" stroke="url(#goldDark)" strokeWidth="3" />
           <circle cx="50" cy="50" r="34" fill="url(#navyRing)" stroke="url(#goldLight)" strokeWidth="1.5" />
-          {/* 4 Diagonal Smaller Star Points */}
+          {/* Diagonal Star Points */}
           <polygon points="50,50 22,22 50,38" fill="url(#goldDark)" />
           <polygon points="50,50 22,22 38,50" fill="url(#goldLight)" />
           <polygon points="50,50 78,22 62,50" fill="url(#goldDark)" />
@@ -132,7 +373,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
           <polygon points="50,50 78,78 62,50" fill="url(#goldLight)" />
           <polygon points="50,50 22,78 38,50" fill="url(#goldDark)" />
           <polygon points="50,50 22,78 50,62" fill="url(#goldLight)" />
-          {/* 4 Primary Large Star Points (North, South, East, West) */}
+          {/* 4 Primary Star Points */}
           <polygon points="50,50 50,8 43,45" fill="url(#goldLight)" />
           <polygon points="50,50 50,8 57,45" fill="url(#goldDark)" />
           <polygon points="50,50 50,92 57,55" fill="url(#goldLight)" />
@@ -141,7 +382,6 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
           <polygon points="50,50 8,50 45,43" fill="url(#goldDark)" />
           <polygon points="50,50 92,50 55,43" fill="url(#goldLight)" />
           <polygon points="50,50 92,50 55,57" fill="url(#goldDark)" />
-          {/* Center Jewel */}
           <circle cx="50" cy="50" r="7" fill="url(#goldLight)" stroke="#713f12" strokeWidth="1.5" />
           <circle cx="50" cy="50" r="3" fill="#fef08a" />
         </svg>
@@ -149,203 +389,54 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
     );
   }
 
-  // 3. MyLxClaudeCode - Organic Emblem with Code Tag & Gear (Matching Screenshot)
-  if (artwork === 'claudecode') {
-    return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#2d221c] to-[#14181f] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
-        <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
-          <defs>
-            <linearGradient id="warmBg" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#f97316" />
-              <stop offset="45%" stopColor="#ea580c" />
-              <stop offset="85%" stopColor="#0d9488" />
-              <stop offset="100%" stopColor="#0f766e" />
-            </linearGradient>
-          </defs>
-          {/* Organic Rounded Wavy Badge */}
-          <rect x="14" y="14" width="72" height="72" rx="24" fill="url(#warmBg)" />
-          {/* Stylized Code Bracket </> */}
-          <path d="M34 40 L24 50 L34 60" stroke="#ffffff" strokeWidth="5.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-          <path d="M48 34 L40 66" stroke="#ffffff" strokeWidth="5" strokeLinecap="round" fill="none" />
-          <path d="M54 40 L64 50 L54 60" stroke="#ffffff" strokeWidth="5.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-          {/* Small Gear in Bottom-Right Corner */}
-          <g transform="translate(62, 62) scale(0.65)">
-            <circle cx="16" cy="16" r="14" fill="#0f766e" stroke="#ffffff" strokeWidth="3" />
-            <circle cx="16" cy="16" r="6" fill="#ffffff" />
-            <path d="M16 0 L16 32 M0 16 L32 16 M5 5 L27 27 M5 27 L27 5" stroke="#ffffff" strokeWidth="4" strokeLinecap="round" />
-          </g>
-        </svg>
-      </div>
-    );
-  }
-
-  // 3.5. Codex / OpenAI - Neural Code Processor with Swirling Aperture Core
-  if (artwork === 'codex') {
-    return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#102a24] via-[#0b1714] to-[#050b09] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
-        <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
-          <defs>
-            <linearGradient id="codexNeon" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#10b981" />
-              <stop offset="50%" stopColor="#06b6d4" />
-              <stop offset="100%" stopColor="#3b82f6" />
-            </linearGradient>
-            <radialGradient id="codexCoreGlow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="#34d399" stopOpacity="0.9" />
-              <stop offset="40%" stopColor="#059669" stopOpacity="0.5" />
-              <stop offset="100%" stopColor="#042f2e" stopOpacity="0" />
-            </radialGradient>
-          </defs>
-          {/* Subtle Outer Cyber Hexagon / Circuit Frame */}
-          <polygon points="50,12 82,30 82,70 50,88 18,70 18,30" fill="none" stroke="#134e4a" strokeWidth="2" strokeDasharray="3 2" />
-          {/* Neural Core Radial Glow */}
-          <circle cx="50" cy="50" r="32" fill="url(#codexCoreGlow)" />
-          {/* OpenAI-inspired Spiraling Neural Aperture Loop */}
-          <g transform="translate(50, 50)">
-            {[0, 60, 120, 180, 240, 300].map((deg) => (
-              <path
-                key={deg}
-                d="M 0 -22 C 12 -22 20 -12 20 0 C 20 12 12 20 0 16"
-                fill="none"
-                stroke="url(#codexNeon)"
-                strokeWidth="3.5"
-                strokeLinecap="round"
-                transform={`rotate(${deg})`}
-              />
-            ))}
-            {/* Center Processing Dot */}
-            <circle cx="0" cy="0" r="4.5" fill="#a7f3d0" stroke="#064e3b" strokeWidth="1.5" />
-          </g>
-          {/* Code Prompt Indicator Bracket at bottom */}
-          <path d="M 38 78 L 44 82 L 38 86" fill="none" stroke="#34d399" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          <line x1="48" y1="86" x2="58" y2="86" stroke="#34d399" strokeWidth="2" strokeLinecap="round" />
-        </svg>
-      </div>
-    );
-  }
-
-  // 4. OpenClaw - Emerald Cyber Mantis Recon
-  if (artwork === 'openclaw') {
-    return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#112a1f] to-[#0a1610] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
-        <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
-          <defs>
-            <linearGradient id="emeraldGlow" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#34d399" />
-              <stop offset="100%" stopColor="#059669" />
-            </linearGradient>
-          </defs>
-          {/* Head & Shield */}
-          <polygon points="50,16 76,38 68,76 50,88 32,76 24,38" fill="#064e3b" stroke="#10b981" strokeWidth="2.5" />
-          {/* Antennas */}
-          <path d="M42 22 Q30 8 18 14" stroke="#34d399" strokeWidth="3" strokeLinecap="round" fill="none" />
-          <path d="M58 22 Q70 8 82 14" stroke="#34d399" strokeWidth="3" strokeLinecap="round" fill="none" />
-          {/* Cyber Optic Visor Eyes */}
-          <polygon points="34,42 46,45 44,54 32,50" fill="url(#emeraldGlow)" />
-          <polygon points="66,42 54,45 56,54 68,50" fill="url(#emeraldGlow)" />
-          {/* Mandible Pincher Elements */}
-          <path d="M44 64 L50 74 L56 64" stroke="#a7f3d0" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-        </svg>
-      </div>
-    );
-  }
-
-  // 5. Shinobi - Cyber Stealth Ninja Mask
-  if (artwork === 'shinobi') {
-    return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#18263a] to-[#0c121c] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
-        <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
-          <defs>
-            <linearGradient id="cyanVisor" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor="#06b6d4" />
-              <stop offset="50%" stopColor="#22d3ee" />
-              <stop offset="100%" stopColor="#0891b2" />
-            </linearGradient>
-          </defs>
-          {/* Ninja Cowl / Hood */}
-          <path d="M22 45 C22 20 78 20 78 45 C78 78 68 88 50 88 C32 88 22 78 22 45 Z" fill="#0f172a" stroke="#1e293b" strokeWidth="2" />
-          {/* Face Mask Slit */}
-          <path d="M30 42 C36 39 64 39 70 42 L70 54 C64 57 36 57 30 54 Z" fill="#020617" />
-          {/* Glowing Cyber Optic Visor */}
-          <path d="M34 46 L66 46" stroke="url(#cyanVisor)" strokeWidth="4" strokeLinecap="round" />
-          {/* Headband Shuriken Knot */}
-          <circle cx="50" cy="30" r="4" fill="#06b6d4" />
-        </svg>
-      </div>
-    );
-  }
-
-  // 6. Artistry Guide - Wooden Artist Palette with Brush (Matching Screenshot)
+  // 9. Artisan - Holographic Prism Palette with CMYK Drops
   if (artwork === 'palette') {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#2a221b] to-[#141210] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#241a35] via-[#160f22] to-[#0c0813] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
           <defs>
-            <radialGradient id="woodGradient" cx="40%" cy="40%" r="70%">
-              <stop offset="0%" stopColor="#f3d5b5" />
-              <stop offset="60%" stopColor="#d4a373" />
-              <stop offset="100%" stopColor="#8c5835" />
+            <linearGradient id="prismBg" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#1e1b4b" />
+              <stop offset="50%" stopColor="#0f172a" />
+              <stop offset="100%" stopColor="#030712" />
+            </linearGradient>
+            <radialGradient id="prismGlow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#c084fc" stopOpacity="0.5" />
+              <stop offset="100%" stopColor="#6366f1" stopOpacity="0" />
             </radialGradient>
-            <linearGradient id="brushWood" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#e6ccb2" />
-              <stop offset="60%" stopColor="#b08968" />
-              <stop offset="100%" stopColor="#7f4f24" />
-            </linearGradient>
-            <linearGradient id="brushTip" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#f87171" />
-              <stop offset="50%" stopColor="#475569" />
-              <stop offset="100%" stopColor="#1e293b" />
-            </linearGradient>
           </defs>
-
-          {/* Wooden Palette Board */}
-          <path
-            d="M 50 16 C 75 12 90 28 88 52 C 86 72 74 88 54 88 C 42 88 38 78 30 76 C 22 74 14 80 12 66 C 10 46 22 18 50 16 Z"
-            fill="url(#woodGradient)"
-            stroke="#6f4518"
-            strokeWidth="2.5"
-          />
-
-          {/* Palette Thumb Hole */}
-          <ellipse cx="68" cy="68" rx="7" ry="9" fill="#141210" stroke="#8c5835" strokeWidth="1.5" />
-
-          {/* Vibrant Paint Blobs */}
-          <circle cx="34" cy="30" r="5" fill="#3b82f6" />
-          <circle cx="33" cy="29" r="1.5" fill="#93c5fd" />
-
-          <circle cx="50" cy="25" r="5.5" fill="#ef4444" />
-          <circle cx="49" cy="24" r="1.5" fill="#fca5a5" />
-
-          <circle cx="67" cy="30" r="5" fill="#eab308" />
-          <circle cx="66" cy="29" r="1.5" fill="#fef08a" />
-
-          <circle cx="28" cy="46" r="5" fill="#a855f7" />
-          <circle cx="27" cy="45" r="1.5" fill="#d8b4fe" />
-
-          <circle cx="30" cy="62" r="5.5" fill="#22c55e" />
-          <circle cx="29" cy="61" r="1.5" fill="#86efac" />
-
-          <circle cx="48" cy="38" r="4.5" fill="#f97316" />
-          <circle cx="47" cy="37" r="1.5" fill="#fdba74" />
-
-          {/* Paintbrush Angled Across */}
-          <g transform="rotate(-36 50 50)">
-            {/* Brush Handle */}
-            <path d="M47 18 L53 18 L51 86 L49 86 Z" fill="url(#brushWood)" stroke="#582f0e" strokeWidth="1" />
-            {/* Silver Ferrule */}
-            <rect x="47" y="14" width="6" height="8" rx="1" fill="#cbd5e1" stroke="#64748b" strokeWidth="0.8" />
-            {/* Bristle Tip */}
-            <path d="M47 14 Q50 2 53 14 Z" fill="url(#brushTip)" />
+          <circle cx="50" cy="50" r="46" fill="url(#prismBg)" stroke="#312e81" strokeWidth="1.5" />
+          <circle cx="50" cy="50" r="34" fill="url(#prismGlow)" />
+          {/* Cyber Palette Board */}
+          <path d="M50 18 C74 14 88 28 86 52 C84 72 72 84 52 84 C40 84 36 76 28 74 C20 72 14 78 12 64 C10 46 22 20 50 18 Z" fill="#18181b" stroke="#a855f7" strokeWidth="2" />
+          {/* Thumb Hole with Cyber Rim */}
+          <ellipse cx="66" cy="66" rx="6" ry="8" fill="#09090b" stroke="#c084fc" strokeWidth="1.2" />
+          {/* Glowing Neon CMYK Color Drops */}
+          <circle cx="34" cy="30" r="5" fill="#38bdf8" />
+          <circle cx="34" cy="30" r="1.8" fill="#e0f2fe" />
+          <circle cx="50" cy="26" r="5" fill="#f43f5e" />
+          <circle cx="50" cy="26" r="1.8" fill="#ffe4e6" />
+          <circle cx="66" cy="32" r="5" fill="#facc15" />
+          <circle cx="66" cy="32" r="1.8" fill="#fef9c3" />
+          <circle cx="28" cy="46" r="4.5" fill="#a855f7" />
+          <circle cx="28" cy="46" r="1.5" fill="#f3e8ff" />
+          <circle cx="30" cy="60" r="4.5" fill="#10b981" />
+          <circle cx="30" cy="60" r="1.5" fill="#d1fae5" />
+          {/* Stylus Angled */}
+          <g transform="rotate(-38 50 50)">
+            <line x1="50" y1="14" x2="50" y2="86" stroke="#e4e4e7" strokeWidth="3" strokeLinecap="round" />
+            <line x1="50" y1="14" x2="50" y2="30" stroke="#a855f7" strokeWidth="3" strokeLinecap="round" />
+            <circle cx="50" cy="14" r="3" fill="#c084fc" />
           </g>
         </svg>
       </div>
     );
   }
 
-  // Fallback: If custom emoji avatar provided, render emoji in stylish gradient circle!
+  // Fallback: If custom emoji avatar provided, render emoji in stylish dark-cyber gradient circle!
   if (avatar && avatar.trim()) {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-tr from-[#1e293b] to-[#0f172a] border-2 border-[#334155] flex items-center justify-center text-3xl sm:text-4xl shadow-inner select-none`}>
+      <div className={`${className} rounded-full bg-gradient-to-tr from-[#1e293b] via-[#0f172a] to-[#020617] border-2 border-[#334155] flex items-center justify-center text-3xl sm:text-4xl shadow-inner select-none`}>
         {avatar}
       </div>
     );

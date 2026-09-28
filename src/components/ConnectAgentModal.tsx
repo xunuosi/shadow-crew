@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Agent, LocalAcpRuntime, AcpTransport } from '../types';
+import { Agent, LocalAcpRuntime, AcpTransport, AgentModelConfig } from '../types';
 import {
   X,
   ChevronDown,
@@ -18,11 +18,21 @@ import {
   Radio,
   Layers,
   ShieldCheck,
+  Cpu,
+  Key,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { AgentAvatarArtwork } from './AgentAvatarArtwork';
 import { discoverLocalAcpRuntimes, FALLBACK_PRESET_RUNTIMES } from '../services/acpDiscovery';
 import { probeRemoteAcpConnection } from '../services/acpClient';
 import { DEFAULT_MODEL_NAME } from '../config/models';
+import {
+  PROVIDER_PRESETS,
+  getGlobalModelConfig,
+  testModelConnection,
+  ModelProbeResult,
+} from '../services/llmService';
 
 interface ConnectAgentModalProps {
   isOpen: boolean;
@@ -40,14 +50,16 @@ interface EnvVarItem {
   value: string;
 }
 
-const PRESET_ICONS = [
-  { id: 'shinobi', label: 'Shinobi Ninja', icon: '🥷', artworkType: 'shinobi' },
-  { id: 'claudecode', label: 'Claude Code', icon: '🪷', artworkType: 'claudecode' },
-  { id: 'codex', label: 'OpenAI Codex', icon: '🤖', artworkType: 'codex' },
-  { id: 'palette', label: 'Artistry Palette', icon: '🎨', artworkType: 'palette' },
-  { id: 'alien', label: 'DeepSeek Alien', icon: '🐞', artworkType: 'alien' },
-  { id: 'astra', label: 'Astra Compass', icon: '🧭', artworkType: 'astra' },
-  { id: 'openclaw', label: 'OpenClaw Mantis', icon: '🦗', artworkType: 'openclaw' },
+export const PRESET_ICONS = [
+  { id: 'shinobi', label: 'Shinobi', subtitle: '隐者核心 (默认)', icon: '🥷', artworkType: 'shinobi' },
+  { id: 'codex', label: 'Codex', subtitle: '赛博机体', icon: '🤖', artworkType: 'codex' },
+  { id: 'claudecode', label: 'Claude', subtitle: '星火认知', icon: '✨', artworkType: 'claudecode' },
+  { id: 'deepseek', label: 'DeepSeek', subtitle: '深海蓝鲸', icon: '🐳', artworkType: 'deepseek' },
+  { id: 'openclaw', label: 'OpenClaw', subtitle: '猎手战甲', icon: '🦗', artworkType: 'openclaw' },
+  { id: 'bolt', label: 'Bolt', subtitle: '极速先锋', icon: '⚡', artworkType: 'bolt' },
+  { id: 'sentinel', label: 'Sentinel', subtitle: '安全守卫', icon: '🛡️', artworkType: 'sentinel' },
+  { id: 'astra', label: 'Astra', subtitle: '恒星航标', icon: '🧭', artworkType: 'astra' },
+  { id: 'palette', label: 'Artisan', subtitle: '创想棱镜', icon: '🎨', artworkType: 'palette' },
 ];
 
 export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
@@ -70,6 +82,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     'Local ultra-fast native agent runtime with private SQLite memory bank.'
   );
   const [selectedIconId, setSelectedIconId] = useState('shinobi');
+  const [customEmoji, setCustomEmoji] = useState('');
   const [customCommand, setCustomCommand] = useState('');
   const [isPickingIcon, setIsPickingIcon] = useState(false);
 
@@ -99,6 +112,13 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   // Visual Theme support
   const [isLightMode, setIsLightMode] = useState(true);
 
+  // Model & Inference Engine Configuration
+  const [useGlobalDefaultModel, setUseGlobalDefaultModel] = useState(true);
+  const [modelConfig, setModelConfig] = useState<AgentModelConfig>(() => getGlobalModelConfig());
+  const [showModelApiKey, setShowModelApiKey] = useState(false);
+  const [isTestingModel, setIsTestingModel] = useState(false);
+  const [modelProbeResult, setModelProbeResult] = useState<ModelProbeResult | null>(null);
+
   const prevIsOpenRef = useRef(false);
   const prevAgentIdRef = useRef<string | null>(null);
 
@@ -108,10 +128,38 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     const agentChanged = isOpen && (initialAgent?.id || null) !== prevAgentIdRef.current;
 
     if (justOpened || agentChanged) {
+      const globalCfg = getGlobalModelConfig();
       if (initialAgent) {
         setName(initialAgent.name || '');
         setDescription(initialAgent.description || initialAgent.role || '');
         setCustomCommand(initialAgent.acpCommandOrUrl || '');
+
+        if (initialAgent.modelConfig) {
+          setUseGlobalDefaultModel(initialAgent.modelConfig.useGlobalDefault ?? false);
+          setModelConfig({
+            ...globalCfg,
+            ...initialAgent.modelConfig,
+          });
+        } else {
+          // Check if envVars has a specific API key
+          const hasCustomKey = initialAgent.envVars?.some(
+            (v) => v.key.endsWith('_API_KEY') && v.value.trim().length > 0
+          );
+          if (hasCustomKey) {
+            setUseGlobalDefaultModel(false);
+            const foundKey = initialAgent.envVars?.find((v) => v.key.endsWith('_API_KEY'));
+            setModelConfig({
+              ...globalCfg,
+              apiKey: foundKey?.value || '',
+              modelName: initialAgent.modelBadge || globalCfg.modelName,
+              useGlobalDefault: false,
+            });
+          } else {
+            setUseGlobalDefaultModel(true);
+            setModelConfig({ ...globalCfg, useGlobalDefault: true });
+          }
+        }
+        setModelProbeResult(null);
 
         if (initialAgent.isRemote || initialAgent.acpTransport === 'websocket') {
           setConnectTab('remote');
@@ -128,6 +176,10 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         );
         if (matchedByAvatar) {
           setSelectedIconId(matchedByAvatar.id);
+          setCustomEmoji('');
+        } else if (initialAgent.avatar && initialAgent.avatar.trim()) {
+          setSelectedIconId('custom');
+          setCustomEmoji(initialAgent.avatar.trim());
         } else {
           const lowerName = (initialAgent.name || '').toLowerCase();
           if (lowerName.includes('shinobi') || lowerName.includes('ninja')) {
@@ -136,15 +188,20 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
             setSelectedIconId('claudecode');
           } else if (lowerName.includes('codex') || lowerName.includes('openai')) {
             setSelectedIconId('codex');
-          } else if (lowerName.includes('openclaw')) {
+          } else if (lowerName.includes('openclaw') || lowerName.includes('mantis')) {
             setSelectedIconId('openclaw');
-          } else if (lowerName.includes('deepseek')) {
-            setSelectedIconId('alien');
+          } else if (lowerName.includes('deepseek') || lowerName.includes('whale') || lowerName.includes('alien')) {
+            setSelectedIconId('deepseek');
+          } else if (lowerName.includes('bolt') || lowerName.includes('turbo')) {
+            setSelectedIconId('bolt');
+          } else if (lowerName.includes('sentinel') || lowerName.includes('shield')) {
+            setSelectedIconId('sentinel');
           } else if (lowerName.includes('astra')) {
             setSelectedIconId('astra');
           } else {
-            setSelectedIconId('palette');
+            setSelectedIconId('shinobi');
           }
+          setCustomEmoji('');
         }
 
         // Map envVars
@@ -173,6 +230,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         setName('Shinobi Native Agent');
         setDescription('Local ultra-fast native agent runtime with private SQLite memory bank.');
         setSelectedIconId('shinobi');
+        setCustomEmoji('');
         setSelectedAcpId('shinobi_core');
         setCustomCommand('./target/debug/shinobi-agent');
         setConnectTab('local');
@@ -180,6 +238,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         setAuthToken('');
         setReadOnlyGuard(true);
         setRemoteTestResult(null);
+        setUseGlobalDefaultModel(true);
+        setModelConfig({ ...globalCfg, useGlobalDefault: true });
+        setModelProbeResult(null);
         setEnvVars([
           { id: '1', key: 'SHINOBI_LOG', value: 'debug' },
           { id: '2', key: 'MEMORY_STORE', value: 'sqlite' },
@@ -297,17 +358,60 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     if (isRemoteMode && !remoteUrl.trim()) return;
 
     const chosenIcon = PRESET_ICONS.find((i) => i.id === selectedIconId);
+    const effectiveAvatar =
+      customEmoji.trim() ||
+      chosenIcon?.icon ||
+      (isRemoteMode ? '🌐' : initialAgent?.avatar || '🥷');
+
     const resolvedCommand = isRemoteMode
       ? remoteUrl.trim()
       : customCommand.trim() || selectedAcp.command;
 
     const transport: AcpTransport = isRemoteMode ? 'websocket' : selectedAcp.transport;
 
+    const globalCfg = getGlobalModelConfig();
+    const effectiveModelBadge = useGlobalDefaultModel
+      ? (globalCfg.modelName || 'DeepSeek V3')
+      : (modelConfig.modelName || modelConfig.modelId || 'DeepSeek V3');
+
+    const finalModelConfig: AgentModelConfig = useGlobalDefaultModel
+      ? { ...globalCfg, useGlobalDefault: true }
+      : { ...modelConfig, useGlobalDefault: false };
+
+    // 合并并自动注入模型环境变量，确保 stdio 子进程与平台内部均能拿到对应配置
+    const mergedEnvVars = [...envVars.filter((v) => v.key.trim().length > 0)];
+    const injectEnv = (key: string, val?: string) => {
+      if (!val) return;
+      const existing = mergedEnvVars.find((e) => e.key === key);
+      if (existing) {
+        existing.value = val;
+      } else {
+        mergedEnvVars.push({ id: `env-auto-${key}-${Date.now()}`, key, value: val });
+      }
+    };
+
+    if (finalModelConfig.apiKey) {
+      if (finalModelConfig.provider === 'deepseek') {
+        injectEnv('DEEPSEEK_API_KEY', finalModelConfig.apiKey);
+        injectEnv('OPENAI_API_KEY', finalModelConfig.apiKey);
+      } else if (finalModelConfig.provider === 'anthropic') {
+        injectEnv('ANTHROPIC_API_KEY', finalModelConfig.apiKey);
+      } else if (finalModelConfig.provider === 'openai_compatible' || finalModelConfig.provider === 'custom') {
+        injectEnv('OPENAI_API_KEY', finalModelConfig.apiKey);
+      }
+    }
+    if (finalModelConfig.baseUrl) {
+      injectEnv('OPENAI_BASE_URL', finalModelConfig.baseUrl);
+      injectEnv('ANTHROPIC_BASE_URL', finalModelConfig.baseUrl);
+    }
+    injectEnv('SHINOBI_MODEL', finalModelConfig.modelId);
+    injectEnv('LLM_MODEL', finalModelConfig.modelId);
+
     if (initialAgent && onUpdateAgent) {
       onUpdateAgent(initialAgent.id, {
         name: name.trim(),
         handle: initialAgent.handle || `@${name.trim().toLowerCase().replace(/\s+/g, '-')}`,
-        avatar: chosenIcon?.icon || (isRemoteMode ? '🌐' : initialAgent.avatar || '🤖'),
+        avatar: effectiveAvatar,
         role: isRemoteMode ? 'Remote ACP Agent' : selectedAcp.name,
         description: description.trim() || (isRemoteMode ? 'Remote WebSocket ACP Endpoint' : selectedAcp.description),
         localAcpProfile: isRemoteMode ? 'Remote WebSocket' : selectedAcp.name,
@@ -315,17 +419,17 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         remoteUrl: isRemoteMode ? remoteUrl.trim() : undefined,
         authToken: isRemoteMode ? authToken.trim() || undefined : undefined,
         readOnlyGuard: isRemoteMode ? readOnlyGuard : undefined,
-        envVars: envVars
-          .filter((v) => v.key.trim().length > 0)
-          .map((v) => ({ key: v.key.trim(), value: v.value })),
+        envVars: mergedEnvVars.map((v) => ({ key: v.key.trim(), value: v.value })),
         acpTransport: transport,
         acpCommandOrUrl: resolvedCommand,
+        modelBadge: effectiveModelBadge,
+        modelConfig: finalModelConfig,
       });
     } else {
       onConnectAgent({
         name: name.trim(),
         handle: `@${name.trim().toLowerCase().replace(/\s+/g, '-')}`,
-        avatar: chosenIcon?.icon || (isRemoteMode ? '🌐' : '🤖'),
+        avatar: effectiveAvatar,
         role: isRemoteMode ? 'Remote ACP Agent' : selectedAcp.name,
         description: description.trim() || (isRemoteMode ? 'Remote WebSocket ACP Endpoint' : selectedAcp.description),
         localAcpProfile: isRemoteMode ? 'Remote WebSocket' : selectedAcp.name,
@@ -333,20 +437,11 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         remoteUrl: isRemoteMode ? remoteUrl.trim() : undefined,
         authToken: isRemoteMode ? authToken.trim() || undefined : undefined,
         readOnlyGuard: isRemoteMode ? readOnlyGuard : undefined,
-        envVars: envVars
-          .filter((v) => v.key.trim().length > 0)
-          .map((v) => ({ key: v.key.trim(), value: v.value })),
+        envVars: mergedEnvVars.map((v) => ({ key: v.key.trim(), value: v.value })),
         color: isRemoteMode ? '#06b6d4' : '#3b82f6',
         status: 'idle',
-        modelBadge: isRemoteMode
-          ? 'Remote ACP'
-          : selectedAcp.id === 'claude_code'
-          ? DEFAULT_MODEL_NAME
-          : selectedAcp.id === 'codex'
-          ? 'deepseek-v4-flash'
-          : selectedAcp.id === 'kimi_code'
-          ? 'Kimi 2.5'
-          : 'Local ACP',
+        modelBadge: effectiveModelBadge,
+        modelConfig: finalModelConfig,
         isManagedByYou: true,
         acpTransport: transport,
         acpCommandOrUrl: resolvedCommand,
@@ -508,50 +603,131 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         <form onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-5 text-xs">
           {/* Top Section: Icon Placeholder (Left) & Name / Description (Right) */}
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-5">
-            {/* Left: Icon Placeholder */}
+            {/* Left: Avatar Artwork Preview & Selector */}
             <div className="sm:col-span-5 flex flex-col items-center">
               <div
                 onClick={() => setIsPickingIcon(!isPickingIcon)}
-                className={`w-full h-40 rounded-2xl border flex flex-col items-center justify-center p-3 transition-all cursor-pointer group shadow-inner relative ${iconBoxBg}`}
-                title="点击切换视觉插画"
+                className={`w-full min-h-[160px] rounded-2xl border flex flex-col items-center justify-center p-3.5 transition-all cursor-pointer group shadow-inner relative ${iconBoxBg}`}
+                title="点击选择头像预设或自定义表情"
               >
-                <div className="group-hover:scale-105 transition-transform">
+                <div className="group-hover:scale-105 transition-transform relative">
                   <AgentAvatarArtwork
                     type={selectedIconId}
-                    avatar={PRESET_ICONS.find((i) => i.id === selectedIconId)?.icon}
+                    avatar={customEmoji.trim() || PRESET_ICONS.find((i) => i.id === selectedIconId)?.icon || '🥷'}
                     className="w-24 h-24"
                   />
+                  <div className="absolute -bottom-1 -right-1 p-1 bg-blue-600 dark:bg-cyan-500 text-white rounded-full shadow-md group-hover:scale-110 transition-transform">
+                    <Sparkles className="w-3.5 h-3.5" />
+                  </div>
                 </div>
-                <span className={`text-[11px] mt-2 font-medium transition-colors ${
-                  isLightMode ? 'text-gray-500 group-hover:text-blue-600' : 'text-gray-400 group-hover:text-cyan-400'
-                }`}>
-                  Icon placeholder
-                </span>
+                <div className="mt-2.5 text-center w-full px-2">
+                  <div className={`text-[12px] font-semibold truncate transition-colors ${
+                    isLightMode ? 'text-gray-800 group-hover:text-blue-600' : 'text-gray-200 group-hover:text-cyan-400'
+                  }`}>
+                    {customEmoji.trim()
+                      ? `自定义表情: ${customEmoji.trim()}`
+                      : (() => {
+                          const p = PRESET_ICONS.find((i) => i.id === selectedIconId);
+                          return p ? `${p.icon} ${p.label} · ${p.subtitle}` : '🥷 Shinobi · 隐者核心';
+                        })()}
+                  </div>
+                  <span className={`text-[10px] font-normal transition-colors block mt-0.5 ${
+                    isLightMode ? 'text-gray-400 group-hover:text-gray-600' : 'text-gray-500 group-hover:text-gray-400'
+                  }`}>
+                    {isPickingIcon ? '▲ 点击收起头像面板' : '▼ 点击更换头像预设'}
+                  </span>
+                </div>
               </div>
 
               {/* Icon Picker Popover */}
               {isPickingIcon && (
-                <div className={`mt-2 p-2 rounded-2xl border shadow-lg w-full grid grid-cols-3 gap-1.5 z-20 ${
+                <div className={`mt-2.5 p-3 rounded-2xl border shadow-xl w-full z-20 space-y-2.5 ${
                   isLightMode ? 'bg-white border-gray-200' : 'bg-[#151c2a] border-[#26354c]'
                 }`}>
-                  {PRESET_ICONS.map((preset) => (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedIconId(preset.id);
-                        setIsPickingIcon(false);
-                      }}
-                      className={`p-1.5 rounded-xl border flex flex-col items-center gap-1 text-[10px] cursor-pointer transition-all ${
-                        selectedIconId === preset.id
-                          ? 'border-blue-500 bg-blue-50/50 text-blue-600 font-bold'
-                          : 'border-transparent hover:bg-gray-100 text-gray-500'
-                      }`}
-                    >
-                      <span className="text-base">{preset.icon}</span>
-                      <span className="truncate w-full text-center">{preset.label.split(' ')[0]}</span>
-                    </button>
-                  ))}
+                  <div className="flex items-center justify-between pb-1.5 border-b border-gray-100 dark:border-gray-800 text-[11px] font-semibold text-gray-700 dark:text-gray-300">
+                    <span>预设视觉头像</span>
+                    <span className="text-[10px] text-gray-400 font-normal">所见即所得</span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    {PRESET_ICONS.map((preset) => {
+                      const isSelected = selectedIconId === preset.id && !customEmoji.trim();
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedIconId(preset.id);
+                            setCustomEmoji('');
+                            setIsPickingIcon(false);
+                          }}
+                          className={`p-2 rounded-xl border flex flex-col items-center gap-1.5 cursor-pointer transition-all group relative ${
+                            isSelected
+                              ? 'border-blue-500 bg-blue-50/70 dark:bg-blue-950/40 shadow-sm ring-1 ring-blue-500'
+                              : isLightMode
+                              ? 'border-gray-100 hover:border-gray-300 hover:bg-gray-50'
+                              : 'border-[#1e293b] hover:border-[#334155] hover:bg-[#1a2333]'
+                          }`}
+                        >
+                          <div className="relative">
+                            <AgentAvatarArtwork
+                              type={preset.artworkType}
+                              avatar={preset.icon}
+                              className="w-10 h-10 shrink-0 transition-transform group-hover:scale-105"
+                            />
+                            <span className="absolute -bottom-1 -right-1 text-[9px] bg-black/60 rounded-full px-0.5 leading-none select-none">
+                              {preset.icon}
+                            </span>
+                          </div>
+                          <div className="w-full text-center">
+                            <div className={`text-[11px] truncate font-medium ${
+                              isSelected ? 'text-blue-600 dark:text-cyan-400 font-bold' : isLightMode ? 'text-gray-700' : 'text-gray-300'
+                            }`}>
+                              {preset.label}
+                            </div>
+                            <div className="text-[9px] text-gray-400 truncate">
+                              {preset.subtitle}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Custom Emoji Input */}
+                  <div className="pt-2 border-t border-gray-100 dark:border-gray-800 flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-gray-400 shrink-0">自定义:</span>
+                    <div className="flex items-center gap-1.5 flex-1">
+                      <input
+                        type="text"
+                        maxLength={6}
+                        placeholder="输入任意表情 (如 ⚡, 🦊, 🚀)"
+                        value={customEmoji}
+                        onChange={(e) => {
+                          const val = e.target.value.trim();
+                          setCustomEmoji(val);
+                          if (val) {
+                            setSelectedIconId('custom');
+                          }
+                        }}
+                        className={`w-full rounded-lg px-2.5 py-1 text-xs focus:outline-none transition-all ${
+                          isLightMode ? 'bg-gray-100 border border-gray-200 text-gray-800' : 'bg-[#0f172a] border border-[#1e293b] text-gray-200'
+                        }`}
+                      />
+                      {customEmoji && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCustomEmoji('');
+                            setSelectedIconId('shinobi');
+                          }}
+                          className="text-[10px] text-gray-400 hover:text-red-400 cursor-pointer shrink-0"
+                        >
+                          清除
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -585,6 +761,262 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                 />
               </div>
             </div>
+          </div>
+
+          {/* Section: LLM Model & Inference Engine Configuration (Model Portal) */}
+          <div className={`p-4 rounded-2xl border space-y-3.5 ${
+            isLightMode ? 'bg-blue-50/40 border-blue-200' : 'bg-blue-950/20 border-blue-900/40'
+          }`}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className={`w-7 h-7 rounded-xl flex items-center justify-center ${
+                  isLightMode ? 'bg-blue-100 text-blue-600' : 'bg-blue-900/40 text-blue-400'
+                }`}>
+                  <Cpu className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="font-bold text-xs text-fg flex items-center gap-2">
+                    <span>底座推理大模型 (Inference Model)</span>
+                    <span className="text-[10px] font-mono px-2 py-0.2 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/25">
+                      {useGlobalDefaultModel ? `${getGlobalModelConfig().modelName || 'DeepSeek V3'} (继承)` : (modelConfig.modelName || modelConfig.modelId)}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-fg-muted">为该 Agent 指定驱动推理的大语言模型与 API 密钥</div>
+                </div>
+              </div>
+
+              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-medium text-fg-secondary">
+                <input
+                  type="checkbox"
+                  checked={useGlobalDefaultModel}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setUseGlobalDefaultModel(checked);
+                    if (checked) {
+                      setModelConfig({ ...getGlobalModelConfig(), useGlobalDefault: true });
+                    }
+                  }}
+                  className="rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <span>继承全局默认</span>
+              </label>
+            </div>
+
+            {useGlobalDefaultModel ? (
+              <div className={`p-3 rounded-xl border text-xs flex items-center justify-between ${
+                isLightMode ? 'bg-white/80 border-blue-100 text-blue-900' : 'bg-[#151c2b] border-[#223048] text-blue-200'
+              }`}>
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-blue-500 shrink-0" />
+                  <div>
+                    <span className="font-semibold text-fg">
+                      已启用全局模型：{getGlobalModelConfig().modelName || 'DeepSeek V3'}
+                    </span>
+                    <div className="text-[10px] text-fg-muted mt-0.5">
+                      端点: <code className="font-mono">{getGlobalModelConfig().baseUrl}</code> · 自动复用全局密钥，无需重复配置
+                    </div>
+                  </div>
+                </div>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/25 shrink-0">
+                  Global Default
+                </span>
+              </div>
+            ) : (
+              <div className="space-y-3 pt-1 border-t border-border/50 animate-in fade-in duration-150">
+                {/* Provider select */}
+                <div>
+                  <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                    模型服务厂商
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {PROVIDER_PRESETS.map((p) => {
+                      const isSelected =
+                        (p.id === 'deepseek' && modelConfig.provider === 'deepseek') ||
+                        (p.id === 'anthropic' && modelConfig.provider === 'anthropic') ||
+                        (p.id === 'ollama' && modelConfig.provider === 'ollama') ||
+                        (p.id === 'siliconflow' && modelConfig.baseUrl?.includes('siliconflow')) ||
+                        (p.id === 'openai' && modelConfig.provider === 'openai_compatible' && !modelConfig.baseUrl?.includes('siliconflow')) ||
+                        (p.id === 'custom' && modelConfig.provider === 'custom');
+
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => {
+                            const firstModel = p.models[0];
+                            setModelConfig((prev) => ({
+                              ...prev,
+                              provider: p.provider,
+                              baseUrl: p.defaultBaseUrl,
+                              modelId: firstModel?.id || 'deepseek-chat',
+                              modelName: firstModel?.name || 'DeepSeek V3',
+                            }));
+                            setModelProbeResult(null);
+                          }}
+                          className={`px-2 py-1.5 rounded-xl border text-left text-[11px] transition-all cursor-pointer truncate ${
+                            isSelected
+                              ? 'border-blue-500 bg-surface font-semibold text-blue-600 dark:text-blue-400 shadow-2xs'
+                              : 'border-border bg-surface/50 hover:bg-surface text-fg-secondary hover:text-fg'
+                          }`}
+                        >
+                          <div className="truncate font-medium">{p.name.split(' ')[0]}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Model dropdown */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                      选择具体模型
+                    </label>
+                    <select
+                      value={modelConfig.modelId}
+                      onChange={(e) => {
+                        const currentP =
+                          PROVIDER_PRESETS.find((p) => p.provider === modelConfig.provider) ||
+                          PROVIDER_PRESETS[0];
+                        const found = currentP.models.find((m) => m.id === e.target.value);
+                        setModelConfig((prev) => ({
+                          ...prev,
+                          modelId: e.target.value,
+                          modelName: found?.name || e.target.value,
+                        }));
+                        setModelProbeResult(null);
+                      }}
+                      className={`w-full rounded-xl px-3 py-1.5 text-xs focus:outline-none transition-all cursor-pointer ${inputBg}`}
+                    >
+                      {(
+                        PROVIDER_PRESETS.find((p) => p.provider === modelConfig.provider) ||
+                        PROVIDER_PRESETS[0]
+                      ).models.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                      模型标识符 (Model ID)
+                    </label>
+                    <input
+                      type="text"
+                      value={modelConfig.modelId}
+                      onChange={(e) =>
+                        setModelConfig((prev) => ({
+                          ...prev,
+                          modelId: e.target.value,
+                          modelName: e.target.value,
+                        }))
+                      }
+                      className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
+                    />
+                  </div>
+                </div>
+
+                {/* API Key */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className={`text-[11px] font-semibold flex items-center gap-1 ${labelColor}`}>
+                      <Key className="w-3 h-3 text-blue-500" />
+                      <span>API Key (密钥)</span>
+                    </label>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type={showModelApiKey ? 'text' : 'password'}
+                      value={modelConfig.apiKey || ''}
+                      onChange={(e) =>
+                        setModelConfig((prev) => ({
+                          ...prev,
+                          apiKey: e.target.value,
+                        }))
+                      }
+                      placeholder="sk-..."
+                      className={`w-full rounded-xl pl-3 pr-9 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowModelApiKey(!showModelApiKey)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-fg-muted hover:text-fg p-0.5 cursor-pointer"
+                    >
+                      {showModelApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Base URL */}
+                <div>
+                  <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                    API Base URL
+                  </label>
+                  <input
+                    type="text"
+                    value={modelConfig.baseUrl || ''}
+                    onChange={(e) =>
+                      setModelConfig((prev) => ({
+                        ...prev,
+                        baseUrl: e.target.value,
+                      }))
+                    }
+                    className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
+                  />
+                </div>
+
+                {/* Test button & result */}
+                <div className="flex items-center justify-between pt-1">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setIsTestingModel(true);
+                      setModelProbeResult(null);
+                      try {
+                        const res = await testModelConnection(modelConfig);
+                        setModelProbeResult(res);
+                      } catch (err: any) {
+                        setModelProbeResult({ ok: false, latencyMs: 0, error: err.message || '测试失败' });
+                      } finally {
+                        setIsTestingModel(false);
+                      }
+                    }}
+                    disabled={isTestingModel}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                      isLightMode
+                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                        : 'bg-blue-600 hover:bg-blue-500 text-white'
+                    }`}
+                  >
+                    <Wifi className={`w-3.5 h-3.5 ${isTestingModel ? 'animate-pulse' : ''}`} />
+                    <span>{isTestingModel ? '正在握手测试...' : '测试模型连通性'}</span>
+                  </button>
+
+                  {modelProbeResult && (
+                    <div
+                      className={`text-[11px] px-2.5 py-1 rounded-xl border flex items-center gap-1.5 ${
+                        modelProbeResult.ok
+                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
+                          : 'bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400'
+                      }`}
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full ${
+                          modelProbeResult.ok ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'
+                        }`}
+                      />
+                      <span>
+                        {modelProbeResult.ok
+                          ? `连通成功 (${modelProbeResult.latencyMs}ms · ${modelProbeResult.modelName || 'Ready'})`
+                          : `失败: ${modelProbeResult.error}`}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Middle Section: Remote ACP or Local ACP */}

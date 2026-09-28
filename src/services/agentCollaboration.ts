@@ -13,12 +13,22 @@ import {
 } from '../types';
 import {
   solveDeterministicBwm,
+  solveExactBwmOptionB,
   stepSprtGovernor,
+  fitSprtCalibrationParams,
   estimateRoundAlignmentScore,
   compileMinorityReport,
   extractArgumentNodes,
   localizeEarliestDispute,
   dehydrateContextToCommittedStates,
+  dehydrateContextWithAlert,
+  logGameTheoreticTelemetry,
+  getMetricBaselineSummary,
+  getMetricBaselineReport,
+  validateStageContract,
+  STAGE_CONTRACT_MAX_RETRIES,
+  tieredGroundingGovernor,
+  generateDynamicRulingDraft,
 } from './cogno';
 
 export interface CollaborationCascade {
@@ -274,31 +284,31 @@ ${topic.targetChallengeText || '（详见前序讨论脉络中的挑战者发言
       }
     } else if (role === 'challenger') {
       gameModeDirective = `\n\n【博弈编排 - ⚔️ 阶段 2: 红队对抗反例压测与反向质询 (Red Team)】:
-你是本议题佩戴黑帽的红队对抗智能体 (Red Team / Challenger)。提案者已提交初始方案（见下方【攻击标的方案】）。
+你是本议题佩戴黑帽的红队对抗智能体 (Red Team / Challenger)。提案官已提交初始立论方案（见下方【攻击标的方案】）。
 【作战守则】:
 强制运行反从众批判模式，寻找隐藏假设漏洞、极端并发死锁、网络抖动失效场景或过度设计问题。严禁盲目附和与套话认同！
-请必须遵循以下四段论输出结构：
-1. [质疑靶点]: 明确指出主导方案中的具体选型、代码设计或逻辑假设；
+请必须遵循以下四部曲批判契约：
+1. [质疑靶点]: 明确指出提案方案中的具体选型、代码设计或逻辑假设；
 2. [失效反例]: 构造具体的极端工况、恶意并发、故障注入或边界数据场景；
 3. [连锁反应]: 推演在此场景下系统为何崩溃、数据如何失真；
-4. [防御检验]: 要求主导者提供补丁防御设计或实证说明。
+4. [防御检验]: 要求提案官提供补丁防御设计或实证说明。
 无需在正文 @ 任何人，平台将自动流转至接地验证/抗辩阶段。
 
-【被质询主导方案 (攻击标的)】:
+【被质询提案方案 (攻击标的)】:
 <<<PROPOSER_SOLUTION_START>>>
-${topic.targetProposalText || '（暂未提取到前序主导方案，请围绕前序讨论脉络展开边界质询）'}
+${topic.targetProposalText || '（暂未提取到前序提案方案，请围绕前序讨论脉络展开边界质询）'}
 <<<PROPOSER_SOLUTION_END>>>`;
     } else if (role === 'verifier') {
       gameModeDirective = `\n\n【博弈编排 - 🔍 阶段 3: 接地实证与反事实检验 (Grounding Verifier)】:
 你是本议题客观物理世界与事实逻辑的接地验证智能体 (Grounding Verifier)。
 【守则与职责】:
 1. 坚决不参与任何主观文本辩论与空洞口水战！
-2. 你的唯一任务是对红队提出的极端失效反例与主导方案的前提假设，执行确定性的反事实与实证逻辑检验；
+2. 你的唯一任务是对红队提出的极端失效反例与提案方案的前提假设，执行确定性的反事实与实证逻辑检验；
 3. 给出具体的工具调用构想或模拟执行结果（如：运行测试脚本、检查并发竞争条件、验证网络抖动下的幂等性）；
 4. 输出确定性结论：该反例工况在真实代码/系统环境下究竟是否成立 (True / False)，并列出直接物理证据链。
 无需在正文 @ 任何人。
 
-【待验证主导方案】:
+【待验证提案方案】:
 <<<PROPOSER_SOLUTION_START>>>
 ${topic.targetProposalText || '详见前序脉络'}
 <<<PROPOSER_SOLUTION_END>>>
@@ -309,20 +319,20 @@ ${topic.targetChallengeText || '详见前序脉络'}
 <<<CHALLENGER_CRITIQUE_END>>>`;
     } else if (role === 'arbiter') {
       const defenseSection = topic.targetDefenseText
-        ? `\n\n【主导方防御答辩与架构补丁 (Defense v2)】:\n<<<PROPOSER_DEFENSE_START>>>\n${topic.targetDefenseText}\n<<<PROPOSER_DEFENSE_END>>>`
+        ? `\n\n【提案方防御答辩与架构补丁 (Defense v2)】:\n<<<PROPOSER_DEFENSE_START>>>\n${topic.targetDefenseText}\n<<<PROPOSER_DEFENSE_END>>>`
         : '';
 
       gameModeDirective = `\n\n【博弈编排 - ⚖️ 阶段 5: 中立综合协调与权衡决策 (Synthesizer / Arbiter)】:
-你是本议题的中立流程协调官与决策协调者 (Synthesizer / Arbiter)。主导方案、红队反例、接地实证及答辩补丁已进入终局仲裁。
+你是本议题的中立流程综合官与决策协调者 (Synthesizer / Arbiter)。提案方案、红队反例、接地实证及答辩补丁已进入终局仲裁。
 【仲裁守则】:
 保持客观中立，依据可行性、健壮性与 ROI：
 1. 梳理双方分歧焦点与核心论据；
-2. 全面审视红队的反例质疑、接地验证智能体的物理实证报告以及主导者的防御修正/补丁方案；
+2. 全面审视红队的反例质疑、接地验证智能体的物理实证报告以及提案官的防御修正/补丁方案；
 3. 输出客观的《架构决策权衡矩阵 (Trade-off Matrix)》；
-4. 调度确定性多属性决策分析 (MCDA) 算法求解，给出终局裁定方案与落地行动建议（若人类开发者持有最终裁决法槌，你的分析将作为定案的核心依据）。
+4. 调度确定性多属性决策分析 (MCDA) 算法求解，给出终局裁定方案与落地行动建议（若人类首席仲裁官持有最终裁决法槌，你的分析将作为定案的核心依据）。
 无需在正文 @ 任何人。
 
-【主导方案 (Proposal v1)】:
+【立论方案 (Proposal v1)】:
 <<<PROPOSER_PROPOSAL_START>>>
 ${topic.targetProposalText || '详见前序脉络'}
 <<<PROPOSER_PROPOSAL_END>>>
@@ -398,11 +408,11 @@ export function buildCascadePrompt(options: BuildCascadePromptOptions): string {
   if (topic?.discussionMode === 'game_theoretic' && topic.gameRoles) {
     const role = getAgentGameRole(targetAgent.id, topic.gameRoles);
     if (role === 'proposer') {
-      gameRoleAddon = `\n【你的博弈定位】: 🏛️ 主导者 (Proposer)。请主导技术方案的架构设计与关键路径，并就挑战者提出的质疑进行技术抗辩与落地修正。无需手动 @，平台将自动流转。`;
+      gameRoleAddon = `\n【你的博弈定位】: 🏛️ 提案官 (Proposer)。请主导技术方案的架构设计与关键路径，并就挑战者提出的质疑进行技术抗辩与落地修正。无需手动 @，平台将自动流转。`;
     } else if (role === 'challenger') {
-      gameRoleAddon = `\n【你的博弈定位】: ⚔️ 挑战者 (Challenger)。请执行对抗性挑错，寻找极端边界缺陷与隐藏风险，拒绝盲目认同。无需手动 @，平台将自动流转。`;
+      gameRoleAddon = `\n【你的博弈定位】: ⚔️ 红队对抗 / 挑战官 (Challenger)。请执行反从众对抗性挑错，寻找极端边界缺陷与隐藏风险，拒绝盲目认同。无需手动 @，平台将自动流转。`;
     } else if (role === 'arbiter') {
-      gameRoleAddon = `\n【你的博弈定位】: ⚖️ 中立仲裁者 (Arbiter)。请评估主导、挑战与答辩三方论据，提炼权衡矩阵，提供公正客观的仲裁裁决建议。无需手动 @。`;
+      gameRoleAddon = `\n【你的博弈定位】: ⚖️ 流程综合官 (Synthesizer / Arbiter)。请综合提案、红队与答辩三方论据，提炼权衡矩阵，提供公正客观的仲裁裁决建议。无需手动 @。`;
     }
   }
 
@@ -578,12 +588,22 @@ export function extractOrCompileMinorityReport(options: {
 // 统一重导出 CognoNexus 服务
 export {
   solveDeterministicBwm,
+  solveExactBwmOptionB,
   stepSprtGovernor,
+  fitSprtCalibrationParams,
   estimateRoundAlignmentScore,
   compileMinorityReport,
   extractArgumentNodes,
   localizeEarliestDispute,
   dehydrateContextToCommittedStates,
+  dehydrateContextWithAlert,
+  logGameTheoreticTelemetry,
+  getMetricBaselineSummary,
+  getMetricBaselineReport,
+  validateStageContract,
+  STAGE_CONTRACT_MAX_RETRIES,
+  tieredGroundingGovernor,
+  generateDynamicRulingDraft,
 };
 
 
