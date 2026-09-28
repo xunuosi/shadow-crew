@@ -39,14 +39,18 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
     const mapping: Record<string, GameRoleType> = {};
     agentList.forEach((agent, idx) => {
       const text = `${agent.name} ${agent.handle} ${agent.role || ''} ${(agent.tags || []).join(' ')}`.toLowerCase();
-      if (text.includes('arbiter') || text.includes('judge') || text.includes('裁判') || text.includes('仲裁')) {
+      if (text.includes('arbiter') || text.includes('judge') || text.includes('裁判') || text.includes('仲裁') || text.includes('协调') || text.includes('综合')) {
         mapping[agent.id] = 'arbiter';
-      } else if (text.includes('sec') || text.includes('audit') || text.includes('review') || text.includes('challenger') || text.includes('qa') || text.includes('test') || text.includes('安全') || text.includes('测试') || text.includes('审查')) {
+      } else if (text.includes('verify') || text.includes('ground') || text.includes('tool') || text.includes('sandbox') || text.includes('沙箱') || text.includes('验证') || text.includes('接地') || text.includes('事实') || text.includes('基准')) {
+        mapping[agent.id] = 'verifier';
+      } else if (text.includes('sec') || text.includes('audit') || text.includes('review') || text.includes('challenger') || text.includes('qa') || text.includes('test') || text.includes('安全') || text.includes('测试') || text.includes('审查') || text.includes('红队') || text.includes('对抗')) {
         mapping[agent.id] = 'challenger';
       } else if (idx === 0) {
         mapping[agent.id] = 'proposer';
       } else if (idx === 1 && !Object.values(mapping).includes('challenger')) {
         mapping[agent.id] = 'challenger';
+      } else if (idx === 2 && !Object.values(mapping).includes('verifier')) {
+        mapping[agent.id] = 'verifier';
       } else {
         mapping[agent.id] = 'proposer';
       }
@@ -172,6 +176,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
     const isGame = discussionMode === 'game_theoretic';
     const proposers = selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'proposer');
     const challengers = selectedAgentIds.filter((id) => agentRoles[id] === 'challenger');
+    const verifiers = selectedAgentIds.filter((id) => agentRoles[id] === 'verifier');
     const arbiters = selectedAgentIds.filter((id) => agentRoles[id] === 'arbiter');
 
     onCreateTopic({
@@ -183,6 +188,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
         ? {
             proposers,
             challengers,
+            verifiers,
             arbiters,
             humanIsArbiter,
           }
@@ -266,7 +272,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
             <label className="block text-xs font-semibold text-fg mb-1.5 flex items-center justify-between">
               <span>讨论模式选择</span>
               <span className="text-[10px] text-fg-muted font-normal">
-                {discussionMode === 'game_theoretic' ? '♟️ 主导/挑战/仲裁三元攻防' : '💬 轮流自由发言推演'}
+                {discussionMode === 'game_theoretic' ? '♟️ 4+1 认知协同攻防决策 (提案/红队/接地/综合 + 人类法槌)' : '💬 轮流自由发言推演'}
               </span>
             </label>
             <div className="grid grid-cols-2 gap-2">
@@ -309,11 +315,11 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
-                    <span>博弈讨论模式</span>
+                    <span>4+1博弈决策模式</span>
                     <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-mono">推荐</span>
                     {discussionMode === 'game_theoretic' && <Check className="w-3 h-3 text-amber-500 stroke-[2.5]" />}
                   </div>
-                  <p className="text-[10px] text-fg-muted mt-0.5 leading-snug">主导-挑战-仲裁三元攻防，高保真架构决策</p>
+                  <p className="text-[10px] text-fg-muted mt-0.5 leading-snug">提案-红队-接地-综合四元协同，高保真架构决策</p>
                 </div>
               </button>
             </div>
@@ -392,7 +398,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
                 <span>指派协同推演 Agent</span>
                 {discussionMode === 'game_theoretic' && (
                   <span className="text-[10px] text-amber-600 dark:text-amber-400 font-normal">
-                    (可为各 Agent 指派三元博弈角色)
+                    (可为各 Agent 指派专业博弈角色：提案/红队/接地/综合)
                   </span>
                 )}
               </label>
@@ -427,6 +433,8 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
                               ? 'bg-blue-500/5 border-blue-500/40 text-fg shadow-2xs'
                               : currentRole === 'challenger'
                               ? 'bg-rose-500/5 border-rose-500/40 text-fg shadow-2xs'
+                              : currentRole === 'verifier'
+                              ? 'bg-cyan-500/5 border-cyan-500/40 text-fg shadow-2xs'
                               : 'bg-purple-500/5 border-purple-500/40 text-fg shadow-2xs'
                             : 'bg-purple-500/10 border-purple-500/40 text-fg shadow-2xs'
                           : 'bg-surface-subtle border-border hover:bg-surface-hover text-fg-secondary'
@@ -464,25 +472,34 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
                       {/* Game-Theoretic: Per-Agent Role Switcher */}
                       {discussionMode === 'game_theoretic' && isSelected && (
                         <div
-                          className="flex items-center gap-1 mt-2 pt-1.5 border-t border-border/40"
+                          className="flex items-center gap-1 mt-2 pt-1.5 border-t border-border/40 overflow-x-auto"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <span className="text-[10px] text-fg-muted shrink-0 mr-1 font-mono">博弈角色:</span>
-                          {(['proposer', 'challenger', 'arbiter'] as GameRoleType[]).map((r) => {
+                          {(['proposer', 'challenger', 'verifier', 'arbiter'] as GameRoleType[]).map((r) => {
                             const isCurrent = currentRole === r;
-                            const label = r === 'proposer' ? '🏛️ 主导' : r === 'challenger' ? '⚔️ 挑战' : '⚖️ 仲裁';
+                            const label =
+                              r === 'proposer'
+                                ? '🏛️ 提案'
+                                : r === 'challenger'
+                                ? '⚔️ 红队'
+                                : r === 'verifier'
+                                ? '🔍 接地'
+                                : '⚖️ 综合';
                             const activeStyle =
                               r === 'proposer'
                                 ? 'bg-blue-500/20 text-blue-600 dark:text-blue-300 border-blue-500/50 font-semibold'
                                 : r === 'challenger'
                                 ? 'bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/50 font-semibold'
+                                : r === 'verifier'
+                                ? 'bg-cyan-500/20 text-cyan-600 dark:text-cyan-300 border-cyan-500/50 font-semibold'
                                 : 'bg-purple-500/20 text-purple-600 dark:text-purple-300 border-purple-500/50 font-semibold';
                             return (
                               <button
                                 key={r}
                                 type="button"
                                 onClick={() => setAgentRoles((prev) => ({ ...prev, [agent.id]: r }))}
-                                className={`text-[10px] px-1.5 py-0.5 rounded-md border transition-all cursor-pointer ${
+                                className={`text-[10px] px-1.5 py-0.5 rounded-md border transition-all cursor-pointer whitespace-nowrap ${
                                   isCurrent
                                     ? activeStyle
                                     : 'bg-surface-subtle text-fg-muted border-border hover:bg-surface-hover hover:text-fg'

@@ -1,4 +1,25 @@
-import { Agent, DiscussionMode, GameRolesConfig, GameRoleType, GameTheoreticStage } from '../types';
+import { 
+  Agent, 
+  DiscussionMode, 
+  GameRolesConfig, 
+  GameRoleType, 
+  GameTheoreticStage,
+  McdaCriterion,
+  McdaDecisionPayload,
+  MinorityReport,
+  SprtGovernorState,
+  DisputeSpanPacket,
+  ArgumentNode
+} from '../types';
+import {
+  solveDeterministicBwm,
+  stepSprtGovernor,
+  estimateRoundAlignmentScore,
+  compileMinorityReport,
+  extractArgumentNodes,
+  localizeEarliestDispute,
+  dehydrateContextToCommittedStates,
+} from './cogno';
 
 export interface CollaborationCascade {
   cascadeId: string;
@@ -172,17 +193,20 @@ export interface TopicPromptContext {
   gameStage?: GameTheoreticStage;
   targetProposalText?: string;
   targetChallengeText?: string;
+  targetVerificationText?: string;
+  targetDefenseText?: string;
   participatingAgents?: Agent[];
   recentHistory?: Array<{ author: string; content: string; isAgent?: boolean }>;
 }
 
 /**
- * 获取 Agent 在三元博弈中的角色定位
+ * 获取 Agent 在 CognoNexus 博弈模式中的角色定位 (4类核心智能体角色)
  */
 export function getAgentGameRole(agentId: string, gameRoles?: GameRolesConfig): GameRoleType | null {
   if (!gameRoles) return null;
   if ((gameRoles.proposers || []).includes(agentId)) return 'proposer';
   if ((gameRoles.challengers || []).includes(agentId)) return 'challenger';
+  if ((gameRoles.verifiers || []).includes(agentId)) return 'verifier';
   if ((gameRoles.arbiters || []).includes(agentId)) return 'arbiter';
   return null;
 }
@@ -222,57 +246,91 @@ export function buildTopicPrompt(options: {
   let gameModeDirective = '';
   if (topic.discussionMode === 'game_theoretic' && topic.gameRoles) {
     const role = getAgentGameRole(targetAgent.id, topic.gameRoles);
-    const stage = topic.gameStage || (role === 'proposer' ? 'proposal' : role === 'challenger' ? 'challenge' : 'arbitration');
+    const stage = topic.gameStage || (role === 'proposer' ? 'proposal' : role === 'challenger' ? 'challenge' : role === 'verifier' ? 'verification' : 'arbitration');
+
+    const verificationSection = topic.targetVerificationText
+      ? `\n\n【🔍 接地验证实证检验结论 (Grounding Truth)】:\n<<<GROUNDING_VERIFICATION_START>>>\n${topic.targetVerificationText}\n<<<GROUNDING_VERIFICATION_END>>>`
+      : '';
 
     if (role === 'proposer') {
       if (stage === 'defense') {
-        gameModeDirective = `\n\n【博弈编排 - 🏛️ 阶段 3: 主导者答辩与防御修正 (Defense)】:
-挑战者已对你的主导方案提出针对性反例与边界质询（见下方【挑战者反例质询】）。
-请针对挑战者指出的并发/极端场景进行针对性答辩：
-1. 若挑战有效，提供架构补丁防御设计、降级方案或代码修正；
-2. 若挑战存在前提误解，基于代码事实与确定性逻辑给出技术抗辩。
+        gameModeDirective = `\n\n【博弈编排 - 🏛️ 阶段 4: 提案者答辩与防御修正 (Defense v2)】:
+红队挑战者已对你的初始提案提出针对性反例与边界质询，且接地验证智能体已提供物理实证检验（见下方靶点数据）。
+请针对挑战者指出的失效场景与接地检验结论做出正面答辩：
+1. 事实澄清与评估：认可还是反驳挑战方的失效推演？指出其推演中的合理之处或边界误判；
+2. 架构补丁与修正方案 (Patch v2)：若漏洞属实，提出具体的容灾、降级、锁机制或重构设计；
+3. 性能/复杂度折中说明：补丁方案对原架构的延迟、吞吐与维护成本有何影响；
+4. 交付准备：给出可供仲裁官定案评估的最终建议。
 无需在正文 @ 任何人，平台状态机将自动汇总攻防论据并提交仲裁。
 
-【挑战者反例质询 (攻击靶点)】:
+【红队反例质询 (攻击靶点)】:
 <<<CHALLENGER_CRITIQUE_START>>>
 ${topic.targetChallengeText || '（详见前序讨论脉络中的挑战者发言）'}
-<<<CHALLENGER_CRITIQUE_END>>>`;
+<<<CHALLENGER_CRITIQUE_END>>>${verificationSection}`;
       } else {
-        gameModeDirective = `\n\n【博弈编排 - 🏛️ 阶段 1: 主导方案立论起草 (Proposer)】:
-你是本议题的主导方案提出者。请基于议题目标与需求，设计全局架构首选技术方案，明确关键选型、核心接口、组件拆分与设计假设。
-注意：你的方案落库后将被平台直接递交至批判性挑战者进行极限反例压测，请尽可能清晰完备地陈述方案逻辑与潜在风险边界。无需在正文 @ 任何人，平台状态机将自动递交方案。`;
+        gameModeDirective = `\n\n【博弈编排 - 🏛️ 阶段 1: 提案智能体独立立论起草 (Proposer)】:
+你是本议题的提案构想者 (Proposer)。请基于议题目标与需求，在独立沙箱中设计全局架构首选技术方案，明确关键选型、核心接口、组件拆分与设计假设。
+注意：你的方案落库后将被平台直接递交至红队对抗智能体进行极限反例压测与反从众审查，请尽可能清晰完备地陈述方案逻辑与潜在风险边界。无需在正文 @ 任何人，平台状态机将自动递交方案。`;
       }
     } else if (role === 'challenger') {
-      gameModeDirective = `\n\n【博弈编排 - ⚔️ 阶段 2: 方案反例压测与反向质询 (Challenger)】:
-你是本议题的批判性挑战者。主导者已提交初始方案（见下方【攻击标的方案】）。
+      gameModeDirective = `\n\n【博弈编排 - ⚔️ 阶段 2: 红队对抗反例压测与反向质询 (Red Team)】:
+你是本议题佩戴黑帽的红队对抗智能体 (Red Team / Challenger)。提案者已提交初始方案（见下方【攻击标的方案】）。
 【作战守则】:
-坚决执行对抗性挑错，寻找隐藏假设漏洞、极端并发死锁、网络抖动失效场景或过度设计问题。严禁盲目附和与套话认同！
+强制运行反从众批判模式，寻找隐藏假设漏洞、极端并发死锁、网络抖动失效场景或过度设计问题。严禁盲目附和与套话认同！
 请必须遵循以下四段论输出结构：
 1. [质疑靶点]: 明确指出主导方案中的具体选型、代码设计或逻辑假设；
 2. [失效反例]: 构造具体的极端工况、恶意并发、故障注入或边界数据场景；
 3. [连锁反应]: 推演在此场景下系统为何崩溃、数据如何失真；
 4. [防御检验]: 要求主导者提供补丁防御设计或实证说明。
-无需在正文 @ 任何人，平台将自动流转至抗辩/仲裁阶段。
+无需在正文 @ 任何人，平台将自动流转至接地验证/抗辩阶段。
 
 【被质询主导方案 (攻击标的)】:
 <<<PROPOSER_SOLUTION_START>>>
 ${topic.targetProposalText || '（暂未提取到前序主导方案，请围绕前序讨论脉络展开边界质询）'}
 <<<PROPOSER_SOLUTION_END>>>`;
-    } else if (role === 'arbiter') {
-      gameModeDirective = `\n\n【博弈编排 - ⚖️ 阶段 3: 中立仲裁与权衡矩阵起草 (Arbiter)】:
-你是本议题的中立仲裁者。主导方案与挑战反例已就绪。
-【仲裁守则】:
-保持客观公正，依据可行性、健壮性与 ROI：
-1. 梳理双方分歧焦点与核心论据；
-2. 输出客观的《架构决策权衡矩阵 (Trade-off Matrix)》；
-3. 给出建议采纳方案或重构要求（若人类开发者持有最终裁决法槌，你的分析将作为定案的核心依据）。
+    } else if (role === 'verifier') {
+      gameModeDirective = `\n\n【博弈编排 - 🔍 阶段 3: 接地实证与反事实检验 (Grounding Verifier)】:
+你是本议题客观物理世界与事实逻辑的接地验证智能体 (Grounding Verifier)。
+【守则与职责】:
+1. 坚决不参与任何主观文本辩论与空洞口水战！
+2. 你的唯一任务是对红队提出的极端失效反例与主导方案的前提假设，执行确定性的反事实与实证逻辑检验；
+3. 给出具体的工具调用构想或模拟执行结果（如：运行测试脚本、检查并发竞争条件、验证网络抖动下的幂等性）；
+4. 输出确定性结论：该反例工况在真实代码/系统环境下究竟是否成立 (True / False)，并列出直接物理证据链。
 无需在正文 @ 任何人。
 
-【主导方案】:
+【待验证主导方案】:
+<<<PROPOSER_SOLUTION_START>>>
 ${topic.targetProposalText || '详见前序脉络'}
+<<<PROPOSER_SOLUTION_END>>>
 
-【挑战反例】:
-${topic.targetChallengeText || '详见前序脉络'}`;
+【红队指出的失效反例争议切片】:
+<<<CHALLENGER_CRITIQUE_START>>>
+${topic.targetChallengeText || '详见前序脉络'}
+<<<CHALLENGER_CRITIQUE_END>>>`;
+    } else if (role === 'arbiter') {
+      const defenseSection = topic.targetDefenseText
+        ? `\n\n【主导方防御答辩与架构补丁 (Defense v2)】:\n<<<PROPOSER_DEFENSE_START>>>\n${topic.targetDefenseText}\n<<<PROPOSER_DEFENSE_END>>>`
+        : '';
+
+      gameModeDirective = `\n\n【博弈编排 - ⚖️ 阶段 5: 中立综合协调与权衡决策 (Synthesizer / Arbiter)】:
+你是本议题的中立流程协调官与决策协调者 (Synthesizer / Arbiter)。主导方案、红队反例、接地实证及答辩补丁已进入终局仲裁。
+【仲裁守则】:
+保持客观中立，依据可行性、健壮性与 ROI：
+1. 梳理双方分歧焦点与核心论据；
+2. 全面审视红队的反例质疑、接地验证智能体的物理实证报告以及主导者的防御修正/补丁方案；
+3. 输出客观的《架构决策权衡矩阵 (Trade-off Matrix)》；
+4. 调度确定性多属性决策分析 (MCDA) 算法求解，给出终局裁定方案与落地行动建议（若人类开发者持有最终裁决法槌，你的分析将作为定案的核心依据）。
+无需在正文 @ 任何人。
+
+【主导方案 (Proposal v1)】:
+<<<PROPOSER_PROPOSAL_START>>>
+${topic.targetProposalText || '详见前序脉络'}
+<<<PROPOSER_PROPOSAL_END>>>
+
+【红队反例质询 (Red Team Challenge)】:
+<<<CHALLENGER_CRITIQUE_START>>>
+${topic.targetChallengeText || '详见前序脉络'}
+<<<CHALLENGER_CRITIQUE_END>>>${verificationSection}${defenseSection}`;
     }
   }
 
@@ -344,7 +402,7 @@ export function buildCascadePrompt(options: BuildCascadePromptOptions): string {
     } else if (role === 'challenger') {
       gameRoleAddon = `\n【你的博弈定位】: ⚔️ 挑战者 (Challenger)。请执行对抗性挑错，寻找极端边界缺陷与隐藏风险，拒绝盲目认同。无需手动 @，平台将自动流转。`;
     } else if (role === 'arbiter') {
-      gameRoleAddon = `\n【你的博弈定位】: ⚖️ 中立仲裁者 (Arbiter)。请评估主导与挑战双方论据，提炼权衡矩阵，提供公正客观的仲裁裁决建议。无需手动 @。`;
+      gameRoleAddon = `\n【你的博弈定位】: ⚖️ 中立仲裁者 (Arbiter)。请评估主导、挑战与答辩三方论据，提炼权衡矩阵，提供公正客观的仲裁裁决建议。无需手动 @。`;
     }
   }
 
@@ -380,4 +438,152 @@ ${invokingAgentReply}
 
 ${requestSection}${peerList}`;
 }
+
+export interface BuildExecutionPromptOptions {
+  topic: TopicPromptContext;
+  executorAgent: Agent;
+  decision: {
+    summary: string;
+    solution?: string;
+    tradeOffPoints?: string[];
+    impactedFiles?: string[];
+  };
+}
+
+/**
+ * 构造仲裁定案/共识合流后落地实施阶段的工程代码实施提示词
+ * 将大脑（治理决策层）的裁决转化为双手（代码工程落地）的执行补丁
+ */
+export function buildExecutionPrompt(options: BuildExecutionPromptOptions): string {
+  const { topic, executorAgent, decision } = options;
+
+  const filesList = decision.impactedFiles && decision.impactedFiles.length > 0
+    ? decision.impactedFiles.map((f) => `• \`${f}\``).join('\n')
+    : '• (根据方案内容自行确定需要新建或修改的文件范围)';
+
+  const tradeOffs = decision.tradeOffPoints && decision.tradeOffPoints.length > 0
+    ? `\n【关键权衡折中约束 (Trade-off Constraints)】:\n${decision.tradeOffPoints.map((p) => `• ${p}`).join('\n')}\n`
+    : '';
+
+  return `[🛠️ 议题仲裁定案代码落地实施任务 (Post-Arbitration Code Implementation)]
+【执行负责人】: ${executorAgent.name} (${executorAgent.handle} · ${executorAgent.role})
+【所属议题】: 【${topic.title}】 (ID: ${topic.topicId})
+【议题背景与需求】:
+${topic.description?.trim() || topic.title}
+
+【终局裁定方案 (Arbitration Ruling Summary)】:
+${decision.summary}
+${decision.solution ? `\n【落地方案与架构补丁要求】:\n${decision.solution}` : ''}${tradeOffs}
+【涉及受影响文件列表】:
+${filesList}
+
+【落地实施硬性指令要求】:
+1. 你已被选定为本议题仲裁定案的**具体代码落地执行智能体**。请将上述博弈推演与仲裁定案结论转化为**真实的工程代码实现与补丁方案**；
+2. 明确给出具体的代码变更（包含代码块、修改文件路径、新增/调整函数及完整逻辑）；
+3. 若涉及配置或依赖变更，请输出具体的命令与配置项；
+4. 严格遵守上述权衡约束，确保补丁具备边界校验、并发安全与向后兼容性；
+5. 无需在正文中 @ 任何人，直接交付高质量落地方案与代码补丁！`;
+}
+
+/**
+ * 神经符号确定性运筹裁决：结合 Arbiter 意图与确定性 BWM 求解器，输出确定性多属性决策载荷
+ */
+export function generateDeterministicMcdaPayload(options: {
+  arbiterText?: string;
+  proposalText?: string;
+  critiqueText?: string;
+  defenseText?: string;
+}): McdaDecisionPayload {
+  const { arbiterText = '' } = options;
+
+  const criteria: McdaCriterion[] = [
+    { id: 'rel', name: '系统健壮性与容灾抗风险', direction: 'maximize' },
+    { id: 'perf', name: '吞吐量与低延迟性能', direction: 'maximize' },
+    { id: 'comp', name: '代码实现与维护复杂度', direction: 'minimize' },
+    { id: 'cost', name: '资源占用与基础设施成本', direction: 'minimize' },
+  ];
+
+  const alternatives = [
+    '方案A: 采纳主导补丁方案 (Adopt Proposer Patch)',
+    '方案B: 采纳挑战推倒重构 (Reject & Rebuild)',
+    '方案C: 架构权衡分期推进 (Staged Trade-off Matrix)',
+  ];
+
+  // 依据仲裁陈词分析最优与最差准则倾向
+  let bestCriterionId = 'rel';
+  let worstCriterionId = 'cost';
+
+  if (arbiterText.includes('性能') || arbiterText.includes('延迟') || arbiterText.includes('高并发') || arbiterText.includes('吞吐')) {
+    bestCriterionId = 'perf';
+  } else if (arbiterText.includes('复杂度') || arbiterText.includes('开发周期') || arbiterText.includes('成本')) {
+    bestCriterionId = 'comp';
+  }
+
+  // 构造标准 BWM 偏好向量
+  let bestToOthers = [1, 2, 3, 5];
+  let othersToWorst = [5, 4, 2, 1];
+
+  if (bestCriterionId === 'perf') {
+    bestToOthers = [2, 1, 3, 4];
+    othersToWorst = [4, 5, 2, 1];
+  } else if (bestCriterionId === 'comp') {
+    bestToOthers = [3, 3, 1, 4];
+    othersToWorst = [2, 2, 5, 1];
+  }
+
+  // 构建各候选方案在各准则下的打分 (0~10)
+  const scoreMatrix: Record<string, Record<string, number>> = {
+    [alternatives[0]]: { rel: 8.6, perf: 8.4, comp: 4.2, cost: 3.5 },
+    [alternatives[1]]: { rel: 9.3, perf: 7.2, comp: 8.8, cost: 8.0 },
+    [alternatives[2]]: { rel: 8.9, perf: 8.5, comp: 5.4, cost: 4.2 },
+  };
+
+  // 如果仲裁陈词明确支持推倒重构
+  if (arbiterText.includes('驳回') || arbiterText.includes('重构') || arbiterText.includes('推翻')) {
+    scoreMatrix[alternatives[1]].rel = 9.8;
+    scoreMatrix[alternatives[0]].rel = 5.2;
+  }
+
+  return solveDeterministicBwm({
+    solverType: 'BWM',
+    criteria,
+    alternatives,
+    scoreMatrix,
+    bestCriterionId,
+    worstCriterionId,
+    bestToOthers,
+    othersToWorst,
+  });
+}
+
+/**
+ * 伴生少数派报告提炼
+ */
+export function extractOrCompileMinorityReport(options: {
+  critiqueText: string;
+  proposalText?: string;
+  dissentingAgentId: string;
+  dissentingAgentName: string;
+  dissentingAgentModel?: string;
+}): MinorityReport {
+  return compileMinorityReport({
+    dissentingAgentId: options.dissentingAgentId,
+    dissentingAgentName: options.dissentingAgentName,
+    dissentingAgentModel: options.dissentingAgentModel,
+    critiqueText: options.critiqueText,
+    proposalText: options.proposalText,
+  });
+}
+
+// 统一重导出 CognoNexus 服务
+export {
+  solveDeterministicBwm,
+  stepSprtGovernor,
+  estimateRoundAlignmentScore,
+  compileMinorityReport,
+  extractArgumentNodes,
+  localizeEarliestDispute,
+  dehydrateContextToCommittedStates,
+};
+
 

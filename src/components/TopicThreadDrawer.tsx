@@ -6,7 +6,9 @@ import {
   ActiveAgentExecution, 
   RulingRecord, 
   RulingDecisionType, 
-  GameRoleType 
+  GameRoleType,
+  McdaDecisionPayload,
+  MinorityReport
 } from '../types';
 import { 
   X, 
@@ -36,7 +38,10 @@ import {
   SlidersHorizontal,
   Plus,
   Trash2,
-  AlertTriangle
+  AlertTriangle,
+  Wrench,
+  Play,
+  Zap
 } from 'lucide-react';
 import { MentionSuggestions } from './MentionSuggestions';
 import { renderFormattedContent } from '../utils/formatMentions';
@@ -60,8 +65,12 @@ interface TopicThreadDrawerProps {
     impactedFiles: string[];
     approvers: string[];
     rulingRecord?: RulingRecord;
+    executorId?: string;
+    mcdaPayload?: McdaDecisionPayload;
+    minorityReport?: MinorityReport;
   }) => void;
   onReopenTopic?: (topicId: string) => void;
+  onExecuteTopicPatch?: (topicId: string, executorId: string) => void;
   onOpenCodexDiff: (diff: any) => void;
   onEditTopic?: () => void;
 }
@@ -78,6 +87,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   onSendMessage,
   onResolveTopic,
   onReopenTopic,
+  onExecuteTopicPatch,
   onOpenCodexDiff,
   onEditTopic,
 }) => {
@@ -87,6 +97,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   const [solutionDraft, setSolutionDraft] = useState('');
   const [impactedFilesDraft, setImpactedFilesDraft] = useState('src/middleware/auth.ts, src/routes/oauth.ts');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // 落地执行 Agent 指派状态
+  const [selectedExecutorId, setSelectedExecutorId] = useState('');
+  const [showAssignExecutorModal, setShowAssignExecutorModal] = useState(false);
 
   // 仲裁裁决法槌控制台相关状态 (Arbiter's Gavel Ruling State)
   const [showRulingModal, setShowRulingModal] = useState(false);
@@ -110,6 +124,13 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     setRulingType(type);
     setExemptionChecked(false);
     setExemptionReason('');
+    const defaultExecutor = type === 'adopt_proposer'
+      ? (topic?.gameRoles?.proposers?.[0] || '')
+      : type === 'reject_rebuild'
+      ? (topic?.gameRoles?.challengers?.[0] || topic?.gameRoles?.proposers?.[0] || '')
+      : (topic?.gameRoles?.proposers?.[0] || topic?.gameRoles?.arbiters?.[0] || '');
+    setSelectedExecutorId(defaultExecutor);
+
     if (type === 'adopt_proposer') {
       setRulingSummary('经博弈讨论验证，主导方案具备完整落地可行性与性能优势，补充边界校验后准予合并实施。');
       setRulingSolution('采纳主导者架构设计方案，补齐分布式锁与熔断兜底。');
@@ -125,6 +146,13 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
   const handleSwitchRulingType = (type: RulingDecisionType) => {
     setRulingType(type);
+    const defaultExecutor = type === 'adopt_proposer'
+      ? (topic?.gameRoles?.proposers?.[0] || '')
+      : type === 'reject_rebuild'
+      ? (topic?.gameRoles?.challengers?.[0] || topic?.gameRoles?.proposers?.[0] || '')
+      : (topic?.gameRoles?.proposers?.[0] || topic?.gameRoles?.arbiters?.[0] || '');
+    setSelectedExecutorId(defaultExecutor);
+
     if (type === 'adopt_proposer') {
       setRulingSummary('经博弈讨论验证，主导方案具备完整落地可行性与性能优势，补充边界校验后准予合并实施。');
       setRulingSolution('采纳主导者架构设计方案，补齐分布式锁与熔断兜底。');
@@ -169,6 +197,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       impactedFiles: finalImpactedFiles,
       decidedAt: resolvedAt,
       exemptionReason: !isChallengerQuorumMet ? (exemptionReason.trim() || '人类首席仲裁官具名特权豁免') : undefined,
+      executorId: selectedExecutorId || undefined,
+      mcdaPayload: topic.gameTheoreticState?.mcdaPayload,
+      minorityReport: topic.gameTheoreticState?.minorityReport,
+      sprtState: topic.gameTheoreticState?.sprtState,
     };
 
     onResolveTopic(topic.id, {
@@ -176,6 +208,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       impactedFiles: finalImpactedFiles,
       approvers: [arbiterName, ...aiArbiterNames],
       rulingRecord,
+      executorId: selectedExecutorId || undefined,
     });
 
     setShowRulingModal(false);
@@ -372,13 +405,16 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   const candidateAgentsWithGameRoles = candidateAgents.map((ag) => {
     if (topic.discussionMode === 'game_theoretic' && topic.gameRoles) {
       if (topic.gameRoles.proposers.includes(ag.id)) {
-        return { ...ag, role: `[🏛️ 主导者] ${ag.role}` };
+        return { ...ag, role: `[🏛️ 提案官] ${ag.role}` };
       }
       if (topic.gameRoles.challengers.includes(ag.id)) {
-        return { ...ag, role: `[⚔️ 挑战者] ${ag.role}` };
+        return { ...ag, role: `[⚔️ 红队官] ${ag.role}` };
+      }
+      if (topic.gameRoles.verifiers && topic.gameRoles.verifiers.includes(ag.id)) {
+        return { ...ag, role: `[🔍 接地验证官] ${ag.role}` };
       }
       if (topic.gameRoles.arbiters.includes(ag.id)) {
-        return { ...ag, role: `[⚖️ 仲裁者] ${ag.role}` };
+        return { ...ag, role: `[⚖️ 流程综合官] ${ag.role}` };
       }
     }
     return ag;
@@ -396,7 +432,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
   const getGameRoleBadge = (msg: Message) => {
     if (topic.discussionMode !== 'game_theoretic' || !topic.gameRoles) return null;
-    const { proposers = [], challengers = [], arbiters = [], humanIsArbiter } = topic.gameRoles;
+    const { proposers = [], challengers = [], verifiers = [], arbiters = [], humanIsArbiter } = topic.gameRoles;
 
     if (humanIsArbiter && (msg.authorId === 'user-norris' || msg.authorName === 'Norris_M5Pro' || !msg.isAgent)) {
       return {
@@ -412,20 +448,26 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
     if (proposers.includes(id)) {
       return {
-        label: '🏛️ 主导者',
-        cls: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30',
+        label: '🏛️ 提案官',
+        cls: 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30',
       };
     }
     if (challengers.includes(id)) {
       return {
-        label: '⚔️ 挑战者',
+        label: '⚔️ 红队对抗',
         cls: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30',
+      };
+    }
+    if (verifiers.includes(id)) {
+      return {
+        label: '🔍 接地验证官',
+        cls: 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 border-cyan-500/30',
       };
     }
     if (arbiters.includes(id)) {
       return {
-        label: '⚖️ 仲裁者',
-        cls: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border-indigo-500/30',
+        label: '⚖️ 流程综合官',
+        cls: 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-500/30',
       };
     }
     return null;
@@ -546,6 +588,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       solution,
       impactedFiles,
       approvers: approverNames,
+      executorId: selectedExecutorId || undefined,
+      mcdaPayload: topic.gameTheoreticState?.mcdaPayload,
+      minorityReport: topic.gameTheoreticState?.minorityReport,
     });
     setShowResolveModal(false);
   };
@@ -627,7 +672,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 <span className="text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1 shrink-0">
                   <Swords className="w-3 h-3" />
                   <span>
-                    🏛️ 主导 {topic.gameRoles.proposers?.length || 0} · ⚔️ 挑战 {topic.gameRoles.challengers?.length || 0} · ⚖️ 仲裁 {topic.gameRoles.humanIsArbiter ? '👤+' : ''}{topic.gameRoles.arbiters?.length || 0}
+                    🏛️ 提案 {topic.gameRoles.proposers?.length || 0} · ⚔️ 红队 {topic.gameRoles.challengers?.length || 0}
+                    {topic.gameRoles.verifiers && topic.gameRoles.verifiers.length > 0 ? ` · 🔍 接地 ${topic.gameRoles.verifiers.length}` : ''}
+                    {' '}· ⚖️ 综合 {topic.gameRoles.humanIsArbiter ? '👤+' : ''}{topic.gameRoles.arbiters?.length || 0}
                   </span>
                 </span>
               ) : isExecuting && topicExecutions.length > 0 ? (
@@ -705,12 +752,12 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           {topic.description || topic.title}
         </div>
 
-        {/* 博弈模式角色配置概览卡片 */}
+        {/* 博弈模式 4+1 角色配置概览卡片 */}
         {topic.discussionMode === 'game_theoretic' && topic.gameRoles && (
-          <div className="grid grid-cols-3 gap-1.5 pt-1 text-[10px] font-mono">
-            <div className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300">
+          <div className={`grid ${topic.gameRoles.verifiers && topic.gameRoles.verifiers.length > 0 ? 'grid-cols-4' : 'grid-cols-3'} gap-1.5 pt-1 text-[10px] font-mono`}>
+            <div className="p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-700 dark:text-blue-300">
               <div className="font-semibold flex items-center gap-1 mb-0.5">
-                <span>🏛️ 主导者</span>
+                <span>🏛️ 提案官</span>
                 <span className="text-[9px] opacity-75">({topic.gameRoles.proposers?.length || 0})</span>
               </div>
               <div className="truncate text-fg-secondary">
@@ -720,7 +767,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
             <div className="p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-700 dark:text-rose-300">
               <div className="font-semibold flex items-center gap-1 mb-0.5">
-                <span>⚔️ 挑战者</span>
+                <span>⚔️ 红队对抗</span>
                 <span className="text-[9px] opacity-75">({topic.gameRoles.challengers?.length || 0})</span>
               </div>
               <div className="truncate text-fg-secondary">
@@ -728,9 +775,21 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               </div>
             </div>
 
-            <div className="p-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-700 dark:text-indigo-300">
+            {topic.gameRoles.verifiers && topic.gameRoles.verifiers.length > 0 && (
+              <div className="p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-700 dark:text-cyan-300">
+                <div className="font-semibold flex items-center gap-1 mb-0.5">
+                  <span>🔍 接地验证</span>
+                  <span className="text-[9px] opacity-75">({topic.gameRoles.verifiers.length})</span>
+                </div>
+                <div className="truncate text-fg-secondary">
+                  {topic.gameRoles.verifiers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、')}
+                </div>
+              </div>
+            )}
+
+            <div className="p-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-700 dark:text-purple-300">
               <div className="font-semibold flex items-center gap-1 mb-0.5">
-                <span>⚖️ 仲裁者</span>
+                <span>⚖️ 综合裁决</span>
                 <span className="text-[9px] opacity-75">({topic.gameRoles.humanIsArbiter ? '👤+' : ''}{topic.gameRoles.arbiters?.length || 0})</span>
               </div>
               <div className="truncate text-fg-secondary">
@@ -744,19 +803,19 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         )}
       </div>
 
-      {/* 博弈推演阶段状态机指示器 (Game Theoretic Phase Stepper) */}
+      {/* 博弈推演阶段状态机指示器 (Game Theoretic Phase Stepper: 4-Stage or 5-Stage with Grounding Verifier) */}
       {topic.discussionMode === 'game_theoretic' && (
         <div className="px-3.5 py-2 bg-surface-subtle/70 border-b border-border text-[11px]">
           <div className="flex items-center justify-between gap-1 select-none">
             {/* Step 1: 方案立论 */}
             <div className={`flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
               (topic.gameStage === 'proposal' || !topic.gameStage)
-                ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-semibold shadow-xs'
+                ? 'bg-blue-500/15 border-blue-500/30 text-blue-700 dark:text-blue-300 font-semibold shadow-xs'
                 : 'bg-surface border-border text-fg-muted'
             }`}>
               <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0 ${
                 (topic.gameStage === 'proposal' || !topic.gameStage)
-                  ? 'bg-emerald-500 text-white font-bold'
+                  ? 'bg-blue-500 text-white font-bold'
                   : 'bg-emerald-500/20 text-emerald-600'
               }`}>
                 {(topic.gameStage && topic.gameStage !== 'proposal') ? '✓' : '1'}
@@ -772,60 +831,196 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             <div className={`flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
               topic.gameStage === 'challenge'
                 ? 'bg-rose-500/15 border-rose-500/30 text-rose-700 dark:text-rose-300 font-semibold shadow-xs'
-                : topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                : topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
                 ? 'bg-amber-500/15 border-amber-500/30 text-amber-700 dark:text-amber-300 font-semibold'
-                : (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                : (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
                 ? 'bg-surface border-border text-fg-muted'
                 : 'bg-surface border-border text-fg-muted opacity-60'
             }`}>
               <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0 ${
                 topic.gameStage === 'challenge'
                   ? 'bg-rose-500 text-white font-bold'
-                  : topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                  : topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
                   ? 'bg-amber-500 text-white font-bold'
-                  : (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                  : (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
                   ? 'bg-emerald-500/20 text-emerald-600'
                   : 'bg-border text-fg-muted'
               }`}>
-                {topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                {topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
                   ? '!'
-                  : (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                  : (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
                   ? '✓'
                   : '2'}
               </div>
               <div className="truncate min-w-0">
                 <span className="truncate block font-medium">
-                  {topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                  {topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
                     ? '⚔️ 压测缺席'
                     : '⚔️ 反例压测'}
                 </span>
               </div>
             </div>
 
+            {/* Step 3: 接地验证 (仅当指派了接地验证官时显示) */}
+            {topic.gameRoles?.verifiers && topic.gameRoles.verifiers.length > 0 && (
+              <>
+                <ArrowRight className="w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
+
+                <div className={`flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
+                  topic.gameStage === 'verification'
+                    ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-700 dark:text-cyan-300 font-semibold shadow-xs'
+                    : topic.gameTheoreticState?.isVerifierResponded === false && (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                    ? 'bg-amber-500/15 border-amber-500/30 text-amber-700 dark:text-amber-300 font-semibold'
+                    : (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                    ? 'bg-surface border-border text-fg-muted'
+                    : 'bg-surface border-border text-fg-muted opacity-60'
+                }`}>
+                  <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0 ${
+                    topic.gameStage === 'verification'
+                      ? 'bg-cyan-500 text-white font-bold'
+                      : topic.gameTheoreticState?.isVerifierResponded === false && (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                      ? 'bg-amber-500 text-white font-bold'
+                      : (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                      ? 'bg-emerald-500/20 text-emerald-600'
+                      : 'bg-border text-fg-muted'
+                  }`}>
+                    {topic.gameTheoreticState?.isVerifierResponded === false && (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                      ? '!'
+                      : (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                      ? '✓'
+                      : '3'}
+                  </div>
+                  <div className="truncate min-w-0">
+                    <span className="truncate block font-medium">
+                      {topic.gameTheoreticState?.isVerifierResponded === false && (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                        ? '🔍 验证跳过'
+                        : '🔍 接地验证'}
+                    </span>
+                  </div>
+                </div>
+              </>
+            )}
+
             <ArrowRight className="w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
 
-            {/* Step 3: 仲裁定案 */}
+            {/* Step 4: 答辩修正 */}
+            <div className={`flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
+              topic.gameStage === 'defense'
+                ? 'bg-blue-500/15 border-blue-500/30 text-blue-700 dark:text-blue-300 font-semibold shadow-xs'
+                : topic.gameTheoreticState?.isDefenseResponded === false && (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                ? 'bg-amber-500/15 border-amber-500/30 text-amber-700 dark:text-amber-300 font-semibold'
+                : (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                ? 'bg-surface border-border text-fg-muted'
+                : 'bg-surface border-border text-fg-muted opacity-60'
+            }`}>
+              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0 ${
+                topic.gameStage === 'defense'
+                  ? 'bg-blue-500 text-white font-bold'
+                  : topic.gameTheoreticState?.isDefenseResponded === false && (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                  ? 'bg-amber-500 text-white font-bold'
+                  : (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                  ? 'bg-emerald-500/20 text-emerald-600'
+                  : 'bg-border text-fg-muted'
+              }`}>
+                {topic.gameTheoreticState?.isDefenseResponded === false && (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                  ? '!'
+                  : (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                  ? '✓'
+                  : (topic.gameRoles?.verifiers && topic.gameRoles.verifiers.length > 0 ? '4' : '3')}
+              </div>
+              <div className="truncate min-w-0">
+                <span className="truncate block font-medium">
+                  {topic.gameTheoreticState?.isDefenseResponded === false && (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                    ? '🛡️ 答辩缺席'
+                    : '🛡️ 答辩修正'}
+                </span>
+              </div>
+            </div>
+
+            <ArrowRight className="w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
+
+            {/* Step 5: 综合仲裁 */}
             <div className={`flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
               topic.gameStage === 'concluded' || topic.status === 'resolved'
                 ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-semibold'
                 : topic.gameStage === 'arbitration'
-                ? 'bg-indigo-500/15 border-indigo-500/30 text-indigo-700 dark:text-indigo-300 font-semibold shadow-xs'
+                ? 'bg-purple-500/15 border-purple-500/30 text-purple-700 dark:text-purple-300 font-semibold shadow-xs'
                 : 'bg-surface border-border text-fg-muted opacity-60'
             }`}>
               <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0 ${
                 topic.gameStage === 'concluded' || topic.status === 'resolved'
                   ? 'bg-emerald-500 text-white font-bold'
                   : topic.gameStage === 'arbitration'
-                  ? 'bg-indigo-500 text-white font-bold'
+                  ? 'bg-purple-500 text-white font-bold'
                   : 'bg-border text-fg-muted'
               }`}>
-                {topic.gameStage === 'concluded' || topic.status === 'resolved' ? '✓' : '3'}
+                {topic.gameStage === 'concluded' || topic.status === 'resolved' ? '✓' : (topic.gameRoles?.verifiers && topic.gameRoles.verifiers.length > 0 ? '5' : '4')}
               </div>
               <div className="truncate min-w-0">
-                <span className="truncate block font-medium">⚖️ 仲裁定案</span>
+                <span className="truncate block font-medium">⚖️ 综合仲裁</span>
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* CognoNexus 运行态看板 (SPRT 自适应调控与 LMAD 局部冲突切片) */}
+      {topic.discussionMode === 'game_theoretic' && (topic.gameTheoreticState?.sprtState || topic.gameTheoreticState?.cognoNexus?.currentDispute) && (
+        <div className="px-3.5 py-1.5 bg-surface-subtle/40 border-b border-border text-[10px] space-y-1.5">
+          {/* SPRT 自适应调控条 */}
+          {topic.gameTheoreticState?.sprtState && (
+            <div className="flex items-center justify-between gap-2 p-1.5 rounded-lg bg-surface border border-border/80 shadow-2xs">
+              <div className="flex items-center gap-1.5 text-fg">
+                <Zap className="w-3 h-3 text-amber-500 shrink-0" />
+                <span className="font-semibold">Wald-SPRT 序贯调控:</span>
+                <span className="font-mono text-[9px] text-fg-muted">
+                  轮次 {topic.gameTheoreticState.sprtState.currentRound} · 对齐分 {(topic.gameTheoreticState.sprtState.latestAlignmentScore * 100).toFixed(0)}% · 似然比 Λ={topic.gameTheoreticState.sprtState.logLikelihoodRatio.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex items-center gap-1">
+                {topic.gameTheoreticState.sprtState.decisionState === 'early_exit' && (
+                  <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-medium font-sans">
+                    ⚡ 高置信早停收敛
+                  </span>
+                )}
+                {topic.gameTheoreticState.sprtState.decisionState === 'deadlock_escalation' && (
+                  <span className="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-600 dark:text-rose-400 font-medium font-sans">
+                    ⚠️ 底层价值死锁熔断
+                  </span>
+                )}
+                {topic.gameTheoreticState.sprtState.decisionState === 'continue' && (
+                  <span className="px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-600 dark:text-purple-400 font-medium font-sans">
+                    序贯收敛中 [区间: -2.94 ~ +2.94]
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* LMAD 局部冲突切片焦点 */}
+          {topic.gameTheoreticState?.cognoNexus?.currentDispute && (
+            <div className="p-2 rounded-lg bg-surface border border-border/80 space-y-1 shadow-2xs">
+              <div className="flex items-center justify-between text-fg font-medium">
+                <span className="flex items-center gap-1 text-purple-600 dark:text-purple-400 font-semibold">
+                  <SlidersHorizontal className="w-3 h-3" />
+                  <span>LMAD 局部冲突切片: {topic.gameTheoreticState.cognoNexus.currentDispute.claimTopic}</span>
+                </span>
+                <span className="text-[9px] font-mono text-fg-muted">
+                  归因: {topic.gameTheoreticState.cognoNexus.currentDispute.rootCause}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-[9px] pt-0.5 text-fg-secondary">
+                <div className="p-1 rounded bg-surface-subtle border border-border/50 truncate" title={topic.gameTheoreticState.cognoNexus.currentDispute.proposerClaim}>
+                  <span className="font-semibold text-emerald-600">立论: </span>
+                  {topic.gameTheoreticState.cognoNexus.currentDispute.proposerClaim}
+                </div>
+                <div className="p-1 rounded bg-surface-subtle border border-border/50 truncate" title={topic.gameTheoreticState.cognoNexus.currentDispute.challengerCritique}>
+                  <span className="font-semibold text-rose-600">反例: </span>
+                  {topic.gameTheoreticState.cognoNexus.currentDispute.challengerCritique}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -873,12 +1068,24 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                       {msg.gameStage && (
                         <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono border shrink-0 whitespace-nowrap ${
                           msg.gameStage === 'proposal'
-                            ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+                            ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20'
                             : msg.gameStage === 'challenge'
                             ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20'
-                            : 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20'
+                            : msg.gameStage === 'verification'
+                            ? 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-500/20'
+                            : msg.gameStage === 'defense'
+                            ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20'
+                            : 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20'
                         }`}>
-                          {msg.gameStage === 'proposal' ? '🏛️ 方案立论' : msg.gameStage === 'challenge' ? '⚔️ 反例压测' : '⚖️ 仲裁建言'}
+                          {msg.gameStage === 'proposal'
+                            ? '🏛️ 方案立论'
+                            : msg.gameStage === 'challenge'
+                            ? '⚔️ 反例压测'
+                            : msg.gameStage === 'verification'
+                            ? '🔍 接地验证'
+                            : msg.gameStage === 'defense'
+                            ? '🛡️ 答辩修正'
+                            : '⚖️ 综合仲裁'}
                         </span>
                       )}
                       {msg.isPending ? (
@@ -1166,6 +1373,83 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 </div>
               )}
 
+              {/* CognoNexus 神经符号 MCDA 确定性决策分析矩阵 */}
+              {(topic.rulingRecord.mcdaPayload || topic.gameTheoreticState?.mcdaPayload) && (() => {
+                const mcda = topic.rulingRecord.mcdaPayload || topic.gameTheoreticState?.mcdaPayload;
+                if (!mcda) return null;
+                return (
+                  <div className="space-y-1.5 p-2 rounded-lg bg-surface/80 border border-border/80 shadow-2xs">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <div className="flex items-center gap-1.5 font-bold text-fg">
+                        <Scale className="w-3.5 h-3.5 text-amber-500" />
+                        <span>MCDA 运筹决策矩阵 (BWM 最优最劣法)</span>
+                      </div>
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-medium ${
+                        mcda.consistencyPassed 
+                          ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' 
+                          : 'bg-amber-500/15 text-amber-600'
+                      }`}>
+                        ξ* = {mcda.consistencyIndex} ({mcda.consistencyPassed ? '✓ 逻辑严密一致' : '⚠️ 需关注'})
+                      </span>
+                    </div>
+
+                    {/* Criteria Weights */}
+                    <div className="grid grid-cols-4 gap-1 text-[9px] font-mono">
+                      {mcda.criteria.map((c) => (
+                        <div key={c.id} className="p-1 rounded bg-surface-subtle border border-border/40 text-center">
+                          <div className="text-fg-muted truncate">{c.name.split('与')[0]}</div>
+                          <div className="font-bold text-fg">{((mcda.computedWeights[c.id] || 0) * 100).toFixed(1)}%</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Mathematical Ranking */}
+                    <div className="space-y-1 pt-1 border-t border-border/40">
+                      <div className="text-[9px] font-semibold text-fg-muted">运筹效用综合评分排名:</div>
+                      {mcda.ranking.map((r) => (
+                        <div key={r.rank} className="flex items-center justify-between text-[9px] px-1.5 py-0.5 rounded bg-surface-subtle/80">
+                          <span className="font-medium text-fg truncate">#{r.rank} {r.alternative.split(' (')[0]}</span>
+                          <span className="font-mono text-fg-secondary">效用: {(r.totalUtility * 10).toFixed(2)} / 10</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* CognoNexus 伴生少数派异议报告 */}
+              {(topic.rulingRecord.minorityReport || topic.gameTheoreticState?.minorityReport) && (() => {
+                const mr = topic.rulingRecord.minorityReport || topic.gameTheoreticState?.minorityReport;
+                if (!mr) return null;
+                return (
+                  <div className="space-y-1.5 p-2 rounded-lg bg-surface/80 border border-border/80 shadow-2xs">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <div className="flex items-center gap-1.5 font-bold text-rose-600 dark:text-rose-400">
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        <span>伴生少数派异议报告 (Minority Report)</span>
+                      </div>
+                      <span className="text-[9px] text-fg-muted font-mono">{mr.dissentingAgentName}</span>
+                    </div>
+                    <div className="text-[9px] text-fg-secondary leading-relaxed">
+                      <span className="font-semibold text-fg">保留立场：</span>{mr.coreDissentThesis}
+                    </div>
+                    <div className="text-[9px] text-fg-muted">
+                      <span className="font-semibold text-fg">自洽依据：</span>{mr.rationalityBasis}
+                    </div>
+                    {mr.reopeningTriggers && mr.reopeningTriggers.length > 0 && (
+                      <div className="pt-1 border-t border-border/40">
+                        <span className="text-[9px] font-semibold text-amber-600 dark:text-amber-400">🚨 黑天鹅重启判定条件：</span>
+                        <ul className="list-disc list-inside text-[9px] text-fg-secondary space-y-0.5 mt-0.5">
+                          {mr.reopeningTriggers.map((t, idx) => (
+                            <li key={idx}>{t}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               <div className="text-[9px] text-fg-muted font-mono flex items-center justify-between pt-1 border-t border-border/50">
                 <span>裁决官: {topic.rulingRecord.arbiterName}</span>
                 {topic.rulingRecord.impactedFiles && topic.rulingRecord.impactedFiles.length > 0 && (
@@ -1174,28 +1458,122 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   </span>
                 )}
               </div>
+
+              {/* Post-Arbitration Execution Status Row */}
+              <div className="pt-2 border-t border-border/50 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-[10px]">
+                  <Wrench className="w-3 h-3 text-fg-muted shrink-0" />
+                  <span className="text-fg-muted">落地执行:</span>
+                  {(() => {
+                    const executorId = topic.rulingRecord.executorId || topic.gameTheoreticState?.assignedExecutorId || topic.decisionRecord?.executorId;
+                    const executorAgent = agents.find((a) => a.id === executorId);
+                    const status = topic.gameTheoreticState?.executionStatus || (executorId ? 'completed' : 'idle');
+                    if (!executorId) {
+                      return <span className="text-fg-muted font-sans">未指派 (仅架构推演)</span>;
+                    }
+                    return (
+                      <span className="flex items-center gap-1 font-mono font-medium">
+                        <span className="text-fg">{executorAgent ? executorAgent.name : executorId}</span>
+                        {status === 'running' && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-sans">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+                            实施中...
+                          </span>
+                        )}
+                        {status === 'completed' && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-sans">
+                            <CheckCircle2 className="w-2.5 h-2.5" />
+                            已交付
+                          </span>
+                        )}
+                        {status === 'failed' && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-rose-500/15 text-rose-600 dark:text-rose-400 font-sans">
+                            异常
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })()}
+                </div>
+
+                {onExecuteTopicPatch && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const initialExec = topic.rulingRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId || candidateAgentsWithGameRoles[0]?.id || '';
+                      setSelectedExecutorId(initialExec);
+                      setShowAssignExecutorModal(true);
+                    }}
+                    className="px-2 py-1 rounded-lg bg-surface border border-border hover:bg-surface-hover text-fg text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer shrink-0"
+                    title="指派落地 Agent 实施代码变更"
+                  >
+                    <Wrench className="w-3 h-3 text-accent" />
+                    <span>{topic.rulingRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId ? '重新指派实施' : '指派 Agent 实施补丁'}</span>
+                  </button>
+                )}
+              </div>
             </div>
           ) : (
-            <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between">
-              <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300">
-                <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
-                <div className="text-[11px] font-semibold">
-                  本议题已达成共识并归档
-                  <div className="text-[9px] text-emerald-600/80 dark:text-emerald-400/80 font-normal">
-                    决策结论已合流至主频道时间轴
+            <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                  <div className="text-[11px] font-semibold">
+                    本议题已达成共识并归档
+                    <div className="text-[9px] text-emerald-600/80 dark:text-emerald-400/80 font-normal">
+                      决策结论已合流至主频道时间轴
+                    </div>
                   </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  {onExecuteTopicPatch && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const initialExec = topic.decisionRecord?.executorId || candidateAgentsWithGameRoles[0]?.id || '';
+                        setSelectedExecutorId(initialExec);
+                        setShowAssignExecutorModal(true);
+                      }}
+                      className="px-2 py-1 rounded-lg bg-surface border border-border hover:bg-surface-hover text-fg text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                      title="指派落地 Agent 实施代码变更"
+                    >
+                      <Wrench className="w-3 h-3 text-accent" />
+                      <span>{topic.decisionRecord?.executorId ? '重新指派实施' : '指派实施补丁'}</span>
+                    </button>
+                  )}
+                  {onReopenTopic && (
+                    <button
+                      onClick={() => onReopenTopic(topic.id)}
+                      className="px-2 py-1 rounded-lg bg-surface border border-border hover:bg-surface-hover text-fg text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
+                      title="重新激活此议题讨论"
+                    >
+                      <RotateCcw className="w-3 h-3 text-fg-muted" />
+                      <span>重开</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {onReopenTopic && (
-                <button
-                  onClick={() => onReopenTopic(topic.id)}
-                  className="px-2 py-1 rounded-lg bg-surface border border-border hover:bg-surface-hover text-fg text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
-                  title="重新激活此议题讨论"
-                >
-                  <RotateCcw className="w-3 h-3 text-fg-muted" />
-                  <span>重开</span>
-                </button>
+              {topic.decisionRecord?.executorId && (
+                <div className="pt-1.5 border-t border-emerald-500/20 flex items-center gap-2 text-[10px] text-emerald-800 dark:text-emerald-300">
+                  <Wrench className="w-3 h-3 opacity-75" />
+                  <span>落地执行 Agent:</span>
+                  <span className="font-mono font-medium">
+                    {agents.find((a) => a.id === topic.decisionRecord?.executorId)?.name || topic.decisionRecord.executorId}
+                  </span>
+                  {topic.gameTheoreticState?.executionStatus === 'running' && (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-700 dark:text-amber-300 font-sans">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+                      实施中...
+                    </span>
+                  )}
+                  {topic.gameTheoreticState?.executionStatus === 'completed' && (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-sans font-medium">
+                      已交付
+                    </span>
+                  )}
+                </div>
               )}
             </div>
           )
@@ -1430,6 +1808,28 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 />
               </div>
 
+              <div>
+                <label className="block text-xs font-semibold text-fg mb-1 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Wrench className="w-3.5 h-3.5 text-emerald-500" />
+                    <span>指派落地执行 Agent (可选)</span>
+                  </span>
+                  <span className="text-[10px] text-fg-muted font-normal">合流后将自动委派其执行代码补丁</span>
+                </label>
+                <select
+                  value={selectedExecutorId}
+                  onChange={(e) => setSelectedExecutorId(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-surface-subtle border border-border focus:border-emerald-500 text-fg text-xs focus:outline-none transition-all"
+                >
+                  <option value="">暂不指派执行 Agent (仅归档结论)</option>
+                  {candidateAgentsWithGameRoles.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name} ({agent.role || 'Agent'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div className="p-2.5 rounded-xl bg-surface-subtle border border-border text-[11px] text-fg-muted">
                 <p>确认后，议题将标记为 <span className="text-emerald-500 font-semibold">Resolved</span>，并将提炼的 200 字架构决策卡片合流至主时间线，方便团队全局获知结论。</p>
               </div>
@@ -1616,6 +2016,59 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 />
               </div>
 
+              {/* Assign Executor Agent */}
+              <div>
+                <label className="block text-xs font-semibold text-fg mb-1 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Wrench className="w-3.5 h-3.5 text-amber-500" />
+                    <span>指派落地执行 Agent (可选)</span>
+                  </span>
+                  <span className="text-[10px] text-fg-muted font-normal">定案后将自动委派其执行代码补丁</span>
+                </label>
+                <select
+                  value={selectedExecutorId}
+                  onChange={(e) => setSelectedExecutorId(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-surface-subtle border border-border focus:border-amber-500 text-fg text-xs focus:outline-none transition-all"
+                >
+                  <option value="">暂不指派执行 Agent (仅法槌定案归档)</option>
+                  {candidateAgentsWithGameRoles.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name} ({agent.role || 'Agent'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* MCDA Decision Matrix Preview in Ruling Modal */}
+              {topic.gameTheoreticState?.mcdaPayload && (
+                <div className="p-3 rounded-xl bg-purple-500/10 border border-purple-500/25 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 font-bold text-purple-700 dark:text-purple-300 text-xs">
+                      <Scale className="w-3.5 h-3.5 text-purple-500" />
+                      <span>MCDA 运筹最优最劣法 (BWM) 数学求解参考</span>
+                    </div>
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300">
+                      一致性标度 ξ* = {topic.gameTheoreticState.mcdaPayload.consistencyIndex}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1 text-[10px] font-mono">
+                    {topic.gameTheoreticState.mcdaPayload.criteria.map((c) => (
+                      <div key={c.id} className="p-1 rounded bg-surface/70 border border-border/50 text-center">
+                        <div className="text-fg-muted truncate">{c.name.split('与')[0]}</div>
+                        <div className="font-semibold text-fg">{((topic.gameTheoreticState?.mcdaPayload?.computedWeights[c.id] || 0) * 100).toFixed(1)}%</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="text-[10px] text-fg-secondary">
+                    <span className="font-semibold text-fg">数学最优方案：</span>
+                    <span className="text-purple-600 dark:text-purple-400 font-bold">
+                      {topic.gameTheoreticState.mcdaPayload.ranking[0]?.alternative}
+                    </span>
+                    （综合效用得分: {(topic.gameTheoreticState.mcdaPayload.ranking[0]?.totalUtility * 10).toFixed(2)}/10）
+                  </div>
+                </div>
+              )}
+
               {/* Quorum Gate Alert & Exemption Checkbox */}
               {!isChallengerQuorumMet && (
                 <div className="p-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-900 dark:text-amber-200 text-xs space-y-2">
@@ -1693,6 +2146,78 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 <Gavel className="w-3.5 h-3.5" />
                 <span>敲响法槌并定案归档</span>
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 7. Assign Executor On-demand Modal */}
+      {showAssignExecutorModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="w-full max-w-md bg-surface border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col text-xs text-fg-secondary">
+            <div className="h-12 px-4 border-b border-border flex items-center justify-between bg-surface-subtle shrink-0">
+              <div className="flex items-center gap-2 font-bold text-fg text-sm">
+                <Wrench className="w-4 h-4 text-accent" />
+                <span>指派落地执行 Agent 实施架构补丁</span>
+              </div>
+              <button
+                onClick={() => setShowAssignExecutorModal(false)}
+                className="p-1 rounded-lg hover:bg-surface-hover text-fg-muted hover:text-fg transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3 font-sans">
+              <div className="p-2.5 rounded-xl bg-surface-subtle border border-border text-[11px] text-fg-muted leading-relaxed">
+                议题决策已确定。选定执行 Agent 后，系统将把定案决策（落地推进方案、权衡矩阵与受影响文件）封装为工程实施指令并唤起该 Agent。
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-fg mb-1">
+                  选择执行 Agent
+                </label>
+                <select
+                  value={selectedExecutorId}
+                  onChange={(e) => setSelectedExecutorId(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-surface-subtle border border-border focus:border-accent text-fg text-xs focus:outline-none transition-all"
+                >
+                  <option value="" disabled>请选择负责落地编码的 Agent</option>
+                  {candidateAgentsWithGameRoles.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name} ({agent.role || 'Agent'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
+                <button
+                  type="button"
+                  onClick={() => setShowAssignExecutorModal(false)}
+                  className="px-3 py-1.5 rounded-xl border border-border hover:bg-surface-hover text-fg-secondary text-xs transition-colors cursor-pointer"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={!selectedExecutorId}
+                  onClick={() => {
+                    if (onExecuteTopicPatch && selectedExecutorId) {
+                      onExecuteTopicPatch(topic.id, selectedExecutorId);
+                      setShowAssignExecutorModal(false);
+                    }
+                  }}
+                  className={`px-4 py-1.5 rounded-xl font-semibold text-xs shadow-md transition-all flex items-center gap-1.5 ${
+                    !selectedExecutorId
+                      ? 'bg-fg-muted/20 text-fg-muted cursor-not-allowed'
+                      : 'bg-accent hover:opacity-90 text-accent-fg cursor-pointer'
+                  }`}
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  <span>立即启动实施补丁</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

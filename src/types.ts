@@ -240,9 +240,9 @@ export type TopicStatus = 'open' | 'investigating' | 'resolved';
 
 export type DiscussionMode = 'standard' | 'game_theoretic';
 
-export type GameRoleType = 'proposer' | 'challenger' | 'arbiter';
+export type GameRoleType = 'proposer' | 'challenger' | 'verifier' | 'arbiter';
 
-export type GameTheoreticStage = 'proposal' | 'challenge' | 'defense' | 'arbitration' | 'concluded';
+export type GameTheoreticStage = 'proposal' | 'challenge' | 'verification' | 'defense' | 'arbitration' | 'concluded';
 
 export interface GameTheoreticState {
   currentStage: GameTheoreticStage;
@@ -250,17 +250,113 @@ export interface GameTheoreticState {
   targetProposalContent?: string;
   targetChallengeMessageId?: string;
   targetChallengeContent?: string;
+  targetVerificationMessageId?: string;
+  targetVerificationContent?: string;
+  targetDefenseMessageId?: string;
+  targetDefenseContent?: string;
   isChallengerResponded?: boolean;
+  isVerifierResponded?: boolean;
+  isDefenseResponded?: boolean;
   isArbiterExempted?: boolean;
   exemptionReason?: string;
   quorumAlert?: string;
+  assignedExecutorId?: string;
+  executionStatus?: 'idle' | 'running' | 'completed' | 'failed';
+  mcdaPayload?: McdaDecisionPayload;
+  sprtState?: SprtGovernorState;
+  minorityReport?: MinorityReport;
+  cognoNexus?: CognoNexusState;
+}
+
+// ==================== CognoNexus 工业级认知决策引擎类型 ====================
+
+export interface ArgumentNode {
+  id: string;
+  authorId?: string;
+  authorName?: string;
+  claim: string;                // 核心论点/主张
+  assumptions: string[];        // 依赖的前提假设
+  dependencies?: string[];      // 依赖的前置论点节点 ID
+  confidence: number;           // 自评置信度 (0~1)
+  evidenceRefs?: string[];      // 关联的证据标识
+}
+
+export interface GroundingEvidence {
+  evidenceId: string;
+  sourceTool: 'code_sandbox' | 'rag_search' | 'sql_executor' | 'static_analyzer';
+  inputQueryOrCode: string;
+  rawOutput: string;
+  truthValue: boolean;         // 反事实检验真值判定
+  verifierReport: string;
+}
+
+export interface DisputeSpanPacket {
+  disputeId: string;
+  claimTopic: string;           // 争论焦点主题
+  proposerClaim: string;        // 主导方立论断言
+  challengerCritique: string;   // 挑战方反例断言
+  rootCause: string;            // 冲突本质归因 (前提分歧 / 资源竞争 / 边界条件误判)
+  groundingStatus: 'unverified' | 'verifying' | 'verified_true' | 'verified_false';
+  evidenceChain?: GroundingEvidence[];
+}
+
+export interface McdaCriterion {
+  id: string;
+  name: string;                 // 准则名称 (如：性能延迟、扩展性、实现复杂度、可靠性)
+  direction: 'maximize' | 'minimize';
+}
+
+export interface McdaDecisionPayload {
+  solverType: 'BWM' | 'AHP';    // 采用的确定性算法 (最优最劣法 / 层次分析法)
+  criteria: McdaCriterion[];
+  alternatives: string[];       // 候选方案名称 (如：[方案A: OAuth分发器, 方案B: 独立网关中间件])
+  scoreMatrix: Record<string, Record<string, number>>; // alternative -> criterion -> score (0~10)
+  bestCriterionId: string;      // 最优准则 ID
+  worstCriterionId: string;     // 最差准则 ID
+  bestToOthers: number[];       // 最优准则相对于其他准则的偏好度 (1~9)
+  othersToWorst: number[];      // 其他准则相对于最差准则的偏好度 (1~9)
+  computedWeights: Record<string, number>; // 线性规划求解得出的各准则确定性权重
+  consistencyIndex: number;     // 逻辑一致性标度 ξ* (越接近 0 逻辑越严密一致)
+  consistencyPassed: boolean;   // 是否通过一致性阈值检验 (ξ* <= 0.1)
+  ranking: { alternative: string; totalUtility: number; rank: number }[]; // 最终数学综合得分排序
+}
+
+export interface SprtGovernorState {
+  currentRound: number;
+  maxRounds: number;
+  logLikelihoodRatio: number;   // 累积对数似然比 Λ_r
+  upperThresholdA: number;      // 上界 (触发 Early Exit 共识早停)
+  lowerThresholdB: number;      // 下界 (触发死锁熔断，拉起人类仲裁)
+  latestAlignmentScore: number; // 最新一轮综合对齐分数 Sr (0~1)
+  decisionState: 'continue' | 'early_exit' | 'deadlock_escalation';
+  statusDescription: string;
+}
+
+export interface MinorityReport {
+  id: string;
+  dissentingAgentId: string;
+  dissentingAgentName: string;
+  dissentingAgentModel?: string;
+  coreDissentThesis: string;    // 反向对立主张与保留异议
+  rationalityBasis: string;     // 未被证伪的自洽逻辑推导
+  reopeningTriggers: string[];  // 黑天鹅与重开判定条件 (如：延迟超 100ms，TPS > 10,000)
+  recordedAt: string;
+}
+
+export interface CognoNexusState {
+  committedStates: ArgumentNode[];        // 已承诺事实看板 (脱水历史)
+  currentDispute?: DisputeSpanPacket;     // 当前聚焦攻防的离散冲突切片
+  mcdaPayload?: McdaDecisionPayload;      // 确定性运筹数学决策矩阵
+  sprtState?: SprtGovernorState;          // SPRT 调控器状态
+  minorityReport?: MinorityReport;        // 少数派异议报告
 }
 
 export interface GameRolesConfig {
-  proposers: string[];      // 主导者 Agent IDs
-  challengers: string[];    // 挑战者 Agent IDs
-  arbiters: string[];       // AI 仲裁者 Agent IDs
-  humanIsArbiter: boolean;  // 人类开发者本人是否担任仲裁者 (持有最终裁决法槌)
+  proposers: string[];      // 提案智能体 Agent IDs (Proposers)
+  challengers: string[];    // 红队对抗智能体 Agent IDs (Red Team / Challengers)
+  verifiers?: string[];     // 接地验证智能体 Agent IDs (Grounding Verifiers)
+  arbiters: string[];       // 中立综合协调官 Agent IDs (Synthesizers / Arbiters)
+  humanIsArbiter: boolean;  // 人类战略决策者持有最终裁决法槌 (Human Strategic Arbiter)
 }
 
 export type RulingDecisionType = 'adopt_proposer' | 'reject_rebuild' | 'trade_off_matrix';
@@ -275,6 +371,10 @@ export interface RulingRecord {
   impactedFiles?: string[];
   decidedAt: string;
   exemptionReason?: string;
+  executorId?: string;
+  mcdaPayload?: McdaDecisionPayload;
+  minorityReport?: MinorityReport;
+  sprtState?: SprtGovernorState;
 }
 
 export interface DecisionRecord {
@@ -283,6 +383,10 @@ export interface DecisionRecord {
   impactedFiles: string[];
   approvers: string[];
   resolvedAt: string;
+  executorId?: string;
+  executorName?: string;
+  mcdaPayload?: McdaDecisionPayload;
+  minorityReport?: MinorityReport;
 }
 
 export interface TopicMessageData {

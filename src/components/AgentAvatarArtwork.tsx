@@ -3,18 +3,57 @@ import React from 'react';
 interface AgentAvatarArtworkProps {
   type?: string;
   name?: string;
+  avatar?: string;
   className?: string;
+}
+
+export function resolveArtworkType(avatar?: string, type?: string, name?: string): string {
+  // 1. Check explicit avatar emoji or id first
+  if (avatar) {
+    if (avatar === '🥷' || avatar === 'shinobi') return 'shinobi';
+    if (avatar === '🪷' || avatar === 'claudecode') return 'claudecode';
+    if (avatar === '🤖' || avatar === 'codex') return 'codex';
+    if (avatar === '🎨' || avatar === 'palette') return 'palette';
+    if (avatar === '🐞' || avatar === 'alien' || avatar === 'deepseek') return 'alien';
+    if (avatar === '🧭' || avatar === 'astra') return 'astra';
+    if (avatar === '🦗' || avatar === 'openclaw') return 'openclaw';
+  }
+
+  // 2. Check type prop
+  if (type) {
+    const t = type.toLowerCase();
+    if (t === 'shinobi' || t.includes('ninja')) return 'shinobi';
+    if (t === 'claudecode' || t.includes('claude')) return 'claudecode';
+    if (t === 'codex' || t.includes('openai')) return 'codex';
+    if (t === 'palette' || t.includes('art') || t.includes('paint')) return 'palette';
+    if (t === 'alien' || t.includes('deepseek')) return 'alien';
+    if (t === 'astra' || t.includes('compass') || t.includes('star')) return 'astra';
+    if (t === 'openclaw' || t.includes('claw')) return 'openclaw';
+  }
+
+  // 3. Fallback to name heuristic only if avatar/type did not match a preset
+  const n = (name || '').toLowerCase();
+  if (n.includes('deepseek') || n.includes('alien')) return 'alien';
+  if (n.includes('astra') || n.includes('compass')) return 'astra';
+  if (n.includes('claudecode') || n.includes('claude')) return 'claudecode';
+  if (n.includes('codex') || n.includes('openai')) return 'codex';
+  if (n.includes('openclaw') || n.includes('claw')) return 'openclaw';
+  if (n.includes('shinobi') || n.includes('ninja')) return 'shinobi';
+  if (n.includes('artistry') || n.includes('palette')) return 'palette';
+
+  return 'other';
 }
 
 export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   type,
   name,
+  avatar,
   className = 'w-20 h-20',
 }) => {
-  const normalized = (type || name || '').toLowerCase();
+  const artwork = resolveArtworkType(avatar, type, name);
 
   // 1. MyDeepSeek - Terracotta Multi-Eyed Alien Bust (Matching Screenshot)
-  if (normalized.includes('deepseek') || normalized.includes('alien')) {
+  if (artwork === 'alien') {
     return (
       <div className={`${className} rounded-full bg-gradient-to-b from-[#38262c] to-[#1a1216] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
@@ -61,7 +100,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   }
 
   // 2. Astra - Ornate Golden Compass Star (Matching Screenshot)
-  if (normalized.includes('astra') || normalized.includes('star') || normalized.includes('compass')) {
+  if (artwork === 'astra') {
     return (
       <div className={`${className} rounded-full bg-gradient-to-b from-[#16273e] via-[#0d1726] to-[#070b12] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
@@ -111,7 +150,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   }
 
   // 3. MyLxClaudeCode - Organic Emblem with Code Tag & Gear (Matching Screenshot)
-  if (normalized.includes('claudecode') || normalized.includes('code') || normalized.includes('claude')) {
+  if (artwork === 'claudecode') {
     return (
       <div className={`${className} rounded-full bg-gradient-to-b from-[#2d221c] to-[#14181f] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
@@ -141,7 +180,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   }
 
   // 3.5. Codex / OpenAI - Neural Code Processor with Swirling Aperture Core
-  if (normalized.includes('codex') || normalized.includes('openai')) {
+  if (artwork === 'codex') {
     return (
       <div className={`${className} rounded-full bg-gradient-to-b from-[#102a24] via-[#0b1714] to-[#050b09] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
@@ -186,7 +225,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   }
 
   // 4. OpenClaw - Emerald Cyber Mantis Recon
-  if (normalized.includes('openclaw') || normalized.includes('claw')) {
+  if (artwork === 'openclaw') {
     return (
       <div className={`${className} rounded-full bg-gradient-to-b from-[#112a1f] to-[#0a1610] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
@@ -212,7 +251,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   }
 
   // 5. Shinobi - Cyber Stealth Ninja Mask
-  if (normalized.includes('shinobi') || normalized.includes('ninja')) {
+  if (artwork === 'shinobi') {
     return (
       <div className={`${className} rounded-full bg-gradient-to-b from-[#18263a] to-[#0c121c] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
@@ -237,7 +276,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   }
 
   // 6. Artistry Guide - Wooden Artist Palette with Brush (Matching Screenshot)
-  if (normalized.includes('artistry') || normalized.includes('palette') || normalized.includes('art') || normalized.includes('paint')) {
+  if (artwork === 'palette') {
     return (
       <div className={`${className} rounded-full bg-gradient-to-b from-[#2a221b] to-[#141210] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
@@ -303,9 +342,18 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
     );
   }
 
+  // Fallback: If custom emoji avatar provided, render emoji in stylish gradient circle!
+  if (avatar && avatar.trim()) {
+    return (
+      <div className={`${className} rounded-full bg-gradient-to-tr from-[#1e293b] to-[#0f172a] border-2 border-[#334155] flex items-center justify-center text-3xl sm:text-4xl shadow-inner select-none`}>
+        {avatar}
+      </div>
+    );
+  }
+
   // Fallback: Elegant Initials Avatar
   return (
-    <div className={`${className} rounded-full bg-gradient-to-tr from-[#1e293b] to-[#0f172a] border-2 border-[#334155] flex items-center justify-center text-3xl font-bold text-gray-200 shadow-inner`}>
+    <div className={`${className} rounded-full bg-gradient-to-tr from-[#1e293b] to-[#0f172a] border-2 border-[#334155] flex items-center justify-center text-3xl font-bold text-gray-200 shadow-inner select-none`}>
       {name ? name.slice(0, 2).toUpperCase() : 'AI'}
     </div>
   );

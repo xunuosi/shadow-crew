@@ -70,6 +70,14 @@ import {
   buildCrewRosterGuidance,
   buildCascadePrompt,
   buildTopicPrompt,
+  buildExecutionPrompt,
+  generateDeterministicMcdaPayload,
+  extractOrCompileMinorityReport,
+  extractArgumentNodes,
+  localizeEarliestDispute,
+  dehydrateContextToCommittedStates,
+  stepSprtGovernor,
+  estimateRoundAlignmentScore,
   TopicPromptContext,
 } from './services/agentCollaboration';
 
@@ -1406,8 +1414,12 @@ export default function App() {
       content: '',
     };
 
+    const verifiersSummary = topicData.gameRoles?.verifiers && topicData.gameRoles.verifiers.length > 0
+      ? `\n- 🔍 接地者：${topicData.gameRoles.verifiers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、')}`
+      : '';
+
     const initContent = isGame && topicData.gameRoles
-      ? `已发起博弈讨论议题【${topicData.title}】。\n目标背景：${topicData.description || '开始三元博弈论证。'}\n【三元博弈配置】：\n- 🏛️ 主导者：${topicData.gameRoles.proposers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- ⚔️ 挑战者：${topicData.gameRoles.challengers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- ⚖️ 仲裁者：${topicData.gameRoles.humanIsArbiter ? 'Norris_M5Pro (人类首席仲裁官, 持法槌) · ' : ''}${topicData.gameRoles.arbiters.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || (topicData.gameRoles.humanIsArbiter ? '' : '未指定')}`
+      ? `已发起 4+1 认知协同决策议题【${topicData.title}】。\n目标背景：${topicData.description || '开始架构决策攻防推演。'}\n【4+1 协同角色配置】：\n- 🏛️ 提案者：${topicData.gameRoles.proposers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- ⚔️ 红队对抗：${topicData.gameRoles.challengers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}${verifiersSummary}\n- ⚖️ 流程综合：${topicData.gameRoles.arbiters.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- 👤 终局裁判：${topicData.gameRoles.humanIsArbiter ? 'Norris_M5Pro (人类首席仲裁官, 持法槌)' : '已委派 AI 综合仲裁'}`
       : `已发起议题【${topicData.title}】。\n目标背景：${topicData.description || '开始方案推演。'}\n指派 Agent：${validAssignedAgentIds.length > 0 ? validAssignedAgentIds.map(id => agents.find(a => a.id === id)?.name).filter(Boolean).join('、') : '暂无 (可在抽屉中指派)'}。`;
 
     setMessages((prev) => ({
@@ -1934,11 +1946,13 @@ export default function App() {
 
   const triggerGameTheoreticStageHandover = async (options: {
     topicId: string;
-    nextStage: 'challenge' | 'arbitration';
+    nextStage: 'challenge' | 'verification' | 'defense' | 'arbitration';
     targetProposalText?: string;
     targetChallengeText?: string;
+    targetVerificationText?: string;
+    targetDefenseText?: string;
   }) => {
-    const { topicId, nextStage, targetProposalText, targetChallengeText } = options;
+    const { topicId, nextStage, targetProposalText, targetChallengeText, targetVerificationText, targetDefenseText } = options;
     const currentTopic = getTopicData(topicId);
     if (!currentTopic || currentTopic.status === 'resolved') return;
 
@@ -2178,22 +2192,45 @@ export default function App() {
           };
         });
 
+        // CognoNexus 阶段 2: 提取论点因果节点、定位最早冲突切片与上下文脱水
+        const argumentNodes = extractArgumentNodes(targetProposalText);
+        const disputePacket = localizeEarliestDispute(targetProposalText, acpResp.textResponse, argumentNodes);
+        const committedStates = dehydrateContextToCommittedStates(targetProposalText, acpResp.textResponse, argumentNodes);
+        const sprtScore = estimateRoundAlignmentScore({
+          proposalText: targetProposalText,
+          critiqueText: acpResp.textResponse,
+        });
+        const sprtState = stepSprtGovernor({
+          currentRound: 2,
+          alignmentScore: sprtScore,
+        });
+
+        const hasVerifiers = (currentTopic.gameRoles?.verifiers || []).length > 0;
+        const nextStageTarget = hasVerifiers ? 'verification' : 'defense';
+
+        // 阶段 2 反例压测完成后，转入【阶段 3: 接地验证 (Verification)】或【阶段 4: 答辩修正 (Defense)】
         updateTopicDataInState(topicId, (old) => ({
           ...old,
-          gameStage: 'arbitration',
+          gameStage: nextStageTarget,
           gameTheoreticState: {
             ...old.gameTheoreticState,
-            currentStage: 'arbitration',
+            currentStage: nextStageTarget,
             targetProposalContent: targetProposalText,
             targetChallengeContent: acpResp.textResponse,
             isChallengerResponded: true,
             quorumAlert: undefined,
+            sprtState,
+            cognoNexus: {
+              committedStates,
+              currentDispute: disputePacket,
+              sprtState,
+            },
           },
         }));
 
         triggerGameTheoreticStageHandover({
           topicId,
-          nextStage: 'arbitration',
+          nextStage: nextStageTarget,
           targetProposalText,
           targetChallengeText: acpResp.textResponse,
         });
@@ -2262,6 +2299,586 @@ export default function App() {
       return;
     }
 
+    if (nextStage === 'verification') {
+      const verifierIds = currentTopic.gameRoles?.verifiers || [];
+      const verifierAgent = candidateAgents.find((a) => verifierIds.includes(a.id));
+
+      if (!verifierAgent || verifierAgent.status === 'idle') {
+        inFlightHandoverRef.current.delete(handoverKey);
+
+        const offlineReason = !verifierAgent
+          ? '未指派或未匹配到接地验证者 (Verifier)'
+          : `接地验证者 ${verifierAgent.name} 处于离线/未连接状态`;
+
+        updateTopicDataInState(topicId, (old) => ({
+          ...old,
+          gameStage: 'defense',
+          gameTheoreticState: {
+            ...old.gameTheoreticState,
+            currentStage: 'defense',
+            targetProposalContent: targetProposalText,
+            targetChallengeContent: targetChallengeText,
+            isVerifierResponded: false,
+          },
+        }));
+
+        const verifierSkipNotice: Message = {
+          id: `msg-verifier-skip-${Date.now()}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: 'system',
+          authorName: 'Shinobi 仲裁法定人数守护',
+          authorHandle: '@verifier-guard',
+          authorAvatar: '🔍',
+          isAgent: true,
+          agentBadge: 'Verification Skipped',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `🔍 **接地验证跳过**：${offlineReason}。根据 4+1 博弈调度协议，工具接地与真实性校验缺席，自动流转至【阶段: 🛡️ 答辩修正】。`,
+        };
+
+        setMessages((prev) => ({
+          ...prev,
+          [topicId]: [...(prev[topicId] || []), verifierSkipNotice],
+        }));
+
+        triggerGameTheoreticStageHandover({
+          topicId,
+          nextStage: 'defense',
+          targetProposalText,
+          targetChallengeText,
+        });
+        return;
+      }
+
+      const execKey = `${topicId}:${verifierAgent.id}`;
+      setIsGenerating(true);
+      setActiveExecutions((prev) => ({
+        ...prev,
+        [execKey]: {
+          agentId: verifierAgent.id,
+          agentName: verifierAgent.name,
+          agentAvatar: verifierAgent.avatar,
+          threadId: topicId,
+          topicId,
+          status: 'thinking',
+          currentActionDetail: `正在执行客观事实与物理逻辑接地验证 (Stage: 🔍 接地验证)...`,
+          startedAt: Date.now(),
+          cascadeHop: 3,
+        },
+      }));
+
+      setAgents((prev) =>
+        prev.map((a) => (a.id === verifierAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
+      );
+
+      const verifierPendingId = `topic-pending-${Date.now()}-${verifierAgent.id}`;
+      const verifierPendingMsg: Message = {
+        id: verifierPendingId,
+        threadId: topicId,
+        channelId: topicChannel?.id,
+        authorId: verifierAgent.id,
+        authorName: verifierAgent.name,
+        authorHandle: verifierAgent.handle,
+        authorAvatar: verifierAgent.avatar,
+        isAgent: true,
+        isPending: true,
+        startedAt: Date.now(),
+        pendingHint: '正在调取外部工具、代码解释器沙箱与事实基准进行真实性接地校验 (Stage: 🔍 接地验证)...',
+        agentBadge: `${verifierAgent.modelBadge?.split(' ')[0] || 'Local'} · 🔍 接地验证 (执行中...)`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: '',
+        gameStage: 'verification',
+        gameRole: 'verifier',
+      };
+
+      setMessages((prev) => ({
+        ...prev,
+        [topicId]: [...(prev[topicId] || []), verifierPendingMsg],
+      }));
+
+      const topicContext: TopicPromptContext = {
+        topicId,
+        title: currentTopic.title,
+        description: currentTopic.description,
+        channelName: topicChannel?.name || 'chat',
+        status: currentTopic.status,
+        discussionMode: 'game_theoretic',
+        gameRoles: currentTopic.gameRoles,
+        gameStage: 'verification',
+        targetProposalText,
+        targetChallengeText,
+        participatingAgents: candidateAgents,
+      };
+
+      const verifierPrompt = buildTopicPrompt({
+        topic: topicContext,
+        userContent: `争议切片与立论反例已就绪，请调取工具、代码沙箱或事实基准，对核心分歧断言进行接地验证，输出布尔真值与反事实压测证据。`,
+        targetAgent: verifierAgent,
+        availableAgents: candidateAgents,
+      });
+
+      try {
+        const acpResp = await sendPromptToAcpAgent({
+          agent: verifierAgent,
+          roomId: topicId,
+          prompt: verifierPrompt,
+          projectId: activeProjectId,
+          channelId: topicChannel?.id,
+        });
+
+        setActiveExecutions((prev) => {
+          const next = { ...prev };
+          delete next[execKey];
+          if (Object.keys(next).length === 0) setIsGenerating(false);
+          return next;
+        });
+
+        if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
+          throw new Error(acpResp.isError ? acpResp.textResponse : '接地验证者返回空响应，未生成有效验证证据。');
+        }
+
+        const verifierReply: Message = {
+          id: `topic-reply-${Date.now()}-${verifierAgent.id}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: verifierAgent.id,
+          authorName: verifierAgent.name,
+          authorHandle: verifierAgent.handle,
+          authorAvatar: verifierAgent.avatar,
+          isAgent: true,
+          isPending: false,
+          agentBadge: `${verifierAgent.modelBadge?.split(' ')[0] || 'Local'} · 🔍 接地验证`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: acpResp.textResponse,
+          gameStage: 'verification',
+          gameRole: 'verifier',
+          thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
+            duration: `${acpResp.durationMs}ms`,
+            tokens: Math.round(acpResp.textResponse.length * 1.3),
+            summary: `已完成工具执行与物理事实接地验证`,
+            detail: acpResp.memoryActions.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n'),
+          } : undefined,
+          diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
+          cartridgeCitation: acpResp.cartridgeCitation,
+        };
+
+        setMessages((prev) => {
+          const existing = prev[topicId] || [];
+          const hasPending = existing.some((m) => m.id === verifierPendingId);
+          const nextTopicMsgs = hasPending
+            ? existing.map((m) => (m.id === verifierPendingId ? verifierReply : m))
+            : [...existing, verifierReply];
+          let parentThreadId: string | null = null;
+          for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+            if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+              parentThreadId = tId;
+              break;
+            }
+          }
+          const updatedChannelMsgs = parentThreadId
+            ? (prev[parentThreadId] || []).map((m) => {
+                if (m.type === 'topic' && m.topicData?.id === topicId) {
+                  return {
+                    ...m,
+                    topicData: {
+                      ...m.topicData,
+                      repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
+                      latestReplyPreview: verifierReply.content.slice(0, 60),
+                    },
+                  };
+                }
+                return m;
+              })
+            : [];
+          return {
+            ...prev,
+            [topicId]: nextTopicMsgs,
+            ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
+          };
+        });
+
+        // 阶段 3 验证完成后，转入【阶段 4: 答辩修正 (defense)】
+        updateTopicDataInState(topicId, (old) => ({
+          ...old,
+          gameStage: 'defense',
+          gameTheoreticState: {
+            ...old.gameTheoreticState,
+            currentStage: 'defense',
+            targetProposalContent: targetProposalText,
+            targetChallengeContent: targetChallengeText,
+            targetVerificationContent: acpResp.textResponse,
+            isVerifierResponded: true,
+          },
+        }));
+
+        triggerGameTheoreticStageHandover({
+          topicId,
+          nextStage: 'defense',
+          targetProposalText,
+          targetChallengeText,
+          targetVerificationText: acpResp.textResponse,
+        });
+      } catch (err) {
+        setActiveExecutions((prev) => {
+          const next = { ...prev };
+          delete next[execKey];
+          if (Object.keys(next).length === 0) setIsGenerating(false);
+          return next;
+        });
+
+        console.error('Verifier execution failed:', err);
+        const errorMsg: Message = {
+          id: `topic-reply-err-${Date.now()}-${verifierAgent.id}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: verifierAgent.id,
+          authorName: verifierAgent.name,
+          authorHandle: verifierAgent.handle,
+          authorAvatar: verifierAgent.avatar,
+          isAgent: true,
+          agentBadge: 'ACP Error',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `⚠️ **接地验证执行异常**：${err instanceof Error ? err.message : String(err)}。自动流转至答辩修正。`,
+          gameStage: 'verification',
+          gameRole: 'verifier',
+        };
+
+        setMessages((prev) => {
+          const existing = prev[topicId] || [];
+          const filtered = existing.filter((m) => m.id !== verifierPendingId);
+          return {
+            ...prev,
+            [topicId]: [...filtered, errorMsg],
+          };
+        });
+
+        updateTopicDataInState(topicId, (old) => ({
+          ...old,
+          gameStage: 'defense',
+          gameTheoreticState: {
+            ...old.gameTheoreticState,
+            currentStage: 'defense',
+            targetProposalContent: targetProposalText,
+            targetChallengeContent: targetChallengeText,
+            isVerifierResponded: false,
+          },
+        }));
+
+        triggerGameTheoreticStageHandover({
+          topicId,
+          nextStage: 'defense',
+          targetProposalText,
+          targetChallengeText,
+        });
+      } finally {
+        inFlightHandoverRef.current.delete(handoverKey);
+      }
+      return;
+    }
+
+    if (nextStage === 'defense') {
+      const proposerIds = currentTopic.gameRoles?.proposers || [];
+      const proposerAgent = candidateAgents.find((a) => proposerIds.includes(a.id));
+
+      if (!proposerAgent || proposerAgent.status === 'idle') {
+        inFlightHandoverRef.current.delete(handoverKey);
+
+        const offlineReason = !proposerAgent
+          ? '未指派或未匹配到主导者 (Proposer)'
+          : `主导者 ${proposerAgent.name} 处于离线/未连接状态`;
+
+        updateTopicDataInState(topicId, (old) => ({
+          ...old,
+          gameStage: 'arbitration',
+          gameTheoreticState: {
+            ...old.gameTheoreticState,
+            currentStage: 'arbitration',
+            targetProposalContent: targetProposalText,
+            targetChallengeContent: targetChallengeText,
+            isDefenseResponded: false,
+          },
+        }));
+
+        const defenseSkipNotice: Message = {
+          id: `msg-defense-skip-${Date.now()}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: 'system',
+          authorName: 'Shinobi 仲裁法定人数守护',
+          authorHandle: '@defense-guard',
+          authorAvatar: '🛡️',
+          isAgent: true,
+          agentBadge: 'Defense Skipped',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `🛡️ **主导者答辩跳过**：${offlineReason}。根据博弈调度协议，主导方答辩与修正缺席，自动流转至【阶段 4: 中立仲裁】。`,
+        };
+
+        setMessages((prev) => ({
+          ...prev,
+          [topicId]: [...(prev[topicId] || []), defenseSkipNotice],
+        }));
+
+        triggerGameTheoreticStageHandover({
+          topicId,
+          nextStage: 'arbitration',
+          targetProposalText,
+          targetChallengeText,
+          targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
+        });
+        return;
+      }
+
+      const execKey = `${topicId}:${proposerAgent.id}`;
+      setIsGenerating(true);
+      setActiveExecutions((prev) => ({
+        ...prev,
+        [execKey]: {
+          agentId: proposerAgent.id,
+          agentName: proposerAgent.name,
+          agentAvatar: proposerAgent.avatar,
+          threadId: topicId,
+          topicId,
+          status: 'thinking',
+          currentActionDetail: `正在针对挑战反例进行技术抗辩与防御修正 (Stage: 🛡️ 答辩修正)...`,
+          startedAt: Date.now(),
+          cascadeHop: 3,
+        },
+      }));
+
+      setAgents((prev) =>
+        prev.map((a) => (a.id === proposerAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
+      );
+
+      const defensePendingId = `topic-pending-${Date.now()}-${proposerAgent.id}`;
+      const defensePendingMsg: Message = {
+        id: defensePendingId,
+        threadId: topicId,
+        channelId: topicChannel?.id,
+        authorId: proposerAgent.id,
+        authorName: proposerAgent.name,
+        authorHandle: proposerAgent.handle,
+        authorAvatar: proposerAgent.avatar,
+        isAgent: true,
+        isPending: true,
+        startedAt: Date.now(),
+        pendingHint: '正在审视挑战者反例质询，设计架构防御补丁与修正方案 (Stage: 🛡️ 答辩修正)...',
+        agentBadge: `${proposerAgent.modelBadge?.split(' ')[0] || 'Local'} · 🛡️ 答辩修正 (推演中...)`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: '',
+        gameStage: 'defense',
+        gameRole: 'proposer',
+      };
+
+      setMessages((prev) => ({
+        ...prev,
+        [topicId]: [...(prev[topicId] || []), defensePendingMsg],
+      }));
+
+      const topicContext: TopicPromptContext = {
+        topicId,
+        title: currentTopic.title,
+        description: currentTopic.description,
+        channelName: topicChannel?.name || 'chat',
+        status: currentTopic.status,
+        discussionMode: 'game_theoretic',
+        gameRoles: currentTopic.gameRoles,
+        gameStage: 'defense',
+        targetProposalText,
+        targetChallengeText,
+        targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
+        participatingAgents: candidateAgents,
+      };
+
+      const defenseUserPrompt = (targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent)
+        ? `挑战者反例质询与接地验证官工具证据已送达，请针对极端场景、并发边界与实测数据给出架构防御补丁与技术抗辩。`
+        : `挑战者反例质询已送达，请针对极端场景与并发边界给出架构防御补丁与技术抗辩。`;
+
+      const defensePrompt = buildTopicPrompt({
+        topic: topicContext,
+        userContent: defenseUserPrompt,
+        targetAgent: proposerAgent,
+        availableAgents: candidateAgents,
+      });
+
+      try {
+        const acpResp = await sendPromptToAcpAgent({
+          agent: proposerAgent,
+          roomId: topicId,
+          prompt: defensePrompt,
+          projectId: activeProjectId,
+          channelId: topicChannel?.id,
+        });
+
+        setActiveExecutions((prev) => {
+          const next = { ...prev };
+          delete next[execKey];
+          if (Object.keys(next).length === 0) setIsGenerating(false);
+          return next;
+        });
+
+        if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
+          throw new Error(acpResp.isError ? acpResp.textResponse : '主导者返回空响应，未生成有效答辩修正。');
+        }
+
+        const defenseReply: Message = {
+          id: `topic-reply-${Date.now()}-${proposerAgent.id}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: proposerAgent.id,
+          authorName: proposerAgent.name,
+          authorHandle: proposerAgent.handle,
+          authorAvatar: proposerAgent.avatar,
+          isAgent: true,
+          isPending: false,
+          agentBadge: `${proposerAgent.modelBadge?.split(' ')[0] || 'Local'} · 🛡️ 答辩修正`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: acpResp.textResponse,
+          gameStage: 'defense',
+          gameRole: 'proposer',
+          thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
+            duration: `${acpResp.durationMs}ms`,
+            tokens: Math.round(acpResp.textResponse.length * 1.3),
+            summary: `已完成反例答辩与架构防御补丁构建`,
+            detail: acpResp.memoryActions.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n'),
+          } : undefined,
+          diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
+          cartridgeCitation: acpResp.cartridgeCitation,
+        };
+
+        setMessages((prev) => {
+          const existing = prev[topicId] || [];
+          const hasPending = existing.some((m) => m.id === defensePendingId);
+          const nextTopicMsgs = hasPending
+            ? existing.map((m) => (m.id === defensePendingId ? defenseReply : m))
+            : [...existing, defenseReply];
+          let parentThreadId: string | null = null;
+          for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+            if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+              parentThreadId = tId;
+              break;
+            }
+          }
+          const updatedChannelMsgs = parentThreadId
+            ? (prev[parentThreadId] || []).map((m) => {
+                if (m.type === 'topic' && m.topicData?.id === topicId) {
+                  return {
+                    ...m,
+                    topicData: {
+                      ...m.topicData,
+                      repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
+                      latestReplyPreview: defenseReply.content.slice(0, 60),
+                    },
+                  };
+                }
+                return m;
+              })
+            : [];
+          return {
+            ...prev,
+            [topicId]: nextTopicMsgs,
+            ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
+          };
+        });
+
+        // CognoNexus 阶段 3: 评估答辩修正后的对齐分数与似然比
+        const sprtScoreAfterDefense = estimateRoundAlignmentScore({
+          proposalText: targetProposalText,
+          critiqueText: targetChallengeText,
+          defenseText: acpResp.textResponse,
+        });
+        const sprtStateAfterDefense = stepSprtGovernor({
+          priorState: currentTopic.gameTheoreticState?.sprtState,
+          currentRound: 3,
+          alignmentScore: sprtScoreAfterDefense,
+        });
+
+        // 阶段 3 答辩修正完成后，自动携攻防两造论据与答辩补丁转入【阶段 4: 中立仲裁】
+        updateTopicDataInState(topicId, (old) => ({
+          ...old,
+          gameStage: 'arbitration',
+          gameTheoreticState: {
+            ...old.gameTheoreticState,
+            currentStage: 'arbitration',
+            targetProposalContent: targetProposalText,
+            targetChallengeContent: targetChallengeText,
+            targetDefenseContent: acpResp.textResponse,
+            isDefenseResponded: true,
+            sprtState: sprtStateAfterDefense,
+            cognoNexus: {
+              ...old.gameTheoreticState?.cognoNexus,
+              committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
+              sprtState: sprtStateAfterDefense,
+            },
+          },
+        }));
+
+        triggerGameTheoreticStageHandover({
+          topicId,
+          nextStage: 'arbitration',
+          targetProposalText,
+          targetChallengeText,
+          targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
+          targetDefenseText: acpResp.textResponse,
+        });
+      } catch (err) {
+        setActiveExecutions((prev) => {
+          const next = { ...prev };
+          delete next[execKey];
+          if (Object.keys(next).length === 0) setIsGenerating(false);
+          return next;
+        });
+
+        console.error('Defense execution failed:', err);
+        const errorMsg: Message = {
+          id: `topic-reply-err-${Date.now()}-${proposerAgent.id}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: proposerAgent.id,
+          authorName: proposerAgent.name,
+          authorHandle: proposerAgent.handle,
+          authorAvatar: proposerAgent.avatar,
+          isAgent: true,
+          agentBadge: 'ACP Error',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `⚠️ **主导者答辩异常**：${err instanceof Error ? err.message : String(err)}。自动流转至仲裁定案。`,
+          gameStage: 'defense',
+          gameRole: 'proposer',
+        };
+
+        setMessages((prev) => {
+          const existing = prev[topicId] || [];
+          const filtered = existing.filter((m) => m.id !== defensePendingId);
+          return {
+            ...prev,
+            [topicId]: [...filtered, errorMsg],
+          };
+        });
+
+        updateTopicDataInState(topicId, (old) => ({
+          ...old,
+          gameStage: 'arbitration',
+          gameTheoreticState: {
+            ...old.gameTheoreticState,
+            currentStage: 'arbitration',
+            targetProposalContent: targetProposalText,
+            targetChallengeContent: targetChallengeText,
+            isDefenseResponded: false,
+          },
+        }));
+
+        triggerGameTheoreticStageHandover({
+          topicId,
+          nextStage: 'arbitration',
+          targetProposalText,
+          targetChallengeText,
+          targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
+        });
+      } finally {
+        inFlightHandoverRef.current.delete(handoverKey);
+      }
+      return;
+    }
+
     if (nextStage === 'arbitration') {
       const arbiterIds = currentTopic.gameRoles?.arbiters || [];
       const arbiterAgent = candidateAgents.find((a) => arbiterIds.includes(a.id));
@@ -2282,9 +2899,9 @@ export default function App() {
             threadId: topicId,
             topicId,
             status: 'thinking',
-            currentActionDetail: `正在权衡方案与反例要点并起草仲裁建议 (Stage: ⚖️ 仲裁定案)...`,
+            currentActionDetail: `正在全面权衡方案、反例与答辩补丁，起草终局仲裁建议 (Stage: ⚖️ 仲裁定案)...`,
             startedAt: Date.now(),
-            cascadeHop: 3,
+            cascadeHop: 4,
           },
         }));
 
@@ -2304,7 +2921,7 @@ export default function App() {
           isAgent: true,
           isPending: true,
           startedAt: Date.now(),
-          pendingHint: '正在权衡立论方案与反例要点，起草仲裁建议 (Stage: ⚖️ 仲裁定案)...',
+          pendingHint: '正在审阅立论方案、反例质疑与防御答辩补丁，起草仲裁权衡矩阵 (Stage: ⚖️ 仲裁定案)...',
           agentBadge: `${arbiterAgent.modelBadge?.split(' ')[0] || 'Local'} · ⚖️ 仲裁建言 (审议中...)`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           content: '',
@@ -2328,12 +2945,16 @@ export default function App() {
           gameStage: 'arbitration',
           targetProposalText,
           targetChallengeText,
+          targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
+          targetDefenseText,
           participatingAgents: candidateAgents,
         };
 
         const arbiterPrompt = buildTopicPrompt({
           topic: topicContext,
-          userContent: `主导方案与反例压测已就绪，请给出客观中立的仲裁权衡矩阵与裁决建言。`,
+          userContent: targetDefenseText
+            ? `主导提案、反例压测、接地验证证据与答辩补丁已就绪，请给出客观中立的仲裁权衡矩阵与终局裁决建言。`
+            : `主导方案、反例压测与接地验证证据已就绪，请给出客观中立的仲裁权衡矩阵与裁决建言。`,
           targetAgent: arbiterAgent,
           availableAgents: candidateAgents,
         });
@@ -2376,7 +2997,7 @@ export default function App() {
             thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
               duration: `${acpResp.durationMs}ms`,
               tokens: Math.round(acpResp.textResponse.length * 1.3),
-              summary: `已完成立论与反例要点仲裁审查`,
+              summary: `已完成立论、反例与答辩补丁的综合仲裁审查`,
               detail: acpResp.memoryActions.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n'),
             } : undefined,
             diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
@@ -2394,7 +3015,7 @@ export default function App() {
             isAgent: true,
             agentBadge: 'Gavel Ready',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `⚖️ **AI 仲裁建言已生成**：立论与制衡反例要点已完成裁决审查。请人类首席仲裁官查阅双方交锋要点，在下方【仲裁法槌控制台】选择【采纳主导】、【采纳挑战】或【权衡矩阵】敲响法槌定案。`,
+            content: `⚖️ **AI 仲裁建言已生成**：立论、反例压测与答辩补丁已完成审查。请人类首席仲裁官查阅交锋要点，在下方【仲裁法槌控制台】选择【采纳主导】、【采纳挑战】或【权衡矩阵】敲响法槌定案，并可指派 Agent 进入工程代码落地实施。`,
           };
 
           setMessages((prev) => {
@@ -2664,16 +3285,19 @@ export default function App() {
         const id = userMentionedAgents[0].id;
         if (activeTopicData?.gameRoles?.proposers?.includes(id)) {
           targetRoleType = 'proposer';
-          executionStage = 'proposal';
+          executionStage = currentTopicStage === 'defense' ? 'defense' : 'proposal';
         } else if (activeTopicData?.gameRoles?.challengers?.includes(id)) {
           targetRoleType = 'challenger';
           executionStage = 'challenge';
+        } else if (activeTopicData?.gameRoles?.verifiers?.includes(id)) {
+          targetRoleType = 'verifier';
+          executionStage = 'verification';
         } else if (activeTopicData?.gameRoles?.arbiters?.includes(id)) {
           targetRoleType = 'arbiter';
           executionStage = 'arbitration';
         }
       } else {
-        // 根据三元博弈当前所处阶段分配角色，绝不并发广播给全员
+        // 根据三元/4+1博弈当前所处阶段分配角色，绝不并发广播给全员
         if (currentTopicStage === 'proposal') {
           const proposerIds = activeTopicData?.gameRoles?.proposers || [];
           respondingAgents = candidateAgents.filter((a) => proposerIds.includes(a.id));
@@ -2684,6 +3308,16 @@ export default function App() {
           respondingAgents = candidateAgents.filter((a) => challengerIds.includes(a.id));
           targetRoleType = 'challenger';
           executionStage = 'challenge';
+        } else if (currentTopicStage === 'verification') {
+          const verifierIds = activeTopicData?.gameRoles?.verifiers || [];
+          respondingAgents = candidateAgents.filter((a) => verifierIds.includes(a.id));
+          targetRoleType = 'verifier';
+          executionStage = 'verification';
+        } else if (currentTopicStage === 'defense') {
+          const proposerIds = activeTopicData?.gameRoles?.proposers || [];
+          respondingAgents = candidateAgents.filter((a) => proposerIds.includes(a.id));
+          targetRoleType = 'proposer';
+          executionStage = 'defense';
         } else if (currentTopicStage === 'arbitration') {
           const arbiterIds = activeTopicData?.gameRoles?.arbiters || [];
           respondingAgents = candidateAgents.filter((a) => arbiterIds.includes(a.id));
@@ -2755,12 +3389,16 @@ export default function App() {
               ? '正在推演并起草主导立论方案 (Stage: 🏛️ 方案立论)...'
               : executionStage === 'challenge'
               ? '正在对立论方案进行反例压测与证伪 (Stage: ⚔️ 反例压测)...'
-              : '正在进行立论与反例要点审查并起草仲裁建议 (Stage: ⚖️ 仲裁定案)...')
+              : executionStage === 'verification'
+              ? '正在调用工具与沙箱进行物理事实与真实性校验 (Stage: 🔍 接地验证)...'
+              : executionStage === 'defense'
+              ? '正在针对反例质询构建防御答辩与架构补丁 (Stage: 🛡️ 答辩修正)...'
+              : '正在进行立论、反例与接地证据审查并起草仲裁建议 (Stage: ⚖️ 仲裁定案)...')
           : onlineAgents.length > 1 
             ? `正在并发独立推演方案与系统共识 (并行 Hop 1)...`
             : `正在深度推演议题方案与系统共识 (Hop 1)...`,
         startedAt: now + idx * 50,
-        cascadeHop: isGameTheoretic ? (executionStage === 'proposal' ? 1 : executionStage === 'challenge' ? 2 : 3) : 1,
+        cascadeHop: isGameTheoretic ? (executionStage === 'proposal' ? 1 : executionStage === 'challenge' ? 2 : executionStage === 'verification' ? 3 : executionStage === 'defense' ? 4 : 5) : 1,
       };
     });
 
@@ -2794,11 +3432,17 @@ export default function App() {
       discussionMode: activeTopicData?.discussionMode,
       gameRoles: activeTopicData?.gameRoles,
       gameStage: isGameTheoretic ? executionStage : undefined,
-      targetProposalText: isGameTheoretic && executionStage === 'challenge'
+      targetProposalText: isGameTheoretic && (executionStage === 'challenge' || executionStage === 'verification' || executionStage === 'defense' || executionStage === 'arbitration')
         ? activeTopicData?.gameTheoreticState?.targetProposalContent
         : undefined,
-      targetChallengeText: isGameTheoretic && executionStage === 'arbitration'
+      targetChallengeText: isGameTheoretic && (executionStage === 'verification' || executionStage === 'defense' || executionStage === 'arbitration')
         ? activeTopicData?.gameTheoreticState?.targetChallengeContent
+        : undefined,
+      targetVerificationText: isGameTheoretic && (executionStage === 'defense' || executionStage === 'arbitration')
+        ? activeTopicData?.gameTheoreticState?.targetVerificationContent
+        : undefined,
+      targetDefenseText: isGameTheoretic && executionStage === 'arbitration'
+        ? activeTopicData?.gameTheoreticState?.targetDefenseContent
         : undefined,
       participatingAgents: candidateAgents,
       recentHistory,
@@ -2862,17 +3506,25 @@ export default function App() {
         startedAt: Date.now(),
         pendingHint: isGameTheoretic
           ? targetRoleType === 'proposer'
-            ? '正在构思核心立论方案与架构设计推演 (Stage: 🏛️ 方案立论)...'
+            ? executionStage === 'defense'
+              ? '正在审视反例质询与实测数据，构建架构防御与补丁方案 (Stage: 🛡️ 答辩修正)...'
+              : '正在构思核心立论方案与架构设计推演 (Stage: 🏛️ 方案立论)...'
             : targetRoleType === 'challenger'
             ? '正在对立论方案进行反例压测与边界证伪 (Stage: ⚔️ 反例压测)...'
-            : '正在权衡方案与反例要点并起草仲裁建议 (Stage: ⚖️ 仲裁定案)...'
+            : targetRoleType === 'verifier'
+            ? '正在调取外部工具、代码解释器沙箱与事实基准进行真实性接地校验 (Stage: 🔍 接地验证)...'
+            : '正在权衡方案、反例与接地证据并起草仲裁建议 (Stage: ⚖️ 仲裁定案)...'
           : '正在思考并组织回复...',
         agentBadge: isGameTheoretic
           ? `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${
               targetRoleType === 'proposer'
-                ? '🏛️ 方案立论 (思考中...)'
+                ? executionStage === 'defense'
+                  ? '🛡️ 答辩修正 (思考中...)'
+                  : '🏛️ 方案立论 (思考中...)'
                 : targetRoleType === 'challenger'
                 ? '⚔️ 反例压测 (思考中...)'
+                : targetRoleType === 'verifier'
+                ? '🔍 接地验证 (执行中...)'
                 : '⚖️ 仲裁建言 (思考中...)'
             }`
           : `${agent.modelBadge?.split(' ')[0] || 'Local'} · 思考中...`,
@@ -2923,9 +3575,13 @@ export default function App() {
             agentBadge: isGameTheoretic
               ? `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${
                   targetRoleType === 'proposer'
-                    ? '🏛️ 方案立论'
+                    ? executionStage === 'defense'
+                      ? '🛡️ 答辩修正'
+                      : '🏛️ 方案立论'
                     : targetRoleType === 'challenger'
                     ? '⚔️ 反例压测'
+                    : targetRoleType === 'verifier'
+                    ? '🔍 接地验证'
                     : '⚖️ 仲裁建言'
                 }`
               : `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : agent.isRemote ? 'ACP Remote' : '协作'}`,
@@ -3015,21 +3671,68 @@ export default function App() {
               if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
                 console.warn('Challenger returned empty/error turn, pausing handover.');
               } else {
+                const hasVerifiers = (activeTopicData?.gameRoles?.verifiers || []).length > 0;
+                const nextStageTarget = hasVerifiers ? 'verification' : 'defense';
                 updateTopicDataInState(topicId, (old) => ({
                   ...old,
-                  gameStage: 'arbitration',
+                  gameStage: nextStageTarget,
                   gameTheoreticState: {
                     ...old.gameTheoreticState,
-                    currentStage: 'arbitration',
+                    currentStage: nextStageTarget,
                     targetChallengeContent: acpResp.textResponse,
                     isChallengerResponded: true,
                   },
                 }));
                 triggerGameTheoreticStageHandover({
                   topicId,
-                  nextStage: 'arbitration',
+                  nextStage: nextStageTarget,
                   targetProposalText: activeTopicData?.gameTheoreticState?.targetProposalContent,
                   targetChallengeText: acpResp.textResponse,
+                });
+              }
+            } else if (executionStage === 'verification') {
+              if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
+                console.warn('Verifier returned empty/error turn, pausing handover.');
+              } else {
+                updateTopicDataInState(topicId, (old) => ({
+                  ...old,
+                  gameStage: 'defense',
+                  gameTheoreticState: {
+                    ...old.gameTheoreticState,
+                    currentStage: 'defense',
+                    targetVerificationContent: acpResp.textResponse,
+                    isVerifierResponded: true,
+                  },
+                }));
+                triggerGameTheoreticStageHandover({
+                  topicId,
+                  nextStage: 'defense',
+                  targetProposalText: activeTopicData?.gameTheoreticState?.targetProposalContent,
+                  targetChallengeText: activeTopicData?.gameTheoreticState?.targetChallengeContent,
+                  targetVerificationText: acpResp.textResponse,
+                });
+              }
+            } else if (executionStage === 'defense') {
+              if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
+                console.warn('Proposer defense returned empty/error turn, pausing handover.');
+              } else {
+                updateTopicDataInState(topicId, (old) => ({
+                  ...old,
+                  gameStage: 'arbitration',
+                  gameTheoreticState: {
+                    ...old.gameTheoreticState,
+                    currentStage: 'arbitration',
+                    targetDefenseContent: acpResp.textResponse,
+                    isDefenseResponded: true,
+                  },
+                }));
+                triggerGameTheoreticStageHandover({
+                  topicId,
+                  nextStage: 'arbitration',
+                  targetProposalText: activeTopicData?.gameTheoreticState?.targetProposalContent,
+                  targetChallengeText: activeTopicData?.gameTheoreticState?.targetChallengeContent,
+                  targetVerificationText: activeTopicData?.gameTheoreticState?.targetVerificationContent,
+                  targetDefenseText: acpResp.textResponse,
                 });
               }
             }
@@ -3101,6 +3804,275 @@ export default function App() {
     });
   };
 
+  const dispatchTopicExecution = async (options: {
+    topicId: string;
+    executorId: string;
+    decision: {
+      solution: string;
+      impactedFiles: string[];
+      approvers: string[];
+      rulingRecord?: RulingRecord;
+    };
+  }) => {
+    const { topicId, executorId, decision } = options;
+    const currentTopic = getTopicData(topicId);
+    if (!currentTopic) return;
+
+    const executorAgent = agentsRef.current.find((a) => a.id === executorId);
+    if (!executorAgent) {
+      console.warn(`[Execution] Executor agent ${executorId} not found.`);
+      return;
+    }
+
+    const topicChannel = channels.find((c) => c.id === currentTopic.channelId) || activeChannel;
+
+    // Update topic execution state to running
+    updateTopicDataInState(topicId, (old) => ({
+      ...old,
+      gameTheoreticState: {
+        ...old.gameTheoreticState,
+        assignedExecutorId: executorAgent.id,
+        executionStatus: 'running',
+      },
+      decisionRecord: old.decisionRecord ? {
+        ...old.decisionRecord,
+        executorId: executorAgent.id,
+        executorName: executorAgent.name,
+      } : old.decisionRecord,
+      rulingRecord: old.rulingRecord ? {
+        ...old.rulingRecord,
+        executorId: executorAgent.id,
+      } : old.rulingRecord,
+    }));
+
+    if (executorAgent.status === 'idle') {
+      const offlineNotice: Message = {
+        id: `msg-offline-exec-${Date.now()}`,
+        threadId: topicId,
+        channelId: topicChannel?.id,
+        authorId: 'system',
+        authorName: 'Shinobi 落地执行守护',
+        authorHandle: '@exec-guard',
+        authorAvatar: '🔌',
+        isAgent: true,
+        agentBadge: 'Communication Required',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: `🔌 **执行 Agent 通信尚未开启**：已指派 **${executorAgent.name}** 落地执行代码补丁，但该 Agent 当前处于离线状态。\n\n请在左侧面板点击【Start】开启 ACP 通信后重新指派落地。`,
+      };
+      setMessages((prev) => ({
+        ...prev,
+        [topicId]: [...(prev[topicId] || []), offlineNotice],
+      }));
+      updateTopicDataInState(topicId, (old) => ({
+        ...old,
+        gameTheoreticState: {
+          ...old.gameTheoreticState,
+          executionStatus: 'failed',
+        },
+      }));
+      return;
+    }
+
+    const execKey = `${topicId}:${executorAgent.id}`;
+    setIsGenerating(true);
+    setActiveExecutions((prev) => ({
+      ...prev,
+      [execKey]: {
+        agentId: executorAgent.id,
+        agentName: executorAgent.name,
+        agentAvatar: executorAgent.avatar,
+        threadId: topicId,
+        topicId,
+        status: 'thinking',
+        currentActionDetail: `正在基于仲裁定案裁决书生成落地实现补丁与工程代码 (Stage: 🛠️ 实施落地)...`,
+        startedAt: Date.now(),
+        cascadeHop: 5,
+      },
+    }));
+
+    setAgents((prev) =>
+      prev.map((a) => (a.id === executorAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
+    );
+
+    const pendingId = `topic-pending-exec-${Date.now()}-${executorAgent.id}`;
+    const pendingMsg: Message = {
+      id: pendingId,
+      threadId: topicId,
+      channelId: topicChannel?.id,
+      authorId: executorAgent.id,
+      authorName: executorAgent.name,
+      authorHandle: executorAgent.handle,
+      authorAvatar: executorAgent.avatar,
+      isAgent: true,
+      isPending: true,
+      startedAt: Date.now(),
+      pendingHint: '正在基于终局裁决方案与架构权衡约束，编写代码补丁与工程落地变更 (Stage: 🛠️ 落地实施)...',
+      agentBadge: `${executorAgent.modelBadge?.split(' ')[0] || 'Local'} · 🛠️ 落地实施 (编写补丁中...)`,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      content: '',
+      gameStage: 'concluded',
+    };
+
+    setMessages((prev) => ({
+      ...prev,
+      [topicId]: [...(prev[topicId] || []), pendingMsg],
+    }));
+
+    const topicContext: TopicPromptContext = {
+      topicId,
+      title: currentTopic.title,
+      description: currentTopic.description,
+      channelName: topicChannel?.name || 'chat',
+      status: currentTopic.status,
+      discussionMode: currentTopic.discussionMode,
+      gameRoles: currentTopic.gameRoles,
+      gameStage: 'concluded',
+      targetProposalText: currentTopic.gameTheoreticState?.targetProposalContent,
+      targetChallengeText: currentTopic.gameTheoreticState?.targetChallengeContent,
+      targetDefenseText: currentTopic.gameTheoreticState?.targetDefenseContent,
+    };
+
+    const execPrompt = buildExecutionPrompt({
+      topic: topicContext,
+      executorAgent,
+      decision: {
+        summary: decision.rulingRecord?.summary || decision.solution,
+        solution: decision.solution,
+        tradeOffPoints: decision.rulingRecord?.tradeOffPoints,
+        impactedFiles: decision.impactedFiles,
+      },
+    });
+
+    try {
+      const acpResp = await sendPromptToAcpAgent({
+        agent: executorAgent,
+        roomId: topicId,
+        prompt: execPrompt,
+        projectId: activeProjectId,
+        channelId: topicChannel?.id,
+      });
+
+      setActiveExecutions((prev) => {
+        const next = { ...prev };
+        delete next[execKey];
+        if (Object.keys(next).length === 0) setIsGenerating(false);
+        return next;
+      });
+
+      if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
+        throw new Error(acpResp.isError ? acpResp.textResponse : '执行 Agent 返回空响应，未生成有效代码补丁。');
+      }
+
+      const execReply: Message = {
+        id: `topic-reply-exec-${Date.now()}-${executorAgent.id}`,
+        threadId: topicId,
+        channelId: topicChannel?.id,
+        authorId: executorAgent.id,
+        authorName: executorAgent.name,
+        authorHandle: executorAgent.handle,
+        authorAvatar: executorAgent.avatar,
+        isAgent: true,
+        isPending: false,
+        agentBadge: `${executorAgent.modelBadge?.split(' ')[0] || 'Local'} · 🛠️ 落地补丁交付`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: acpResp.textResponse,
+        gameStage: 'concluded',
+        thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
+          duration: `${acpResp.durationMs}ms`,
+          tokens: Math.round(acpResp.textResponse.length * 1.3),
+          summary: `已完成仲裁裁决的代码工程补丁实现`,
+          detail: acpResp.memoryActions.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n'),
+        } : undefined,
+        diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
+        cartridgeCitation: acpResp.cartridgeCitation,
+      };
+
+      setMessages((prev) => {
+        const existing = prev[topicId] || [];
+        const hasPending = existing.some((m) => m.id === pendingId);
+        const nextTopicMsgs = hasPending
+          ? existing.map((m) => (m.id === pendingId ? execReply : m))
+          : [...existing, execReply];
+        let parentThreadId: string | null = null;
+        for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+          if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+            parentThreadId = tId;
+            break;
+          }
+        }
+        const updatedChannelMsgs = parentThreadId
+          ? (prev[parentThreadId] || []).map((m) => {
+              if (m.type === 'topic' && m.topicData?.id === topicId) {
+                return {
+                  ...m,
+                  topicData: {
+                    ...m.topicData,
+                    repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
+                    latestReplyPreview: execReply.content.slice(0, 60),
+                  },
+                };
+              }
+              return m;
+            })
+          : [];
+        return {
+          ...prev,
+          [topicId]: nextTopicMsgs,
+          ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
+        };
+      });
+
+      updateTopicDataInState(topicId, (old) => ({
+        ...old,
+        gameTheoreticState: {
+          ...old.gameTheoreticState,
+          assignedExecutorId: executorAgent.id,
+          executionStatus: 'completed',
+        },
+      }));
+    } catch (err) {
+      setActiveExecutions((prev) => {
+        const next = { ...prev };
+        delete next[execKey];
+        if (Object.keys(next).length === 0) setIsGenerating(false);
+        return next;
+      });
+
+      console.error('Executor execution failed:', err);
+      const errorMsg: Message = {
+        id: `topic-exec-err-${Date.now()}-${executorAgent.id}`,
+        threadId: topicId,
+        channelId: topicChannel?.id,
+        authorId: executorAgent.id,
+        authorName: executorAgent.name,
+        authorHandle: executorAgent.handle,
+        authorAvatar: executorAgent.avatar,
+        isAgent: true,
+        agentBadge: 'ACP Error',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: `⚠️ **代码落地实施异常**：${err instanceof Error ? err.message : String(err)}`,
+        gameStage: 'concluded',
+      };
+
+      setMessages((prev) => {
+        const existing = prev[topicId] || [];
+        const filtered = existing.filter((m) => m.id !== pendingId);
+        return {
+          ...prev,
+          [topicId]: [...filtered, errorMsg],
+        };
+      });
+
+      updateTopicDataInState(topicId, (old) => ({
+        ...old,
+        gameTheoreticState: {
+          ...old.gameTheoreticState,
+          executionStatus: 'failed',
+        },
+      }));
+    }
+  };
+
   const handleResolveTopic = (
     topicId: string,
     decision: {
@@ -3108,15 +4080,26 @@ export default function App() {
       impactedFiles: string[];
       approvers: string[];
       rulingRecord?: RulingRecord;
+      executorId?: string;
     }
   ) => {
     const resolvedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const targetExecutorId = decision.executorId || decision.rulingRecord?.executorId;
+    const executorAgent = targetExecutorId ? agentsRef.current.find((a) => a.id === targetExecutorId) : undefined;
+
+    const rulingRecordWithExecutor: RulingRecord | undefined = decision.rulingRecord ? {
+      ...decision.rulingRecord,
+      executorId: targetExecutorId,
+    } : undefined;
+
     const decisionRecord: DecisionRecord = {
       summary: decision.rulingRecord ? decision.rulingRecord.summary : '架构方案达成一致并收敛',
       solution: decision.solution,
       impactedFiles: decision.impactedFiles,
       approvers: decision.approvers,
       resolvedAt,
+      executorId: targetExecutorId,
+      executorName: executorAgent?.name,
     };
 
     setMessages((prev) => {
@@ -3142,9 +4125,11 @@ export default function App() {
                 currentStage: 'concluded' as GameTheoreticStage,
                 isArbiterExempted: Boolean(decision.rulingRecord?.exemptionReason),
                 exemptionReason: decision.rulingRecord?.exemptionReason,
+                assignedExecutorId: targetExecutorId,
+                executionStatus: targetExecutorId ? 'running' : m.topicData.gameTheoreticState?.executionStatus,
               } : m.topicData.gameTheoreticState,
               decisionRecord,
-              rulingRecord: decision.rulingRecord,
+              rulingRecord: rulingRecordWithExecutor,
             },
           };
         }
@@ -3159,7 +4144,7 @@ export default function App() {
           : decision.rulingRecord.decisionType === 'reject_rebuild'
           ? '🔄 采纳挑战驳回重构'
           : '📊 达成架构权衡矩阵';
-        rollupContent = `⚖️ **博弈讨论仲裁定案 (${typeText})**\n\n**仲裁裁决官**：${decision.rulingRecord.arbiterName}\n**裁决结论**：${decision.rulingRecord.summary}\n${decision.solution ? `**实施/重构方案**：${decision.solution}\n` : ''}${decision.rulingRecord.tradeOffPoints && decision.rulingRecord.tradeOffPoints.length > 0 ? `**关键权衡要点**：\n${decision.rulingRecord.tradeOffPoints.map((p) => `- ${p}`).join('\n')}\n` : ''}${decision.rulingRecord.exemptionReason ? `**特权豁免记录**：⚠️ 已执行人类首席仲裁官具名豁免 (${decision.rulingRecord.exemptionReason})\n` : ''}**影响文件**：${decision.impactedFiles.join('、') || '无'}\n**签署裁决**：${decision.approvers.join('、')}\n\n*博弈论证与仲裁全过程已归档。*`;
+        rollupContent = `⚖️ **博弈讨论仲裁定案 (${typeText})**\n\n**仲裁裁决官**：${decision.rulingRecord.arbiterName}\n**裁决结论**：${decision.rulingRecord.summary}\n${decision.solution ? `**实施/重构方案**：${decision.solution}\n` : ''}${decision.rulingRecord.tradeOffPoints && decision.rulingRecord.tradeOffPoints.length > 0 ? `**关键权衡要点**：\n${decision.rulingRecord.tradeOffPoints.map((p) => `- ${p}`).join('\n')}\n` : ''}${decision.rulingRecord.exemptionReason ? `**特权豁免记录**：⚠️ 已执行人类首席仲裁官具名豁免 (${decision.rulingRecord.exemptionReason})\n` : ''}${executorAgent ? `**指派落地执行**：🛠️ ${executorAgent.name} (${executorAgent.handle} · ${executorAgent.role})\n` : ''}**影响文件**：${decision.impactedFiles.join('、') || '无'}\n**签署裁决**：${decision.approvers.join('、')}\n\n*博弈论证与仲裁全过程已归档。*`;
       }
 
       const rollupNotice: Message = {
@@ -3180,6 +4165,34 @@ export default function App() {
         ...prev,
         [parentThreadId]: [...updatedChannelMsgs, rollupNotice],
       };
+    });
+
+    if (targetExecutorId) {
+      setTimeout(() => {
+        dispatchTopicExecution({
+          topicId,
+          executorId: targetExecutorId,
+          decision: {
+            ...decision,
+            rulingRecord: rulingRecordWithExecutor,
+          },
+        });
+      }, 300);
+    }
+  };
+
+  const handleExecuteTopicPatch = (topicId: string, executorId: string) => {
+    const currentTopic = getTopicData(topicId);
+    if (!currentTopic) return;
+    dispatchTopicExecution({
+      topicId,
+      executorId,
+      decision: {
+        solution: currentTopic.decisionRecord?.solution || currentTopic.rulingRecord?.solution || currentTopic.description || currentTopic.title,
+        impactedFiles: currentTopic.decisionRecord?.impactedFiles || currentTopic.rulingRecord?.impactedFiles || [],
+        approvers: currentTopic.decisionRecord?.approvers || [],
+        rulingRecord: currentTopic.rulingRecord,
+      },
     });
   };
 
@@ -3964,6 +4977,7 @@ export default function App() {
             onSendMessage={handleSendTopicMessage}
             onResolveTopic={handleResolveTopic}
             onReopenTopic={handleReopenTopic}
+            onExecuteTopicPatch={handleExecuteTopicPatch}
             onOpenCodexDiff={(diff) => {
               setActiveDiff(diff);
               setIsCodexDiffOpen(true);

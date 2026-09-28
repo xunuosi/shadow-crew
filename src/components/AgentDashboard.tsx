@@ -355,7 +355,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                   <div className="relative">
                     {/* Visual 3D Artwork */}
                     <div className="group-hover:scale-105 transition-transform duration-200">
-                      <AgentAvatarArtwork name={agent.name} className="w-24 h-24 sm:w-26 sm:h-26" />
+                      <AgentAvatarArtwork name={agent.name} avatar={agent.avatar} className="w-24 h-24 sm:w-26 sm:h-26" />
                     </div>
 
                     {/* Floating Status / Start Capsule at Bottom Center of Avatar */}

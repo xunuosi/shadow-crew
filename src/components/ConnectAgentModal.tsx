@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Agent, LocalAcpRuntime, AcpTransport } from '../types';
 import {
   X,
@@ -99,78 +99,97 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   // Visual Theme support
   const [isLightMode, setIsLightMode] = useState(true);
 
-  // Initialize or reset form based on initialAgent
+  const prevIsOpenRef = useRef(false);
+  const prevAgentIdRef = useRef<string | null>(null);
+
+  // Initialize or reset form based on initialAgent (only on modal open or agent switch)
   useEffect(() => {
-    if (initialAgent) {
-      setName(initialAgent.name || '');
-      setDescription(initialAgent.description || initialAgent.role || '');
-      setCustomCommand(initialAgent.acpCommandOrUrl || '');
+    const justOpened = isOpen && !prevIsOpenRef.current;
+    const agentChanged = isOpen && (initialAgent?.id || null) !== prevAgentIdRef.current;
 
-      if (initialAgent.isRemote || initialAgent.acpTransport === 'websocket') {
-        setConnectTab('remote');
-        setRemoteUrl(initialAgent.remoteUrl || initialAgent.acpCommandOrUrl || 'ws://127.0.0.1:9000');
-        setAuthToken(initialAgent.authToken || '');
-        setReadOnlyGuard(initialAgent.readOnlyGuard ?? true);
-      } else {
-        setConnectTab('local');
-      }
+    if (justOpened || agentChanged) {
+      if (initialAgent) {
+        setName(initialAgent.name || '');
+        setDescription(initialAgent.description || initialAgent.role || '');
+        setCustomCommand(initialAgent.acpCommandOrUrl || '');
 
-      // Map icon from avatar or name
-      if (initialAgent.avatar === '🥷' || initialAgent.name.toLowerCase().includes('shinobi')) {
-        setSelectedIconId('shinobi');
-      } else if (initialAgent.avatar === '🪷' || initialAgent.name.toLowerCase().includes('claude')) {
-        setSelectedIconId('claudecode');
-      } else if (initialAgent.avatar === '🤖' || initialAgent.name.toLowerCase().includes('codex')) {
-        setSelectedIconId('codex');
-      } else if (initialAgent.avatar === '🦗' || initialAgent.name.toLowerCase().includes('openclaw')) {
-        setSelectedIconId('openclaw');
-      } else if (initialAgent.avatar === '🐞' || initialAgent.name.toLowerCase().includes('deepseek')) {
-        setSelectedIconId('alien');
-      } else if (initialAgent.avatar === '🧭' || initialAgent.name.toLowerCase().includes('astra')) {
-        setSelectedIconId('astra');
-      } else {
-        setSelectedIconId('palette');
-      }
+        if (initialAgent.isRemote || initialAgent.acpTransport === 'websocket') {
+          setConnectTab('remote');
+          setRemoteUrl(initialAgent.remoteUrl || initialAgent.acpCommandOrUrl || 'ws://127.0.0.1:9000');
+          setAuthToken(initialAgent.authToken || '');
+          setReadOnlyGuard(initialAgent.readOnlyGuard ?? true);
+        } else {
+          setConnectTab('local');
+        }
 
-      // Map envVars
-      if (initialAgent.envVars && initialAgent.envVars.length > 0) {
-        setEnvVars(
-          initialAgent.envVars.map((v, idx) => ({
-            id: `env-${idx}-${Date.now()}`,
-            key: v.key,
-            value: v.value,
-          }))
+        // Map icon from avatar FIRST!
+        const matchedByAvatar = PRESET_ICONS.find(
+          (p) => p.icon === initialAgent.avatar || p.id === initialAgent.avatar
         );
-      } else {
-        setEnvVars([]);
-      }
+        if (matchedByAvatar) {
+          setSelectedIconId(matchedByAvatar.id);
+        } else {
+          const lowerName = (initialAgent.name || '').toLowerCase();
+          if (lowerName.includes('shinobi') || lowerName.includes('ninja')) {
+            setSelectedIconId('shinobi');
+          } else if (lowerName.includes('claude')) {
+            setSelectedIconId('claudecode');
+          } else if (lowerName.includes('codex') || lowerName.includes('openai')) {
+            setSelectedIconId('codex');
+          } else if (lowerName.includes('openclaw')) {
+            setSelectedIconId('openclaw');
+          } else if (lowerName.includes('deepseek')) {
+            setSelectedIconId('alien');
+          } else if (lowerName.includes('astra')) {
+            setSelectedIconId('astra');
+          } else {
+            setSelectedIconId('palette');
+          }
+        }
 
-      // Map ACP runtime
-      const matched = runtimes.find(
-        (r) =>
-          r.name.toLowerCase() === initialAgent.localAcpProfile?.toLowerCase() ||
-          r.command === initialAgent.acpCommandOrUrl
-      );
-      if (matched) {
-        setSelectedAcpId(matched.id);
+        // Map envVars
+        if (initialAgent.envVars && initialAgent.envVars.length > 0) {
+          setEnvVars(
+            initialAgent.envVars.map((v, idx) => ({
+              id: `env-${idx}-${Date.now()}`,
+              key: v.key,
+              value: v.value,
+            }))
+          );
+        } else {
+          setEnvVars([]);
+        }
+
+        // Map ACP runtime
+        const matched = runtimes.find(
+          (r) =>
+            r.name.toLowerCase() === initialAgent.localAcpProfile?.toLowerCase() ||
+            r.command === initialAgent.acpCommandOrUrl
+        );
+        if (matched) {
+          setSelectedAcpId(matched.id);
+        }
+      } else {
+        setName('Shinobi Native Agent');
+        setDescription('Local ultra-fast native agent runtime with private SQLite memory bank.');
+        setSelectedIconId('shinobi');
+        setSelectedAcpId('shinobi_core');
+        setCustomCommand('./target/debug/shinobi-agent');
+        setConnectTab('local');
+        setRemoteUrl('ws://127.0.0.1:9000');
+        setAuthToken('');
+        setReadOnlyGuard(true);
+        setRemoteTestResult(null);
+        setEnvVars([
+          { id: '1', key: 'SHINOBI_LOG', value: 'debug' },
+          { id: '2', key: 'MEMORY_STORE', value: 'sqlite' },
+        ]);
       }
-    } else {
-      setName('Shinobi Native Agent');
-      setDescription('Local ultra-fast native agent runtime with private SQLite memory bank.');
-      setSelectedIconId('shinobi');
-      setSelectedAcpId('shinobi_core');
-      setCustomCommand('./target/debug/shinobi-agent');
-      setConnectTab('local');
-      setRemoteUrl('ws://127.0.0.1:9000');
-      setAuthToken('');
-      setReadOnlyGuard(true);
-      setRemoteTestResult(null);
-      setEnvVars([
-        { id: '1', key: 'SHINOBI_LOG', value: 'debug' },
-        { id: '2', key: 'MEMORY_STORE', value: 'sqlite' },
-      ]);
     }
-  }, [initialAgent, isOpen, runtimes]);
+
+    prevIsOpenRef.current = isOpen;
+    prevAgentIdRef.current = initialAgent?.id || null;
+  }, [initialAgent, isOpen]);
 
   const handleTestRemote = async () => {
     if (!remoteUrl.trim()) return;
@@ -497,7 +516,11 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                 title="点击切换视觉插画"
               >
                 <div className="group-hover:scale-105 transition-transform">
-                  <AgentAvatarArtwork name={selectedIconId} className="w-24 h-24" />
+                  <AgentAvatarArtwork
+                    type={selectedIconId}
+                    avatar={PRESET_ICONS.find((i) => i.id === selectedIconId)?.icon}
+                    className="w-24 h-24"
+                  />
                 </div>
                 <span className={`text-[11px] mt-2 font-medium transition-colors ${
                   isLightMode ? 'text-gray-500 group-hover:text-blue-600' : 'text-gray-400 group-hover:text-cyan-400'

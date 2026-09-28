@@ -183,7 +183,7 @@ export const CreateTeamModal: React.FC<CreateTeamModalProps> = ({
                   >
                     <div className="flex items-center gap-2.5 min-w-0 flex-1 mr-2">
                       <div className="w-8 h-8 shrink-0 flex items-center justify-center">
-                        <AgentAvatarArtwork name={agent.name} className="w-8 h-8" />
+                        <AgentAvatarArtwork name={agent.name} avatar={agent.avatar} className="w-8 h-8" />
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="font-semibold text-xs truncate text-fg">{agent.name}</div>
