@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { MentionSuggestions, MentionItem } from './MentionSuggestions';
 import { getDraft, saveDraft, clearDraft, DraftType } from '../services/draftService';
+import { UnifiedAvatar } from './AgentAvatarArtwork';
 
 interface MessageInputProps {
   onSendMessage: (content: string, targetAgentId?: string) => void;
@@ -279,7 +280,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                     className="px-2.5 py-1 rounded-full bg-surface-subtle hover:bg-surface-hover text-fg-secondary hover:text-fg border border-border hover:border-accent/40 transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
                     title={`点击召唤 ${agent.name} (${agent.role})`}
                   >
-                    <span className="text-xs leading-none">{agent.avatar}</span>
+                    <UnifiedAvatar agent={agent} avatar={agent.avatar} name={agent.name} size="xs" className="w-4 h-4" />
                     <span className="font-semibold text-xs text-fg max-w-[110px] truncate">{agent.name}</span>
                   </button>
                 ))}
@@ -321,7 +322,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                               className="w-full flex items-center justify-between px-2 py-1.5 rounded-lg hover:bg-surface-hover text-left transition-colors cursor-pointer group"
                             >
                               <div className="flex items-center gap-2 min-w-0">
-                                <span className="text-sm shrink-0">{agent.avatar}</span>
+                                <UnifiedAvatar agent={agent} avatar={agent.avatar} name={agent.name} size="sm" className="w-6 h-6" />
                                 <div className="truncate">
                                   <div className="text-xs font-medium text-fg truncate">{agent.name}</div>
                                   <div className="text-[10px] text-fg-muted truncate">{agent.role}</div>

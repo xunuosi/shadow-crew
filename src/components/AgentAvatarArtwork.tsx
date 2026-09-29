@@ -1,4 +1,5 @@
 import React from 'react';
+import { Agent } from '../types';
 
 interface AgentAvatarArtworkProps {
   type?: string;
@@ -7,7 +8,7 @@ interface AgentAvatarArtworkProps {
   className?: string;
 }
 
-export function resolveArtworkType(avatar?: string, type?: string, name?: string): string {
+function resolveArtworkType(avatar?: string, type?: string, name?: string): string {
   // 1. Check explicit avatar emoji or id first
   if (avatar) {
     if (avatar === '🥷' || avatar === 'shinobi') return 'shinobi';
@@ -57,11 +58,23 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   className = 'w-20 h-20',
 }) => {
   const artwork = resolveArtworkType(avatar, type, name);
+  const isSmall =
+    className.includes('w-4') ||
+    className.includes('w-5') ||
+    className.includes('w-6') ||
+    className.includes('w-7') ||
+    className.includes('w-8') ||
+    className.includes('h-4') ||
+    className.includes('h-5') ||
+    className.includes('h-6') ||
+    className.includes('h-7') ||
+    className.includes('h-8');
+  const padCls = isSmall ? 'p-0.5' : 'p-1';
 
   // 1. Shinobi - Cyber Stealth Ninja Mask (DEFAULT)
   if (artwork === 'shinobi') {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#18263a] via-[#0d1624] to-[#060a10] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#18263a] via-[#0d1624] to-[#060a10] ${padCls} flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
           <defs>
             <linearGradient id="shinoBg" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -119,7 +132,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   // 2. DeepSeek - Oceanic Quantum Whale (Breaching in Sonar Telemetry)
   if (artwork === 'deepseek') {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#061826] via-[#04111c] to-[#02080e] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#061826] via-[#04111c] to-[#02080e] ${padCls} flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
           <defs>
             <radialGradient id="deepOcean" cx="50%" cy="40%" r="60%">
@@ -169,7 +182,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   // 3. Codex - OpenAI Neural Code Core with Interlocking Aperture Loop
   if (artwork === 'codex') {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#102a24] via-[#0b1714] to-[#050b09] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#102a24] via-[#0b1714] to-[#050b09] ${padCls} flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
           <defs>
             <linearGradient id="codexNeon" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -213,7 +226,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   // 4. Claude Code - Anthropic Lumina Sparkburst & Crystal Intelligence
   if (artwork === 'claudecode') {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#2d1b14] via-[#1c0f0a] to-[#0c0604] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#2d1b14] via-[#1c0f0a] to-[#0c0604] ${padCls} flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
           <defs>
             <radialGradient id="claudeSpark" cx="50%" cy="50%" r="50%">
@@ -250,7 +263,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   // 5. OpenClaw - Aerodynamic Cyber Mantis Recon Strike
   if (artwork === 'openclaw') {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#0d2a1d] via-[#081b12] to-[#040e0a] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#0d2a1d] via-[#081b12] to-[#040e0a] ${padCls} flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
           <defs>
             <linearGradient id="clawArmor" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -285,7 +298,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   // 6. Bolt - Overclocked Turbo Lightning Surge
   if (artwork === 'bolt') {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#2a2007] via-[#181203] to-[#0c0901] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#2a2007] via-[#181203] to-[#0c0901] ${padCls} flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
           <defs>
             <linearGradient id="boltGrad" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -314,7 +327,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   // 7. Sentinel - Aegis Security Guardian Shield
   if (artwork === 'sentinel') {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#191e3e] via-[#0f1226] to-[#070914] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#191e3e] via-[#0f1226] to-[#070914] ${padCls} flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
           <defs>
             <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -344,7 +357,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   // 8. Astra - Ornate Golden Compass Star
   if (artwork === 'astra') {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#16273e] via-[#0d1726] to-[#070b12] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#16273e] via-[#0d1726] to-[#070b12] ${padCls} flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
           <defs>
             <linearGradient id="goldLight" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -392,7 +405,7 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
   // 9. Artisan - Holographic Prism Palette with CMYK Drops
   if (artwork === 'palette') {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-b from-[#241a35] via-[#160f22] to-[#0c0813] p-1 flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
+      <div className={`${className} rounded-full bg-gradient-to-b from-[#241a35] via-[#160f22] to-[#0c0813] ${padCls} flex items-center justify-center shadow-inner relative overflow-hidden group select-none`}>
         <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
           <defs>
             <linearGradient id="prismBg" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -433,10 +446,35 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
     );
   }
 
+  // Fallback: If image URL provided, render image directly
+  if (avatar && (avatar.startsWith('http://') || avatar.startsWith('https://') || avatar.startsWith('data:') || avatar.startsWith('/'))) {
+    return (
+      <div className={`${className} rounded-full overflow-hidden border-2 border-[#334155] shadow-inner select-none shrink-0 bg-surface-subtle`}>
+        <img src={avatar} alt={name || 'Agent'} className="w-full h-full object-cover" />
+      </div>
+    );
+  }
+
+  const isSmallFallback =
+    className.includes('w-4') ||
+    className.includes('w-5') ||
+    className.includes('w-6') ||
+    className.includes('w-7') ||
+    className.includes('w-8') ||
+    className.includes('h-4') ||
+    className.includes('h-5') ||
+    className.includes('h-6') ||
+    className.includes('h-7') ||
+    className.includes('h-8');
+  const isMedium = className.includes('w-10') || className.includes('w-12') || className.includes('w-14') || className.includes('w-16');
+  const fallbackTextSize = isSmallFallback ? (className.includes('w-4') || className.includes('w-5') ? 'text-[9px]' : 'text-xs') : isMedium ? 'text-lg' : 'text-3xl sm:text-4xl';
+  const initialTextSize = isSmallFallback ? 'text-[10px]' : isMedium ? 'text-sm font-semibold' : 'text-3xl font-bold';
+  const borderCls = isSmallFallback ? 'border border-[#334155]' : 'border-2 border-[#334155]';
+
   // Fallback: If custom emoji avatar provided, render emoji in stylish dark-cyber gradient circle!
   if (avatar && avatar.trim()) {
     return (
-      <div className={`${className} rounded-full bg-gradient-to-tr from-[#1e293b] via-[#0f172a] to-[#020617] border-2 border-[#334155] flex items-center justify-center text-3xl sm:text-4xl shadow-inner select-none`}>
+      <div className={`${className} rounded-full bg-gradient-to-tr from-[#1e293b] via-[#0f172a] to-[#020617] ${borderCls} flex items-center justify-center ${fallbackTextSize} shadow-inner select-none`}>
         {avatar}
       </div>
     );
@@ -444,8 +482,80 @@ export const AgentAvatarArtwork: React.FC<AgentAvatarArtworkProps> = ({
 
   // Fallback: Elegant Initials Avatar
   return (
-    <div className={`${className} rounded-full bg-gradient-to-tr from-[#1e293b] to-[#0f172a] border-2 border-[#334155] flex items-center justify-center text-3xl font-bold text-gray-200 shadow-inner select-none`}>
+    <div className={`${className} rounded-full bg-gradient-to-tr from-[#1e293b] to-[#0f172a] ${borderCls} flex items-center justify-center ${initialTextSize} text-gray-200 shadow-inner select-none`}>
       {name ? name.slice(0, 2).toUpperCase() : 'AI'}
+    </div>
+  );
+};
+
+// Unified Avatar Component: Ensures complete visual consistency across conversation list, message stream, topic drawer, and cards
+export interface UnifiedAvatarProps {
+  agent?: Agent | null;
+  name?: string;
+  avatar?: string;
+  role?: string;
+  isUser?: boolean;
+  size?: 'xs' | 'sm' | 'md' | 'base' | 'lg' | 'xl';
+  className?: string;
+  title?: string;
+}
+
+export const UnifiedAvatar: React.FC<UnifiedAvatarProps> = ({
+  agent,
+  name,
+  avatar,
+  role,
+  isUser,
+  size = 'md',
+  className = '',
+  title,
+}) => {
+  const effectiveName = agent?.name || name || '';
+  const effectiveAvatar = agent?.avatar || avatar || '';
+  const effectiveRole = agent?.role || role || '';
+
+  const isHuman =
+    isUser === true ||
+    (isUser !== false &&
+      (agent?.id === 'user-norris' ||
+        effectiveName === 'Norris_M5Pro' ||
+        effectiveName.toLowerCase() === 'norris' ||
+        effectiveAvatar === '👨‍💻' ||
+        (!agent && !effectiveAvatar && (effectiveName === 'Norris_M5Pro' || effectiveName === 'You'))));
+
+  const sizeClasses: Record<string, string> = {
+    xs: 'w-4 h-4 text-[9px]',
+    sm: 'w-6 h-6 text-xs',
+    md: 'w-7 h-7 text-xs',
+    base: 'w-7 h-7 text-xs',
+    lg: 'w-8 h-8 text-sm',
+    xl: 'w-10 h-10 text-base font-bold',
+  };
+
+  const chosenSize = sizeClasses[size] || sizeClasses.md;
+  const hasCustomDimension = /\b[wh]-\d+/.test(className);
+  const finalDimension = hasCustomDimension ? className : `${chosenSize} ${className}`.trim();
+
+  if (isHuman) {
+    const initial = effectiveName ? effectiveName.charAt(0).toUpperCase() : 'N';
+    return (
+      <div
+        className={`${finalDimension} rounded-full bg-gradient-to-tr from-cyan-600 to-emerald-500 flex items-center justify-center text-white font-bold shrink-0 shadow-xs select-none`}
+        title={title || effectiveName || 'Norris_M5Pro'}
+      >
+        {initial}
+      </div>
+    );
+  }
+
+  return (
+    <div className="shrink-0 inline-flex items-center justify-center select-none" title={title || effectiveName}>
+      <AgentAvatarArtwork
+        name={effectiveName}
+        avatar={effectiveAvatar}
+        type={effectiveRole}
+        className={finalDimension}
+      />
     </div>
   );
 };

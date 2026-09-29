@@ -106,6 +106,10 @@ export interface AgentModelConfig {
   temperature?: number;
   maxTokens?: number;
   useGlobalDefault?: boolean;
+  lastTestedAt?: number;
+  lastLatencyMs?: number;
+  isHealthy?: boolean;
+  lastError?: string;
 }
 
 export interface AgentWorkspaceConfig {
@@ -137,6 +141,8 @@ export interface Agent {
   statusDetail?: string;
   modelBadge?: string; // e.g., 'DeepSeek V3', 'Claude 3.7 Sonnet', 'Gemini 2.5 Pro'
   modelConfig?: AgentModelConfig;
+  modelLatencyMs?: number;
+  isModelHealthy?: boolean;
   isManagedByYou?: boolean;
   
   // ACP Protocol Config

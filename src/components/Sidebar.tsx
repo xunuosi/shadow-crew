@@ -31,6 +31,7 @@ import { NinjaIcon } from './NinjaIcon';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ResizeHandle } from './ResizeHandle';
 import { useAllDrafts } from '../services/draftService';
+import { UnifiedAvatar } from './AgentAvatarArtwork';
 
 interface SidebarProps {
   projects?: Project[];
@@ -400,8 +401,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   }`}
                 >
                   <div className="flex items-center gap-2 truncate min-w-0 flex-1 mr-1.5">
-                    <div className="relative shrink-0 flex items-center justify-center text-sm">
-                      {agent.avatar}
+                    <div className="relative shrink-0 flex items-center justify-center">
+                      <UnifiedAvatar agent={agent} avatar={agent.avatar} name={agent.name} size="sm" className="w-6 h-6" />
                       <span
                         className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-surface transition-colors ${
                           isOnline
@@ -494,9 +495,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="p-2.5 border-t border-border bg-surface-subtle">
         <div className="flex items-center justify-between bg-surface p-2 rounded-xl border border-border hover:border-accent/40 transition-colors">
           <div className="flex items-center gap-2 overflow-hidden">
-            <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-cyan-600 to-emerald-500 flex items-center justify-center text-white text-xs font-bold shrink-0 shadow-xs">
-              N
-            </div>
+            <UnifiedAvatar isUser name="Norris_M5Pro" size="base" className="w-7 h-7" />
             <div className="truncate">
               <div className="font-semibold text-fg text-xs truncate flex items-center gap-1">
                 <span>Norris_M5Pro</span>

@@ -15,6 +15,7 @@ import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ResizeHandle } from './ResizeHandle';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { getDraft, saveDraft, clearDraft } from '../services/draftService';
+import { UnifiedAvatar } from './AgentAvatarArtwork';
 
 interface SubThreadDrawerProps {
   isOpen: boolean;
@@ -184,20 +185,51 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
 
       {/* 3. Sub-Thread Message Stream */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-3 space-y-3 select-text">
-        {subThread.messages.map((msg) => (
-          <div key={msg.id} className="p-2.5 rounded-xl bg-surface-subtle border border-border">
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-1.5">
-                <span className="text-sm">{msg.authorAvatar}</span>
-                <span className="font-semibold text-fg text-xs">{msg.authorName}</span>
+        {subThread.messages.map((msg) => {
+          const authorAgent = msg.authorId
+            ? agents.find(
+                (a) =>
+                  a.id === msg.authorId ||
+                  a.name.toLowerCase() === msg.authorName?.toLowerCase() ||
+                  (msg.authorHandle && a.handle?.toLowerCase() === msg.authorHandle.toLowerCase())
+              )
+            : agents.find(
+                (a) =>
+                  (msg.authorName && a.name.toLowerCase() === msg.authorName.toLowerCase()) ||
+                  (msg.authorHandle && a.handle?.toLowerCase() === msg.authorHandle.toLowerCase())
+              );
+          const displayAvatar = authorAgent?.avatar || msg.authorAvatar;
+          const displayName = authorAgent?.name || msg.authorName;
+          const isHumanUser =
+            msg.authorId === 'user-norris' ||
+            msg.authorName === 'Norris_M5Pro' ||
+            msg.authorName === 'Norris' ||
+            msg.authorAvatar === '👨‍💻';
+
+          return (
+            <div key={msg.id} className="p-2.5 rounded-xl bg-surface-subtle border border-border">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2">
+                  <div className="shrink-0 select-none">
+                    <UnifiedAvatar
+                      isUser={isHumanUser}
+                      agent={authorAgent}
+                      avatar={displayAvatar}
+                      name={displayName}
+                      size="sm"
+                      className="w-5 h-5"
+                    />
+                  </div>
+                  <span className="font-semibold text-fg text-xs">{displayName}</span>
+                </div>
+                <span className="text-[10px] text-fg-muted font-mono">{msg.timestamp}</span>
               </div>
-              <span className="text-[10px] text-fg-muted font-mono">{msg.timestamp}</span>
+              <div className="mt-1">
+                <MarkdownRenderer content={msg.content} />
+              </div>
             </div>
-            <div className="mt-1">
-              <MarkdownRenderer content={msg.content} />
-            </div>
-          </div>
-        ))}
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
 

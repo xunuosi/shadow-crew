@@ -10,6 +10,7 @@ import {
   McdaDecisionPayload,
   MinorityReport
 } from '../types';
+import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { 
   X, 
   GitBranch, 
@@ -1113,6 +1114,26 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             const isThinkingOpen = expandedThinking[msg.id] ?? true;
             const isAgent = msg.agentBadge || msg.authorName.includes('Agent') || msg.authorName.includes('Reviewer');
             const gameRoleBadge = getGameRoleBadge(msg);
+            const authorAgent = msg.authorId
+              ? agents.find(
+                  (a) =>
+                    a.id === msg.authorId ||
+                    a.name.toLowerCase() === msg.authorName?.toLowerCase() ||
+                    (msg.authorHandle && a.handle?.toLowerCase() === msg.authorHandle.toLowerCase())
+                )
+              : agents.find(
+                  (a) =>
+                    (msg.authorName && a.name.toLowerCase() === msg.authorName.toLowerCase()) ||
+                    (msg.authorHandle && a.handle?.toLowerCase() === msg.authorHandle.toLowerCase())
+                );
+            const displayAvatar = authorAgent?.avatar || msg.authorAvatar || '🤖';
+            const displayName = authorAgent?.name || msg.authorName;
+            const isHumanUser =
+              msg.authorId === 'user-norris' ||
+              msg.authorName === 'Norris_M5Pro' ||
+              msg.authorName === 'Norris' ||
+              msg.authorAvatar === '👨‍💻' ||
+              (!authorAgent && !isAgent && (msg.authorName === 'Norris_M5Pro' || msg.authorName === 'You'));
 
             return (
               <div
@@ -1127,13 +1148,18 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 {/* Message Header */}
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-start gap-2 min-w-0 flex-1">
-                    <div className={`w-6 h-6 rounded-lg bg-surface border flex items-center justify-center text-xs shadow-xs shrink-0 mt-0.5 ${
-                      msg.isPending ? 'border-purple-500/40 animate-pulse' : 'border-border'
-                    }`}>
-                      {msg.authorAvatar || '🤖'}
+                    <div className="shrink-0 mt-0.5 select-none">
+                      <UnifiedAvatar
+                        isUser={isHumanUser}
+                        agent={authorAgent}
+                        avatar={displayAvatar}
+                        name={displayName}
+                        size="sm"
+                        className="w-6 h-6"
+                      />
                     </div>
                     <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">
-                      <span className="font-bold text-fg text-xs whitespace-nowrap shrink-0">{msg.authorName}</span>
+                      <span className="font-bold text-fg text-xs whitespace-nowrap shrink-0">{displayName}</span>
                       {gameRoleBadge && (
                         <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono border shrink-0 whitespace-nowrap ${gameRoleBadge.cls}`}>
                           {gameRoleBadge.label}
@@ -1351,13 +1377,24 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     }`}
                   >
                     <div className="flex items-center justify-between">
-                      <span className={`font-semibold flex items-center gap-1.5 ${
-                        isQueued ? 'text-fg-muted' : 'text-purple-600 dark:text-purple-400'
-                      }`}>
-                        <span className="text-sm">{exec.agentAvatar || '🤖'}</span>
-                        <BrainCircuit className={`w-3.5 h-3.5 ${isQueued ? 'opacity-60' : 'animate-pulse text-purple-500'}`} />
-                        <span>{exec.agentName} {isQueued ? '排队等待接力' : '正在论证推演中'}</span>
-                      </span>
+                      {(() => {
+                        const execAgent = agents.find((a) => a.id === exec.agentId);
+                        return (
+                          <span className={`font-semibold flex items-center gap-1.5 ${
+                            isQueued ? 'text-fg-muted' : 'text-purple-600 dark:text-purple-400'
+                          }`}>
+                            <UnifiedAvatar
+                              agent={execAgent}
+                              avatar={execAgent?.avatar || exec.agentAvatar}
+                              name={execAgent?.name || exec.agentName}
+                              size="xs"
+                              className="w-4 h-4"
+                            />
+                            <BrainCircuit className={`w-3.5 h-3.5 ${isQueued ? 'opacity-60' : 'animate-pulse text-purple-500'}`} />
+                            <span>{execAgent?.name || exec.agentName} {isQueued ? '排队等待接力' : '正在论证推演中'}</span>
+                          </span>
+                        );
+                      })()}
                       <div className="flex items-center gap-2">
                         <span className={`text-[10px] font-mono font-semibold ${isQueued ? 'text-fg-muted' : 'text-purple-500'}`}>
                           {((now - exec.startedAt) / 1000).toFixed(1)}s

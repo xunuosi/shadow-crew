@@ -32,6 +32,7 @@ import {
   getActiveProviderPreset,
   ModelProbeResult,
 } from '../services/llmService';
+import { ModelSelectorCombobox } from './ModelSelectorCombobox';
 import { AgentModelConfig, ModelProviderType } from '../types';
 
 interface AgentDefaultsModalProps {
@@ -170,20 +171,13 @@ export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({
               </label>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                 {PROVIDER_PRESETS.map((p) => {
-                  const isSelected =
-                    (p.id === 'deepseek' && modelConfig.provider === 'deepseek') ||
-                    (p.id === 'anthropic' && modelConfig.provider === 'anthropic') ||
-                    (p.id === 'ollama' && modelConfig.provider === 'ollama') ||
-                    (p.id === 'siliconflow' && modelConfig.baseUrl?.includes('siliconflow')) ||
-                    (p.id === 'corpdeepseek' && (modelConfig.baseUrl?.includes('qianxin') || modelConfig.baseUrl?.includes('corpdeepseek') || modelConfig.modelId?.includes('deepseek-v4'))) ||
-                    (p.id === 'openai' && modelConfig.provider === 'openai_compatible' && !modelConfig.baseUrl?.includes('siliconflow') && !modelConfig.baseUrl?.includes('qianxin')) ||
-                    (p.id === 'custom' && modelConfig.provider === 'custom');
+                  const isSelected = p.id === currentPreset.id;
 
                   const label =
-                    p.id === 'corpdeepseek'
-                      ? '🏢 公司网关'
-                      : p.id === 'deepseek'
+                    p.id === 'deepseek'
                       ? '🐳 DeepSeek'
+                      : p.id === 'zhipu'
+                      ? '🧠 智谱 GLM'
                       : p.id === 'anthropic'
                       ? '✨ Claude'
                       : p.id === 'openai'
@@ -192,7 +186,7 @@ export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({
                       ? '🦙 Ollama'
                       : p.id === 'siliconflow'
                       ? '⚡ 硅基流动'
-                      : '⚙️ 自定义';
+                      : '⚙️ 自定义 (Custom)';
 
                   return (
                     <button
@@ -212,60 +206,19 @@ export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({
               </div>
             </div>
 
-            {/* Model Select */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-semibold text-fg mb-1">
-                  底座推理模型
-                </label>
-                <select
-                  value={modelConfig.modelId}
-                  onChange={(e) => handleModelChange(e.target.value)}
-                  className="w-full bg-surface border border-border focus:border-accent rounded-xl px-3 py-1.5 text-xs text-fg focus:outline-none transition-all cursor-pointer"
-                >
-                  {currentPreset.models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                  {currentPreset.id === 'custom' && (
-                    <option value={modelConfig.modelId}>{modelConfig.modelId || '输入自定义模型 ID'}</option>
-                  )}
-                </select>
-              </div>
-
-              {/* Custom Model ID input if custom */}
-              {currentPreset.id === 'custom' ? (
-                <div>
-                  <label className="block text-[11px] font-semibold text-fg mb-1">
-                    自定义模型名称 (Model Identifier)
-                  </label>
-                  <input
-                    type="text"
-                    value={modelConfig.modelId}
-                    onChange={(e) =>
-                      setModelConfigState((prev) => ({
-                        ...prev,
-                        modelId: e.target.value,
-                        modelName: e.target.value,
-                      }))
-                    }
-                    placeholder="e.g. qwen-plus, deepseek-ai/DeepSeek-V3"
-                    className="w-full bg-surface border border-border focus:border-accent rounded-xl px-3 py-1.5 font-mono text-[11px] text-fg focus:outline-none"
-                  />
-                </div>
-              ) : (
-                <div>
-                  <label className="block text-[11px] font-semibold text-fg mb-1">
-                    特性说明
-                  </label>
-                  <div className="text-[11px] text-fg-muted truncate py-1.5 px-2 bg-surface/60 rounded-xl border border-border/60">
-                    {currentPreset.models.find((m) => m.id === modelConfig.modelId)?.description ||
-                      '高性能推理模型'}
-                  </div>
-                </div>
-              )}
-            </div>
+            {/* Unified Model Selector Combobox */}
+            <ModelSelectorCombobox
+              modelConfig={modelConfig}
+              onChangeModel={(modelId, modelName) => {
+                setModelConfigState((prev) => ({
+                  ...prev,
+                  modelId,
+                  modelName: modelName || modelId,
+                }));
+                setProbeResult(null);
+              }}
+              onProbeResultClear={() => setProbeResult(null)}
+            />
 
             {/* API Key Input */}
             <div>

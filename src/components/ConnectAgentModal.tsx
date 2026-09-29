@@ -22,6 +22,7 @@ import {
   Key,
   Eye,
   EyeOff,
+  Loader2,
 } from 'lucide-react';
 import { AgentAvatarArtwork } from './AgentAvatarArtwork';
 import { discoverLocalAcpRuntimes, FALLBACK_PRESET_RUNTIMES } from '../services/acpDiscovery';
@@ -34,6 +35,7 @@ import {
   getActiveProviderPreset,
   ModelProbeResult,
 } from '../services/llmService';
+import { ModelSelectorCombobox } from './ModelSelectorCombobox';
 
 interface ConnectAgentModalProps {
   isOpen: boolean;
@@ -51,7 +53,7 @@ interface EnvVarItem {
   value: string;
 }
 
-export const PRESET_ICONS = [
+const PRESET_ICONS = [
   { id: 'shinobi', label: 'Shinobi', subtitle: '隐者核心 (默认)', icon: '🥷', artworkType: 'shinobi' },
   { id: 'codex', label: 'Codex', subtitle: '赛博机体', icon: '🤖', artworkType: 'codex' },
   { id: 'claudecode', label: 'Claude', subtitle: '星火认知', icon: '✨', artworkType: 'claudecode' },
@@ -120,6 +122,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   const [isTestingModel, setIsTestingModel] = useState(false);
   const [modelProbeResult, setModelProbeResult] = useState<ModelProbeResult | null>(null);
 
+  // Saving & Re-verification State
+  const [isSavingAndVerifying, setIsSavingAndVerifying] = useState(false);
+
   const prevIsOpenRef = useRef(false);
   const prevAgentIdRef = useRef<string | null>(null);
 
@@ -137,24 +142,30 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
         if (initialAgent.modelConfig) {
           setUseGlobalDefaultModel(initialAgent.modelConfig.useGlobalDefault ?? false);
-          setModelConfig({
+          const effectiveCfg = {
             ...globalCfg,
             ...initialAgent.modelConfig,
-          });
+          };
+          setModelConfig(effectiveCfg);
         } else {
-          // Check if envVars has a specific API key
+          // Check if envVars has a specific API key or Base URL
           const hasCustomKey = initialAgent.envVars?.some(
-            (v) => v.key.endsWith('_API_KEY') && v.value.trim().length > 0
+            (v) => (v.key.endsWith('_API_KEY') || v.key.endsWith('_BASE_URL')) && v.value.trim().length > 0
           );
           if (hasCustomKey) {
             setUseGlobalDefaultModel(false);
-            const foundKey = initialAgent.envVars?.find((v) => v.key.endsWith('_API_KEY'));
-            setModelConfig({
+            const foundKey = initialAgent.envVars?.find((v) => v.key.endsWith('_API_KEY'))?.value || '';
+            const foundBaseUrl = initialAgent.envVars?.find((v) => v.key.endsWith('_BASE_URL'))?.value;
+            const foundModel = initialAgent.envVars?.find((v) => v.key.endsWith('_MODEL'))?.value;
+            const effectiveCfg = {
               ...globalCfg,
-              apiKey: foundKey?.value || '',
-              modelName: initialAgent.modelBadge || globalCfg.modelName,
+              apiKey: foundKey || globalCfg.apiKey,
+              baseUrl: foundBaseUrl || globalCfg.baseUrl,
+              modelId: foundModel || globalCfg.modelId,
+              modelName: foundModel || initialAgent.modelBadge || globalCfg.modelName,
               useGlobalDefault: false,
-            });
+            };
+            setModelConfig(effectiveCfg);
           } else {
             setUseGlobalDefaultModel(true);
             setModelConfig({ ...globalCfg, useGlobalDefault: true });
@@ -363,11 +374,13 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   const isReady = selectedAcp.availability === 'available';
   const isRemoteMode = connectTab === 'remote';
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!name.trim() || isSavingAndVerifying) return;
     if (!initialAgent && !isRemoteMode && !isReady) return;
     if (isRemoteMode && !remoteUrl.trim()) return;
+
+    setIsSavingAndVerifying(true);
 
     const chosenIcon = PRESET_ICONS.find((i) => i.id === selectedIconId);
     const effectiveAvatar =
@@ -389,6 +402,23 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     const finalModelConfig: AgentModelConfig = useGlobalDefaultModel
       ? { ...globalCfg, useGlobalDefault: true }
       : { ...modelConfig, useGlobalDefault: false };
+
+    // 保存前重新验证最新的模型状态
+    let probeResult: ModelProbeResult | null = null;
+    if (finalModelConfig.baseUrl && (finalModelConfig.apiKey || finalModelConfig.provider === 'ollama')) {
+      try {
+        probeResult = await testModelConnection(finalModelConfig);
+      } catch (err: any) {
+        probeResult = { ok: false, latencyMs: 0, error: err.message || '模型验证失败' };
+      }
+    }
+
+    if (probeResult) {
+      finalModelConfig.lastTestedAt = Date.now();
+      finalModelConfig.isHealthy = probeResult.ok;
+      finalModelConfig.lastLatencyMs = probeResult.ok ? probeResult.latencyMs : undefined;
+      finalModelConfig.lastError = probeResult.ok ? undefined : probeResult.error;
+    }
 
     // 合并并自动注入模型环境变量，确保 stdio 子进程与平台内部均能拿到对应配置
     const mergedEnvVars = [...envVars.filter((v) => v.key.trim().length > 0)];
@@ -434,8 +464,15 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         envVars: mergedEnvVars.map((v) => ({ key: v.key.trim(), value: v.value })),
         acpTransport: transport,
         acpCommandOrUrl: resolvedCommand,
-        modelBadge: effectiveModelBadge,
+        modelBadge: (probeResult?.ok && probeResult.modelName) || effectiveModelBadge,
         modelConfig: finalModelConfig,
+        modelLatencyMs: probeResult?.ok ? probeResult.latencyMs : undefined,
+        isModelHealthy: probeResult ? probeResult.ok : undefined,
+        statusDetail: probeResult
+          ? probeResult.ok
+            ? `底座模型就绪 (${probeResult.latencyMs}ms · ${probeResult.modelName || effectiveModelBadge})`
+            : `模型连通异常: ${probeResult.error || '连通失败'}`
+          : initialAgent.statusDetail,
       });
     } else {
       onConnectAgent({
@@ -452,8 +489,15 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         envVars: mergedEnvVars.map((v) => ({ key: v.key.trim(), value: v.value })),
         color: isRemoteMode ? '#06b6d4' : '#3b82f6',
         status: 'idle',
-        modelBadge: effectiveModelBadge,
+        modelBadge: (probeResult?.ok && probeResult.modelName) || effectiveModelBadge,
         modelConfig: finalModelConfig,
+        modelLatencyMs: probeResult?.ok ? probeResult.latencyMs : undefined,
+        isModelHealthy: probeResult ? probeResult.ok : undefined,
+        statusDetail: probeResult
+          ? probeResult.ok
+            ? `底座模型就绪 (${probeResult.latencyMs}ms · ${probeResult.modelName || effectiveModelBadge})`
+            : `模型连通异常: ${probeResult.error || '连通失败'}`
+          : undefined,
         isManagedByYou: true,
         acpTransport: transport,
         acpCommandOrUrl: resolvedCommand,
@@ -485,6 +529,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       });
     }
 
+    setIsSavingAndVerifying(false);
     onClose();
   };
 
@@ -806,6 +851,14 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                     setUseGlobalDefaultModel(checked);
                     if (checked) {
                       setModelConfig({ ...getGlobalModelConfig(), useGlobalDefault: true });
+                    } else {
+                      const globalCfg = getGlobalModelConfig();
+                      setModelConfig((prev) => ({
+                        ...prev,
+                        apiKey: prev.apiKey || globalCfg.apiKey,
+                        baseUrl: prev.baseUrl || globalCfg.baseUrl,
+                        useGlobalDefault: false,
+                      }));
                     }
                   }}
                   className="rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
@@ -846,10 +899,10 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                       const isSelected = p.id === currentPreset.id;
 
                       const label =
-                        p.id === 'corpdeepseek'
-                          ? '🏢 公司网关'
-                          : p.id === 'deepseek'
+                        p.id === 'deepseek'
                           ? '🐳 DeepSeek'
+                          : p.id === 'zhipu'
+                          ? '🧠 智谱 GLM'
                           : p.id === 'anthropic'
                           ? '✨ Claude'
                           : p.id === 'openai'
@@ -858,7 +911,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                           ? '🦙 Ollama'
                           : p.id === 'siliconflow'
                           ? '⚡ 硅基流动'
-                          : '⚙️ 自定义';
+                          : '⚙️ 自定义 (Custom)';
 
                       return (
                         <button
@@ -866,12 +919,15 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                           type="button"
                           onClick={() => {
                             const firstModel = p.models[0];
+                            const globalCfg = getGlobalModelConfig();
+                            const targetKey = modelConfig.apiKey || globalCfg.apiKey;
                             setModelConfig((prev) => ({
                               ...prev,
                               provider: p.provider,
                               baseUrl: p.defaultBaseUrl,
                               modelId: firstModel?.id || 'deepseek-chat',
                               modelName: firstModel?.name || 'DeepSeek V3',
+                              apiKey: targetKey,
                             }));
                             setModelProbeResult(null);
                           }}
@@ -888,67 +944,20 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                   </div>
                 </div>
 
-                {/* Model dropdown & identifier */}
-                {(() => {
-                  const currentPreset = getActiveProviderPreset(modelConfig);
-                  return (
-                    <div className="space-y-1">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
-                            选择预设模型 (Preset Model)
-                          </label>
-                          <select
-                            value={modelConfig.modelId}
-                            onChange={(e) => {
-                              const found = currentPreset.models.find((m) => m.id === e.target.value);
-                              setModelConfig((prev) => ({
-                                ...prev,
-                                modelId: e.target.value,
-                                modelName: found?.name || e.target.value,
-                              }));
-                              setModelProbeResult(null);
-                            }}
-                            className={`w-full rounded-xl px-3 py-1.5 text-xs focus:outline-none transition-all cursor-pointer ${inputBg}`}
-                          >
-                            {currentPreset.models.map((m) => (
-                              <option key={m.id} value={m.id}>
-                                {m.label}
-                              </option>
-                            ))}
-                            {!currentPreset.models.some((m) => m.id === modelConfig.modelId) && (
-                              <option value={modelConfig.modelId}>
-                                {modelConfig.modelId} (自定义标识)
-                              </option>
-                            )}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
-                            模型标识符 (API Model ID)
-                          </label>
-                          <input
-                            type="text"
-                            value={modelConfig.modelId}
-                            onChange={(e) =>
-                              setModelConfig((prev) => ({
-                                ...prev,
-                                modelId: e.target.value,
-                                modelName: e.target.value,
-                              }))
-                            }
-                            placeholder="e.g. deepseek-v4-flash, gpt-4o"
-                            className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
-                          />
-                        </div>
-                      </div>
-                      <div className="text-[10px] text-fg-muted">
-                        左侧可快速切换该厂商推荐的预设模型；如需使用未收录或企业私有微调模型，可直接在右侧输入标识符。
-                      </div>
-                    </div>
-                  );
-                })()}
+                {/* Unified Model Selector Combobox (Direct Input + Dropdown Sync + Quick Chips) */}
+                <ModelSelectorCombobox
+                  modelConfig={modelConfig}
+                  onChangeModel={(modelId, modelName) => {
+                    setModelConfig((prev) => ({
+                      ...prev,
+                      modelId,
+                      modelName: modelName || modelId,
+                    }));
+                    setModelProbeResult(null);
+                  }}
+                  isLightMode={isLightMode}
+                  onProbeResultClear={() => setModelProbeResult(null)}
+                />
 
                 {/* API Key */}
                 <div>
@@ -1455,26 +1464,34 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
               <button
                 type="submit"
                 disabled={
+                  isSavingAndVerifying ||
                   !name.trim() ||
                   (connectTab === 'remote' ? !remoteUrl.trim() : !initialAgent && !isReady)
                 }
-                className={`px-5 py-2 rounded-xl text-xs font-semibold text-white transition-all shadow-md ${
-                  name.trim() && (connectTab === 'remote' ? remoteUrl.trim() : initialAgent || isReady)
+                className={`px-5 py-2 rounded-xl text-xs font-semibold text-white transition-all shadow-md flex items-center gap-1.5 ${
+                  !isSavingAndVerifying && name.trim() && (connectTab === 'remote' ? remoteUrl.trim() : initialAgent || isReady)
                     ? isLightMode
                       ? 'bg-[#2563eb] hover:bg-[#1d4ed8] cursor-pointer'
                       : 'bg-cyan-600 hover:bg-cyan-500 cursor-pointer'
                     : 'bg-gray-300 dark:bg-zinc-800 text-gray-500 dark:text-zinc-500 cursor-not-allowed shadow-none'
                 }`}
               >
-                {initialAgent
-                  ? '保存修改 (Save Changes)'
-                  : connectTab === 'remote'
-                  ? '连接远程 Agent (Connect Remote)'
-                  : selectedAcp.availability === 'not_adapted'
-                  ? 'Adapter Required'
-                  : selectedAcp.availability === 'not_installed'
-                  ? 'Not Installed'
-                  : 'Create Agent'}
+                {isSavingAndVerifying ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>正在验证模型状态并保存...</span>
+                  </>
+                ) : initialAgent ? (
+                  '保存修改 (Save Changes)'
+                ) : connectTab === 'remote' ? (
+                  '连接远程 Agent (Connect Remote)'
+                ) : selectedAcp.availability === 'not_adapted' ? (
+                  'Adapter Required'
+                ) : selectedAcp.availability === 'not_installed' ? (
+                  'Not Installed'
+                ) : (
+                  'Create Agent'
+                )}
               </button>
             </div>
           </div>

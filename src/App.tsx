@@ -542,13 +542,30 @@ export default function App() {
   // 3. 线程解析：
   // - 若为私聊模式，严格锁定对应 dmThread，严禁回退至任何频道线程；
   // - 若为频道模式，严格只在该频道所属线程中查找，彻底废除 threads[0] 的盲目 cross-fallback
-  const activeThread = isDirectMessageSelected
-    ? (threads.find((t) => t.id === activeThreadId && t.type === 'dm') ||
-       threads.find((t) => t.type === 'dm') ||
-       null)
-    : ((activeChannel ? threads.find((t) => t.id === activeThreadId && t.channelId === activeChannel.id && t.type !== 'dm') : null) ||
-       (activeChannel ? threads.find((t) => t.channelId === activeChannel.id && t.type !== 'dm') : null) ||
-       null);
+  const activeThread = useMemo(() => {
+    const rawThread = isDirectMessageSelected
+      ? (threads.find((t) => t.id === activeThreadId && t.type === 'dm') ||
+         threads.find((t) => t.type === 'dm') ||
+         null)
+      : ((activeChannel ? threads.find((t) => t.id === activeThreadId && t.channelId === activeChannel.id && t.type !== 'dm') : null) ||
+         (activeChannel ? threads.find((t) => t.channelId === activeChannel.id && t.type !== 'dm') : null) ||
+         null);
+    if (!rawThread) return null;
+    if (rawThread.type === 'dm') {
+      const dmAgent = agents.find((a) => a.id === rawThread.authorId || rawThread.id === `thread-dm-${a.id}`);
+      if (dmAgent) {
+        return {
+          ...rawThread,
+          authorName: dmAgent.name,
+          authorAvatar: dmAgent.avatar,
+          authorHandle: dmAgent.handle,
+          title: `与 ${dmAgent.name} 的私信会话`,
+          channelName: `与 ${dmAgent.name} 私聊`,
+        };
+      }
+    }
+    return rawThread;
+  }, [isDirectMessageSelected, threads, activeThreadId, activeChannel, agents]);
 
   const activeMessages = activeThread ? messages[activeThread.id] || [] : [];
   const activeSubThread = activeSubThreadId ? subThreads[activeSubThreadId] : null;
@@ -1071,6 +1088,28 @@ export default function App() {
           },
         ],
       }));
+    } else {
+      // If dmThread already exists, ensure its metadata matches the latest agent profile
+      if (
+        dmThread.authorAvatar !== agent.avatar ||
+        dmThread.authorName !== agent.name ||
+        dmThread.authorHandle !== agent.handle
+      ) {
+        setThreads((prev) =>
+          prev.map((t) =>
+            t.id === dmThread!.id
+              ? {
+                  ...t,
+                  authorName: agent.name,
+                  authorAvatar: agent.avatar,
+                  authorHandle: agent.handle,
+                  title: `与 ${agent.name} 的私信会话`,
+                  channelName: `与 ${agent.name} 私聊`,
+                }
+              : t
+          )
+        );
+      }
     }
     setActiveThreadId(dmThread.id);
     setSelectedAgentId(agent.id);
@@ -5754,7 +5793,7 @@ export default function App() {
                 return {
                   ...a,
                   ...updatedData,
-                  status: 'idle',
+                  status: updatedData.status || a.status || 'idle',
                   workspace: {
                     ...a.workspace,
                     ...(updatedData.workspace || {}),
@@ -5764,6 +5803,98 @@ export default function App() {
               return a;
             })
           );
+
+          // 同步全量更新所有线程中由该 Agent 发起或该 Agent 的 DM 会话
+          if (updatedData.name || updatedData.avatar || updatedData.handle) {
+            setThreads((prev) =>
+              prev.map((t) => {
+                if (t.authorId === agentId || t.id === `thread-dm-${agentId}`) {
+                  const newName = updatedData.name ?? t.authorName;
+                  const newAvatar = updatedData.avatar ?? t.authorAvatar;
+                  const newHandle = updatedData.handle ?? t.authorHandle;
+                  return {
+                    ...t,
+                    authorName: newName,
+                    authorAvatar: newAvatar,
+                    authorHandle: newHandle,
+                    ...(t.type === 'dm'
+                      ? {
+                          title: `与 ${newName} 的私信会话`,
+                          channelName: `与 ${newName} 私聊`,
+                        }
+                      : {}),
+                  };
+                }
+                return t;
+              })
+            );
+
+            // 同步更新所有会话/频道中该 Agent 历史与当前发言的头像与昵称（包含议题卡片元数据）
+            setMessages((prev) => {
+              let changed = false;
+              const next: Record<string, Message[]> = {};
+              for (const [threadId, msgs] of Object.entries(prev)) {
+                let threadChanged = false;
+                const newMsgs = msgs.map((m) => {
+                  const isAuthor = m.authorId === agentId;
+                  const isTopicAuthor = m.topicData && m.topicData.authorId === agentId;
+                  if (isAuthor || isTopicAuthor) {
+                    threadChanged = true;
+                    return {
+                      ...m,
+                      ...(isAuthor && updatedData.name ? { authorName: updatedData.name } : {}),
+                      ...(isAuthor && updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
+                      ...(isAuthor && updatedData.handle ? { authorHandle: updatedData.handle } : {}),
+                      ...(m.topicData ? {
+                        topicData: {
+                          ...m.topicData,
+                          ...(isTopicAuthor && updatedData.name ? { authorName: updatedData.name } : {}),
+                          ...(isTopicAuthor && updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
+                        },
+                      } : {}),
+                    };
+                  }
+                  return m;
+                });
+                if (threadChanged) {
+                  changed = true;
+                  next[threadId] = newMsgs;
+                } else {
+                  next[threadId] = msgs;
+                }
+              }
+              return changed ? next : prev;
+            });
+
+            // 同步更新所有子话题 (SubThread) 中该 Agent 的历史与当前回复
+            setSubThreads((prev) => {
+              let changed = false;
+              const next: Record<string, SubThread> = {};
+              for (const [subId, sub] of Object.entries(prev)) {
+                let subChanged = false;
+                const newMsgs = sub.messages.map((m) => {
+                  if (m.authorId === agentId) {
+                    subChanged = true;
+                    return {
+                      ...m,
+                      ...(updatedData.name ? { authorName: updatedData.name } : {}),
+                      ...(updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
+                      ...(updatedData.handle ? { authorHandle: updatedData.handle } : {}),
+                    };
+                  }
+                  return m;
+                });
+                if (subChanged) {
+                  changed = true;
+                  next[subId] = { ...sub, messages: newMsgs };
+                } else {
+                  next[subId] = sub;
+                }
+              }
+              return changed ? next : prev;
+            });
+          }
+
           // 若底层正在运行旧进程，主动停止以确保后续以更新后的配置/环境变量重新拉起
           if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke) {
             (window as any).__TAURI_INTERNALS__.invoke('stop_acp_agent', { agentId })
@@ -5780,8 +5911,12 @@ export default function App() {
             role: agentData.role || 'Specialized Agent',
             description: agentData.description || agentData.role || 'Custom ACP Agent',
             color: '#06b6d4',
-            status: 'idle',
+            status: agentData.status || 'idle',
             modelBadge: agentData.modelBadge || DEFAULT_MODEL_NAME,
+            modelConfig: agentData.modelConfig,
+            isModelHealthy: agentData.isModelHealthy,
+            modelLatencyMs: agentData.modelLatencyMs,
+            statusDetail: agentData.statusDetail,
             localAcpProfile: agentData.localAcpProfile,
             envVars: agentData.envVars,
             isManagedByYou: true,

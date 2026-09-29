@@ -1,15 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ActiveAgentExecution } from '../types';
+import { ActiveAgentExecution, Agent } from '../types';
 import { Loader2, Square, ChevronUp, BrainCircuit } from 'lucide-react';
+import { UnifiedAvatar } from './AgentAvatarArtwork';
 
 interface ChannelComposerActivityBarProps {
   executions: ActiveAgentExecution[];
+  agents?: Agent[];
   onAbortAgent?: (agentId: string) => void;
   onOpenAgentSession?: (agentId: string) => void;
 }
 
 export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProps> = ({
   executions,
+  agents,
   onAbortAgent,
   onOpenAgentSession,
 }) => {
@@ -42,6 +45,13 @@ export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProp
   const isMulti = executions.length > 1;
   const primary = executions[0];
 
+  const getAgentAvatar = (agentId: string, fallback: string) => {
+    return agents?.find((a) => a.id === agentId)?.avatar || fallback;
+  };
+  const getAgentName = (agentId: string, fallback: string) => {
+    return agents?.find((a) => a.id === agentId)?.name || fallback;
+  };
+
   return (
     <div className="relative z-30 px-3 sm:px-4 py-1.5 transition-all duration-150 animate-in fade-in slide-in-from-bottom-1">
       {/* 1. Main Floating Trigger Bar (Buzz-style Composer Accessory) */}
@@ -56,14 +66,23 @@ export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProp
             >
               {/* Overlapping Avatars */}
               <div className="flex items-center -space-x-1.5 shrink-0">
-                {executions.slice(0, 2).map((ex) => (
-                  <div
-                    key={ex.agentId}
-                    className="w-5 h-5 rounded-[6px] bg-surface-subtle border border-border flex items-center justify-center text-xs shadow-2xs shrink-0"
-                  >
-                    {ex.agentAvatar}
-                  </div>
-                ))}
+                {executions.slice(0, 2).map((ex) => {
+                  const exAgent = agents?.find((a) => a.id === ex.agentId);
+                  return (
+                    <div
+                      key={ex.agentId}
+                      className="relative shrink-0 shadow-2xs"
+                    >
+                      <UnifiedAvatar
+                        agent={exAgent}
+                        avatar={exAgent?.avatar || ex.agentAvatar}
+                        name={exAgent?.name || ex.agentName}
+                        size="xs"
+                        className="w-5 h-5 border border-border"
+                      />
+                    </div>
+                  );
+                })}
               </div>
 
               {executions.length > 2 && (
@@ -74,7 +93,7 @@ export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProp
 
               {/* Stack Headline with Shimmer */}
               <span className="text-xs font-semibold text-fg flex items-center gap-1.5">
-                <span className="truncate max-w-[120px]">{primary.agentName}</span>
+                <span className="truncate max-w-[120px]">{getAgentName(primary.agentId, primary.agentName)}</span>
                 <span className="text-[11px] text-accent font-mono font-medium">
                   +{executions.length - 1} 协作中
                 </span>
@@ -87,9 +106,20 @@ export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProp
         ) : (
           /* Single Agent Case: Squircle Avatar + Shimmer Headline + Elapsed Time + Stop */
           <div className="flex items-center gap-2 min-w-0">
-            <div className="w-5 h-5 rounded-[6px] bg-surface-subtle border border-border flex items-center justify-center text-xs shadow-2xs shrink-0">
-              {primary.agentAvatar}
-            </div>
+            {(() => {
+              const exAgent = agents?.find((a) => a.id === primary.agentId);
+              return (
+                <div className="shrink-0 shadow-2xs">
+                  <UnifiedAvatar
+                    agent={exAgent}
+                    avatar={exAgent?.avatar || primary.agentAvatar}
+                    name={exAgent?.name || primary.agentName}
+                    size="xs"
+                    className="w-5 h-5 border border-border"
+                  />
+                </div>
+              );
+            })()}
 
             <div className="flex items-center gap-1.5 min-w-0 truncate">
               {primary.cascadeHop && (
@@ -98,7 +128,7 @@ export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProp
                 </span>
               )}
               <span className="font-semibold text-fg text-xs shrink-0">
-                {primary.agentName}:
+                {getAgentName(primary.agentId, primary.agentName)}:
               </span>
               <span className="animate-shimmer text-xs truncate max-w-[200px] sm:max-w-[340px]">
                 {primary.currentActionDetail ||
@@ -153,12 +183,23 @@ export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProp
                     onClick={() => onOpenAgentSession?.(ex.agentId)}
                     className="flex items-center gap-2 min-w-0 flex-1 mr-2 cursor-pointer"
                   >
-                    <div className="w-6 h-6 rounded-[7px] bg-surface border border-border flex items-center justify-center text-xs shrink-0 shadow-2xs">
-                      {ex.agentAvatar}
-                    </div>
+                    {(() => {
+                      const exAgent = agents?.find((a) => a.id === ex.agentId);
+                      return (
+                        <div className="shrink-0 select-none">
+                          <UnifiedAvatar
+                            agent={exAgent}
+                            avatar={exAgent?.avatar || ex.agentAvatar}
+                            name={exAgent?.name || ex.agentName}
+                            size="sm"
+                            className="w-6 h-6 border border-border"
+                          />
+                        </div>
+                      );
+                    })()}
                     <div className="min-w-0 flex-1">
                       <div className="font-semibold text-xs text-fg truncate flex items-center gap-1.5">
-                        <span className="truncate">{ex.agentName}</span>
+                        <span className="truncate">{getAgentName(ex.agentId, ex.agentName)}</span>
                         <span className="text-[10px] text-fg-muted font-mono">({elapsed}s)</span>
                       </div>
                       <p className="text-[11px] text-fg-muted truncate">

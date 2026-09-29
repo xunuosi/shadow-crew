@@ -9,14 +9,15 @@ import {
   FileCode2, 
   ShieldCheck, 
   UserCheck, 
-  Sparkles,
-  ChevronRight,
-  Edit3,
-  Swords,
-  Scale,
-  RotateCcw,
-  SlidersHorizontal
+  Sparkles, 
+  ChevronRight, 
+  Edit3, 
+  Swords, 
+  Scale, 
+  RotateCcw, 
+  SlidersHorizontal 
 } from 'lucide-react';
+import { UnifiedAvatar } from './AgentAvatarArtwork';
 
 interface TopicMessageCardProps {
   topic: TopicMessageData;
@@ -141,8 +142,18 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
               </span>
             )}
 
-            <span className="text-xs text-fg-muted font-mono whitespace-nowrap shrink-0">
-              by <span className="text-fg font-medium">{topic.authorName}</span> · {topic.timestamp}
+            <span className="text-xs text-fg-muted font-mono whitespace-nowrap shrink-0 flex items-center gap-1.5">
+              <span>by</span>
+              <UnifiedAvatar
+                isUser={topic.authorId === 'user-norris' || topic.authorName === 'Norris_M5Pro' || topic.authorAvatar === '👨‍💻'}
+                agent={agents.find((a) => a.id === topic.authorId || a.name === topic.authorName)}
+                name={topic.authorName}
+                avatar={topic.authorAvatar}
+                size="xs"
+                className="w-4 h-4"
+              />
+              <span className="text-fg font-medium">{topic.authorName}</span>
+              <span>· {topic.timestamp}</span>
             </span>
           </div>
 
@@ -330,14 +341,20 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                   <div
                     key={ag.id}
                     title={`${ag.name} (${ag.role})`}
-                    className="w-6 h-6 rounded-lg bg-surface border border-border flex items-center justify-center text-xs shadow-xs shrink-0"
+                    className="relative shrink-0 hover:z-10 transition-transform hover:scale-110"
                   >
-                    {ag.avatar}
+                    <UnifiedAvatar
+                      agent={ag}
+                      avatar={ag.avatar}
+                      name={ag.name}
+                      size="sm"
+                      className="w-6 h-6 border border-border shadow-xs"
+                    />
                   </div>
                 ))
               ) : (
-                <div className="w-6 h-6 rounded-lg bg-surface border border-border flex items-center justify-center text-xs shrink-0">
-                  🤖
+                <div className="w-6 h-6 rounded-full shrink-0">
+                  <UnifiedAvatar name="Agent" size="sm" className="w-6 h-6" />
                 </div>
               )}
             </div>

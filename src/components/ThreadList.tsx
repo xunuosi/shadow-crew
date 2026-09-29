@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Thread } from '../types';
+import { Thread, Agent } from '../types';
 import { 
   ChevronDown, 
   MoreHorizontal, 
@@ -11,9 +11,11 @@ import {
   Layers,
   GitBranch
 } from 'lucide-react';
+import { UnifiedAvatar } from './AgentAvatarArtwork';
 
 interface ThreadListProps {
   threads: Thread[];
+  agents?: Agent[];
   activeThreadId: string;
   onSelectThread: (threadId: string) => void;
   onNewThread: () => void;
@@ -23,6 +25,7 @@ interface ThreadListProps {
 
 export const ThreadList: React.FC<ThreadListProps> = ({
   threads,
+  agents,
   activeThreadId,
   onSelectThread,
   onNewThread,
@@ -116,6 +119,15 @@ export const ThreadList: React.FC<ThreadListProps> = ({
         ) : (
           filteredThreads.map((thread) => {
             const isActive = thread.id === activeThreadId;
+            const authorAgent = agents?.find((a) => a.id === thread.authorId || thread.id === `thread-dm-${a.id}`);
+            const displayAvatar = authorAgent?.avatar || thread.authorAvatar;
+            const displayName = authorAgent?.name || thread.authorName;
+
+            const isHumanUser =
+              thread.authorId === 'user-norris' ||
+              thread.authorName === 'Norris_M5Pro' ||
+              thread.authorName === 'Norris' ||
+              thread.authorAvatar === '👨‍💻';
 
             return (
               <article
@@ -134,14 +146,21 @@ export const ThreadList: React.FC<ThreadListProps> = ({
 
                 {/* Header: Avatar, Name & Location */}
                 <div className="flex items-start gap-2.5 mb-1.5">
-                  <div className="w-7 h-7 rounded-lg bg-surface-subtle border border-border flex items-center justify-center text-base shrink-0 shadow-xs">
-                    {thread.authorAvatar}
+                  <div className="shrink-0 select-none">
+                    <UnifiedAvatar
+                      isUser={isHumanUser}
+                      agent={authorAgent}
+                      avatar={displayAvatar}
+                      name={displayName}
+                      size="sm"
+                      className="w-7 h-7"
+                    />
                   </div>
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-1">
                       <span className="font-semibold text-xs text-fg truncate group-hover:text-accent transition-colors">
-                        {thread.authorName}
+                        {displayName}
                       </span>
                       <span className="text-[10px] text-fg-muted font-mono shrink-0">
                         {thread.timestamp}
@@ -150,7 +169,7 @@ export const ThreadList: React.FC<ThreadListProps> = ({
 
                     <div className="text-[11px] text-fg-muted truncate flex items-center gap-1">
                       {thread.type === 'dm' ? (
-                        <span>DM from {thread.authorName}</span>
+                        <span>DM from {displayName}</span>
                       ) : (
                         <span>Thread in <span className="text-accent font-mono">#{thread.channelName}</span></span>
                       )}

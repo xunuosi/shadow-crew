@@ -257,7 +257,10 @@ function llmProxyPlugin(): Plugin {
           });
           req.on('end', async () => {
             try {
-              const { url, headers, body, timeoutMs = 20000 } = JSON.parse(reqBodyStr || '{}');
+              const { url, headers, body, method = 'POST', timeoutMs = 20000 } = JSON.parse(reqBodyStr || '{}');
+              const reqMethod = String(method || 'POST').toUpperCase();
+              const isPost = reqMethod === 'POST';
+
               if (!url) {
                 res.statusCode = 400;
                 res.setHeader('Content-Type', 'application/json');
@@ -273,12 +276,16 @@ function llmProxyPlugin(): Plugin {
               process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
               try {
-                const response = await fetch(url, {
-                  method: 'POST',
+                const fetchOptions: RequestInit = {
+                  method: reqMethod,
                   headers: headers || {},
-                  body: typeof body === 'string' ? body : JSON.stringify(body),
                   signal: controller.signal,
-                });
+                };
+                if (isPost && body !== undefined && body !== null) {
+                  fetchOptions.body = typeof body === 'string' ? body : JSON.stringify(body);
+                }
+
+                const response = await fetch(url, fetchOptions);
                 clearTimeout(timer);
                 if (prevTls !== undefined) {
                   process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTls;
@@ -291,7 +298,7 @@ function llmProxyPlugin(): Plugin {
                 } catch {}
 
                 const hasValidPayload = Boolean(
-                  parsedJson && (parsedJson.choices || parsedJson.id || parsedJson.content)
+                  parsedJson && (parsedJson.choices || parsedJson.id || parsedJson.content || parsedJson.data || parsedJson.models)
                 );
 
                 res.setHeader('Content-Type', 'application/json');
@@ -322,7 +329,7 @@ function llmProxyPlugin(): Plugin {
                     '-s',
                     '-S',
                     '-X',
-                    'POST',
+                    reqMethod,
                     '--max-time',
                     String(Math.ceil(timeoutMs / 1000)),
                   ];
@@ -337,8 +344,10 @@ function llmProxyPlugin(): Plugin {
                     }
                   }
 
-                  const bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
-                  curlArgs.push('-d', bodyStr);
+                  if (isPost && body !== undefined && body !== null) {
+                    const bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
+                    curlArgs.push('-d', bodyStr);
+                  }
                   curlArgs.push(url);
 
                   const { stdout } = await execFileAsync('curl', curlArgs);
@@ -348,7 +357,7 @@ function llmProxyPlugin(): Plugin {
                   } catch {}
 
                   const hasValid = Boolean(
-                    parsedJson && (parsedJson.choices || parsedJson.id || parsedJson.content)
+                    parsedJson && (parsedJson.choices || parsedJson.id || parsedJson.content || parsedJson.data || parsedJson.models)
                   );
 
                   res.setHeader('Content-Type', 'application/json');
@@ -363,6 +372,28 @@ function llmProxyPlugin(): Plugin {
                   );
                   return;
                 } catch (curlErr: any) {
+                  const curlStdout = curlErr?.stdout || '';
+                  let parsedJson = null;
+                  try {
+                    parsedJson = JSON.parse(curlStdout);
+                  } catch {}
+                  const hasValid = Boolean(
+                    parsedJson && (parsedJson.choices || parsedJson.id || parsedJson.content)
+                  );
+                  if (hasValid) {
+                    res.setHeader('Content-Type', 'application/json');
+                    res.setHeader('Access-Control-Allow-Origin', '*');
+                    res.end(
+                      JSON.stringify({
+                        ok: true,
+                        status: 200,
+                        body: parsedJson,
+                        raw_text: curlStdout,
+                      })
+                    );
+                    return;
+                  }
+
                   res.statusCode = 200;
                   res.setHeader('Content-Type', 'application/json');
                   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -371,8 +402,8 @@ function llmProxyPlugin(): Plugin {
                       ok: false,
                       status: 500,
                       body: null,
-                      raw_text: fetchErr?.message || 'Proxy fetch failed',
-                      error: fetchErr?.message || 'Proxy fetch failed',
+                      raw_text: curlStdout || fetchErr?.message || 'Proxy fetch failed',
+                      error: fetchErr?.message || curlErr?.message || 'Proxy fetch failed',
                     })
                   );
                 }

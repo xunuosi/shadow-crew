@@ -146,31 +146,32 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     apiKeyHelpUrl: 'https://cloud.siliconflow.cn/account/ak',
   },
   {
-    id: 'corpdeepseek',
-    name: '企业 AI 网关 (Corporate AI Gateway)',
+    id: 'zhipu',
+    name: '智谱 AI (Zhipu GLM)',
     provider: 'openai_compatible',
-    defaultBaseUrl: 'https://ai-gateway.qianxin-inc.cn/v1',
+    defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     models: [
       {
-        id: 'deepseek-v4-flash',
-        name: 'DeepSeek V4 Flash',
-        label: 'deepseek-v4-flash (企业网关专属 · 极速推理)',
-        description: '公司企业 AI 网关专属极速推理大模型',
+        id: 'glm-4-flash',
+        name: 'GLM-4-Flash',
+        label: 'GLM-4-Flash (免费高速 · 推荐)',
+        description: '智谱高并发极速模型，适合日常推演与代码执行',
       },
       {
-        id: 'deepseek-v3',
-        name: 'DeepSeek V3',
-        label: 'deepseek-v3 (企业网关版 · 通用全栈)',
-        description: '公司企业 AI 网关通用大模型',
+        id: 'glm-4-plus',
+        name: 'GLM-4-Plus',
+        label: 'GLM-4-Plus (高精度旗舰)',
+        description: '智谱旗舰级全栈大模型，复杂逻辑与长上下文能力出众',
       },
       {
-        id: 'deepseek-r1',
-        name: 'DeepSeek R1',
-        label: 'deepseek-r1 (企业网关版 · 深度推理)',
-        description: '公司企业 AI 网关深度逻辑数学推理模型',
+        id: 'glm-4-air',
+        name: 'GLM-4-Air',
+        label: 'GLM-4-Air (极致性价比)',
+        description: '轻量低延迟代码与任务执行大模型',
       },
     ],
-    apiKeyPlaceholder: 'sk-... (企业网关 Token)',
+    apiKeyPlaceholder: '智谱 API Key (来自 open.bigmodel.cn)',
+    apiKeyHelpUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
   },
   {
     id: 'custom',
@@ -181,8 +182,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
       {
         id: 'custom-model',
         name: '自定义模型',
-        label: '自定义模型标识 (如 qwen-plus, claude-proxy 等)',
-        description: '适用于 OneAPI, NewAPI, vLLM 或私有中转网关',
+        label: '自定义模型标识 (如 qwen-plus, deepseek-v4, claude-proxy 等)',
+        description: '适用于 OneAPI, NewAPI, 企业自建私有网关或 vLLM',
       },
     ],
     apiKeyPlaceholder: 'sk-...',
@@ -193,26 +194,22 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
  * 智能判定当前模型配置匹配的 ProviderPreset 预设
  */
 export function getActiveProviderPreset(config: AgentModelConfig): ProviderPreset {
-  if (
-    config.baseUrl?.includes('qianxin') ||
-    config.baseUrl?.includes('corpdeepseek') ||
-    config.modelId?.includes('deepseek-v4')
-  ) {
-    return PROVIDER_PRESETS.find((p) => p.id === 'corpdeepseek') || PROVIDER_PRESETS[0];
+  if (config.provider === 'deepseek' || config.baseUrl?.includes('deepseek.com')) {
+    return PROVIDER_PRESETS.find((p) => p.id === 'deepseek') || PROVIDER_PRESETS[0];
+  }
+  if (config.baseUrl?.includes('bigmodel.cn') || config.modelId?.toLowerCase().includes('glm')) {
+    return PROVIDER_PRESETS.find((p) => p.id === 'zhipu') || PROVIDER_PRESETS[0];
   }
   if (config.baseUrl?.includes('siliconflow')) {
     return PROVIDER_PRESETS.find((p) => p.id === 'siliconflow') || PROVIDER_PRESETS[0];
   }
-  if (config.provider === 'deepseek') {
-    return PROVIDER_PRESETS.find((p) => p.id === 'deepseek') || PROVIDER_PRESETS[0];
-  }
-  if (config.provider === 'anthropic') {
+  if (config.provider === 'anthropic' || config.baseUrl?.includes('anthropic.com')) {
     return PROVIDER_PRESETS.find((p) => p.id === 'anthropic') || PROVIDER_PRESETS[0];
   }
-  if (config.provider === 'ollama') {
+  if (config.provider === 'ollama' || config.baseUrl?.includes('localhost:11434')) {
     return PROVIDER_PRESETS.find((p) => p.id === 'ollama') || PROVIDER_PRESETS[0];
   }
-  if (config.provider === 'custom') {
+  if (config.provider === 'custom' || (!config.baseUrl?.includes('openai.com') && config.provider === 'openai_compatible')) {
     return PROVIDER_PRESETS.find((p) => p.id === 'custom') || PROVIDER_PRESETS[0];
   }
   return (
@@ -369,20 +366,30 @@ export interface PostJsonResponse {
   error?: string;
 }
 
+export interface RequestJsonOptions {
+  method?: 'GET' | 'POST';
+  headers?: Record<string, string>;
+  body?: any;
+  timeoutMs?: number;
+}
+
 /**
- * 全环境智能 HTTP POST 转发器
+ * 全环境通用 HTTP 请求转发器 (支持 GET / POST)
  * 优先级：
  * 1. Tauri 原生 Rust 管道转发 (native_http_post) - 彻底击穿浏览器 WebKit CORS 限制，支持公司内网自签证书
  * 2. Vite 本地开发服务器代理 (/api/llm-proxy) - 浏览器预览模式下无缝避开同源策略
  * 3. 标准 Web 浏览器原生 fetch 回退
  */
-export async function postJsonUniversal(
+export async function requestJsonUniversal(
   url: string,
-  headers: Record<string, string>,
-  body: any,
-  timeoutMs = 15000
+  options: RequestJsonOptions = {}
 ): Promise<PostJsonResponse> {
-  // 1. 尝试使用 Tauri 原生后端转发（在桌面端环境下彻底消除浏览器 CORS 限制与企业自签证书阻断）
+  const method = (options.method || 'POST').toUpperCase() as 'GET' | 'POST';
+  const headers = options.headers || {};
+  const body = options.body;
+  const timeoutMs = options.timeoutMs || 15000;
+
+  // 1. 尝试使用 Tauri 原生后端转发
   const tauriInvoke =
     typeof window !== 'undefined'
       ? (window as any).__TAURI_INTERNALS__?.invoke || (window as any).__TAURI__?.core?.invoke
@@ -394,17 +401,22 @@ export async function postJsonUniversal(
         req: {
           url,
           headers,
-          body,
+          body: method === 'POST' ? body : undefined,
+          method,
           timeoutSecs: Math.ceil(timeoutMs / 1000),
         },
       });
       if (res) {
+        const hasPayload = Boolean(
+          (res.body && (res.body.choices || res.body.id || res.body.content || res.body.data || res.body.models)) ||
+          (res.raw_text && (res.raw_text.includes('"choices"') || res.raw_text.includes('"id"') || res.raw_text.includes('"content"') || res.raw_text.includes('"data"') || res.raw_text.includes('"models"')))
+        );
         return {
-          ok: res.ok,
-          status: res.status,
+          ok: res.ok || hasPayload,
+          status: hasPayload ? 200 : res.status,
           data: res.body,
           rawText: res.raw_text,
-          error: res.ok ? undefined : res.body?.error?.message || res.raw_text || `HTTP ${res.status}`,
+          error: (res.ok || hasPayload) ? undefined : res.body?.error?.message || res.raw_text || `HTTP ${res.status}`,
         };
       }
     } catch (tauriErr: any) {
@@ -421,18 +433,23 @@ export async function postJsonUniversal(
         body: JSON.stringify({
           url,
           headers,
-          body,
+          body: method === 'POST' ? body : undefined,
+          method,
           timeoutMs,
         }),
       });
       if (proxyRes.ok) {
         const proxyData = await proxyRes.json();
+        const hasProxyPayload = Boolean(
+          (proxyData.body && (proxyData.body.choices || proxyData.body.id || proxyData.body.content || proxyData.body.data || proxyData.body.models)) ||
+          (proxyData.raw_text && (proxyData.raw_text.includes('"choices"') || proxyData.raw_text.includes('"id"') || proxyData.raw_text.includes('"content"') || proxyData.raw_text.includes('"data"') || proxyData.raw_text.includes('"models"')))
+        );
         return {
-          ok: proxyData.ok,
-          status: proxyData.status,
+          ok: proxyData.ok || hasProxyPayload,
+          status: hasProxyPayload ? 200 : proxyData.status,
           data: proxyData.body,
           rawText: proxyData.raw_text,
-          error: proxyData.ok ? undefined : proxyData.body?.error?.message || proxyData.error || `HTTP ${proxyData.status}`,
+          error: (proxyData.ok || hasProxyPayload) ? undefined : proxyData.body?.error?.message || proxyData.error || `HTTP ${proxyData.status}`,
         };
       }
     } catch (proxyErr) {
@@ -445,12 +462,16 @@ export async function postJsonUniversal(
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const res = await fetch(url, {
-      method: 'POST',
+    const fetchOptions: RequestInit = {
+      method,
       headers,
-      body: JSON.stringify(body),
       signal: controller.signal,
-    });
+    };
+    if (method === 'POST' && body !== undefined && body !== null) {
+      fetchOptions.body = typeof body === 'string' ? body : JSON.stringify(body);
+    }
+
+    const res = await fetch(url, fetchOptions);
     clearTimeout(timeoutId);
 
     const rawText = await res.text();
@@ -459,12 +480,17 @@ export async function postJsonUniversal(
       data = JSON.parse(rawText);
     } catch {}
 
+    const hasValid = Boolean(
+      (data && (data.choices || data.id || data.content || data.data || data.models)) ||
+      (rawText && (rawText.includes('"choices"') || rawText.includes('"id"') || rawText.includes('"data"') || rawText.includes('"models"')))
+    );
+
     return {
-      ok: res.ok,
+      ok: res.ok || hasValid,
       status: res.status,
       data,
       rawText,
-      error: res.ok ? undefined : data?.error?.message || `HTTP ${res.status}: ${res.statusText}`,
+      error: (res.ok || hasValid) ? undefined : data?.error?.message || `HTTP ${res.status}: ${res.statusText}`,
     };
   } catch (err: any) {
     clearTimeout(timeoutId);
@@ -478,6 +504,173 @@ export async function postJsonUniversal(
       data: null,
       rawText: '',
       error: msg,
+    };
+  }
+}
+
+/**
+ * 全环境智能 HTTP POST 转发器 (兼容旧版调用)
+ */
+export async function postJsonUniversal(
+  url: string,
+  headers: Record<string, string>,
+  body: any,
+  timeoutMs = 15000
+): Promise<PostJsonResponse> {
+  return requestJsonUniversal(url, {
+    method: 'POST',
+    headers,
+    body,
+    timeoutMs,
+  });
+}
+
+export interface GatewayModelItem {
+  id: string;
+  name: string;
+  description?: string;
+  ownedBy?: string;
+  contextWindow?: number;
+  supportsImages?: boolean;
+}
+
+export interface FetchGatewayModelsResult {
+  ok: boolean;
+  models: GatewayModelItem[];
+  error?: string;
+}
+
+/**
+ * 动态拉取网关支持的大模型列表
+ * 适配标准：
+ * - OpenAI 兼容网关 / 企业 AI 网关: GET /v1/models 或 /models
+ * - Ollama: GET /api/tags 或 /v1/models
+ * - Anthropic: GET /v1/models
+ */
+export async function fetchGatewayModels(config: {
+  baseUrl: string;
+  apiKey?: string;
+  provider?: string;
+}): Promise<FetchGatewayModelsResult> {
+  const rawBaseUrl = (config.baseUrl || '').trim().replace(/\/+$/, '');
+  if (!rawBaseUrl) {
+    return { ok: false, models: [], error: '请先填写接口 Base URL' };
+  }
+
+  const apiKey = (config.apiKey || '').trim();
+  const headers: Record<string, string> = {
+    'Accept': 'application/json',
+  };
+  if (apiKey) {
+    if (config.provider === 'anthropic') {
+      headers['x-api-key'] = apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+      headers['anthropic-dangerous-direct-browser-access'] = 'true';
+    } else {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+  }
+
+  // 组装端点地址
+  let modelsUrl = '';
+  if (config.provider === 'anthropic') {
+    modelsUrl = rawBaseUrl.endsWith('/v1') ? `${rawBaseUrl}/models` : `${rawBaseUrl}/v1/models`;
+  } else if (config.provider === 'ollama') {
+    modelsUrl = `${rawBaseUrl}/api/tags`;
+  } else {
+    // OpenAI Compatible / 企业 AI 网关 (ai-gateway)
+    if (rawBaseUrl.endsWith('/models')) {
+      modelsUrl = rawBaseUrl;
+    } else if (rawBaseUrl.endsWith('/v1')) {
+      modelsUrl = `${rawBaseUrl}/models`;
+    } else {
+      modelsUrl = `${rawBaseUrl}/v1/models`;
+    }
+  }
+
+  try {
+    const res = await requestJsonUniversal(modelsUrl, {
+      method: 'GET',
+      headers,
+      timeoutMs: 12000,
+    });
+
+    let data = res.data;
+    if (!data && res.rawText) {
+      try {
+        data = JSON.parse(res.rawText);
+      } catch {}
+    }
+
+    // 若 404 且原地址带 /v1/models，尝试回退至 /models
+    if ((!res.ok || !data) && modelsUrl.endsWith('/v1/models')) {
+      const fallbackUrl = `${rawBaseUrl}/models`;
+      const fallbackRes = await requestJsonUniversal(fallbackUrl, {
+        method: 'GET',
+        headers,
+        timeoutMs: 10000,
+      });
+      if (fallbackRes.ok && (fallbackRes.data || fallbackRes.rawText)) {
+        data = fallbackRes.data || JSON.parse(fallbackRes.rawText);
+      }
+    }
+
+    if (!data) {
+      return {
+        ok: false,
+        models: [],
+        error: res.error || `网关未返回有效模型数据 (HTTP ${res.status})`,
+      };
+    }
+
+    const rawList = Array.isArray(data)
+      ? data
+      : Array.isArray(data.data)
+      ? data.data
+      : Array.isArray(data.models)
+      ? data.models
+      : [];
+
+    const models: GatewayModelItem[] = rawList
+      .map((item: any) => {
+        const id = item.id || item.name || (typeof item === 'string' ? item : '');
+        if (!id) return null;
+        let desc = item.description;
+        if (!desc && item.owned_by) {
+          desc = `来源: ${item.owned_by}`;
+        }
+        if (item.context_window || item.context) {
+          const ctxK = Math.round((item.context_window || item.context) / 1024);
+          desc = desc ? `${desc} · ${ctxK}k 上下文` : `${ctxK}k 上下文`;
+        }
+        return {
+          id,
+          name: item.name || id,
+          description: desc,
+          ownedBy: item.owned_by,
+          contextWindow: item.context_window || item.context,
+          supportsImages: item.supports_images,
+        };
+      })
+      .filter(Boolean) as GatewayModelItem[];
+
+    if (models.length === 0) {
+      return {
+        ok: false,
+        models: [],
+        error: data.error?.message || '网关返回的模型列表为空',
+      };
+    }
+
+    return {
+      ok: true,
+      models,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      models: [],
+      error: err.message || '拉取网关模型列表失败',
     };
   }
 }

@@ -34,6 +34,7 @@ import {
 } from 'lucide-react';
 import { renderFormattedContent } from '../utils/formatMentions';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
+import { UnifiedAvatar } from './AgentAvatarArtwork';
 
 interface ChatTimelineProps {
   messages: Message[];
@@ -205,6 +206,9 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     prevThreadIdRef.current = activeThread.id;
 
     if (isNewThread) {
+      if (activeThread.type === 'dm') {
+        setFilter('all');
+      }
       prevMsgCountRef.current = messages.length;
       scrollToBottom('auto');
       const raf = requestAnimationFrame(() => scrollToBottom('auto'));
@@ -305,7 +309,16 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           <div className="font-bold text-fg text-sm tracking-wide truncate flex items-center gap-2 min-w-0">
             {activeThread.type === 'dm' ? (
               <span className="flex items-center gap-2 truncate min-w-0">
-                <span className="truncate">DM with <span className="text-accent font-semibold">{activeThread.authorName}</span></span>
+                <div className="shrink-0 select-none">
+                  <UnifiedAvatar
+                    agent={dmTargetAgent}
+                    avatar={dmTargetAgent?.avatar || activeThread.authorAvatar}
+                    name={dmTargetAgent?.name || activeThread.authorName}
+                    size="sm"
+                    className="w-5 h-5"
+                  />
+                </div>
+                <span className="truncate">DM with <span className="text-accent font-semibold">{dmTargetAgent?.name || activeThread.authorName}</span></span>
                 {dmTargetAgent && dmTargetAgent.status === 'idle' && (
                   <span className="hidden @md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 border border-zinc-500/25 text-[10px] font-mono shrink-0" title="通信未开启，请先在 Agents 面板点击 Start 开启连接">
                     <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500" />
@@ -637,6 +650,26 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
 
           const isThinkingOpen = expandedThinking[message.id] ?? false;
           const isTraceOpen = expandedTraces[message.id] ?? false;
+          const authorAgent = message.authorId
+            ? agents.find(
+                (a) =>
+                  a.id === message.authorId ||
+                  a.name.toLowerCase() === message.authorName?.toLowerCase() ||
+                  (message.authorHandle && a.handle?.toLowerCase() === message.authorHandle.toLowerCase())
+              )
+            : agents.find(
+                (a) =>
+                  (message.authorName && a.name.toLowerCase() === message.authorName.toLowerCase()) ||
+                  (message.authorHandle && a.handle?.toLowerCase() === message.authorHandle.toLowerCase())
+              );
+          const displayAvatar = authorAgent?.avatar || message.authorAvatar;
+          const displayName = authorAgent?.name || message.authorName;
+          const isHumanUser =
+            message.authorId === 'user-norris' ||
+            message.authorName === 'Norris_M5Pro' ||
+            message.authorName === 'Norris' ||
+            message.authorAvatar === '👨‍💻' ||
+            (!authorAgent && !message.isAgent && !message.managedBy && (message.authorName === 'Norris_M5Pro' || message.authorName === 'You'));
 
           return (
             <article
@@ -647,13 +680,20 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
               {/* Message Header */}
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-surface-subtle border border-border flex items-center justify-center text-lg shrink-0 shadow-xs">
-                    {message.authorAvatar}
+                  <div className="shrink-0 select-none">
+                    <UnifiedAvatar
+                      isUser={isHumanUser}
+                      agent={authorAgent}
+                      avatar={displayAvatar}
+                      name={displayName}
+                      size="lg"
+                      className="w-8 h-8"
+                    />
                   </div>
 
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-bold text-fg text-xs">
-                      {message.authorName}
+                      {displayName}
                     </span>
 
                     {message.managedBy && (
@@ -992,6 +1032,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
         <div className="shrink-0 max-w-3xl mx-auto w-full px-4 mb-2">
           <ChannelComposerActivityBar
             executions={currentThreadExecutions}
+            agents={agents}
             onAbortAgent={onAbortAgent}
             onOpenAgentSession={onInspectAgent}
           />
