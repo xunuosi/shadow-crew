@@ -244,9 +244,156 @@ function localAcpDiscoveryPlugin(): Plugin {
   };
 }
 
+// Middleware to proxy LLM requests in Vite dev server to bypass browser CORS & network restrictions
+function llmProxyPlugin(): Plugin {
+  return {
+    name: 'vite-plugin-llm-proxy',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url && req.url.startsWith('/api/llm-proxy') && req.method === 'POST') {
+          let reqBodyStr = '';
+          req.on('data', (chunk) => {
+            reqBodyStr += chunk;
+          });
+          req.on('end', async () => {
+            try {
+              const { url, headers, body, timeoutMs = 20000 } = JSON.parse(reqBodyStr || '{}');
+              if (!url) {
+                res.statusCode = 400;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ ok: false, status: 400, error: 'Missing target url' }));
+                return;
+              }
+
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+              // Allow intranet corporate certificates in dev mode
+              const prevTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+              process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+              try {
+                const response = await fetch(url, {
+                  method: 'POST',
+                  headers: headers || {},
+                  body: typeof body === 'string' ? body : JSON.stringify(body),
+                  signal: controller.signal,
+                });
+                clearTimeout(timer);
+                if (prevTls !== undefined) {
+                  process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTls;
+                }
+
+                const rawText = await response.text();
+                let parsedJson = null;
+                try {
+                  parsedJson = JSON.parse(rawText);
+                } catch {}
+
+                const hasValidPayload = Boolean(
+                  parsedJson && (parsedJson.choices || parsedJson.id || parsedJson.content)
+                );
+
+                res.setHeader('Content-Type', 'application/json');
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                res.end(
+                  JSON.stringify({
+                    ok: response.ok || hasValidPayload,
+                    status: response.status,
+                    body: parsedJson,
+                    raw_text: rawText,
+                  })
+                );
+              } catch (fetchErr: any) {
+                clearTimeout(timer);
+                if (prevTls !== undefined) {
+                  process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTls;
+                }
+
+                // Node fetch 失败时 (如未走系统代理出现 ECONNRESET)，平滑回退至 curl 调用（自动穿透系统代理与企业网关）
+                try {
+                  const { execFile } = await import('child_process');
+                  const { promisify } = await import('util');
+                  const execFileAsync = promisify(execFile);
+
+                  const proxyUrl = process.env.https_proxy || process.env.http_proxy || process.env.ALL_PROXY || 'http://127.0.0.1:7897';
+                  const curlArgs = [
+                    '-k',
+                    '-s',
+                    '-S',
+                    '-X',
+                    'POST',
+                    '--max-time',
+                    String(Math.ceil(timeoutMs / 1000)),
+                  ];
+
+                  if (proxyUrl) {
+                    curlArgs.push('-x', proxyUrl);
+                  }
+
+                  if (headers) {
+                    for (const [k, v] of Object.entries(headers)) {
+                      curlArgs.push('-H', `${k}: ${v}`);
+                    }
+                  }
+
+                  const bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
+                  curlArgs.push('-d', bodyStr);
+                  curlArgs.push(url);
+
+                  const { stdout } = await execFileAsync('curl', curlArgs);
+                  let parsedJson = null;
+                  try {
+                    parsedJson = JSON.parse(stdout);
+                  } catch {}
+
+                  const hasValid = Boolean(
+                    parsedJson && (parsedJson.choices || parsedJson.id || parsedJson.content)
+                  );
+
+                  res.setHeader('Content-Type', 'application/json');
+                  res.setHeader('Access-Control-Allow-Origin', '*');
+                  res.end(
+                    JSON.stringify({
+                      ok: hasValid || Boolean(stdout && !stdout.includes('"error":')),
+                      status: 200,
+                      body: parsedJson,
+                      raw_text: stdout,
+                    })
+                  );
+                  return;
+                } catch (curlErr: any) {
+                  res.statusCode = 200;
+                  res.setHeader('Content-Type', 'application/json');
+                  res.setHeader('Access-Control-Allow-Origin', '*');
+                  res.end(
+                    JSON.stringify({
+                      ok: false,
+                      status: 500,
+                      body: null,
+                      raw_text: fetchErr?.message || 'Proxy fetch failed',
+                      error: fetchErr?.message || 'Proxy fetch failed',
+                    })
+                  );
+                }
+              }
+            } catch (parseErr: any) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ ok: false, status: 400, error: parseErr.message }));
+            }
+          });
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss(), aistudioMediaPlugin(), localAcpDiscoveryPlugin()],
+    plugins: [react(), tailwindcss(), aistudioMediaPlugin(), localAcpDiscoveryPlugin(), llmProxyPlugin()],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

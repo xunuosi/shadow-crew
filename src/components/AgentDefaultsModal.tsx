@@ -29,6 +29,7 @@ import {
   getGlobalModelConfig,
   setGlobalModelConfig,
   testModelConnection,
+  getActiveProviderPreset,
   ModelProbeResult,
 } from '../services/llmService';
 import { AgentModelConfig, ModelProviderType } from '../types';
@@ -63,10 +64,7 @@ export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({
 
   if (!isOpen) return null;
 
-  const currentPreset =
-    PROVIDER_PRESETS.find((p) => p.id === modelConfig.provider) ||
-    PROVIDER_PRESETS.find((p) => p.provider === modelConfig.provider) ||
-    PROVIDER_PRESETS[0];
+  const currentPreset = getActiveProviderPreset(modelConfig);
 
   const handleProviderChange = (presetId: string) => {
     const preset = PROVIDER_PRESETS.find((p) => p.id === presetId);
@@ -145,7 +143,7 @@ export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSave} className="p-6 space-y-4 max-h-[82vh] overflow-y-auto">
+        <form onSubmit={handleSave} className="p-6 space-y-4 max-h-[82vh] overflow-y-auto overflow-x-hidden">
           {/* Section A: Global LLM Model & API Key Configuration (Core Feature) */}
           <div className="p-4 rounded-2xl border border-accent/30 bg-accent/5 space-y-3.5 shadow-2xs">
             <div className="flex items-center justify-between">
@@ -170,15 +168,31 @@ export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({
               <label className="block text-[11px] font-semibold text-fg mb-1.5">
                 模型服务厂商 / 接口规范
               </label>
-              <div className="grid grid-cols-3 gap-1.5">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                 {PROVIDER_PRESETS.map((p) => {
                   const isSelected =
                     (p.id === 'deepseek' && modelConfig.provider === 'deepseek') ||
                     (p.id === 'anthropic' && modelConfig.provider === 'anthropic') ||
                     (p.id === 'ollama' && modelConfig.provider === 'ollama') ||
                     (p.id === 'siliconflow' && modelConfig.baseUrl?.includes('siliconflow')) ||
-                    (p.id === 'openai' && modelConfig.provider === 'openai_compatible' && !modelConfig.baseUrl?.includes('siliconflow')) ||
+                    (p.id === 'corpdeepseek' && (modelConfig.baseUrl?.includes('qianxin') || modelConfig.baseUrl?.includes('corpdeepseek') || modelConfig.modelId?.includes('deepseek-v4'))) ||
+                    (p.id === 'openai' && modelConfig.provider === 'openai_compatible' && !modelConfig.baseUrl?.includes('siliconflow') && !modelConfig.baseUrl?.includes('qianxin')) ||
                     (p.id === 'custom' && modelConfig.provider === 'custom');
+
+                  const label =
+                    p.id === 'corpdeepseek'
+                      ? '🏢 公司网关'
+                      : p.id === 'deepseek'
+                      ? '🐳 DeepSeek'
+                      : p.id === 'anthropic'
+                      ? '✨ Claude'
+                      : p.id === 'openai'
+                      ? '🤖 OpenAI'
+                      : p.id === 'ollama'
+                      ? '🦙 Ollama'
+                      : p.id === 'siliconflow'
+                      ? '⚡ 硅基流动'
+                      : '⚙️ 自定义';
 
                   return (
                     <button
@@ -187,11 +201,11 @@ export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({
                       onClick={() => handleProviderChange(p.id)}
                       className={`px-2.5 py-1.5 rounded-xl border text-left text-[11px] transition-all cursor-pointer truncate ${
                         isSelected
-                          ? 'border-accent bg-surface font-semibold text-accent shadow-2xs'
+                          ? 'border-accent bg-surface font-semibold text-accent shadow-2xs ring-1 ring-accent/20'
                           : 'border-border bg-surface/50 hover:bg-surface text-fg-secondary hover:text-fg'
                       }`}
                     >
-                      <div className="truncate font-medium">{p.name.split(' ')[0]}</div>
+                      <div className="truncate font-medium">{label}</div>
                     </button>
                   );
                 })}
@@ -331,36 +345,35 @@ export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({
               />
             </div>
 
-            {/* Test Connection Button & Result */}
-            <div className="pt-1 flex items-center justify-between">
-              <button
-                type="button"
-                onClick={handleTestConnection}
-                disabled={isTestingModel}
-                className="px-3 py-1.5 rounded-xl bg-surface border border-border hover:border-accent hover:text-accent text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs disabled:opacity-50"
-              >
-                <Wifi className={`w-3.5 h-3.5 ${isTestingModel ? 'animate-pulse text-accent' : ''}`} />
-                <span>{isTestingModel ? '正在握手测试...' : '测试模型连通性'}</span>
-              </button>
-
-              {probeResult && (
-                <div
-                  className={`text-[11px] px-2.5 py-1 rounded-xl border flex items-center gap-1.5 ${
-                    probeResult.ok
-                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
-                      : 'bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400'
-                  }`}
+            <div className="pt-2 space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={handleTestConnection}
+                  disabled={isTestingModel}
+                  className="shrink-0 px-3.5 py-1.5 rounded-xl bg-surface border border-border hover:border-accent hover:text-accent text-xs font-semibold whitespace-nowrap flex items-center gap-1.5 transition-all cursor-pointer shadow-xs disabled:opacity-50"
                 >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      probeResult.ok ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'
-                    }`}
-                  />
-                  <span>
-                    {probeResult.ok
-                      ? `连通成功 (${probeResult.latencyMs}ms · ${probeResult.modelName || 'Ready'})`
-                      : `失败: ${probeResult.error}`}
-                  </span>
+                  <Wifi className={`w-3.5 h-3.5 ${isTestingModel ? 'animate-pulse text-accent' : ''}`} />
+                  <span>{isTestingModel ? '正在握手测试...' : '测试模型连通性'}</span>
+                </button>
+
+                {probeResult && probeResult.ok && (
+                  <div className="text-[11px] px-2.5 py-1 rounded-xl border flex items-center gap-1.5 bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                    <span className="font-medium">
+                      连通成功 ({probeResult.latencyMs}ms · {probeResult.modelName || 'Ready'})
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {probeResult && !probeResult.ok && (
+                <div className="text-[11px] p-2.5 rounded-xl border bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400 leading-relaxed break-all">
+                  <div className="font-semibold flex items-center gap-1.5 mb-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
+                    <span>连通测试未通过</span>
+                  </div>
+                  <div className="font-mono text-[10px] opacity-90 break-all">{probeResult.error}</div>
                 </div>
               )}
             </div>

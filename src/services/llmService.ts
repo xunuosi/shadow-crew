@@ -146,6 +146,33 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     apiKeyHelpUrl: 'https://cloud.siliconflow.cn/account/ak',
   },
   {
+    id: 'corpdeepseek',
+    name: '企业 AI 网关 (Corporate AI Gateway)',
+    provider: 'openai_compatible',
+    defaultBaseUrl: 'https://ai-gateway.qianxin-inc.cn/v1',
+    models: [
+      {
+        id: 'deepseek-v4-flash',
+        name: 'DeepSeek V4 Flash',
+        label: 'deepseek-v4-flash (企业网关专属 · 极速推理)',
+        description: '公司企业 AI 网关专属极速推理大模型',
+      },
+      {
+        id: 'deepseek-v3',
+        name: 'DeepSeek V3',
+        label: 'deepseek-v3 (企业网关版 · 通用全栈)',
+        description: '公司企业 AI 网关通用大模型',
+      },
+      {
+        id: 'deepseek-r1',
+        name: 'DeepSeek R1',
+        label: 'deepseek-r1 (企业网关版 · 深度推理)',
+        description: '公司企业 AI 网关深度逻辑数学推理模型',
+      },
+    ],
+    apiKeyPlaceholder: 'sk-... (企业网关 Token)',
+  },
+  {
     id: 'custom',
     name: '自定义 OpenAI 兼容接口 (Custom Proxy/Relay)',
     provider: 'custom',
@@ -161,6 +188,39 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     apiKeyPlaceholder: 'sk-...',
   },
 ];
+
+/**
+ * 智能判定当前模型配置匹配的 ProviderPreset 预设
+ */
+export function getActiveProviderPreset(config: AgentModelConfig): ProviderPreset {
+  if (
+    config.baseUrl?.includes('qianxin') ||
+    config.baseUrl?.includes('corpdeepseek') ||
+    config.modelId?.includes('deepseek-v4')
+  ) {
+    return PROVIDER_PRESETS.find((p) => p.id === 'corpdeepseek') || PROVIDER_PRESETS[0];
+  }
+  if (config.baseUrl?.includes('siliconflow')) {
+    return PROVIDER_PRESETS.find((p) => p.id === 'siliconflow') || PROVIDER_PRESETS[0];
+  }
+  if (config.provider === 'deepseek') {
+    return PROVIDER_PRESETS.find((p) => p.id === 'deepseek') || PROVIDER_PRESETS[0];
+  }
+  if (config.provider === 'anthropic') {
+    return PROVIDER_PRESETS.find((p) => p.id === 'anthropic') || PROVIDER_PRESETS[0];
+  }
+  if (config.provider === 'ollama') {
+    return PROVIDER_PRESETS.find((p) => p.id === 'ollama') || PROVIDER_PRESETS[0];
+  }
+  if (config.provider === 'custom') {
+    return PROVIDER_PRESETS.find((p) => p.id === 'custom') || PROVIDER_PRESETS[0];
+  }
+  return (
+    PROVIDER_PRESETS.find((p) => p.id === 'openai') ||
+    PROVIDER_PRESETS.find((p) => p.provider === config.provider) ||
+    PROVIDER_PRESETS[0]
+  );
+}
 
 export const GLOBAL_MODEL_CONFIG_STORAGE_KEY = 'shinobi_global_model_config';
 
@@ -273,22 +333,172 @@ export interface ModelProbeResult {
 }
 
 /**
+ * 规范化 OpenAI 兼容 chat/completions 端点地址
+ * 兼容用户输入：Base URL、带 /v1、带 /chat/completions 或尾随斜杠等各种写法
+ */
+export function buildChatCompletionsUrl(rawUrl: string): string {
+  let url = (rawUrl || '').trim().replace(/\/+$/, '');
+  if (!url) return '';
+  if (url.endsWith('/chat/completions')) return url;
+  if (url.endsWith('/v1')) return `${url}/chat/completions`;
+  try {
+    const parsed = new URL(url);
+    if (!parsed.pathname || parsed.pathname === '/' || parsed.pathname === '') {
+      return `${url}/v1/chat/completions`;
+    }
+  } catch {}
+  return `${url}/chat/completions`;
+}
+
+/**
+ * 规范化 Anthropic messages 端点地址
+ */
+export function buildAnthropicMessagesUrl(rawUrl: string): string {
+  let url = (rawUrl || '').trim().replace(/\/+$/, '');
+  if (!url) return '';
+  if (url.endsWith('/v1/messages') || url.endsWith('/messages')) return url;
+  if (url.endsWith('/v1')) return `${url}/messages`;
+  return `${url}/v1/messages`;
+}
+
+export interface PostJsonResponse {
+  ok: boolean;
+  status: number;
+  data: any;
+  rawText: string;
+  error?: string;
+}
+
+/**
+ * 全环境智能 HTTP POST 转发器
+ * 优先级：
+ * 1. Tauri 原生 Rust 管道转发 (native_http_post) - 彻底击穿浏览器 WebKit CORS 限制，支持公司内网自签证书
+ * 2. Vite 本地开发服务器代理 (/api/llm-proxy) - 浏览器预览模式下无缝避开同源策略
+ * 3. 标准 Web 浏览器原生 fetch 回退
+ */
+export async function postJsonUniversal(
+  url: string,
+  headers: Record<string, string>,
+  body: any,
+  timeoutMs = 15000
+): Promise<PostJsonResponse> {
+  // 1. 尝试使用 Tauri 原生后端转发（在桌面端环境下彻底消除浏览器 CORS 限制与企业自签证书阻断）
+  const tauriInvoke =
+    typeof window !== 'undefined'
+      ? (window as any).__TAURI_INTERNALS__?.invoke || (window as any).__TAURI__?.core?.invoke
+      : null;
+
+  if (tauriInvoke) {
+    try {
+      const res = await tauriInvoke('native_http_post', {
+        req: {
+          url,
+          headers,
+          body,
+          timeoutSecs: Math.ceil(timeoutMs / 1000),
+        },
+      });
+      if (res) {
+        return {
+          ok: res.ok,
+          status: res.status,
+          data: res.body,
+          rawText: res.raw_text,
+          error: res.ok ? undefined : res.body?.error?.message || res.raw_text || `HTTP ${res.status}`,
+        };
+      }
+    } catch (tauriErr: any) {
+      console.warn('[llmService] Tauri native_http_post error, falling back:', tauriErr);
+    }
+  }
+
+  // 2. 尝试使用 Vite 开发服务器中间件代理（在浏览器 Dev 预览模式下避开 CORS 限制）
+  if (typeof window !== 'undefined' && window.location && window.location.port) {
+    try {
+      const proxyRes = await fetch('/api/llm-proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url,
+          headers,
+          body,
+          timeoutMs,
+        }),
+      });
+      if (proxyRes.ok) {
+        const proxyData = await proxyRes.json();
+        return {
+          ok: proxyData.ok,
+          status: proxyData.status,
+          data: proxyData.body,
+          rawText: proxyData.raw_text,
+          error: proxyData.ok ? undefined : proxyData.body?.error?.message || proxyData.error || `HTTP ${proxyData.status}`,
+        };
+      }
+    } catch (proxyErr) {
+      // Continue to browser fetch
+    }
+  }
+
+  // 3. 回退到标准浏览器 fetch
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    const rawText = await res.text();
+    let data = null;
+    try {
+      data = JSON.parse(rawText);
+    } catch {}
+
+    return {
+      ok: res.ok,
+      status: res.status,
+      data,
+      rawText,
+      error: res.ok ? undefined : data?.error?.message || `HTTP ${res.status}: ${res.statusText}`,
+    };
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    let msg = err.message || '网络连接失败';
+    if (msg.includes('Load failed') || msg.includes('Failed to fetch')) {
+      msg = `网络请求被浏览器拦截 (Load failed)。原因通常是：目标服务「${new URL(url).host}」未开启跨域(CORS)策略，或企业内网证书未受信任。在 Shadow Crew 桌面端运行将自动通过底层原生网络转发，彻底规避此限制。`;
+    }
+    return {
+      ok: false,
+      status: 0,
+      data: null,
+      rawText: '',
+      error: msg,
+    };
+  }
+}
+
+/**
  * 测试大模型 API 连通性
  */
 export async function testModelConnection(config: AgentModelConfig): Promise<ModelProbeResult> {
   const start = Date.now();
-  const baseUrl = (config.baseUrl || '').replace(/\/+$/, '');
+  const rawBaseUrl = (config.baseUrl || '').trim();
   const apiKey = (config.apiKey || '').trim();
 
   if (config.provider !== 'ollama' && !apiKey) {
     return {
       ok: false,
       latencyMs: 0,
-      error: '请先填写 API Key (密钥不能为空)',
+      error: '请先填写 API Key (访问密钥不能为空)',
     };
   }
 
-  if (!baseUrl) {
+  if (!rawBaseUrl) {
     return {
       ok: false,
       latencyMs: 0,
@@ -297,89 +507,86 @@ export async function testModelConnection(config: AgentModelConfig): Promise<Mod
   }
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s 超时
+    let endpoint = '';
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    let body: any = null;
 
     if (config.provider === 'anthropic') {
-      // Anthropic Messages API
-      const endpoint = `${baseUrl}/v1/messages`;
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify({
-          model: config.modelId || 'claude-3-7-sonnet-20250219',
-          messages: [{ role: 'user', content: 'Ping' }],
-          max_tokens: 5,
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-      const latencyMs = Date.now() - start;
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => null);
-        const errMsg = errorData?.error?.message || `HTTP ${res.status}: ${res.statusText}`;
-        return { ok: false, latencyMs, error: errMsg };
-      }
-
-      const data = await res.json();
-      return {
-        ok: true,
-        latencyMs,
-        modelName: data?.model || config.modelId,
+      endpoint = buildAnthropicMessagesUrl(rawBaseUrl);
+      headers['x-api-key'] = apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+      headers['anthropic-dangerous-direct-browser-access'] = 'true';
+      body = {
+        model: config.modelId || 'claude-3-7-sonnet-20250219',
+        messages: [{ role: 'user', content: 'Ping' }],
+        max_tokens: 5,
       };
     } else {
-      // OpenAI / DeepSeek / Ollama / SiliconFlow / Custom OpenAI-compatible
-      const endpoint = `${baseUrl}/chat/completions`;
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
+      endpoint = buildChatCompletionsUrl(rawBaseUrl);
       if (apiKey) {
         headers['Authorization'] = `Bearer ${apiKey}`;
       }
+      body = {
+        model: config.modelId || 'deepseek-chat',
+        messages: [{ role: 'user', content: 'Ping' }],
+        max_tokens: 16,
+      };
+    }
 
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          model: config.modelId || 'deepseek-chat',
-          messages: [{ role: 'user', content: 'Ping' }],
-          max_tokens: 5,
-        }),
-        signal: controller.signal,
-      });
+    const res = await postJsonUniversal(endpoint, headers, body, 15000);
+    const latencyMs = Date.now() - start;
 
-      clearTimeout(timeoutId);
-      const latencyMs = Date.now() - start;
+    let payload = res.data;
+    if (!payload && res.rawText) {
+      try { payload = JSON.parse(res.rawText); } catch {}
+    }
+    if (!payload && res.error) {
+      try { payload = JSON.parse(res.error); } catch {}
+    }
 
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => null);
-        const errMsg = errorData?.error?.message || `HTTP ${res.status}: ${res.statusText}`;
-        return { ok: false, latencyMs, error: errMsg };
-      }
-
-      const data = await res.json();
+    // 容错检测：如果响应中已经携带了合法的 choices、id、或 content，无论底层网络连接如何断开，均判定为大模型连通成功
+    if (payload?.choices || payload?.id || payload?.content) {
+      const modelName = payload?.model || config.modelId || 'Ready';
       return {
         ok: true,
         latencyMs,
-        modelName: data?.model || config.modelId,
+        modelName,
       };
     }
+
+    if (!res.ok) {
+      let errText = res.error || `HTTP ${res.status}`;
+      try {
+        const parsed = typeof res.data === 'object' ? res.data : JSON.parse(errText);
+        if (parsed?.error?.message) errText = parsed.error.message;
+        else if (parsed?.message) errText = parsed.message;
+      } catch {}
+
+      return {
+        ok: false,
+        latencyMs,
+        error: errText,
+      };
+    }
+
+    const modelName = res.data?.model || config.modelId || 'Ready';
+    return {
+      ok: true,
+      latencyMs,
+      modelName,
+    };
   } catch (err: any) {
     const latencyMs = Date.now() - start;
-    if (err.name === 'AbortError') {
-      return { ok: false, latencyMs, error: '连接超时 (超过 12 秒无响应，请检查端点 URL)' };
+    let msg = err?.message || '测试失败';
+    if (msg.includes('Load failed') || msg.includes('Failed to fetch')) {
+      msg = `网络请求被浏览器拦截 (Load failed)。原因通常是：目标网关未允许浏览器跨域(CORS)；请确保在 Shadow Crew 桌面端运行。`;
     }
     return {
       ok: false,
       latencyMs,
-      error: err.message || '网络连接失败，请检查网络或跨域设置',
+      error: msg,
     };
   }
 }
@@ -393,7 +600,7 @@ export async function callLlmModel(
   systemPrompt?: string
 ): Promise<{ textResponse: string; durationMs: number }> {
   const start = Date.now();
-  const baseUrl = (config.baseUrl || '').replace(/\/+$/, '');
+  const rawBaseUrl = (config.baseUrl || '').trim();
   const apiKey = (config.apiKey || '').trim();
 
   if (config.provider !== 'ollama' && !apiKey) {
@@ -401,35 +608,31 @@ export async function callLlmModel(
   }
 
   if (config.provider === 'anthropic') {
-    const endpoint = `${baseUrl}/v1/messages`;
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify({
-        model: config.modelId || 'claude-3-7-sonnet-20250219',
-        system: systemPrompt || undefined,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: config.maxTokens || 4096,
-        temperature: config.temperature ?? 0.7,
-      }),
-    });
+    const endpoint = buildAnthropicMessagesUrl(rawBaseUrl);
+    const headers: Record<string, string> = {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    };
+    const body = {
+      model: config.modelId || 'claude-3-7-sonnet-20250219',
+      system: systemPrompt || undefined,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: config.maxTokens || 4096,
+      temperature: config.temperature ?? 0.7,
+    };
 
+    const res = await postJsonUniversal(endpoint, headers, body, 60000);
     if (!res.ok) {
-      const errorData = await res.json().catch(() => null);
-      throw new Error(errorData?.error?.message || `Anthropic API Error: HTTP ${res.status}`);
+      throw new Error(res.error || `Anthropic API Error: HTTP ${res.status}`);
     }
 
-    const data = await res.json();
-    const text = data?.content?.[0]?.text || '';
+    const text = res.data?.content?.[0]?.text || '';
     return { textResponse: text, durationMs: Date.now() - start };
   } else {
-    // OpenAI Compatible
-    const endpoint = `${baseUrl}/chat/completions`;
+    // OpenAI Compatible / Custom / Corporate Gateway
+    const endpoint = buildChatCompletionsUrl(rawBaseUrl);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
@@ -443,24 +646,19 @@ export async function callLlmModel(
     }
     messages.push({ role: 'user', content: prompt });
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: config.modelId || 'deepseek-chat',
-        messages,
-        max_tokens: config.maxTokens || 4096,
-        temperature: config.temperature ?? 0.7,
-      }),
-    });
+    const body = {
+      model: config.modelId || 'deepseek-chat',
+      messages,
+      max_tokens: config.maxTokens || 4096,
+      temperature: config.temperature ?? 0.7,
+    };
 
+    const res = await postJsonUniversal(endpoint, headers, body, 60000);
     if (!res.ok) {
-      const errorData = await res.json().catch(() => null);
-      throw new Error(errorData?.error?.message || `LLM API Error: HTTP ${res.status}`);
+      throw new Error(res.error || `LLM API Error: HTTP ${res.status}`);
     }
 
-    const data = await res.json();
-    const text = data?.choices?.[0]?.message?.content || '';
+    const text = res.data?.choices?.[0]?.message?.content || '';
     return { textResponse: text, durationMs: Date.now() - start };
   }
 }

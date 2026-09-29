@@ -31,6 +31,7 @@ import {
   PROVIDER_PRESETS,
   getGlobalModelConfig,
   testModelConnection,
+  getActiveProviderPreset,
   ModelProbeResult,
 } from '../services/llmService';
 
@@ -253,11 +254,22 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   }, [initialAgent, isOpen]);
 
   const handleTestRemote = async () => {
-    if (!remoteUrl.trim()) return;
+    const trimmedUrl = remoteUrl.trim();
+    if (!trimmedUrl) return;
+
+    if (trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://')) {
+      setRemoteTestResult({
+        ok: false,
+        latencyMs: 0,
+        error: '此处为远程 ACP 进程的 WebSocket 连接协议 (需以 ws:// 或 wss:// 开头)。若这是大模型推理网关（如公司 AI 网关），请在下方「大模型推理端点配置」中填入并测试。',
+      });
+      return;
+    }
+
     setIsTestingRemote(true);
     setRemoteTestResult(null);
     try {
-      const res = await probeRemoteAcpConnection(remoteUrl.trim(), authToken.trim() || undefined);
+      const res = await probeRemoteAcpConnection(trimmedUrl, authToken.trim() || undefined);
       setRemoteTestResult(res);
     } catch (e: any) {
       setRemoteTestResult({
@@ -600,7 +612,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         )}
 
         {/* Modal Form Content */}
-        <form onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-5 text-xs">
+        <form onSubmit={handleSubmit} className="p-6 overflow-y-auto overflow-x-hidden space-y-5 text-xs">
           {/* Top Section: Icon Placeholder (Left) & Name / Description (Right) */}
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-5">
             {/* Left: Avatar Artwork Preview & Selector */}
@@ -826,17 +838,27 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                 {/* Provider select */}
                 <div>
                   <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
-                    模型服务厂商
+                    模型服务厂商 (Provider)
                   </label>
-                  <div className="grid grid-cols-3 gap-1.5">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                     {PROVIDER_PRESETS.map((p) => {
-                      const isSelected =
-                        (p.id === 'deepseek' && modelConfig.provider === 'deepseek') ||
-                        (p.id === 'anthropic' && modelConfig.provider === 'anthropic') ||
-                        (p.id === 'ollama' && modelConfig.provider === 'ollama') ||
-                        (p.id === 'siliconflow' && modelConfig.baseUrl?.includes('siliconflow')) ||
-                        (p.id === 'openai' && modelConfig.provider === 'openai_compatible' && !modelConfig.baseUrl?.includes('siliconflow')) ||
-                        (p.id === 'custom' && modelConfig.provider === 'custom');
+                      const currentPreset = getActiveProviderPreset(modelConfig);
+                      const isSelected = p.id === currentPreset.id;
+
+                      const label =
+                        p.id === 'corpdeepseek'
+                          ? '🏢 公司网关'
+                          : p.id === 'deepseek'
+                          ? '🐳 DeepSeek'
+                          : p.id === 'anthropic'
+                          ? '✨ Claude'
+                          : p.id === 'openai'
+                          ? '🤖 OpenAI'
+                          : p.id === 'ollama'
+                          ? '🦙 Ollama'
+                          : p.id === 'siliconflow'
+                          ? '⚡ 硅基流动'
+                          : '⚙️ 自定义';
 
                       return (
                         <button
@@ -855,68 +877,78 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                           }}
                           className={`px-2 py-1.5 rounded-xl border text-left text-[11px] transition-all cursor-pointer truncate ${
                             isSelected
-                              ? 'border-blue-500 bg-surface font-semibold text-blue-600 dark:text-blue-400 shadow-2xs'
+                              ? 'border-blue-500 bg-surface font-semibold text-blue-600 dark:text-blue-400 shadow-2xs ring-1 ring-blue-500/20'
                               : 'border-border bg-surface/50 hover:bg-surface text-fg-secondary hover:text-fg'
                           }`}
                         >
-                          <div className="truncate font-medium">{p.name.split(' ')[0]}</div>
+                          <div className="truncate font-medium">{label}</div>
                         </button>
                       );
                     })}
                   </div>
                 </div>
 
-                {/* Model dropdown */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
-                      选择具体模型
-                    </label>
-                    <select
-                      value={modelConfig.modelId}
-                      onChange={(e) => {
-                        const currentP =
-                          PROVIDER_PRESETS.find((p) => p.provider === modelConfig.provider) ||
-                          PROVIDER_PRESETS[0];
-                        const found = currentP.models.find((m) => m.id === e.target.value);
-                        setModelConfig((prev) => ({
-                          ...prev,
-                          modelId: e.target.value,
-                          modelName: found?.name || e.target.value,
-                        }));
-                        setModelProbeResult(null);
-                      }}
-                      className={`w-full rounded-xl px-3 py-1.5 text-xs focus:outline-none transition-all cursor-pointer ${inputBg}`}
-                    >
-                      {(
-                        PROVIDER_PRESETS.find((p) => p.provider === modelConfig.provider) ||
-                        PROVIDER_PRESETS[0]
-                      ).models.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                {/* Model dropdown & identifier */}
+                {(() => {
+                  const currentPreset = getActiveProviderPreset(modelConfig);
+                  return (
+                    <div className="space-y-1">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                            选择预设模型 (Preset Model)
+                          </label>
+                          <select
+                            value={modelConfig.modelId}
+                            onChange={(e) => {
+                              const found = currentPreset.models.find((m) => m.id === e.target.value);
+                              setModelConfig((prev) => ({
+                                ...prev,
+                                modelId: e.target.value,
+                                modelName: found?.name || e.target.value,
+                              }));
+                              setModelProbeResult(null);
+                            }}
+                            className={`w-full rounded-xl px-3 py-1.5 text-xs focus:outline-none transition-all cursor-pointer ${inputBg}`}
+                          >
+                            {currentPreset.models.map((m) => (
+                              <option key={m.id} value={m.id}>
+                                {m.label}
+                              </option>
+                            ))}
+                            {!currentPreset.models.some((m) => m.id === modelConfig.modelId) && (
+                              <option value={modelConfig.modelId}>
+                                {modelConfig.modelId} (自定义标识)
+                              </option>
+                            )}
+                          </select>
+                        </div>
 
-                  <div>
-                    <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
-                      模型标识符 (Model ID)
-                    </label>
-                    <input
-                      type="text"
-                      value={modelConfig.modelId}
-                      onChange={(e) =>
-                        setModelConfig((prev) => ({
-                          ...prev,
-                          modelId: e.target.value,
-                          modelName: e.target.value,
-                        }))
-                      }
-                      className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
-                    />
-                  </div>
-                </div>
+                        <div>
+                          <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                            模型标识符 (API Model ID)
+                          </label>
+                          <input
+                            type="text"
+                            value={modelConfig.modelId}
+                            onChange={(e) =>
+                              setModelConfig((prev) => ({
+                                ...prev,
+                                modelId: e.target.value,
+                                modelName: e.target.value,
+                              }))
+                            }
+                            placeholder="e.g. deepseek-v4-flash, gpt-4o"
+                            className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
+                          />
+                        </div>
+                      </div>
+                      <div className="text-[10px] text-fg-muted">
+                        左侧可快速切换该厂商推荐的预设模型；如需使用未收录或企业私有微调模型，可直接在右侧输入标识符。
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* API Key */}
                 <div>
@@ -968,50 +1000,50 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                 </div>
 
                 {/* Test button & result */}
-                <div className="flex items-center justify-between pt-1">
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      setIsTestingModel(true);
-                      setModelProbeResult(null);
-                      try {
-                        const res = await testModelConnection(modelConfig);
-                        setModelProbeResult(res);
-                      } catch (err: any) {
-                        setModelProbeResult({ ok: false, latencyMs: 0, error: err.message || '测试失败' });
-                      } finally {
-                        setIsTestingModel(false);
-                      }
-                    }}
-                    disabled={isTestingModel}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                      isLightMode
-                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                        : 'bg-blue-600 hover:bg-blue-500 text-white'
-                    }`}
-                  >
-                    <Wifi className={`w-3.5 h-3.5 ${isTestingModel ? 'animate-pulse' : ''}`} />
-                    <span>{isTestingModel ? '正在握手测试...' : '测试模型连通性'}</span>
-                  </button>
-
-                  {modelProbeResult && (
-                    <div
-                      className={`text-[11px] px-2.5 py-1 rounded-xl border flex items-center gap-1.5 ${
-                        modelProbeResult.ok
-                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
-                          : 'bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400'
+                <div className="pt-2 space-y-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setIsTestingModel(true);
+                        setModelProbeResult(null);
+                        try {
+                          const res = await testModelConnection(modelConfig);
+                          setModelProbeResult(res);
+                        } catch (err: any) {
+                          setModelProbeResult({ ok: false, latencyMs: 0, error: err.message || '测试失败' });
+                        } finally {
+                          setIsTestingModel(false);
+                        }
+                      }}
+                      disabled={isTestingModel}
+                      className={`shrink-0 px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap flex items-center gap-1.5 transition-all cursor-pointer shadow-xs disabled:opacity-50 ${
+                        isLightMode
+                          ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                          : 'bg-blue-600 hover:bg-blue-500 text-white'
                       }`}
                     >
-                      <span
-                        className={`w-1.5 h-1.5 rounded-full ${
-                          modelProbeResult.ok ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'
-                        }`}
-                      />
-                      <span>
-                        {modelProbeResult.ok
-                          ? `连通成功 (${modelProbeResult.latencyMs}ms · ${modelProbeResult.modelName || 'Ready'})`
-                          : `失败: ${modelProbeResult.error}`}
-                      </span>
+                      <Wifi className={`w-3.5 h-3.5 ${isTestingModel ? 'animate-pulse' : ''}`} />
+                      <span>{isTestingModel ? '正在握手测试...' : '测试模型连通性'}</span>
+                    </button>
+
+                    {modelProbeResult && modelProbeResult.ok && (
+                      <div className="text-[11px] px-2.5 py-1 rounded-xl border flex items-center gap-1.5 bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                        <span className="font-medium">
+                          连通成功 ({modelProbeResult.latencyMs}ms · {modelProbeResult.modelName || 'Ready'})
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {modelProbeResult && !modelProbeResult.ok && (
+                    <div className="text-[11px] p-2.5 rounded-xl border bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400 leading-relaxed break-all">
+                      <div className="font-semibold flex items-center gap-1.5 mb-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
+                        <span>连通测试未通过</span>
+                      </div>
+                      <div className="font-mono text-[10px] opacity-90 break-all">{modelProbeResult.error}</div>
                     </div>
                   )}
                 </div>
@@ -1061,6 +1093,14 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                     <span>{isTestingRemote ? '探测中...' : '测试连通性'}</span>
                   </button>
                 </div>
+                {remoteUrl.trim().match(/^https?:\/\//i) && (
+                  <div className="mt-2 p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[11px] leading-relaxed flex items-start gap-2">
+                    <span className="shrink-0 font-bold">⚠️ 地址协议提示:</span>
+                    <span>
+                      您当前输入的是 HTTP 网页/接口地址。如果您配置的是公司 AI 大模型接口（如 <code>{remoteUrl.trim()}</code>），应在上方<strong>「大模型推理端点配置」</strong>中配置并测试；此处仅接收 <code>ws://</code> 或 <code>wss://</code> 的远程 ACP WebSocket 服务。
+                    </span>
+                  </div>
+                )}
                 {remoteTestResult && (
                   <div className={`mt-2 p-2.5 rounded-xl border text-[11px] flex items-center gap-2 ${
                     remoteTestResult.ok

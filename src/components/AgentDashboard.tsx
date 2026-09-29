@@ -422,13 +422,18 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
 
                 {/* Bottom Row: Name, Role/Description & Model Badge */}
                 <div className="pt-2 border-t border-border space-y-1">
-                  <div className="flex items-center justify-between gap-1.5">
-                    <div className="font-bold text-sm text-fg truncate tracking-tight">
-                      {agent.name}
+                  <div className="font-bold text-sm text-fg truncate tracking-tight" title={agent.name}>
+                    {agent.name}
+                  </div>
+                  {(agent.role || agent.description) && (
+                    <div className="text-xs text-fg-secondary truncate leading-relaxed" title={agent.role || agent.description}>
+                      {agent.role || agent.description}
                     </div>
-                    {/* Model Badge */}
+                  )}
+                  {/* Model Badge on its own line */}
+                  <div className="pt-0.5 flex items-center">
                     <div
-                      className={`text-[10px] px-2 py-0.5 rounded-full font-mono flex items-center gap-1 border shrink-0 max-w-[130px] truncate ${
+                      className={`text-[10px] px-2 py-0.5 rounded-full font-mono inline-flex items-center gap-1 border max-w-full truncate ${
                         isModelReady
                           ? 'bg-accent/10 border-accent/25 text-accent'
                           : 'bg-surface-subtle border-border text-fg-muted'
@@ -440,9 +445,6 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                         {resolvedConfig.modelName || agent.modelBadge || '默认模型'}
                       </span>
                     </div>
-                  </div>
-                  <div className="text-xs text-fg-secondary truncate leading-relaxed">
-                    {agent.role || agent.description}
                   </div>
                 </div>
               </div>

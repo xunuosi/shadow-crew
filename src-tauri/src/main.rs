@@ -200,6 +200,120 @@ fn db_clear_safe_cache(state: State<'_, AppState>) -> Result<u64, String> {
     state.db_manager.clear_safe_cache(&log_path).map_err(|e| e.to_string())
 }
 
+#[derive(serde::Deserialize)]
+pub struct HttpPostRequest {
+    pub url: String,
+    pub headers: std::collections::HashMap<String, String>,
+    pub body: serde_json::Value,
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+pub struct HttpResponsePayload {
+    pub status: u16,
+    pub ok: bool,
+    pub body: serde_json::Value,
+    pub raw_text: String,
+}
+
+/// Tauri Command: 原生无跨域 HTTP POST 转发 (彻底消除前端 WebView CORS 限制与企业内网证书拦截)
+#[tauri::command]
+async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, String> {
+    let timeout = req.timeout_secs.unwrap_or(20).to_string();
+    let body_str = serde_json::to_string(&req.body).map_err(|e| e.to_string())?;
+
+    // 探测系统 curl 路径
+    let curl_bin = if std::path::Path::new("/usr/bin/curl").exists() {
+        "/usr/bin/curl"
+    } else {
+        "curl"
+    };
+
+    let mut cmd = tokio::process::Command::new(curl_bin);
+    cmd.arg("-s")
+       .arg("-S")
+       .arg("-X").arg("POST")
+       .arg("--connect-timeout").arg(&timeout)
+       .arg("--max-time").arg(&timeout)
+       .arg("-k"); // 支持企业内网自签/局域网证书
+
+    for (k, v) in &req.headers {
+        cmd.arg("-H").arg(format!("{}: {}", k, v));
+    }
+
+    cmd.arg("-d").arg(&body_str);
+    cmd.arg("-w").arg("\n__SHADOW_HTTP_CODE__:%{http_code}");
+    cmd.arg(&req.url);
+
+    let mut output = cmd.output().await.map_err(|e| format!("执行系统 curl 失败: {}", e))?;
+    let mut raw_output = String::from_utf8_lossy(&output.stdout).to_string();
+    let mut err_output = String::from_utf8_lossy(&output.stderr).to_string();
+
+    // 如果直连失败（例如部分企业网关在本地需走系统代理 127.0.0.1:7897），自动尝试通过代理重试
+    if (!output.status.success() || raw_output.is_empty()) && !req.url.contains("127.0.0.1") {
+        let mut retry_cmd = tokio::process::Command::new(curl_bin);
+        retry_cmd.arg("-s")
+            .arg("-S")
+            .arg("-X").arg("POST")
+            .arg("--connect-timeout").arg(&timeout)
+            .arg("--max-time").arg(&timeout)
+            .arg("-k")
+            .arg("-x").arg("http://127.0.0.1:7897");
+
+        for (k, v) in &req.headers {
+            retry_cmd.arg("-H").arg(format!("{}: {}", k, v));
+        }
+
+        retry_cmd.arg("-d").arg(&body_str);
+        retry_cmd.arg("-w").arg("\n__SHADOW_HTTP_CODE__:%{http_code}");
+        retry_cmd.arg(&req.url);
+
+        if let Ok(retry_out) = retry_cmd.output().await {
+            let retry_str = String::from_utf8_lossy(&retry_out.stdout).to_string();
+            if !retry_str.is_empty() {
+                output = retry_out;
+                raw_output = retry_str;
+                err_output = String::from_utf8_lossy(&output.stderr).to_string();
+            }
+        }
+    }
+
+    let mut status_code: u16 = 200;
+    let mut response_text = raw_output;
+
+    if let Some(pos) = response_text.rfind("\n__SHADOW_HTTP_CODE__:") {
+        let code_part = response_text[pos + 23..].trim();
+        if let Ok(c) = code_part.parse::<u16>() {
+            status_code = c;
+        }
+        response_text.truncate(pos);
+    }
+
+    let parsed_json: serde_json::Value = serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null);
+
+    // 容错判定：若响应 JSON 中已包含 choices/id/content 等标准 LLM 响应体，说明请求已成功被服务端处理完毕，
+    // 即使企业内网网关在传输末尾提前断开 TCP 连接导致系统 curl 产生非 0 退出码，也视为成功响应
+    let has_valid_llm_payload = parsed_json.get("choices").is_some()
+        || parsed_json.get("id").is_some()
+        || parsed_json.get("content").is_some();
+
+    if !output.status.success() && status_code == 200 && !has_valid_llm_payload {
+        status_code = 500;
+        if response_text.is_empty() {
+            response_text = format!("网络请求异常: {}", err_output.trim());
+        }
+    }
+
+    let is_ok = (status_code >= 200 && status_code < 300) || has_valid_llm_payload;
+
+    Ok(HttpResponsePayload {
+        status: status_code,
+        ok: is_ok,
+        body: parsed_json,
+        raw_text: response_text,
+    })
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -239,6 +353,7 @@ async fn main() {
             db_clear_all_messages,
             db_get_storage_stats,
             db_clear_safe_cache,
+            native_http_post,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shinobi tauri desktop application");
