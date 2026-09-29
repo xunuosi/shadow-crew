@@ -63,7 +63,7 @@ import { MemoryImportModal } from './components/MemoryImportModal';
 import { sendPromptToAcpAgent, probeRemoteAcpConnection } from './services/acpClient';
 import { saveMessagesBatchToDb, loadMessagesFromDb } from './services/dbClient';
 import { DEFAULT_MODEL_NAME } from './config/models';
-import { resolveAgentModelConfig, isModelConfigReady } from './services/llmService';
+import { resolveAgentModelConfig } from './services/llmService';
 import {
   CollaborationCascade,
   parseAgentMentions,
@@ -5325,14 +5325,13 @@ export default function App() {
             const currentAgent = agents.find((a) => a.id === agentId);
             if (!currentAgent) return;
 
-            // 如果当前处于 auth_required 状态，直接打开配置弹窗
-            if (currentAgent.status === 'auth_required') {
-              setEditingAgent(currentAgent);
-              setIsConnectModalOpen(true);
-              return;
-            }
-
-            const isCurrentlyRunning = currentAgent.status !== 'idle';
+            const isCurrentlyRunning =
+              currentAgent.status === 'running' ||
+              currentAgent.status === 'starting' ||
+              currentAgent.status === 'thinking' ||
+              currentAgent.status === 'using_skill' ||
+              currentAgent.status === 'accessing_workspace' ||
+              currentAgent.status === 'querying_memory';
 
             if (!isCurrentlyRunning) {
               if (currentAgent.isRemote) {
@@ -5363,27 +5362,8 @@ export default function App() {
                 return;
               }
 
-              // 本地 Agent 启动前置前瞻校验：检查大模型与 Key 是否就绪
+              // 本地 Agent 启动：解析生效模型配置
               const resolvedConfig = resolveAgentModelConfig(currentAgent);
-              const isReady = isModelConfigReady(resolvedConfig);
-
-              if (!isReady) {
-                // 未配置底座大模型或未填 Key，标记为 auth_required 并打开配置面板
-                setAgents((prev) =>
-                  prev.map((a) =>
-                    a.id === agentId
-                      ? {
-                          ...a,
-                          status: 'auth_required',
-                          statusDetail: '未检测到底座大模型 API Key，请点击配置',
-                        }
-                      : a
-                  )
-                );
-                setEditingAgent(currentAgent);
-                setIsConnectModalOpen(true);
-                return;
-              }
 
               // 启动 Agent 进程: 初始设为 starting 握手过渡态
               setAgents((prev) =>

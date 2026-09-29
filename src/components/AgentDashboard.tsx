@@ -149,7 +149,13 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
 
           {/* Individual Agent Cards */}
           {agents.map((agent) => {
-            const isRunning = agent.status !== 'idle';
+            const isRunning =
+              agent.status === 'running' ||
+              agent.status === 'starting' ||
+              agent.status === 'thinking' ||
+              agent.status === 'using_skill' ||
+              agent.status === 'accessing_workspace' ||
+              agent.status === 'querying_memory';
             const isMenuOpen = activeMenuId === agent.id;
             const resolvedConfig = resolveAgentModelConfig(agent);
             const isModelReady = isModelConfigReady(resolvedConfig);
@@ -195,34 +201,26 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                         <span>online</span>
                       </span>
                     ) : agent.status === 'auth_required' ? (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onEditAgent?.(agent);
-                        }}
-                        className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/35 text-amber-600 dark:text-amber-400 text-[11px] font-medium hover:bg-amber-500/25 transition-all cursor-pointer"
-                        title={agent.statusDetail || "缺少或无效 API Key，点击配置"}
+                      <span
+                        className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/35 text-amber-600 dark:text-amber-400 text-[11px] font-medium"
+                        title={agent.statusDetail || "缺少或无效 API Key"}
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
                         <span>auth required</span>
-                      </button>
+                      </span>
                     ) : agent.status === 'starting' ? (
                       <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-sky-500/10 border border-sky-500/25 text-sky-600 dark:text-sky-400 text-[11px] font-medium">
                         <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-ping" />
                         <span>connecting...</span>
                       </span>
                     ) : agent.status === 'error' ? (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onEditAgent?.(agent);
-                        }}
-                        className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/25 text-red-600 dark:text-red-400 text-[11px] font-medium hover:bg-red-500/20 transition-all cursor-pointer"
-                        title={agent.statusDetail || "启动或握手异常，点击排障"}
+                      <span
+                        className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/25 text-red-600 dark:text-red-400 text-[11px] font-medium"
+                        title={agent.statusDetail || "启动或握手异常"}
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
                         <span>error</span>
-                      </button>
+                      </span>
                     ) : (
                       <span className="text-[10px] text-fg-muted font-mono pl-1">
                         {agent.acpTransport || 'stdio'}
@@ -376,19 +374,14 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
 
                     {/* Floating Status / Start Capsule at Bottom Center of Avatar */}
                     <button
-                      onClick={() => {
-                        if (agent.status === 'auth_required') {
-                          onEditAgent?.(agent);
-                        } else {
-                          onToggleAgentStatus(agent.id);
-                        }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleAgentStatus(agent.id);
                       }}
                       disabled={agent.status === 'starting'}
                       className={`absolute -bottom-2.5 left-1/2 -translate-x-1/2 pl-3 pr-2 py-1 rounded-full text-[11px] font-semibold flex items-center gap-2 transition-all shadow-md cursor-pointer ${
                         agent.status === 'starting'
                           ? 'bg-surface border border-sky-500/40 text-sky-500 cursor-wait'
-                          : agent.status === 'auth_required'
-                          ? 'bg-surface border border-amber-500/60 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10'
                           : isRunning
                           ? 'bg-surface border border-emerald-500/50 text-emerald-600 dark:text-emerald-400 hover:border-red-500/60'
                           : 'bg-surface border border-border hover:border-accent text-fg-secondary hover:text-fg'
@@ -396,8 +389,6 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                       title={
                         agent.status === 'starting'
                           ? '正在建立 ACP 握手连接...'
-                          : agent.status === 'auth_required'
-                          ? '底座大模型未配置 API Key，点击进入配置'
                           : isRunning
                           ? '点击挂起/断开通信连接'
                           : '点击启动通信并完成 ACP 握手'
@@ -406,8 +397,6 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                       <span>
                         {agent.status === 'starting'
                           ? 'Connecting...'
-                          : agent.status === 'auth_required'
-                          ? 'Config Key'
                           : isRunning
                           ? 'Stop'
                           : 'Start'}
@@ -415,8 +404,6 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                       <span className={`w-3.5 h-3.5 rounded-full flex items-center justify-center ${
                         agent.status === 'starting'
                           ? 'bg-sky-500/20'
-                          : agent.status === 'auth_required'
-                          ? 'bg-amber-500/20'
                           : isRunning
                           ? 'bg-emerald-500'
                           : 'bg-zinc-500/15'
@@ -424,8 +411,6 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                         <span className={`w-2 h-2 rounded-full ${
                           agent.status === 'starting'
                             ? 'bg-sky-500 animate-ping'
-                            : agent.status === 'auth_required'
-                            ? 'bg-amber-500 animate-pulse'
                             : isRunning
                             ? 'bg-white animate-pulse'
                             : 'bg-zinc-400 dark:bg-zinc-500'
@@ -441,28 +426,20 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     <div className="font-bold text-sm text-fg truncate tracking-tight">
                       {agent.name}
                     </div>
-                    {/* Model Badge Button */}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onEditAgent?.(agent);
-                      }}
-                      className={`text-[10px] px-2 py-0.5 rounded-full font-mono flex items-center gap-1 border transition-all cursor-pointer shrink-0 max-w-[130px] truncate ${
+                    {/* Model Badge */}
+                    <div
+                      className={`text-[10px] px-2 py-0.5 rounded-full font-mono flex items-center gap-1 border shrink-0 max-w-[130px] truncate ${
                         isModelReady
-                          ? 'bg-accent/10 border-accent/25 text-accent hover:bg-accent/20'
-                          : 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20'
+                          ? 'bg-accent/10 border-accent/25 text-accent'
+                          : 'bg-surface-subtle border-border text-fg-muted'
                       }`}
-                      title={
-                        isModelReady
-                          ? `底座模型: ${resolvedConfig.modelName || resolvedConfig.modelId} (点击调整配置)`
-                          : '底座模型尚未配置 API Key，点击配置'
-                      }
+                      title={`底座模型: ${resolvedConfig.modelName || agent.modelBadge || '默认模型'}`}
                     >
                       <Cpu className="w-2.5 h-2.5 shrink-0" />
                       <span className="truncate">
-                        {resolvedConfig.modelName || agent.modelBadge || '未配模型'}
+                        {resolvedConfig.modelName || agent.modelBadge || '默认模型'}
                       </span>
-                    </button>
+                    </div>
                   </div>
                   <div className="text-xs text-fg-secondary truncate leading-relaxed">
                     {agent.role || agent.description}
