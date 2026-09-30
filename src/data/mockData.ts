@@ -73,12 +73,12 @@ export const INITIAL_AGENTS: Agent[] = [
     name: 'OpenClaw Mantis',
     handle: '@openclaw-mantis',
     avatar: '🦗',
-    role: 'OpenClaw Mantis',
+    role: 'Autonomous Gateway Daemon',
     description: 'Personal assistant / Autonomous multi-agent gateway daemon via openclaw acp',
     color: '#06b6d4',
     status: 'idle',
     statusDetail: undefined,
-    modelBadge: 'deepseek-v4-flash-vision-exp',
+    modelBadge: 'ACP Stdio',
     localAcpProfile: 'OpenClaw Mantis',
     envVars: [
       {

@@ -281,7 +281,16 @@ export function resolveAgentModelConfig(agent: Agent): AgentModelConfig {
 
   // 2. 否则使用全局默认配置，但模型显示 Badge 遵循 Agent 自身的个性化设定
   const fallback = { ...globalConfig };
-  if (agent.modelBadge && agent.modelBadge !== 'Rust Native' && agent.modelBadge !== 'Local ACP') {
+  if (
+    agent.modelBadge &&
+    agent.modelBadge !== 'Rust Native' &&
+    agent.modelBadge !== 'Local ACP' &&
+    agent.modelBadge !== 'Remote ACP' &&
+    agent.modelBadge !== 'ACP Stdio' &&
+    agent.modelBadge !== agent.name &&
+    agent.modelBadge !== agent.role &&
+    agent.modelBadge !== agent.localAcpProfile
+  ) {
     fallback.modelName = agent.modelBadge;
   }
   return fallback;

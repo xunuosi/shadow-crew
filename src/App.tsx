@@ -146,6 +146,13 @@ export default function App() {
                   },
                 };
               }
+              // 针对外部自主 ACP Agent，清理历史脏数据中把 Agent 名字错赋给 modelBadge 或 role 的情况
+              if (baseAgent.modelBadge === baseAgent.name || baseAgent.modelBadge === baseAgent.localAcpProfile) {
+                baseAgent.modelBadge = baseAgent.isRemote ? 'Remote ACP' : 'ACP Stdio';
+              }
+              if (baseAgent.role === baseAgent.name && baseAgent.description && baseAgent.description !== baseAgent.name) {
+                baseAgent.role = baseAgent.description.length < 35 ? baseAgent.description : 'Autonomous ACP Daemon';
+              }
               return updatedWorkspace ? { ...baseAgent, workspace: updatedWorkspace } : baseAgent;
             });
           filtered.sort((a: any, b: any) => (a.id === 'agent-shinobi-core' ? -1 : b.id === 'agent-shinobi-core' ? 1 : 0));

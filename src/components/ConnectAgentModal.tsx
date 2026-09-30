@@ -404,10 +404,10 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       // 本地 stdio 外部 ACP：连通性由进程重启握手自证，无需网关探测
     }
 
-    // 模型网关配置仅对 Shinobi 原生 Agent 生效；ACP Agent 展示运行时标识
+    // 模型网关配置仅对 Shinobi 原生 Agent 生效；外部自主 ACP Agent 标识为进程协议类型
     const modelPayload = isShinobiNative
       ? { modelBadge: effectiveModelBadge, modelConfig: finalModelConfig }
-      : { modelBadge: isRemoteMode ? 'Remote ACP' : selectedAcp.name };
+      : { modelBadge: isRemoteMode ? 'Remote ACP' : 'ACP Stdio', modelConfig: undefined };
 
     if (initialAgent && onUpdateAgent) {
       onUpdateAgent(initialAgent.id, {

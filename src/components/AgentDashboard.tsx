@@ -18,6 +18,7 @@ import {
   Layers,
   PanelLeft,
   Cpu,
+  Terminal,
 } from 'lucide-react';
 import { AgentAvatarArtwork, TeamArtwork } from './AgentAvatarArtwork';
 import { ThemeSwitcher } from './ThemeSwitcher';
@@ -433,41 +434,86 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                   <div className="font-bold text-sm text-fg truncate tracking-tight" title={agent.name}>
                     {agent.name}
                   </div>
-                  {(agent.role || agent.description) && (
-                    <div className="text-xs text-fg-secondary truncate leading-relaxed" title={agent.role || agent.description}>
-                      {agent.role || agent.description}
-                    </div>
-                  )}
-                  {/* Model Badge on its own line */}
-                  <div className="pt-0.5 flex items-center gap-1.5 flex-wrap">
-                    <div
-                      className={`text-[10px] px-2 py-0.5 rounded-full font-mono inline-flex items-center gap-1 border max-w-full truncate ${
-                        agent.isModelHealthy === false
-                          ? 'bg-rose-500/10 border-rose-500/30 text-rose-600 dark:text-rose-400'
-                          : agent.isModelHealthy === true
-                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
-                          : isModelReady
-                          ? 'bg-accent/10 border-accent/25 text-accent'
-                          : 'bg-surface-subtle border-border text-fg-muted'
-                      }`}
-                      title={
-                        agent.isModelHealthy === false
-                          ? `模型连接异常: ${agent.statusDetail || '校验失败'}`
-                          : `底座模型: ${resolvedConfig.modelName || agent.modelBadge || '默认模型'}`
-                      }
-                    >
-                      <Cpu className="w-2.5 h-2.5 shrink-0" />
-                      <span className="truncate">
-                        {resolvedConfig.modelName || agent.modelBadge || '默认模型'}
-                      </span>
-                      {agent.isModelHealthy === true && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-                      )}
-                      {agent.isModelHealthy === false && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />
-                      )}
-                    </div>
-                  </div>
+                  {(() => {
+                    const secondaryText =
+                      agent.role && agent.role !== agent.name
+                        ? agent.role
+                        : agent.description && agent.description !== agent.name
+                        ? agent.description
+                        : null;
+                    return secondaryText ? (
+                      <div className="text-xs text-fg-secondary truncate leading-relaxed" title={secondaryText}>
+                        {secondaryText}
+                      </div>
+                    ) : null;
+                  })()}
+                  {/* Model / Process Protocol Badge (Option 2: 外部自主 ACP 进程显示进程协议，非模型) */}
+                  {(() => {
+                    const isShinobiNative =
+                      agent.id === 'agent-shinobi-core' ||
+                      (agent.localAcpProfile && agent.localAcpProfile.includes('Shinobi'));
+                    const hasExplicitModel = Boolean(
+                      agent.modelConfig &&
+                      !agent.modelConfig.useGlobalDefault &&
+                      agent.modelConfig.modelId &&
+                      agent.modelConfig.modelId !== agent.name
+                    );
+                    const isModelDriven = isShinobiNative || hasExplicitModel;
+
+                    if (isModelDriven) {
+                      return (
+                        <div className="pt-0.5 flex items-center gap-1.5 flex-wrap">
+                          <div
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-mono inline-flex items-center gap-1 border max-w-full truncate ${
+                              agent.isModelHealthy === false
+                                ? 'bg-rose-500/10 border-rose-500/30 text-rose-600 dark:text-rose-400'
+                                : agent.isModelHealthy === true
+                                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
+                                : isModelReady
+                                ? 'bg-accent/10 border-accent/25 text-accent'
+                                : 'bg-surface-subtle border-border text-fg-muted'
+                            }`}
+                            title={
+                              agent.isModelHealthy === false
+                                ? `模型连接异常: ${agent.statusDetail || '校验失败'}`
+                                : `底座模型: ${resolvedConfig.modelName || agent.modelBadge || '默认模型'}`
+                            }
+                          >
+                            <Cpu className="w-2.5 h-2.5 shrink-0" />
+                            <span className="truncate">
+                              {resolvedConfig.modelName || agent.modelBadge || '默认模型'}
+                            </span>
+                            {agent.isModelHealthy === true && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                            )}
+                            {agent.isModelHealthy === false && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // 外部自主 ACP 进程：不展示虚假的模型名称，展示进程协议标识
+                    const isRemote = agent.isRemote || agent.acpTransport === 'websocket';
+                    return (
+                      <div className="pt-0.5 flex items-center gap-1.5 flex-wrap">
+                        <div
+                          className="text-[10px] px-2 py-0.5 rounded-full font-mono inline-flex items-center gap-1 border max-w-full truncate bg-surface-subtle border-border text-fg-muted"
+                          title={isRemote ? '远程 WebSocket ACP 端点' : '本地 ACP Stdio 独立子进程'}
+                        >
+                          {isRemote ? (
+                            <Globe className="w-2.5 h-2.5 shrink-0 text-cyan-500" />
+                          ) : (
+                            <Terminal className="w-2.5 h-2.5 shrink-0 text-fg-muted" />
+                          )}
+                          <span className="truncate">
+                            {isRemote ? 'Remote ACP' : 'ACP Stdio'}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             );
