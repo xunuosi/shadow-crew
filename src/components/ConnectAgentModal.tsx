@@ -20,22 +20,15 @@ import {
   ShieldCheck,
   Cpu,
   Key,
-  Eye,
-  EyeOff,
   Loader2,
 } from 'lucide-react';
 import { AgentAvatarArtwork } from './AgentAvatarArtwork';
 import { discoverLocalAcpRuntimes, FALLBACK_PRESET_RUNTIMES } from '../services/acpDiscovery';
 import { probeRemoteAcpConnection } from '../services/acpClient';
 import { DEFAULT_MODEL_NAME } from '../config/models';
-import {
-  PROVIDER_PRESETS,
-  getGlobalModelConfig,
-  testModelConnection,
-  getActiveProviderPreset,
-  ModelProbeResult,
-} from '../services/llmService';
+import { PROVIDER_PRESETS, getGlobalModelConfig, getActiveProviderPreset, testModelConnection } from '../services/llmService';
 import { ModelSelectorCombobox } from './ModelSelectorCombobox';
+import { AgentRuntimeStatus } from '../types';
 
 interface ConnectAgentModalProps {
   isOpen: boolean;
@@ -118,9 +111,6 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   // Model & Inference Engine Configuration
   const [useGlobalDefaultModel, setUseGlobalDefaultModel] = useState(true);
   const [modelConfig, setModelConfig] = useState<AgentModelConfig>(() => getGlobalModelConfig());
-  const [showModelApiKey, setShowModelApiKey] = useState(false);
-  const [isTestingModel, setIsTestingModel] = useState(false);
-  const [modelProbeResult, setModelProbeResult] = useState<ModelProbeResult | null>(null);
 
   // Saving & Re-verification State
   const [isSavingAndVerifying, setIsSavingAndVerifying] = useState(false);
@@ -148,30 +138,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           };
           setModelConfig(effectiveCfg);
         } else {
-          // Check if envVars has a specific API key or Base URL
-          const hasCustomKey = initialAgent.envVars?.some(
-            (v) => (v.key.endsWith('_API_KEY') || v.key.endsWith('_BASE_URL')) && v.value.trim().length > 0
-          );
-          if (hasCustomKey) {
-            setUseGlobalDefaultModel(false);
-            const foundKey = initialAgent.envVars?.find((v) => v.key.endsWith('_API_KEY'))?.value || '';
-            const foundBaseUrl = initialAgent.envVars?.find((v) => v.key.endsWith('_BASE_URL'))?.value;
-            const foundModel = initialAgent.envVars?.find((v) => v.key.endsWith('_MODEL'))?.value;
-            const effectiveCfg = {
-              ...globalCfg,
-              apiKey: foundKey || globalCfg.apiKey,
-              baseUrl: foundBaseUrl || globalCfg.baseUrl,
-              modelId: foundModel || globalCfg.modelId,
-              modelName: foundModel || initialAgent.modelBadge || globalCfg.modelName,
-              useGlobalDefault: false,
-            };
-            setModelConfig(effectiveCfg);
-          } else {
-            setUseGlobalDefaultModel(true);
-            setModelConfig({ ...globalCfg, useGlobalDefault: true });
-          }
+          setUseGlobalDefaultModel(true);
+          setModelConfig({ ...globalCfg, useGlobalDefault: true });
         }
-        setModelProbeResult(null);
 
         if (initialAgent.isRemote || initialAgent.acpTransport === 'websocket') {
           setConnectTab('remote');
@@ -252,7 +221,6 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         setRemoteTestResult(null);
         setUseGlobalDefaultModel(true);
         setModelConfig({ ...globalCfg, useGlobalDefault: true });
-        setModelProbeResult(null);
         setEnvVars([
           { id: '1', key: 'SHINOBI_LOG', value: 'debug' },
           { id: '2', key: 'MEMORY_STORE', value: 'sqlite' },
@@ -373,6 +341,8 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
   const isReady = selectedAcp.availability === 'available';
   const isRemoteMode = connectTab === 'remote';
+  // 仅 Shinobi 原生 Agent 由平台网关驱动推理；外部 ACP Agent 自管理模型配置
+  const isShinobiNative = !isRemoteMode && selectedAcp.id === 'shinobi_core';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -403,51 +373,41 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       ? { ...globalCfg, useGlobalDefault: true }
       : { ...modelConfig, useGlobalDefault: false };
 
-    // 保存前重新验证最新的模型状态
-    let probeResult: ModelProbeResult | null = null;
-    if (finalModelConfig.baseUrl && (finalModelConfig.apiKey || finalModelConfig.provider === 'ollama')) {
-      try {
-        probeResult = await testModelConnection(finalModelConfig);
-      } catch (err: any) {
-        probeResult = { ok: false, latencyMs: 0, error: err.message || '模型验证失败' };
+    // ENV is user-owned agent startup data. Do not resurrect deleted entries
+    // from the model configuration when saving.
+    const finalEnvVars = envVars
+      .filter((v) => v.key.trim().length > 0)
+      .map((v) => ({ key: v.key.trim(), value: v.value }));
+
+    // 在线 Agent 编辑保存后重新校验连通性，更新 online / dismiss 状态
+    const wasOnline =
+      !!initialAgent && initialAgent.status !== 'idle' && initialAgent.status !== 'error';
+    let healthCheck: { ok: boolean; latencyMs?: number; error?: string } | null = null;
+    if (initialAgent && wasOnline) {
+      if (isShinobiNative) {
+        // Shinobi 原生 Agent：校验平台模型网关连通性
+        try {
+          const res = await testModelConnection(finalModelConfig);
+          healthCheck = { ok: res.ok, latencyMs: res.latencyMs, error: res.ok ? undefined : res.error };
+        } catch (err: any) {
+          healthCheck = { ok: false, error: err?.message || '模型网关连通校验失败' };
+        }
+      } else if (isRemoteMode && remoteUrl.trim()) {
+        // 远程 ACP：校验 WebSocket 端点连通性
+        try {
+          const res = await probeRemoteAcpConnection(remoteUrl.trim(), authToken.trim() || undefined);
+          healthCheck = { ok: res.ok, latencyMs: res.latencyMs, error: res.ok ? undefined : res.error };
+        } catch (err: any) {
+          healthCheck = { ok: false, error: err?.message || '远程 ACP 连接校验失败' };
+        }
       }
+      // 本地 stdio 外部 ACP：连通性由进程重启握手自证，无需网关探测
     }
 
-    if (probeResult) {
-      finalModelConfig.lastTestedAt = Date.now();
-      finalModelConfig.isHealthy = probeResult.ok;
-      finalModelConfig.lastLatencyMs = probeResult.ok ? probeResult.latencyMs : undefined;
-      finalModelConfig.lastError = probeResult.ok ? undefined : probeResult.error;
-    }
-
-    // 合并并自动注入模型环境变量，确保 stdio 子进程与平台内部均能拿到对应配置
-    const mergedEnvVars = [...envVars.filter((v) => v.key.trim().length > 0)];
-    const injectEnv = (key: string, val?: string) => {
-      if (!val) return;
-      const existing = mergedEnvVars.find((e) => e.key === key);
-      if (existing) {
-        existing.value = val;
-      } else {
-        mergedEnvVars.push({ id: `env-auto-${key}-${Date.now()}`, key, value: val });
-      }
-    };
-
-    if (finalModelConfig.apiKey) {
-      if (finalModelConfig.provider === 'deepseek') {
-        injectEnv('DEEPSEEK_API_KEY', finalModelConfig.apiKey);
-        injectEnv('OPENAI_API_KEY', finalModelConfig.apiKey);
-      } else if (finalModelConfig.provider === 'anthropic') {
-        injectEnv('ANTHROPIC_API_KEY', finalModelConfig.apiKey);
-      } else if (finalModelConfig.provider === 'openai_compatible' || finalModelConfig.provider === 'custom') {
-        injectEnv('OPENAI_API_KEY', finalModelConfig.apiKey);
-      }
-    }
-    if (finalModelConfig.baseUrl) {
-      injectEnv('OPENAI_BASE_URL', finalModelConfig.baseUrl);
-      injectEnv('ANTHROPIC_BASE_URL', finalModelConfig.baseUrl);
-    }
-    injectEnv('SHINOBI_MODEL', finalModelConfig.modelId);
-    injectEnv('LLM_MODEL', finalModelConfig.modelId);
+    // 模型网关配置仅对 Shinobi 原生 Agent 生效；ACP Agent 展示运行时标识
+    const modelPayload = isShinobiNative
+      ? { modelBadge: effectiveModelBadge, modelConfig: finalModelConfig }
+      : { modelBadge: isRemoteMode ? 'Remote ACP' : selectedAcp.name };
 
     if (initialAgent && onUpdateAgent) {
       onUpdateAgent(initialAgent.id, {
@@ -461,18 +421,24 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         remoteUrl: isRemoteMode ? remoteUrl.trim() : undefined,
         authToken: isRemoteMode ? authToken.trim() || undefined : undefined,
         readOnlyGuard: isRemoteMode ? readOnlyGuard : undefined,
-        envVars: mergedEnvVars.map((v) => ({ key: v.key.trim(), value: v.value })),
+        envVars: finalEnvVars,
         acpTransport: transport,
         acpCommandOrUrl: resolvedCommand,
-        modelBadge: (probeResult?.ok && probeResult.modelName) || effectiveModelBadge,
-        modelConfig: finalModelConfig,
-        modelLatencyMs: probeResult?.ok ? probeResult.latencyMs : undefined,
-        isModelHealthy: probeResult ? probeResult.ok : undefined,
-        statusDetail: probeResult
-          ? probeResult.ok
-            ? `底座模型就绪 (${probeResult.latencyMs}ms · ${probeResult.modelName || effectiveModelBadge})`
-            : `模型连通异常: ${probeResult.error || '连通失败'}`
-          : initialAgent.statusDetail,
+        ...modelPayload,
+        ...(healthCheck
+          ? {
+              isModelHealthy: healthCheck.ok,
+              ...(isRemoteMode
+                ? {
+                    status: (healthCheck.ok ? 'running' : 'error') as Agent['status'],
+                    remoteLatencyMs: healthCheck.ok ? healthCheck.latencyMs : undefined,
+                  }
+                : {}),
+              statusDetail: healthCheck.ok
+                ? `连通校验通过${healthCheck.latencyMs !== undefined ? ` (${healthCheck.latencyMs}ms)` : ''}`
+                : `连通校验未通过: ${healthCheck.error || '未知错误'}`,
+            }
+          : { statusDetail: initialAgent.statusDetail }),
       });
     } else {
       onConnectAgent({
@@ -486,18 +452,10 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         remoteUrl: isRemoteMode ? remoteUrl.trim() : undefined,
         authToken: isRemoteMode ? authToken.trim() || undefined : undefined,
         readOnlyGuard: isRemoteMode ? readOnlyGuard : undefined,
-        envVars: mergedEnvVars.map((v) => ({ key: v.key.trim(), value: v.value })),
+        envVars: finalEnvVars,
         color: isRemoteMode ? '#06b6d4' : '#3b82f6',
         status: 'idle',
-        modelBadge: (probeResult?.ok && probeResult.modelName) || effectiveModelBadge,
-        modelConfig: finalModelConfig,
-        modelLatencyMs: probeResult?.ok ? probeResult.latencyMs : undefined,
-        isModelHealthy: probeResult ? probeResult.ok : undefined,
-        statusDetail: probeResult
-          ? probeResult.ok
-            ? `底座模型就绪 (${probeResult.latencyMs}ms · ${probeResult.modelName || effectiveModelBadge})`
-            : `模型连通异常: ${probeResult.error || '连通失败'}`
-          : undefined,
+        ...modelPayload,
         isManagedByYou: true,
         acpTransport: transport,
         acpCommandOrUrl: resolvedCommand,
@@ -820,7 +778,8 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
             </div>
           </div>
 
-          {/* Section: LLM Model & Inference Engine Configuration (Model Portal) */}
+          {/* Section: LLM Model & Inference Engine Configuration — 仅 Shinobi 原生 Agent 显示 */}
+          {isShinobiNative && (
           <div className={`p-4 rounded-2xl border space-y-3.5 ${
             isLightMode ? 'bg-blue-50/40 border-blue-200' : 'bg-blue-950/20 border-blue-900/40'
           }`}>
@@ -929,7 +888,6 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                               modelName: firstModel?.name || 'DeepSeek V3',
                               apiKey: targetKey,
                             }));
-                            setModelProbeResult(null);
                           }}
                           className={`px-2 py-1.5 rounded-xl border text-left text-[11px] transition-all cursor-pointer truncate ${
                             isSelected
@@ -953,10 +911,8 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                       modelId,
                       modelName: modelName || modelId,
                     }));
-                    setModelProbeResult(null);
                   }}
                   isLightMode={isLightMode}
-                  onProbeResultClear={() => setModelProbeResult(null)}
                 />
 
                 {/* API Key */}
@@ -969,7 +925,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                   </div>
                   <div className="relative">
                     <input
-                      type={showModelApiKey ? 'text' : 'password'}
+                      type="password"
                       value={modelConfig.apiKey || ''}
                       onChange={(e) =>
                         setModelConfig((prev) => ({
@@ -980,13 +936,6 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                       placeholder="sk-..."
                       className={`w-full rounded-xl pl-3 pr-9 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
                     />
-                    <button
-                      type="button"
-                      onClick={() => setShowModelApiKey(!showModelApiKey)}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-fg-muted hover:text-fg p-0.5 cursor-pointer"
-                    >
-                      {showModelApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
                   </div>
                 </div>
 
@@ -1008,57 +957,10 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                   />
                 </div>
 
-                {/* Test button & result */}
-                <div className="pt-2 space-y-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        setIsTestingModel(true);
-                        setModelProbeResult(null);
-                        try {
-                          const res = await testModelConnection(modelConfig);
-                          setModelProbeResult(res);
-                        } catch (err: any) {
-                          setModelProbeResult({ ok: false, latencyMs: 0, error: err.message || '测试失败' });
-                        } finally {
-                          setIsTestingModel(false);
-                        }
-                      }}
-                      disabled={isTestingModel}
-                      className={`shrink-0 px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap flex items-center gap-1.5 transition-all cursor-pointer shadow-xs disabled:opacity-50 ${
-                        isLightMode
-                          ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                          : 'bg-blue-600 hover:bg-blue-500 text-white'
-                      }`}
-                    >
-                      <Wifi className={`w-3.5 h-3.5 ${isTestingModel ? 'animate-pulse' : ''}`} />
-                      <span>{isTestingModel ? '正在握手测试...' : '测试模型连通性'}</span>
-                    </button>
-
-                    {modelProbeResult && modelProbeResult.ok && (
-                      <div className="text-[11px] px-2.5 py-1 rounded-xl border flex items-center gap-1.5 bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-                        <span className="font-medium">
-                          连通成功 ({modelProbeResult.latencyMs}ms · {modelProbeResult.modelName || 'Ready'})
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  {modelProbeResult && !modelProbeResult.ok && (
-                    <div className="text-[11px] p-2.5 rounded-xl border bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400 leading-relaxed break-all">
-                      <div className="font-semibold flex items-center gap-1.5 mb-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
-                        <span>连通测试未通过</span>
-                      </div>
-                      <div className="font-mono text-[10px] opacity-90 break-all">{modelProbeResult.error}</div>
-                    </div>
-                  )}
-                </div>
               </div>
             )}
           </div>
+          )}
 
           {/* Middle Section: Remote ACP or Local ACP */}
           {connectTab === 'remote' ? (

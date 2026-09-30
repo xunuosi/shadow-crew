@@ -264,7 +264,7 @@ export function setGlobalModelConfig(config: AgentModelConfig): void {
 
 /**
  * 智能解析特定 Agent 的最终生效模型配置
- * 遵循策略：Agent 私有自定义 > 全局默认配置 > 检查 Agent 环境变量补齐 API Key
+ * 遵循策略：Agent 私有自定义 > 全局默认配置
  */
 export function resolveAgentModelConfig(agent: Agent): AgentModelConfig {
   const globalConfig = getGlobalModelConfig();
@@ -272,20 +272,7 @@ export function resolveAgentModelConfig(agent: Agent): AgentModelConfig {
   // 1. 如果 Agent 显式配置了独立的私有模型，且没有勾选使用全局默认
   if (agent.modelConfig && !agent.modelConfig.useGlobalDefault && agent.modelConfig.modelId) {
     const cfg = { ...agent.modelConfig };
-    // 如果没有独立填 API Key，尝试从 envVars 中寻找
-    if (!cfg.apiKey && agent.envVars) {
-      const foundKey = agent.envVars.find(
-        (v) =>
-          v.key === 'DEEPSEEK_API_KEY' ||
-          v.key === 'OPENAI_API_KEY' ||
-          v.key === 'ANTHROPIC_API_KEY' ||
-          v.key.endsWith('_API_KEY')
-      );
-      if (foundKey && foundKey.value) {
-        cfg.apiKey = foundKey.value;
-      }
-    }
-    // 依然没有则回退复用全局 Key（若厂商匹配）
+    // 没有独立配置时回退到全局默认 Key。
     if (!cfg.apiKey && globalConfig.apiKey) {
       cfg.apiKey = globalConfig.apiKey;
     }
@@ -296,18 +283,6 @@ export function resolveAgentModelConfig(agent: Agent): AgentModelConfig {
   const fallback = { ...globalConfig };
   if (agent.modelBadge && agent.modelBadge !== 'Rust Native' && agent.modelBadge !== 'Local ACP') {
     fallback.modelName = agent.modelBadge;
-  }
-  if (!fallback.apiKey && agent.envVars) {
-    const foundKey = agent.envVars.find(
-      (v) =>
-        v.key === 'DEEPSEEK_API_KEY' ||
-        v.key === 'OPENAI_API_KEY' ||
-        v.key === 'ANTHROPIC_API_KEY' ||
-        v.key.endsWith('_API_KEY')
-    );
-    if (foundKey && foundKey.value) {
-      fallback.apiKey = foundKey.value;
-    }
   }
   return fallback;
 }

@@ -517,7 +517,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <HardDrive className="w-3.5 h-3.5" />
               </button>
             )}
-            <ThemeSwitcher variant="compact" placement="top-start" />
+            <ThemeSwitcher variant="compact" placement="top-end" />
             <div 
               className="p-1 text-fg-muted hover:text-accent transition-colors cursor-pointer"
               title={`当前关联仓库: ${currentWorkspace}`}

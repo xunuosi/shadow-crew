@@ -767,6 +767,57 @@ export default function App() {
     }
   }, []);
 
+  // 启动本地 ACP Agent 进程（Tauri stdio 拉起 / Web 运行时平滑转入）
+  const spawnLocalAcpAgent = useCallback(
+    async (agent: Agent) => {
+      const resolvedConfig = resolveAgentModelConfig(agent);
+
+      // 启动 Agent 进程: 初始设为 starting 握手过渡态
+      setAgents((prev) =>
+        prev.map((a) =>
+          a.id === agent.id ? { ...a, status: 'starting', statusDetail: 'ACP 进程启动与协议握手中...' } : a
+        )
+      );
+
+      const tauriInvoke =
+        (window as any).__TAURI_INTERNALS__?.invoke || (window as any).__TAURI__?.core?.invoke;
+      if (typeof window !== 'undefined' && tauriInvoke) {
+        try {
+          await tauriInvoke('spawn_acp_agent', {
+            agentId: agent.id,
+            command: agent.acpCommandOrUrl,
+            cwd: agent.workspace?.rootPath || activeProject?.localWorkspaceRoot || '.',
+            envVars: agent.envVars || [],
+          });
+          syncRunningAgentsWithBackend();
+        } catch (err: any) {
+          console.warn('Spawn agent error:', err);
+          setAgents((prev) =>
+            prev.map((a) =>
+              a.id === agent.id ? { ...a, status: 'error', statusDetail: String(err) } : a
+            )
+          );
+        }
+      } else {
+        // Web 浏览器环境：平滑转入 running，接入 Web LLM 运行时
+        setTimeout(() => {
+          setAgents((prev) =>
+            prev.map((a) =>
+              a.id === agent.id
+                ? {
+                    ...a,
+                    status: 'running',
+                    statusDetail: `就绪 · ${resolvedConfig.modelName || resolvedConfig.modelId} (Web 运行时)`,
+                  }
+                : a
+            )
+          );
+        }, 500);
+      }
+    },
+    [activeProject?.localWorkspaceRoot, syncRunningAgentsWithBackend]
+  );
+
   // Listen for real-time ACP status changes from Tauri backend
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -5401,79 +5452,8 @@ export default function App() {
                 return;
               }
 
-              // 本地 Agent 启动：解析生效模型配置
-              const resolvedConfig = resolveAgentModelConfig(currentAgent);
-
-              // 启动 Agent 进程: 初始设为 starting 握手过渡态
-              setAgents((prev) =>
-                prev.map((a) =>
-                  a.id === agentId ? { ...a, status: 'starting', statusDetail: 'ACP 进程启动与协议握手中...' } : a
-                )
-              );
-
-              if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke) {
-                // Tauri 桌面端：自动组装并注入模型环境变量
-                const mergedEnvVars = [...(currentAgent.envVars || [])];
-                const injectEnv = (key: string, val?: string) => {
-                  if (!val) return;
-                  const idx = mergedEnvVars.findIndex((e) => e.key === key);
-                  if (idx >= 0) {
-                    mergedEnvVars[idx] = { key, value: val };
-                  } else {
-                    mergedEnvVars.push({ key, value: val });
-                  }
-                };
-
-                if (resolvedConfig.apiKey) {
-                  if (resolvedConfig.provider === 'deepseek') {
-                    injectEnv('DEEPSEEK_API_KEY', resolvedConfig.apiKey);
-                    injectEnv('OPENAI_API_KEY', resolvedConfig.apiKey);
-                  } else if (resolvedConfig.provider === 'anthropic') {
-                    injectEnv('ANTHROPIC_API_KEY', resolvedConfig.apiKey);
-                  } else {
-                    injectEnv('OPENAI_API_KEY', resolvedConfig.apiKey);
-                  }
-                }
-                if (resolvedConfig.baseUrl) {
-                  injectEnv('OPENAI_BASE_URL', resolvedConfig.baseUrl);
-                  injectEnv('ANTHROPIC_BASE_URL', resolvedConfig.baseUrl);
-                }
-                if (resolvedConfig.modelId) {
-                  injectEnv('SHINOBI_MODEL', resolvedConfig.modelId);
-                  injectEnv('LLM_MODEL', resolvedConfig.modelId);
-                }
-
-                (window as any).__TAURI_INTERNALS__.invoke('spawn_acp_agent', {
-                  agentId: currentAgent.id,
-                  command: currentAgent.acpCommandOrUrl,
-                  cwd: currentAgent.workspace?.rootPath || activeProject?.localWorkspaceRoot || '.',
-                  envVars: mergedEnvVars,
-                }).then(() => {
-                  syncRunningAgentsWithBackend();
-                }).catch((err: any) => {
-                  console.warn('Spawn agent error:', err);
-                  setAgents((prev) =>
-                    prev.map((a) =>
-                      a.id === agentId ? { ...a, status: 'error', statusDetail: String(err) } : a
-                    )
-                  );
-                });
-              } else {
-                // Web 浏览器环境：平滑转入 running，接入 Web LLM 运行时
-                setTimeout(() => {
-                  setAgents((prev) =>
-                    prev.map((a) =>
-                      a.id === agentId
-                        ? {
-                            ...a,
-                            status: 'running',
-                            statusDetail: `就绪 · ${resolvedConfig.modelName || resolvedConfig.modelId} (Web 运行时)`,
-                          }
-                        : a
-                    )
-                  );
-                }, 500);
-              }
+              // 本地 Agent 启动
+              spawnLocalAcpAgent(currentAgent);
             } else {
               // 终止 Agent 进程
               setAgents((prev) =>
@@ -5787,13 +5767,18 @@ export default function App() {
           setIsMemoryImportModalOpen(true);
         }}
         onUpdateAgent={(agentId, updatedData) => {
+          const existingAgent = agents.find((a) => a.id === agentId);
+          const wasOnline =
+            !!existingAgent && existingAgent.status !== 'idle' && existingAgent.status !== 'error';
+          const isRemoteAgent = updatedData.isRemote ?? existingAgent?.isRemote ?? false;
+
           setAgents((prev) =>
             prev.map((a) => {
               if (a.id === agentId) {
                 return {
                   ...a,
                   ...updatedData,
-                  status: updatedData.status || a.status || 'idle',
+                  status: updatedData.status !== undefined ? updatedData.status : (a.status || 'idle'),
                   workspace: {
                     ...a.workspace,
                     ...(updatedData.workspace || {}),
@@ -5803,6 +5788,9 @@ export default function App() {
               return a;
             })
           );
+
+          // 远程 Agent 的 online/dismiss 状态由保存时的 WebSocket 探测结果直接驱动；
+          // 本地 Agent 通过进程重启自证连通性，无需额外轮询
 
           // 同步全量更新所有线程中由该 Agent 发起或该 Agent 的 DM 会话
           if (updatedData.name || updatedData.avatar || updatedData.handle) {
@@ -5895,10 +5883,17 @@ export default function App() {
             });
           }
 
-          // 若底层正在运行旧进程，主动停止以确保后续以更新后的配置/环境变量重新拉起
-          if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke) {
+          // 本地 Agent：停止旧进程；编辑前在线则自动以新配置重启恢复 online
+          // （网关校验未通过时不再重启，保持 dismiss 状态等待用户修复配置）
+          if (!isRemoteAgent && typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.invoke) {
             (window as any).__TAURI_INTERNALS__.invoke('stop_acp_agent', { agentId })
-              .then(() => syncRunningAgentsWithBackend())
+              .then(async () => {
+                await syncRunningAgentsWithBackend();
+                if (wasOnline && existingAgent && updatedData.isModelHealthy !== false) {
+                  const respawnAgent: Agent = { ...existingAgent, ...updatedData } as Agent;
+                  spawnLocalAcpAgent(respawnAgent);
+                }
+              })
               .catch(() => {});
           }
         }}

@@ -179,32 +179,22 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     )}
 
                     {/* Badge State */}
-                    {agent.isModelHealthy === false ? (
+                    {agent.isModelHealthy === false || agent.status === 'error' ? (
                       <span
                         className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/25 text-rose-600 dark:text-rose-400 text-[11px] font-medium"
-                        title={agent.statusDetail || "模型网关连通校验失败，请检查配置"}
+                        title={agent.statusDetail || "连通性校验未通过或异常"}
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                        <span>model error</span>
+                        <span>{agent.status === 'error' ? 'error' : 'model error'}</span>
                       </span>
                     ) : agent.status === 'idle' ? (
-                      agent.isModelHealthy === true ? (
-                        <span
-                          className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-600 dark:text-emerald-400 text-[11px] font-medium"
-                          title={agent.statusDetail || `模型端点正常就绪 (${agent.modelLatencyMs ? `${agent.modelLatencyMs}ms` : '已校验'})`}
-                        >
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                          <span>ready</span>
-                        </span>
-                      ) : (
-                        <span
-                          className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-zinc-500/10 border border-zinc-500/25 text-zinc-500 dark:text-zinc-400 text-[11px] font-medium"
-                          title="通信未开启，点击下方 Start 按钮连接"
-                        >
-                          <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500" />
-                          <span>offline</span>
-                        </span>
-                      )
+                      <span
+                        className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-zinc-500/10 border border-zinc-500/25 text-zinc-500 dark:text-zinc-400 text-[11px] font-medium"
+                        title="通信未开启，点击下方 Start 按钮连接"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500" />
+                        <span>offline</span>
+                      </span>
                     ) : (agent.isRemote || agent.acpTransport === 'websocket') && isRunning ? (
                       <span
                         className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-cyan-500/15 border border-cyan-500/35 text-cyan-700 dark:text-cyan-300 text-[11px] font-medium shrink-0"
@@ -462,9 +452,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                       }`}
                       title={
                         agent.isModelHealthy === false
-                          ? `模型连接异常: ${agent.statusDetail || '网关校验失败'}`
-                          : agent.isModelHealthy === true
-                          ? `底座模型: ${resolvedConfig.modelName || agent.modelBadge || '默认模型'} (网关连通正常, 响应延迟: ${agent.modelLatencyMs ?? '-'}ms)`
+                          ? `模型连接异常: ${agent.statusDetail || '校验失败'}`
                           : `底座模型: ${resolvedConfig.modelName || agent.modelBadge || '默认模型'}`
                       }
                     >
@@ -479,15 +467,6 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                         <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />
                       )}
                     </div>
-
-                    {agent.isModelHealthy === true && agent.modelLatencyMs !== undefined && (
-                      <span
-                        className="text-[9px] px-1.5 py-0.5 rounded-md font-mono bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0"
-                        title={`接口实测响应延迟: ${agent.modelLatencyMs}ms`}
-                      >
-                        {agent.modelLatencyMs}ms
-                      </span>
-                    )}
                   </div>
                 </div>
               </div>
