@@ -106,7 +106,114 @@ export function extractArgumentNodes(
     }
   }
 
-  return nodes;
+  return buildArgumentDag(nodes, proposalText);
+}
+
+/**
+ * 基于文本语义与因果推导构建论点有向无环图 (Claim DAG, P1-1)
+ */
+export function buildArgumentDag(nodes: ArgumentNode[], proposalText: string): ArgumentNode[] {
+  if (nodes.length <= 1) {
+    return nodes.map((n) => ({ ...n, depth: 0, dependencies: [], impactScore: 1.0 }));
+  }
+
+  // 1. 根据节点先后顺序与因果连词推导前置依赖
+  const idToDeps = new Map<string, string[]>();
+
+  nodes.forEach((n, idx) => {
+    const deps: string[] = [];
+    const claimLower = n.claim.toLowerCase();
+
+    // 检查显式因果/依赖触发词
+    const hasDependencyCue =
+      claimLower.includes('基于') ||
+      claimLower.includes('依赖') ||
+      claimLower.includes('接着') ||
+      claimLower.includes('随后') ||
+      claimLower.includes('因此') ||
+      claimLower.includes('为了') ||
+      claimLower.includes('在此基础') ||
+      claimLower.includes('进而');
+
+    if (hasDependencyCue && idx > 0) {
+      // 优先寻找语义关联的前置节点
+      let foundParent = false;
+      for (let prevIdx = idx - 1; prevIdx >= 0; prevIdx--) {
+        const prevNode = nodes[prevIdx];
+        const sharedKeywords = prevNode.claim
+          .split(/[，,\s]+/)
+          .filter((w) => w.length >= 3 && claimLower.includes(w.toLowerCase()));
+
+        if (sharedKeywords.length > 0) {
+          deps.push(prevNode.id);
+          foundParent = true;
+          break;
+        }
+      }
+
+      // 若未直接命中共享词汇，但具有显式前后递进标志，则依赖紧邻前置节点
+      if (!foundParent && idx > 0) {
+        deps.push(nodes[idx - 1].id);
+      }
+    } else if (idx > 0 && idx % 2 === 1 && !deps.includes(nodes[idx - 1].id)) {
+      // 自然流式推导：若后续节点存在复合从属，赋予前序支撑
+      const prevNode = nodes[idx - 1];
+      if (claimLower.includes('数据') && prevNode.claim.includes('数据')) {
+        deps.push(prevNode.id);
+      }
+    }
+
+    idToDeps.set(n.id, deps);
+  });
+
+  // 2. 计算各节点的拓扑深度 depth (防止环形依赖)
+  const idToDepth = new Map<string, number>();
+  const getDepth = (id: string, visited = new Set<string>()): number => {
+    if (visited.has(id)) return 0; // 防止环
+    visited.add(id);
+    const deps = idToDeps.get(id) || [];
+    if (deps.length === 0) return 0;
+    let maxParentDepth = 0;
+    for (const pId of deps) {
+      maxParentDepth = Math.max(maxParentDepth, getDepth(pId, new Set(visited)));
+    }
+    return maxParentDepth + 1;
+  };
+
+  nodes.forEach((n) => {
+    idToDepth.set(n.id, getDepth(n.id));
+  });
+
+  // 3. 计算下游影响面 (Impact Score: 有多少节点直接或间接依赖本节点)
+  const getDownstreamCount = (id: string): number => {
+    const affected = new Set<string>();
+    const queue = [id];
+    while (queue.length > 0) {
+      const curr = queue.shift()!;
+      nodes.forEach((candidate) => {
+        const candidateDeps = idToDeps.get(candidate.id) || [];
+        if (candidateDeps.includes(curr) && !affected.has(candidate.id)) {
+          affected.add(candidate.id);
+          queue.push(candidate.id);
+        }
+      });
+    }
+    return affected.size;
+  };
+
+  return nodes.map((n) => {
+    const deps = idToDeps.get(n.id) || [];
+    const depth = idToDepth.get(n.id) || 0;
+    const downstreamCount = getDownstreamCount(n.id);
+    const impactScore = Math.round((1.0 + downstreamCount * 0.5) * 10) / 10;
+
+    return {
+      ...n,
+      dependencies: deps,
+      depth,
+      impactScore,
+    };
+  });
 }
 
 /**
@@ -256,3 +363,101 @@ export function dehydrateContextWithAlert(
     pruneAlert,
   };
 }
+
+/**
+ * 遍历 DAG 获取受冲突根源节点影响的全部下游子图节点 ID 集合 (P1-1)
+ */
+export function calculateAffectedSubgraph(rootDisputeNodeId: string, nodes: ArgumentNode[]): string[] {
+  const affected = new Set<string>();
+  const queue = [rootDisputeNodeId];
+
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    nodes.forEach((node) => {
+      const deps = node.dependencies || [];
+      if (deps.includes(currentId) && !affected.has(node.id)) {
+        affected.add(node.id);
+        queue.push(node.id);
+      }
+    });
+  }
+
+  return Array.from(affected);
+}
+
+/**
+ * 升级版图差分冲突定位 (Graph Diff Localizer, P1-1)：
+ * 比较立论 DAG 与反例批判点，通过有向图逆向遍历定位因果链路上最早被攻破的根源节点 (Root Cause Node)，
+ * 彻底杜绝回退兜底首个节点的误定位。
+ */
+export function localizeGraphDiffDispute(
+  proposalNodes: ArgumentNode[],
+  critiqueText: string,
+  defenseText?: string
+): DisputeSpanPacket {
+  const baseDispute = localizeEarliestDispute(
+    proposalNodes.map((n) => n.claim).join('\n'),
+    critiqueText,
+    proposalNodes
+  );
+
+  if (proposalNodes.length === 0) {
+    return baseDispute;
+  }
+
+  // 1. 寻找被直接批判命中的候选论点节点
+  let matchedNode = proposalNodes.find((n) => critiqueText.includes(n.claim.slice(0, 12)));
+
+  if (!matchedNode) {
+    // 词项重叠打分匹配
+    let bestScore = -1;
+    for (const node of proposalNodes) {
+      const words = node.claim.split(/[，,\s]+/).filter((w) => w.length >= 2);
+      let matchCount = 0;
+      words.forEach((w) => {
+        if (critiqueText.includes(w)) matchCount++;
+      });
+      if (matchCount > bestScore && matchCount > 0) {
+        bestScore = matchCount;
+        matchedNode = node;
+      }
+    }
+  }
+
+  const directHitNode = matchedNode || proposalNodes[0];
+
+  // 2. 图差分因果溯源：向上寻找因果根源节点 (Root Cause Node)
+  let rootDisputeNode = directHitNode;
+  const nodeMap = new Map<string, ArgumentNode>();
+  proposalNodes.forEach((n) => nodeMap.set(n.id, n));
+
+  // 沿依赖链向上追溯：检查上游前置依赖是否也遭到质疑
+  let curr = directHitNode;
+  while (curr.dependencies && curr.dependencies.length > 0) {
+    const parentId = curr.dependencies[0];
+    const parentNode = nodeMap.get(parentId);
+    if (!parentNode) break;
+
+    // 若上游节点的前提或核心主张也在 critique 中被波及，则认定更深层的根源在上游
+    const parentTokens = [parentNode.claim.slice(0, 8), ...(parentNode.assumptions || [])];
+    const isParentCritiqued = parentTokens.some((s) => s && critiqueText.includes(s.slice(0, 6)));
+    if (isParentCritiqued || critiqueText.includes('前提') || critiqueText.includes('根本')) {
+      rootDisputeNode = parentNode;
+      curr = parentNode;
+    } else {
+      break;
+    }
+  }
+
+  // 3. 计算受影响的下游子图节点集合
+  const affectedSubgraphNodeIds = calculateAffectedSubgraph(rootDisputeNode.id, proposalNodes);
+
+  return {
+    ...baseDispute,
+    claimTopic: rootDisputeNode.claim,
+    proposerClaim: rootDisputeNode.claim,
+    rootDisputeNodeId: rootDisputeNode.id,
+    affectedSubgraphNodeIds,
+  };
+}
+

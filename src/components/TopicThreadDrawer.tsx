@@ -1103,7 +1103,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             </div>
           )}
 
-          {/* LMAD 局部冲突切片焦点 */}
+          {/* LMAD 局部冲突切片焦点 (Wave 3 P1-1: Claim DAG 与图差分定位) */}
           {topic.gameTheoreticState?.cognoNexus?.currentDispute && (
             <div className="p-2 rounded-lg bg-surface border border-border/80 space-y-1 shadow-2xs">
               <div className="flex items-center justify-between text-fg font-medium">
@@ -1111,9 +1111,21 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   <SlidersHorizontal className="w-3 h-3" />
                   <span>LMAD 局部冲突切片: {topic.gameTheoreticState.cognoNexus.currentDispute.claimTopic}</span>
                 </span>
-                <span className="text-[9px] font-mono text-fg-muted">
-                  归因: {topic.gameTheoreticState.cognoNexus.currentDispute.rootCause}
-                </span>
+                <div className="flex items-center gap-1">
+                  {topic.gameTheoreticState.cognoNexus.currentDispute.rootDisputeNodeId && (
+                    <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-600 dark:text-purple-300">
+                      DAG 根源: {topic.gameTheoreticState.cognoNexus.currentDispute.rootDisputeNodeId}
+                    </span>
+                  )}
+                  {topic.gameTheoreticState.cognoNexus.currentDispute.affectedSubgraphNodeIds && topic.gameTheoreticState.cognoNexus.currentDispute.affectedSubgraphNodeIds.length > 0 && (
+                    <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-600 dark:text-amber-300">
+                      波及下游: {topic.gameTheoreticState.cognoNexus.currentDispute.affectedSubgraphNodeIds.length} 节点
+                    </span>
+                  )}
+                  <span className="text-[9px] font-mono text-fg-muted">
+                    归因: {topic.gameTheoreticState.cognoNexus.currentDispute.rootCause}
+                  </span>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-2 text-[9px] pt-0.5 text-fg-secondary">
                 <div className="p-1 rounded bg-surface-subtle border border-border/50 truncate" title={topic.gameTheoreticState.cognoNexus.currentDispute.proposerClaim}>
@@ -1128,20 +1140,25 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             </div>
           )}
 
-          {/* R-5 三态事实脱水看板 (Tri-State Dehydration) */}
+          {/* R-5 三态事实脱水看板 (Tri-State Dehydration & Claim DAG) */}
           {topic.gameTheoreticState?.cognoNexus?.committedStates && topic.gameTheoreticState.cognoNexus.committedStates.length > 0 && (
             <div className="p-2 rounded-lg bg-surface border border-border/80 space-y-1 shadow-2xs">
               <div className="flex items-center justify-between text-fg font-medium">
                 <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold text-[10px]">
                   <ShieldCheck className="w-3 h-3" />
-                  <span>三态事实脱水看板 ({topic.gameTheoreticState.cognoNexus.committedStates.length} 项论点收敛)</span>
+                  <span>三态事实脱水看板 ({topic.gameTheoreticState.cognoNexus.committedStates.length} 项论点收敛 · DAG)</span>
                 </span>
                 <span className="text-[9px] font-mono text-fg-muted">Tri-State Dehydration</span>
               </div>
               <div className="space-y-1 pt-0.5">
                 {topic.gameTheoreticState.cognoNexus.committedStates.slice(0, 3).map((node) => (
                   <div key={node.id} className="flex items-center justify-between gap-1.5 px-1.5 py-0.5 rounded bg-surface-subtle text-[9px]">
-                    <span className="text-fg truncate flex-1" title={node.claim}>{node.claim}</span>
+                    <div className="flex items-center gap-1 min-w-0 flex-1">
+                      {node.depth !== undefined && (
+                        <span className="text-[8px] font-mono text-fg-muted/80 shrink-0">L{node.depth}</span>
+                      )}
+                      <span className="text-fg truncate flex-1" title={node.claim}>{node.claim}</span>
+                    </div>
                     <span className={`px-1.5 py-0.2 rounded font-mono shrink-0 text-[8px] ${
                       node.status === 'refuted' 
                         ? 'bg-rose-500/15 text-rose-600 font-bold' 
@@ -1156,6 +1173,49 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               </div>
             </div>
           )}
+
+          {/* Wave 3 P1-3: ColMAD 协同增量事实贡献榜 (Fact Reward & Reputation Leaderboard) */}
+          {(topic.gameTheoreticState?.colMadReport || topic.gameTheoreticState?.cognoNexus?.colMadReport) && (() => {
+            const report = topic.gameTheoreticState?.colMadReport || topic.gameTheoreticState?.cognoNexus?.colMadReport;
+            if (!report || report.leaderboard.length === 0) return null;
+            return (
+              <div className="p-2 rounded-lg bg-surface border border-border/80 space-y-1.5 shadow-2xs">
+                <div className="flex items-center justify-between text-fg font-medium">
+                  <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold text-[10px]">
+                    <Sparkles className="w-3 h-3 text-amber-500" />
+                    <span>ColMAD 增量事实贡献榜 (Total ΔFact: +{report.totalFactDelta})</span>
+                  </span>
+                  <span className="text-[9px] font-mono text-fg-muted">Non-zero-sum Fact Rewards</span>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 pt-0.5">
+                  {report.leaderboard.map((item, idx) => (
+                    <div key={item.agentId} className="flex items-center justify-between p-1.5 rounded bg-surface-subtle border border-border/40 text-[9px]">
+                      <div className="flex items-center gap-1 min-w-0">
+                        <span className="font-mono text-fg-muted shrink-0">#{idx + 1}</span>
+                        <span className="font-medium text-fg truncate" title={item.agentName}>{item.agentName}</span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0 font-mono">
+                        <span className={`px-1 py-0.2 rounded text-[8px] font-bold ${
+                          item.reputationLevel === 'pioneer'
+                            ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300'
+                            : item.reputationLevel === 'contributor'
+                            ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-300'
+                            : item.reputationLevel === 'redundant'
+                            ? 'bg-rose-500/20 text-rose-600 dark:text-rose-300'
+                            : 'bg-zinc-500/20 text-zinc-500'
+                        }`}>
+                          {item.reputationLevel === 'pioneer' ? '🏆 先锋' :
+                           item.reputationLevel === 'contributor' ? '✓ 贡献' :
+                           item.reputationLevel === 'redundant' ? '⚠️ 冗余' : '常规'}
+                        </span>
+                        <span className="font-semibold text-fg">+{item.factReward}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 

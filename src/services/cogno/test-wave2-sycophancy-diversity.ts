@@ -15,7 +15,7 @@ import {
 console.log('=== CognoNexus Wave 2: Sycophancy Governance & Model Diversity Test Suite ===\n');
 
 // Mock Agents
-const claudeAgent: Agent = {
+const claudeAgent = {
   id: 'agent-claude',
   name: 'Claude Proposer',
   handle: '@claude',
@@ -24,9 +24,9 @@ const claudeAgent: Agent = {
   status: 'idle',
   modelBadge: 'Claude 3.7 Sonnet',
   modelConfig: { modelId: 'claude-3-7-sonnet', provider: 'anthropic' },
-};
+} as unknown as Agent;
 
-const deepseekAgent: Agent = {
+const deepseekAgent = {
   id: 'agent-deepseek',
   name: 'DeepSeek RedTeam',
   handle: '@deepseek',
@@ -35,9 +35,9 @@ const deepseekAgent: Agent = {
   status: 'idle',
   modelBadge: 'DeepSeek R1 Reasoner',
   modelConfig: { modelId: 'deepseek-reasoner-r1', provider: 'deepseek' },
-};
+} as unknown as Agent;
 
-const gptAgent: Agent = {
+const gptAgent = {
   id: 'agent-gpt',
   name: 'GPT Verifier',
   handle: '@gpt',
@@ -46,9 +46,9 @@ const gptAgent: Agent = {
   status: 'idle',
   modelBadge: 'GPT-4o Omniscience',
   modelConfig: { modelId: 'gpt-4o', provider: 'openai' },
-};
+} as unknown as Agent;
 
-const geminiAgent: Agent = {
+const geminiAgent = {
   id: 'agent-gemini',
   name: 'Gemini Arbiter',
   handle: '@gemini',
@@ -57,9 +57,9 @@ const geminiAgent: Agent = {
   status: 'idle',
   modelBadge: 'Gemini 2.5 Pro',
   modelConfig: { modelId: 'gemini-2.5-pro', provider: 'google' },
-};
+} as unknown as Agent;
 
-const miniAgent: Agent = {
+const miniAgent = {
   id: 'agent-mini',
   name: 'Mini Follower',
   handle: '@mini',
@@ -68,7 +68,7 @@ const miniAgent: Agent = {
   status: 'idle',
   modelBadge: 'Llama-3-8b-instruct',
   modelConfig: { modelId: 'llama-3-8b', provider: 'ollama' },
-};
+} as unknown as Agent;
 
 // ==========================================
 // Test 1: BSS (Baseline Sycophancy Score)
@@ -207,14 +207,15 @@ const confMatrix = calculateConfidenceMatrix({
   criteriaIds,
   evidences: [
     {
-      id: 'ev-1',
-      claimRef: 'claim-1',
+      evidenceId: 'ev-1',
+      claimId: 'claim-1',
+      sourceTool: 'code_sandbox',
+      inputQueryOrCode: 'run_load_test()',
+      rawOutput: 'Deadlock reproduced',
+      verifierReport: 'Concurrency deadlock reproduced in synthetic load test',
       tier: 'T1',
-      verificationMethod: 'heuristic_static_analysis',
       truthValue: false, // Refuted!
-      evidencePayload: 'Concurrency deadlock reproduced in synthetic load test',
-      timestamp: Date.now(),
-      weight: 0.3,
+      confidence: 0.3,
     },
   ],
   sycophancy: authenticEval,

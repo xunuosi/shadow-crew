@@ -41,6 +41,10 @@ import {
   detectModelFamily,
   calculateModelDiversity,
   calculateConfidenceMatrix,
+  buildArgumentDag,
+  calculateAffectedSubgraph,
+  localizeGraphDiffDispute,
+  calculateColMadContributions,
 } from './cogno';
 
 export interface CollaborationCascade {
@@ -860,6 +864,10 @@ export {
   detectModelFamily,
   calculateModelDiversity,
   calculateConfidenceMatrix,
+  buildArgumentDag,
+  calculateAffectedSubgraph,
+  localizeGraphDiffDispute,
+  calculateColMadContributions,
 };
 
 

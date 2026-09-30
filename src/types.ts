@@ -289,6 +289,7 @@ export interface GameTheoreticState {
   cognoNexus?: CognoNexusState;
   latestSycophancy?: SycophancyEvaluation; // 最新谄媚度评估记录 (P0-4)
   modelDiversity?: ModelDiversityEvaluation; // 参与角色模型异构多样性评估 (P0-5)
+  colMadReport?: ColMadSessionReport;    // ColMAD 增量事实贡献与声誉报表 (P1-3)
   roundCount?: number;                   // 当前博弈轮次计数 (P2 回边使用)
   isSafetyCharterSigned?: boolean;       // 人类是否已签署 T2 高危工具执行安全宪章
   telemetryLogIds?: string[];
@@ -302,10 +303,12 @@ export interface ArgumentNode {
   authorName?: string;
   claim: string;                // 核心论点/主张
   assumptions: string[];        // 依赖的前提假设
-  dependencies?: string[];      // 依赖的前置论点节点 ID
+  dependencies?: string[];      // 依赖的前置论点节点 ID (DAG 拓扑边)
   confidence: number;           // 自评置信度 (0~1)
   evidenceRefs?: string[];      // 关联的证据标识
   status?: 'supported' | 'disputed' | 'refuted'; // 三态脱水事实状态 (R-5)
+  depth?: number;               // DAG 拓扑层级 (根节点为 0)
+  impactScore?: number;         // 论点关键度权重 (下游被依赖程度)
 }
 
 export interface GroundingEvidence {
@@ -329,6 +332,8 @@ export interface DisputeSpanPacket {
   rootCause: string;            // 冲突本质归因 (前提分歧 / 资源竞争 / 边界条件误判)
   groundingStatus: 'unverified' | 'verifying' | 'verified_true' | 'verified_false';
   evidenceChain?: GroundingEvidence[];
+  rootDisputeNodeId?: string;   // LMAD DAG 定位的因果根源论点 ID (P1-1)
+  affectedSubgraphNodeIds?: string[]; // 冲突引发需增量修复的下游子图节点 ID 集合 (P1-1)
 }
 
 export interface McdaCriterion {
@@ -387,6 +392,12 @@ export interface SprtGovernorState {
   statusDescription: string;
   groundedTrueRatio?: number;   // 显式注入的物理接地真值率 (0~1)
   calibrationStatus?: 'uncalibrated' | 'calibrated' | 'fallback'; // 校准状态 (R-4)
+  observationVector?: {         // 多维联合观测向量 (P1-2)
+    groundedRatio: number;
+    semanticScore: number;
+    dssScore: number;
+    combinedScore: number;
+  };
 }
 
 export interface MinorityReport {
@@ -400,6 +411,24 @@ export interface MinorityReport {
   recordedAt: string;
 }
 
+export interface ColMadAgentScore {
+  agentId: string;
+  agentName: string;
+  factReward: number; // 综合增量事实贡献分
+  verifiedClaimsCount: number; // 贡献的已实证断言数
+  discoveredEdgeCasesCount: number; // 发现的极端反例数
+  redundantPenalty: number; // 冗余车轱辘话扣分
+  reputationLevel: 'pioneer' | 'contributor' | 'neutral' | 'redundant';
+}
+
+export interface ColMadSessionReport {
+  topicId: string;
+  scores: Record<string, ColMadAgentScore>; // agentId -> score
+  totalFactDelta: number;
+  leaderboard: ColMadAgentScore[];
+  generatedAt: string;
+}
+
 export interface CognoNexusState {
   committedStates: ArgumentNode[];        // 已承诺事实看板 (脱水历史)
   currentDispute?: DisputeSpanPacket;     // 当前聚焦攻防的离散冲突切片
@@ -408,6 +437,7 @@ export interface CognoNexusState {
   minorityReport?: MinorityReport;        // 少数派异议报告
   latestSycophancy?: SycophancyEvaluation; // 谄媚度评估记录 (P0-4)
   modelDiversity?: ModelDiversityEvaluation; // 角色模型异构性评估 (P0-5)
+  colMadReport?: ColMadSessionReport;    // ColMAD 增量事实贡献与声誉报表 (P1-3)
 }
 
 export interface GameRolesConfig {

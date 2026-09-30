@@ -8,3 +8,5 @@ export * from './tieredGroundingGovernor';
 export * from './dynamicRulingGenerator';
 export * from './sycophancyGovernor';
 export * from './modelDiversityGovernor';
+export * from './colmadGovernor';
+

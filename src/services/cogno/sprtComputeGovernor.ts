@@ -71,6 +71,7 @@ export interface EvaluateSprtOptions {
   maxRounds?: number;
   alignmentScore: number; // 当轮综合对齐分数 (0~1)
   groundedTrueRatio?: number;
+  dssScore?: number;      // 动态谄媚度 (P1-2 多维观测向量)
   calibrationStatus?: 'uncalibrated' | 'calibrated' | 'fallback';
   alpha?: number;         // 第一类错误率 (假共识/虚假早停)，默认动态拟合
   beta?: number;          // 第二类错误率 (漏报/死锁误判)，默认动态拟合
@@ -87,6 +88,7 @@ export function stepSprtGovernor(options: EvaluateSprtOptions): SprtGovernorStat
     maxRounds = 4,
     alignmentScore,
     groundedTrueRatio,
+    dssScore,
     calibrationStatus: explicitCalibrationStatus,
     alpha: explicitAlpha,
     beta: explicitBeta,
@@ -146,6 +148,12 @@ export function stepSprtGovernor(options: EvaluateSprtOptions): SprtGovernorStat
     statusDescription,
     groundedTrueRatio,
     calibrationStatus,
+    observationVector: {
+      groundedRatio: groundedTrueRatio ?? 0.5,
+      semanticScore: boundedScore,
+      dssScore: dssScore ?? 0.25,
+      combinedScore: boundedScore,
+    },
   };
 }
 
@@ -157,17 +165,17 @@ export function estimateRoundAlignmentScore(options: {
   critiqueText?: string;
   defenseText?: string;
   groundedTrueRatio?: number; // 0~1 工具真值检验通过比例
+  dssScore?: number;          // 0~1 动态谄媚附和分 (P1-2 多维联合观测向量)
   isExempted?: boolean;
 }): number {
-  const { proposalText = '', critiqueText = '', defenseText = '', groundedTrueRatio, isExempted } = options;
+  const { proposalText = '', critiqueText = '', defenseText = '', groundedTrueRatio, dssScore, isExempted } = options;
 
   if (isExempted) {
     return 0.85; // 人类特权豁免直接赋予高对齐度
   }
 
-  let score = 0.50; // 默认中性基准
-
-  // 检查答辩文本中的修复积极信号
+  // 1. 语义对齐分 (Semantic Alignment)
+  let semanticScore = 0.50;
   const defensePositiveSignals = ['采纳', '补丁', '修复', '重构', '同意', '解决', '优化', '认可', '已修正', '引入锁', '降级'];
   const defenseNegativeSignals = ['无法认同', '拒绝修改', '并非漏洞', '不予采纳', '死锁', '严重分歧', '坚持原案'];
 
@@ -183,22 +191,28 @@ export function estimateRoundAlignmentScore(options: {
 
   if (defenseText.length > 50) {
     if (posCount > negCount) {
-      score += 0.25;
+      semanticScore += 0.25;
     } else if (negCount > posCount) {
-      score -= 0.20;
+      semanticScore -= 0.20;
     }
   }
 
   // 检查挑战文本的攻击烈度
   if (critiqueText.includes('致命') || critiqueText.includes('崩溃') || critiqueText.includes('数据失真')) {
-    score -= 0.10;
+    semanticScore -= 0.10;
+  }
+  semanticScore = Math.max(0.05, Math.min(0.95, semanticScore));
+
+  // 2. 多维联合观测向量融合 (P1-2: Grounding + Semantic + DSS)
+  let finalScore = semanticScore;
+  if (typeof groundedTrueRatio === 'number' && typeof dssScore === 'number') {
+    // 严密融合公式: Sr = 0.40 * GroundedTrueRatio + 0.35 * SemanticScore + 0.25 * (1 - DSS)
+    finalScore = 0.40 * groundedTrueRatio + 0.35 * semanticScore + 0.25 * (1.0 - dssScore);
+  } else if (typeof groundedTrueRatio === 'number') {
+    finalScore = semanticScore + (groundedTrueRatio - 0.5) * 0.3;
+  } else if (typeof dssScore === 'number') {
+    finalScore = semanticScore * (1 - dssScore * 0.3);
   }
 
-  // 接地工具实证反馈增益
-  if (typeof groundedTrueRatio === 'number') {
-    // 如果工具实证检验全部通过，说明方案已在沙箱跑通
-    score += (groundedTrueRatio - 0.5) * 0.3;
-  }
-
-  return Math.max(0.05, Math.min(0.95, Math.round(score * 100) / 100));
+  return Math.max(0.05, Math.min(0.95, Math.round(finalScore * 100) / 100));
 }

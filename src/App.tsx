@@ -89,6 +89,8 @@ import {
   evaluateDynamicSycophancyScore,
   applySycophancyDiscountToSprt,
   calculateModelDiversity,
+  localizeGraphDiffDispute,
+  calculateColMadContributions,
 } from './services/agentCollaboration';
 
 export default function App() {
@@ -2407,9 +2409,9 @@ export default function App() {
         }
         delete stageRefineRetriesRef.current[`${topicId}:challenge`];
 
-        // 提取论点因果节点、定位最早冲突切片与上下文脱水
+        // 提取论点因果节点、升级为 Claim DAG 与图差分冲突定位 (Wave 3 P1-1)
         const argumentNodes = extractArgumentNodes(targetProposalText);
-        const disputePacket = localizeEarliestDispute(targetProposalText, acpResp.textResponse, argumentNodes);
+        const disputePacket = localizeGraphDiffDispute(argumentNodes, acpResp.textResponse);
         const committedStates = dehydrateContextToCommittedStates(targetProposalText, acpResp.textResponse, argumentNodes);
 
         // 提炼并保留伴生少数派异议报告 (P0-2 Disagreement-Aware Deliberation)
@@ -3294,22 +3296,29 @@ export default function App() {
           groundedTrueRatio,
         });
 
-        // CognoNexus 阶段 3: 评估答辩修正后的对齐分数与似然比
+        // CognoNexus 阶段 3: 评估答辩修正后的对齐分数与似然比 (Wave 3 P1-2: 多维观测联合向量)
         const rawSprtScoreAfterDefense = estimateRoundAlignmentScore({
           proposalText: targetProposalText,
           critiqueText: targetChallengeText,
           defenseText: acpResp.textResponse,
           groundedTrueRatio,
+          dssScore: sycophancyEval.dss,
         });
 
         // 施加谄媚折减后的真实对齐分数 (Sharma et al. 2023)
         const sprtScoreAfterDefense = applySycophancyDiscountToSprt(rawSprtScoreAfterDefense, sycophancyEval);
+
+        const hasUnverifiedDisputeAfterDefense = Boolean(
+          currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.groundingStatus === 'unverified'
+        );
 
         const sprtStateAfterDefense = stepSprtGovernor({
           priorState: currentTopic.gameTheoreticState?.sprtState,
           currentRound: (currentTopic.gameTheoreticState?.roundCount || 1) + 2,
           alignmentScore: sprtScoreAfterDefense,
           groundedTrueRatio,
+          dssScore: sycophancyEval.dss,
+          hasUnverifiedCriticalDispute: hasUnverifiedDisputeAfterDefense,
         });
 
         logGameTheoreticTelemetry('decisionState_transition', topicId, {
@@ -3706,17 +3715,31 @@ export default function App() {
             solverType: mcdaPayload.solverType,
           });
 
-          // 将求解出的 MCDA 矩阵持久化至议题博弈状态中
+          // 计算 ColMAD 非零和协同事实贡献报表 (Wave 3 P1-3)
+          const colMadReport = calculateColMadContributions({
+            topicId,
+            agents,
+            proposalText: targetProposalText,
+            critiqueText: targetChallengeText,
+            verificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
+            defenseText: targetDefenseText,
+            argumentNodes: currentTopic.gameTheoreticState?.cognoNexus?.committedStates,
+            evidences: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain,
+          });
+
+          // 将求解出的 MCDA 矩阵与 ColMAD 报表持久化至议题博弈状态中
           updateTopicDataInState(topicId, (old) => ({
             ...old,
             gameTheoreticState: {
               ...old.gameTheoreticState,
               minorityReport: old.gameTheoreticState?.minorityReport,
               mcdaPayload,
+              colMadReport,
               cognoNexus: {
                 ...old.gameTheoreticState?.cognoNexus,
                 minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
                 mcdaPayload,
+                colMadReport,
               },
             },
           }));
