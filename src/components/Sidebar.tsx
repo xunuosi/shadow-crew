@@ -4,7 +4,6 @@ import {
   Hash, 
   Lock, 
   Plus, 
-  Inbox,
   Users, 
   Settings, 
   Bot, 
@@ -182,21 +181,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      {/* 3. Primary Top Navigation (Inbox, Agents & Teams) */}
+      {/* 3. Primary Top Navigation (Agents & Teams) */}
       <div className="px-2 space-y-0.5 mb-2">
-        <button
-          className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-fg-secondary hover:text-fg hover:bg-surface-hover transition-all cursor-pointer group"
-          title="所有未读与待办"
-        >
-          <div className="flex items-center gap-2">
-            <Inbox className="w-4 h-4 text-fg-muted group-hover:text-accent transition-colors shrink-0" />
-            <span className="font-medium text-xs">Inbox</span>
-          </div>
-          <span className="text-[10px] bg-accent/15 text-accent px-1.5 py-0.5 rounded font-mono border border-accent/30 shrink-0">
-            3
-          </span>
-        </button>
-
         <button
           onClick={() => onSelectMainView?.('agents')}
           className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg transition-all cursor-pointer group ${
