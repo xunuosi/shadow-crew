@@ -9,7 +9,8 @@ import {
   MinorityReport,
   SprtGovernorState,
   DisputeSpanPacket,
-  ArgumentNode
+  ArgumentNode,
+  GroundingEvidence,
 } from '../types';
 import {
   solveDeterministicBwm,
@@ -28,6 +29,8 @@ import {
   validateStageContract,
   STAGE_CONTRACT_MAX_RETRIES,
   tieredGroundingGovernor,
+  parseVerifierOutput,
+  processVerifierEvidenceChain,
   generateDynamicRulingDraft,
 } from './cogno';
 
@@ -304,8 +307,23 @@ ${topic.targetProposalText || '（暂未提取到前序提案方案，请围绕�
 【守则与职责】:
 1. 坚决不参与任何主观文本辩论与空洞口水战！
 2. 你的唯一任务是对红队提出的极端失效反例与提案方案的前提假设，执行确定性的反事实与实证逻辑检验；
-3. 给出具体的工具调用构想或模拟执行结果（如：运行测试脚本、检查并发竞争条件、验证网络抖动下的幂等性）；
-4. 输出确定性结论：该反例工况在真实代码/系统环境下究竟是否成立 (True / False)，并列出直接物理证据链。
+3. 给出具体的工具调用执行记录（如：ast_grep, static_analyzer, rag_search 或 code_sandbox）；
+4. 输出确定性结论：该反例工况在真实代码/系统环境下究竟是否成立 (PASS / FAIL / 证实 / 证伪)；
+5. 【必须输出结构化实证结果】：在陈词结尾附带标准 JSON 证据块：
+\`\`\`json
+{
+  "evidences": [
+    {
+      "sourceTool": "ast_grep",
+      "inputQueryOrCode": "具体的检验代码、查询命令或测试用例",
+      "rawOutput": "执行输出摘要或观测结果",
+      "truthValue": true,
+      "confidence": 0.9,
+      "verifierReport": "精炼客观的实证推演结论"
+    }
+  ]
+}
+\`\`\`
 无需在正文 @ 任何人。
 
 【待验证提案方案】:
@@ -495,64 +513,268 @@ ${filesList}
 5. 无需在正文中 @ 任何人，直接交付高质量落地方案与代码补丁！`;
 }
 
-/**
- * 神经符号确定性运筹裁决：结合 Arbiter 意图与确定性 BWM 求解器，输出确定性多属性决策载荷
- */
-export function generateDeterministicMcdaPayload(options: {
+interface CriterionCandidate {
+  id: string;
+  name: string;
+  direction: 'maximize' | 'minimize';
+  keywords: string[];
+}
+
+const CRITERIA_CATALOGUE: CriterionCandidate[] = [
+  {
+    id: 'rel',
+    name: '系统健壮性与容灾抗风险',
+    direction: 'maximize',
+    keywords: ['健壮', '容灾', '高可用', '崩溃', '单点', '故障', '死锁', '可靠性', '稳定性', '异常'],
+  },
+  {
+    id: 'perf',
+    name: '吞吐性能与低延迟表现',
+    direction: 'maximize',
+    keywords: ['性能', '延迟', '高并发', '吞吐', 'tps', 'qps', '响应时间', '压测', '瓶颈', '毫秒'],
+  },
+  {
+    id: 'comp',
+    name: '代码实现与维护复杂度',
+    direction: 'minimize',
+    keywords: ['复杂度', '开发周期', '维护', '可读性', '技术债', '耦合', '重构成本', '工程量', '难度'],
+  },
+  {
+    id: 'cons',
+    name: '数据一致性与状态正确性',
+    direction: 'maximize',
+    keywords: ['一致性', '幂等', '原子性', '状态机', '事务', '数据丢失', '脏读', '竞争', '锁'],
+  },
+  {
+    id: 'sec',
+    name: '安全性与隔离防护机制',
+    direction: 'maximize',
+    keywords: ['安全', '权限', '攻击', '越权', '隔离', '审计', '防重放', '注入', '凭证'],
+  },
+  {
+    id: 'cost',
+    name: '资源开销与基础设施成本',
+    direction: 'minimize',
+    keywords: ['成本', '资源', '内存', 'cpu', '带宽', '开销', '服务器', '云成本', '配额'],
+  },
+];
+
+function extractCoreThemeFromText(text?: string, fallback = ''): string {
+  if (!text || !text.trim()) return fallback;
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  const keyLine = lines.find((l) =>
+    l.includes('选型') || l.includes('方案') || l.includes('建议') || l.includes('结论') ||
+    l.includes('架构') || l.includes('重构') || l.includes('补丁') || l.startsWith('1.')
+  );
+  if (keyLine) {
+    const cleaned = keyLine.replace(/^[0-9.#\-*：:\s【】]+/, '').replace(/[*`_]/g, '').trim();
+    if (cleaned.length >= 3) {
+      return cleaned.slice(0, 20);
+    }
+  }
+  const boldMatch = text.match(/\*\*([^*]{3,25})\*\*/);
+  if (boldMatch) {
+    return boldMatch[1].trim().slice(0, 20);
+  }
+  return lines[0]?.slice(0, 20) || fallback;
+}
+
+export interface GenerateMcdaOptions {
   arbiterText?: string;
   proposalText?: string;
   critiqueText?: string;
   defenseText?: string;
-}): McdaDecisionPayload {
-  const { arbiterText = '' } = options;
+  topicTitle?: string;
+  topicDescription?: string;
+  argumentNodes?: ArgumentNode[];
+  evidences?: GroundingEvidence[];
+}
 
-  const criteria: McdaCriterion[] = [
-    { id: 'rel', name: '系统健壮性与容灾抗风险', direction: 'maximize' },
-    { id: 'perf', name: '吞吐量与低延迟性能', direction: 'maximize' },
-    { id: 'comp', name: '代码实现与维护复杂度', direction: 'minimize' },
-    { id: 'cost', name: '资源占用与基础设施成本', direction: 'minimize' },
-  ];
+/**
+ * 神经符号确定性运筹裁决：结合 Arbiter 意图与真实研讨脉络，输出确定性多属性决策载荷 (LLM + BWM)
+ */
+export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): McdaDecisionPayload {
+  const {
+    arbiterText = '',
+    proposalText = '',
+    critiqueText = '',
+    defenseText = '',
+    topicTitle = '',
+    topicDescription = '',
+    argumentNodes = [],
+    evidences = [],
+  } = options;
 
-  const alternatives = [
-    '方案A: 采纳主导补丁方案 (Adopt Proposer Patch)',
-    '方案B: 采纳挑战推倒重构 (Reject & Rebuild)',
-    '方案C: 架构权衡分期推进 (Staged Trade-off Matrix)',
-  ];
+  const fullCorpus = [topicTitle, topicDescription, arbiterText, proposalText, critiqueText, defenseText].join('\n').toLowerCase();
 
-  // 依据仲裁陈词分析最优与最差准则倾向
-  let bestCriterionId = 'rel';
-  let worstCriterionId = 'cost';
+  // 1. 动态评分筛选当前议题最关切的准则 (前 4 项)
+  const scoredCriteria = CRITERIA_CATALOGUE.map((c) => {
+    let count = 0;
+    c.keywords.forEach((kw) => {
+      const regex = new RegExp(kw.toLowerCase(), 'g');
+      const matches = fullCorpus.match(regex);
+      if (matches) count += matches.length;
+    });
+    return { candidate: c, count };
+  });
 
-  if (arbiterText.includes('性能') || arbiterText.includes('延迟') || arbiterText.includes('高并发') || arbiterText.includes('吞吐')) {
-    bestCriterionId = 'perf';
-  } else if (arbiterText.includes('复杂度') || arbiterText.includes('开发周期') || arbiterText.includes('成本')) {
-    bestCriterionId = 'comp';
-  }
+  scoredCriteria.sort((a, b) => b.count - a.count);
+  const selectedCandidates = scoredCriteria.slice(0, 4).map((s) => s.candidate);
 
-  // 构造标准 BWM 偏好向量
-  let bestToOthers = [1, 2, 3, 5];
-  let othersToWorst = [5, 4, 2, 1];
+  // 确保至少有 3 个准则，若不足则使用标准默认准则
+  const criteria: McdaCriterion[] = (selectedCandidates.length >= 3 ? selectedCandidates : CRITERIA_CATALOGUE.slice(0, 4)).map((c) => ({
+    id: c.id,
+    name: c.name,
+    direction: c.direction,
+  }));
 
-  if (bestCriterionId === 'perf') {
-    bestToOthers = [2, 1, 3, 4];
-    othersToWorst = [4, 5, 2, 1];
-  } else if (bestCriterionId === 'comp') {
-    bestToOthers = [3, 3, 1, 4];
-    othersToWorst = [2, 2, 5, 1];
-  }
+  // 2. 动态抽取候选方案名称
+  const propTheme = extractCoreThemeFromText(proposalText, '提案主推方案');
+  const critTheme = extractCoreThemeFromText(critiqueText, '红队对抗重构方案');
+  const defTheme = extractCoreThemeFromText(defenseText || arbiterText, '架构权衡补丁');
 
-  // 构建各候选方案在各准则下的打分 (0~10)
+  const altA = `方案A: 提案主导方案 (${propTheme})`;
+  const altB = `方案B: 红队对抗方案 (${critTheme})`;
+  const altC = `方案C: 架构权衡补丁 (${defTheme})`;
+  const alternatives = [altA, altB, altC];
+
+  // 3. 构建方案评分矩阵与证据溯源链 (Audit Provenance)
   const scoreMatrix: Record<string, Record<string, number>> = {
-    [alternatives[0]]: { rel: 8.6, perf: 8.4, comp: 4.2, cost: 3.5 },
-    [alternatives[1]]: { rel: 9.3, perf: 7.2, comp: 8.8, cost: 8.0 },
-    [alternatives[2]]: { rel: 8.9, perf: 8.5, comp: 5.4, cost: 4.2 },
+    [altA]: {},
+    [altB]: {},
+    [altC]: {},
+  };
+  const scoreProvenance: Record<string, Record<string, string>> = {
+    [altA]: {},
+    [altB]: {},
+    [altC]: {},
   };
 
-  // 如果仲裁陈词明确支持推倒重构
-  if (arbiterText.includes('驳回') || arbiterText.includes('重构') || arbiterText.includes('推翻')) {
-    scoreMatrix[alternatives[1]].rel = 9.8;
-    scoreMatrix[alternatives[0]].rel = 5.2;
+  // 计算实证与论点状态对准则的修正因子
+  const verifiedT1T2Count = evidences.filter((e) => e.truthValue).length;
+  const refutedT1T2Count = evidences.filter((e) => !e.truthValue).length;
+
+  for (const crit of criteria) {
+    let scoreA = 7.5;
+    let scoreB = 7.0;
+    let scoreC = 8.0;
+
+    let provA = '立论基线设计';
+    let provB = '红队对抗主张';
+    let provC = '中立综合折中';
+
+    // 准则方向与类型适配
+    if (crit.id === 'rel' || crit.id === 'cons') {
+      scoreA = 7.8;
+      scoreB = 8.8;
+      scoreC = 8.5;
+      if (refutedT1T2Count > 0) {
+        scoreA = Math.max(3.5, scoreA - 2.5);
+        provA = `实证检验存在 ${refutedT1T2Count} 项未通过/复现反例缺陷`;
+        provB = '红队反例获接地实证验证支持';
+      } else if (verifiedT1T2Count > 0) {
+        scoreA = Math.min(9.5, scoreA + 1.2);
+        provA = `接地实证通过 ${verifiedT1T2Count} 项物理检验`;
+      }
+      if (defenseText.includes('补丁') || defenseText.includes('容灾') || defenseText.includes('降级')) {
+        scoreC = Math.min(9.4, scoreC + 0.8);
+        provC = '答辩已融入容灾/降级防御补丁';
+      }
+    } else if (crit.id === 'perf') {
+      scoreA = 8.5;
+      scoreB = 7.2;
+      scoreC = 8.2;
+      if (critiqueText.includes('性能') || critiqueText.includes('延迟') || critiqueText.includes('瓶颈')) {
+        scoreA = Math.max(4.0, scoreA - 1.5);
+        provA = '红队指出极端并发/网络抖动下的延迟抖动隐患';
+      }
+      if (defenseText.includes('优化') || defenseText.includes('异步') || defenseText.includes('缓存')) {
+        scoreC = Math.min(9.2, scoreC + 0.8);
+        provC = '答辩补丁引入异步/缓冲优化性能';
+      }
+    } else if (crit.id === 'comp') {
+      // 复杂度越小越好 (minimize)
+      scoreA = 4.5; // 相对较小改动
+      scoreB = 8.8; // 推倒重构复杂度极高
+      scoreC = 5.5; // 补丁折中
+      provA = '原方案架构改动最小';
+      provB = '推倒重构涉及深层技术栈与历史代码重写';
+      provC = '局部补丁修补，工程周期适中';
+    } else if (crit.id === 'cost') {
+      scoreA = 4.0;
+      scoreB = 7.5;
+      scoreC = 4.8;
+      provA = '复用现有基础设施';
+      provB = '引入新架构组件需额外计算/运维资源';
+      provC = '局部配置微调，资源增量低';
+    } else if (crit.id === 'sec') {
+      scoreA = 7.6;
+      scoreB = 8.6;
+      scoreC = 8.4;
+      provA = '常规安全边界设计';
+      provB = '隔离性更强但架构开销更大';
+      provC = '补充安全鉴权与审计切面';
+    }
+
+    // Arbiter 仲裁文本倾向修正
+    if (arbiterText.includes('驳回') || arbiterText.includes('推倒重构') || arbiterText.includes('推翻')) {
+      scoreB = Math.min(9.6, scoreB + 1.0);
+      scoreA = Math.max(3.0, scoreA - 1.5);
+      provB += ' (仲裁官重点支持重构路线)';
+    } else if (arbiterText.includes('采纳提案') || arbiterText.includes('坚持原案')) {
+      scoreA = Math.min(9.5, scoreA + 1.0);
+      provA += ' (仲裁官认可原案主体设计)';
+    }
+
+    scoreMatrix[altA][crit.id] = Math.round(scoreA * 10) / 10;
+    scoreMatrix[altB][crit.id] = Math.round(scoreB * 10) / 10;
+    scoreMatrix[altC][crit.id] = Math.round(scoreC * 10) / 10;
+
+    scoreProvenance[altA][crit.id] = provA;
+    scoreProvenance[altB][crit.id] = provB;
+    scoreProvenance[altC][crit.id] = provC;
   }
+
+  // 4. 依据仲裁陈词动态判定最优准则 (Best) 与最差准则 (Worst)
+  let bestCriterionId = criteria[0].id;
+  let worstCriterionId = criteria[criteria.length - 1].id;
+
+  let maxBestMentions = -1;
+  criteria.forEach((c) => {
+    const cand = CRITERIA_CATALOGUE.find((cat) => cat.id === c.id);
+    let mentions = 0;
+    (cand?.keywords || [c.name]).forEach((kw) => {
+      if (arbiterText.includes(kw)) mentions++;
+    });
+    if (mentions > maxBestMentions && mentions > 0) {
+      maxBestMentions = mentions;
+      bestCriterionId = c.id;
+    }
+  });
+
+  const nonBestCriteria = criteria.filter((c) => c.id !== bestCriterionId);
+  const costOrComp = nonBestCriteria.find((c) => c.id === 'cost' || c.id === 'comp');
+  worstCriterionId = costOrComp ? costOrComp.id : nonBestCriteria[nonBestCriteria.length - 1].id;
+
+  // 5. 构建符合一致性的 BWM 偏好向量
+  const bestIdx = criteria.findIndex((c) => c.id === bestCriterionId);
+  const worstIdx = criteria.findIndex((c) => c.id === worstCriterionId);
+
+  const bestToOthers: number[] = new Array(criteria.length).fill(2);
+  const othersToWorst: number[] = new Array(criteria.length).fill(2);
+
+  bestToOthers[bestIdx] = 1;
+  bestToOthers[worstIdx] = Math.min(5, Math.max(3, criteria.length));
+
+  othersToWorst[worstIdx] = 1;
+  othersToWorst[bestIdx] = bestToOthers[worstIdx];
+
+  criteria.forEach((c, idx) => {
+    if (idx !== bestIdx && idx !== worstIdx) {
+      bestToOthers[idx] = 2;
+      othersToWorst[idx] = Math.max(1, bestToOthers[worstIdx] - 1);
+    }
+  });
 
   return solveDeterministicBwm({
     solverType: 'BWM',
@@ -563,6 +785,7 @@ export function generateDeterministicMcdaPayload(options: {
     worstCriterionId,
     bestToOthers,
     othersToWorst,
+    scoreProvenance,
   });
 }
 
@@ -603,6 +826,8 @@ export {
   validateStageContract,
   STAGE_CONTRACT_MAX_RETRIES,
   tieredGroundingGovernor,
+  parseVerifierOutput,
+  processVerifierEvidenceChain,
   generateDynamicRulingDraft,
 };
 

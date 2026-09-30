@@ -74,6 +74,7 @@ export interface EvaluateSprtOptions {
   calibrationStatus?: 'uncalibrated' | 'calibrated' | 'fallback';
   alpha?: number;         // 第一类错误率 (假共识/虚假早停)，默认动态拟合
   beta?: number;          // 第二类错误率 (漏报/死锁误判)，默认动态拟合
+  hasUnverifiedCriticalDispute?: boolean; // P1-2 / P0-1: 存在未实证核心争议时硬门禁拦截 early_exit
 }
 
 /**
@@ -118,8 +119,13 @@ export function stepSprtGovernor(options: EvaluateSprtOptions): SprtGovernorStat
   let statusDescription = `轮次 ${currentRound}: 对齐分 ${(boundedScore * 100).toFixed(0)}%, 似然比 Λ=${currentLambda} (区间 [${lowerThresholdB}, ${upperThresholdA}])`;
 
   if (currentLambda >= upperThresholdA) {
-    decisionState = 'early_exit';
-    statusDescription = `⚡ SPRT 突破高置信上界 (Λ=${currentLambda} >= ${upperThresholdA})，已达成高质共识，触发早停！`;
+    if (options.hasUnverifiedCriticalDispute) {
+      decisionState = 'continue';
+      statusDescription = `🔒 对齐似然比达到高位 (Λ=${currentLambda})，但存在核心未核验争议点，强制要求接地验证官执行实证检验！`;
+    } else {
+      decisionState = 'early_exit';
+      statusDescription = `⚡ SPRT 突破高置信上界 (Λ=${currentLambda} >= ${upperThresholdA})，已达成高质共识，触发早停！`;
+    }
   } else if (currentLambda <= lowerThresholdB) {
     decisionState = 'deadlock_escalation';
     statusDescription = `⚠️ SPRT 跌破死锁下界 (Λ=${currentLambda} <= ${lowerThresholdB})，检测到底层价值冲突，触发熔断求助人类！`;

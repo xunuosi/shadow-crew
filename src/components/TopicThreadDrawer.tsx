@@ -1524,6 +1524,34 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                         </div>
                       ))}
                     </div>
+
+                    {/* CognoNexus 实证打分溯源链 (Audit Provenance) */}
+                    {mcda.scoreProvenance && Object.keys(mcda.scoreProvenance).length > 0 && (
+                      <div className="space-y-1 pt-1.5 border-t border-border/40">
+                        <div className="text-[9px] font-semibold text-fg-muted flex items-center justify-between">
+                          <span>实证打分溯源链 (Audit Provenance):</span>
+                          <span className="text-[8px] text-primary/80 font-mono">神经符号绑定</span>
+                        </div>
+                        <div className="space-y-1 text-[8px] text-fg-secondary">
+                          {Object.entries(mcda.scoreProvenance).map(([altName, critMap]) => (
+                            <div key={altName} className="p-1 rounded bg-surface-subtle/50 border border-border/30">
+                              <span className="font-semibold text-fg block truncate">{altName.split(' (')[0]}</span>
+                              <div className="space-y-0.5 mt-0.5">
+                                {Object.entries(critMap).map(([critId, reason]) => {
+                                  const cName = mcda.criteria.find((c) => c.id === critId)?.name.split('与')[0] || critId;
+                                  return (
+                                    <div key={critId} className="flex items-start gap-1">
+                                      <span className="text-fg-muted shrink-0">[{cName}]:</span>
+                                      <span className="truncate">{reason}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })()}

@@ -29,6 +29,7 @@ export interface SolveBwmInput {
   bestToOthers: number[];       // 维度顺序与 criteria 一致，最优准则相对于其他准则的偏好度 (1~9)
   othersToWorst: number[];      // 维度顺序与 criteria 一致，其他准则相对于最差准则的偏好度 (1~9)
   throwOnDegeneracy?: boolean;  // 遇到退化输入时是否抛出异常，默认 true
+  scoreProvenance?: Record<string, Record<string, string>>; // 评分证据溯源链 (P0-3)
 }
 
 /**
@@ -210,6 +211,7 @@ export function solveDeterministicBwm(input: SolveBwmInput): McdaDecisionPayload
       ranking: [],
       status: 'rejected',
       rejectionReason: 'insufficient_information',
+      scoreProvenance: input.scoreProvenance,
     };
   }
 
@@ -229,6 +231,7 @@ export function solveDeterministicBwm(input: SolveBwmInput): McdaDecisionPayload
       ranking: [],
       status: 'rejected',
       rejectionReason: solved.rejectionReason,
+      scoreProvenance: input.scoreProvenance,
     };
   }
 
@@ -289,5 +292,6 @@ export function solveDeterministicBwm(input: SolveBwmInput): McdaDecisionPayload
     consistencyPassed,
     ranking: rankingList,
     status: 'optimal',
+    scoreProvenance: input.scoreProvenance,
   };
 }

@@ -307,13 +307,15 @@ export interface ArgumentNode {
 
 export interface GroundingEvidence {
   evidenceId: string;
-  sourceTool: 'code_sandbox' | 'rag_search' | 'sql_executor' | 'static_analyzer';
+  sourceTool: 'code_sandbox' | 'rag_search' | 'sql_executor' | 'static_analyzer' | 'ast_grep' | 'read_file' | 'bash_exec' | string;
   inputQueryOrCode: string;
   rawOutput: string;
   truthValue: boolean;         // 反事实检验真值判定
   verifierReport: string;
   tier?: 'T1' | 'T2';          // T1: 只读建议 (权重<=0.3), T2: 宪章授权执行沙箱 (R-3)
   isAdvisory?: boolean;        // 是否为 T1 Advisory 建议性证据
+  claimId?: string;            // 关联的原子论点节点 ID (P0-1 原子承诺链)
+  confidence?: number;         // 检验置信度
 }
 
 export interface DisputeSpanPacket {
@@ -347,6 +349,7 @@ export interface McdaDecisionPayload {
   ranking: { alternative: string; totalUtility: number; rank: number }[]; // 最终数学综合得分排序
   status?: 'optimal' | 'rejected'; // 求解状态 (R-2 退化拒绝支持)
   rejectionReason?: 'insufficient_information' | 'inconsistent_matrix';
+  scoreProvenance?: Record<string, Record<string, string>>; // 评分证据来源追溯链 (P0-3 真实讨论绑定)
 }
 
 export interface SprtGovernorState {

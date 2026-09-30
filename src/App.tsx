@@ -73,6 +73,7 @@ import {
   buildTopicPrompt,
   buildExecutionPrompt,
   generateDeterministicMcdaPayload,
+  compileMinorityReport,
   extractOrCompileMinorityReport,
   extractArgumentNodes,
   localizeEarliestDispute,
@@ -83,6 +84,8 @@ import {
   logGameTheoreticTelemetry,
   validateStageContract,
   STAGE_CONTRACT_MAX_RETRIES,
+  tieredGroundingGovernor,
+  processVerifierEvidenceChain,
 } from './services/agentCollaboration';
 
 export default function App() {
@@ -2392,13 +2395,26 @@ export default function App() {
         const argumentNodes = extractArgumentNodes(targetProposalText);
         const disputePacket = localizeEarliestDispute(targetProposalText, acpResp.textResponse, argumentNodes);
         const committedStates = dehydrateContextToCommittedStates(targetProposalText, acpResp.textResponse, argumentNodes);
+
+        // 提炼并保留伴生少数派异议报告 (P0-2 Disagreement-Aware Deliberation)
+        const minorityReport = compileMinorityReport({
+          dissentingAgentId: challengerAgent.id,
+          dissentingAgentName: challengerAgent.name,
+          dissentingAgentModel: challengerAgent.modelBadge || challengerAgent.modelConfig?.modelId || challengerAgent.modelConfig?.modelName || 'Heterogeneous-LLM',
+          critiqueText: acpResp.textResponse,
+          proposalText: targetProposalText,
+        });
+
         const sprtScore = estimateRoundAlignmentScore({
           proposalText: targetProposalText,
           critiqueText: acpResp.textResponse,
         });
+        // 关键门禁：若存在未验证核心冲突切片，拦截 early_exit (P1-2 / P0-1)
+        const hasUnverifiedDispute = Boolean(disputePacket && disputePacket.groundingStatus === 'unverified');
         const sprtState = stepSprtGovernor({
           currentRound: 2,
           alignmentScore: sprtScore,
+          hasUnverifiedCriticalDispute: hasUnverifiedDispute,
         });
 
         // 记录 SPRT 似然比迁移打点 (R-1)
@@ -2424,10 +2440,12 @@ export default function App() {
               isChallengerResponded: true,
               quorumAlert: '⚠️ SPRT 似然比跌破死锁下界 (Deadlock Escalation)，攻防陷入深层价值对立，已熔断自动推演',
               sprtState,
+              minorityReport,
               cognoNexus: {
                 committedStates,
                 currentDispute: disputePacket,
                 sprtState,
+                minorityReport,
               },
             },
           }));
@@ -2496,10 +2514,12 @@ export default function App() {
             isChallengerResponded: true,
             quorumAlert: undefined,
             sprtState,
+            minorityReport,
             cognoNexus: {
               committedStates,
               currentDispute: disputePacket,
               sprtState,
+              minorityReport,
             },
           },
         }));
@@ -2852,12 +2872,21 @@ export default function App() {
         }
         delete stageRefineRetriesRef.current[`${topicId}:verification`];
 
-        // 显式提取接地实证真值率并记录打点 (R-1 接线三件套)
-        const groundedTrueRatio = extractGroundedTrueRatio(acpResp.textResponse);
+        // 全量调度分级取证执行器并计算确定性加权真值率 (P0-1 / R-3 DIANOIA)
+        const { evidences, weightedTrueRatio, updatedDispute, updatedCommittedStates } = processVerifierEvidenceChain({
+          topicId,
+          verifierText: acpResp.textResponse,
+          isSafetyCharterSigned: currentTopic.gameTheoreticState?.isSafetyCharterSigned,
+          disputePacket: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute,
+          committedStates: currentTopic.gameTheoreticState?.cognoNexus?.committedStates,
+        });
+        const groundedTrueRatio = weightedTrueRatio;
+
         logGameTheoreticTelemetry('grounded_ratio_injected', topicId, {
           stage: 'verification',
           groundedTrueRatio,
           verifierId: verifierAgent.id,
+          evidenceCount: evidences.length,
         });
 
         // 阶段 3 验证完成后，转入【阶段 4: 答辩修正 (defense)】
@@ -2871,6 +2900,13 @@ export default function App() {
             targetChallengeContent: targetChallengeText,
             targetVerificationContent: acpResp.textResponse,
             isVerifierResponded: true,
+            minorityReport: old.gameTheoreticState?.minorityReport,
+            cognoNexus: {
+              ...old.gameTheoreticState?.cognoNexus,
+              currentDispute: updatedDispute || old.gameTheoreticState?.cognoNexus?.currentDispute,
+              committedStates: updatedCommittedStates || old.gameTheoreticState?.cognoNexus?.committedStates || [],
+              minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
+            },
           },
         }));
 
@@ -3268,10 +3304,12 @@ export default function App() {
               isDefenseResponded: true,
               quorumAlert: '⚠️ SPRT 似然比跌破死锁下界 (Deadlock Escalation)，答辩未能化解分歧，已熔断流转',
               sprtState: sprtStateAfterDefense,
+              minorityReport: old.gameTheoreticState?.minorityReport,
               cognoNexus: {
                 ...old.gameTheoreticState?.cognoNexus,
                 committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
                 sprtState: sprtStateAfterDefense,
+                minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
               },
             },
           }));
@@ -3340,10 +3378,12 @@ export default function App() {
               isVerifierResponded: false,
               isDefenseResponded: false,
               sprtState: sprtStateAfterDefense,
+              minorityReport: old.gameTheoreticState?.minorityReport,
               cognoNexus: {
                 ...old.gameTheoreticState?.cognoNexus,
                 committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
                 sprtState: sprtStateAfterDefense,
+                minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
               },
             },
           }));
@@ -3398,10 +3438,12 @@ export default function App() {
             targetDefenseContent: acpResp.textResponse,
             isDefenseResponded: true,
             sprtState: sprtStateAfterDefense,
+            minorityReport: old.gameTheoreticState?.minorityReport,
             cognoNexus: {
               ...old.gameTheoreticState?.cognoNexus,
               committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
               sprtState: sprtStateAfterDefense,
+              minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
             },
           },
         }));
@@ -3607,11 +3649,16 @@ export default function App() {
             missingRequirements: contractValidation.missingRequirements,
           });
 
-          // 求解确定性运筹决策矩阵并进行一致性硬门禁检验 (R-1)
+          // 求解确定性运筹决策矩阵并进行一致性硬门禁检验 (R-1 / P0-3)
           const mcdaPayload = generateDeterministicMcdaPayload({
+            arbiterText: acpResp.textResponse,
             proposalText: targetProposalText,
             critiqueText: targetChallengeText,
             defenseText: targetDefenseText,
+            topicTitle: currentTopic.title,
+            topicDescription: currentTopic.description,
+            argumentNodes: currentTopic.gameTheoreticState?.cognoNexus?.committedStates,
+            evidences: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain,
           });
 
           logGameTheoreticTelemetry('consistency_gate_evaluation', topicId, {
@@ -3625,9 +3672,11 @@ export default function App() {
             ...old,
             gameTheoreticState: {
               ...old.gameTheoreticState,
+              minorityReport: old.gameTheoreticState?.minorityReport,
               mcdaPayload,
               cognoNexus: {
                 ...old.gameTheoreticState?.cognoNexus,
+                minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
                 mcdaPayload,
               },
             },
@@ -4718,9 +4767,12 @@ export default function App() {
     const targetExecutorId = decision.executorId || decision.rulingRecord?.executorId;
     const executorAgent = targetExecutorId ? agentsRef.current.find((a) => a.id === targetExecutorId) : undefined;
 
+    const currentMinorityReport = decision.rulingRecord?.minorityReport || activeTopicData?.gameTheoreticState?.minorityReport;
+
     const rulingRecordWithExecutor: RulingRecord | undefined = decision.rulingRecord ? {
       ...decision.rulingRecord,
       executorId: targetExecutorId,
+      minorityReport: decision.rulingRecord.minorityReport || currentMinorityReport,
     } : undefined;
 
     const decisionRecord: DecisionRecord = {
@@ -4731,6 +4783,7 @@ export default function App() {
       resolvedAt,
       executorId: targetExecutorId,
       executorName: executorAgent?.name,
+      minorityReport: currentMinorityReport,
     };
 
     setMessages((prev) => {
@@ -4758,6 +4811,7 @@ export default function App() {
                 exemptionReason: decision.rulingRecord?.exemptionReason,
                 assignedExecutorId: targetExecutorId,
                 executionStatus: targetExecutorId ? 'running' : m.topicData.gameTheoreticState?.executionStatus,
+                minorityReport: currentMinorityReport,
               } : m.topicData.gameTheoreticState,
               decisionRecord,
               rulingRecord: rulingRecordWithExecutor,
@@ -4775,7 +4829,10 @@ export default function App() {
           : decision.rulingRecord.decisionType === 'reject_rebuild'
           ? '🔄 采纳挑战驳回重构'
           : '📊 达成架构权衡矩阵';
-        rollupContent = `⚖️ **博弈讨论仲裁定案 (${typeText})**\n\n**仲裁裁决官**：${decision.rulingRecord.arbiterName}\n**裁决结论**：${decision.rulingRecord.summary}\n${decision.solution ? `**实施/重构方案**：${decision.solution}\n` : ''}${decision.rulingRecord.tradeOffPoints && decision.rulingRecord.tradeOffPoints.length > 0 ? `**关键权衡要点**：\n${decision.rulingRecord.tradeOffPoints.map((p) => `- ${p}`).join('\n')}\n` : ''}${decision.rulingRecord.exemptionReason ? `**特权豁免记录**：⚠️ 已执行人类首席仲裁官具名豁免 (${decision.rulingRecord.exemptionReason})\n` : ''}${executorAgent ? `**指派落地执行**：🛠️ ${executorAgent.name} (${executorAgent.handle} · ${executorAgent.role})\n` : ''}**影响文件**：${decision.impactedFiles.join('、') || '无'}\n**签署裁决**：${decision.approvers.join('、')}\n\n*博弈论证与仲裁全过程已归档。*`;
+        const minoritySection = currentMinorityReport
+          ? `\n\n📌 **伴生少数派异议备案 (Minority Dissent)**：\n- **异议代表**：${currentMinorityReport.dissentingAgentName}\n- **保留意见**：${currentMinorityReport.coreDissentThesis}\n- **自洽逻辑**：${currentMinorityReport.rationalityBasis}\n- **黑天鹅重启条件**：\n${currentMinorityReport.reopeningTriggers.map((t) => `  • ${t}`).join('\n')}`
+          : '';
+        rollupContent = `⚖️ **博弈讨论仲裁定案 (${typeText})**\n\n**仲裁裁决官**：${decision.rulingRecord.arbiterName}\n**裁决结论**：${decision.rulingRecord.summary}\n${decision.solution ? `**实施/重构方案**：${decision.solution}\n` : ''}${decision.rulingRecord.tradeOffPoints && decision.rulingRecord.tradeOffPoints.length > 0 ? `**关键权衡要点**：\n${decision.rulingRecord.tradeOffPoints.map((p) => `- ${p}`).join('\n')}\n` : ''}${minoritySection}${decision.rulingRecord.exemptionReason ? `\n**特权豁免记录**：⚠️ 已执行人类首席仲裁官具名豁免 (${decision.rulingRecord.exemptionReason})\n` : ''}${executorAgent ? `\n**指派落地执行**：🛠️ ${executorAgent.name} (${executorAgent.handle} · ${executorAgent.role})\n` : ''}**影响文件**：${decision.impactedFiles.join('、') || '无'}\n**签署裁决**：${decision.approvers.join('、')}\n\n*博弈论证与仲裁全过程已归档。*`;
       }
 
       const rollupNotice: Message = {

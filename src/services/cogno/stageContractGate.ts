@@ -87,6 +87,10 @@ export function validateStageContract(
       if (!hasVerifiableVerdict) {
         missingRequirements.push('未包含明确的真值判定或实证结论（如 PASS/FAIL、已证实/已证伪）');
       }
+      const hasToolOrEvidence = /(工具|沙箱|sandbox|ast|grep|代码|测试|执行|用例|脚本|命令|evidence|evidences|sourceTool|query|output)/i.test(trimmed);
+      if (!hasToolOrEvidence) {
+        missingRequirements.push('未包含具体的检验工具、测试用例或代码实证记录');
+      }
       break;
     }
 
