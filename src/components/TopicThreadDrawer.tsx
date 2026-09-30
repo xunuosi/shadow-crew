@@ -995,8 +995,13 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         </div>
       )}
 
-      {/* CognoNexus 运行态看板 (SPRT 自适应调控与 LMAD 局部冲突切片) */}
-      {topic.discussionMode === 'game_theoretic' && (topic.gameTheoreticState?.sprtState || topic.gameTheoreticState?.cognoNexus?.currentDispute) && (
+      {/* CognoNexus 运行态看板 (SPRT 自适应调控、LMAD 局部冲突切片、谄媚度治理与异构模型多样性) */}
+      {topic.discussionMode === 'game_theoretic' && (
+        topic.gameTheoreticState?.sprtState ||
+        topic.gameTheoreticState?.cognoNexus?.currentDispute ||
+        topic.gameTheoreticState?.latestSycophancy ||
+        topic.gameTheoreticState?.modelDiversity
+      ) && (
         <div className="px-3.5 py-1.5 bg-surface-subtle/40 border-b border-border text-[10px] space-y-1.5">
           {/* SPRT 自适应调控条 */}
           {topic.gameTheoreticState?.sprtState && (
@@ -1037,6 +1042,61 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 {topic.gameTheoreticState.sprtState.decisionState === 'continue' && (
                   <span className="px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-600 dark:text-purple-400 font-medium font-sans">
                     序贯收敛中 [区间: -2.94 ~ +2.94]
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Wave 2 P0-4: 谄媚度治理 (Sycophancy Governance: BSS / DSS / γ) */}
+          {topic.gameTheoreticState?.latestSycophancy && (
+            <div className="flex items-center justify-between gap-2 p-1.5 rounded-lg bg-surface border border-border/80 shadow-2xs">
+              <div className="flex items-center gap-1.5 text-fg">
+                <ShieldCheck className="w-3 h-3 text-cyan-500 shrink-0" />
+                <span className="font-semibold">谄媚度治理 (BSS/DSS):</span>
+                <span className="font-mono text-[9px] text-fg-muted">
+                  DSS: {(topic.gameTheoreticState.latestSycophancy.dss * 100).toFixed(0)}% · BSS: {(topic.gameTheoreticState.latestSycophancy.bss * 100).toFixed(0)}% · 折减因子 γ={topic.gameTheoreticState.latestSycophancy.discountFactorGamma.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {topic.gameTheoreticState.latestSycophancy.surrenderDetected ? (
+                  <span className="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-600 dark:text-rose-400 font-medium font-sans">
+                    ⚠️ 顺从投降拦截 (Surrender Blocked)
+                  </span>
+                ) : (
+                  <span className={`px-1.5 py-0.5 rounded font-mono text-[9px] ${
+                    topic.gameTheoreticState.latestSycophancy.sycophancyLevel === 'authentic'
+                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-medium'
+                      : topic.gameTheoreticState.latestSycophancy.sycophancyLevel === 'mild_conformity'
+                      ? 'bg-amber-500/15 text-amber-600 font-medium'
+                      : 'bg-rose-500/15 text-rose-600 font-medium'
+                  }`}>
+                    {topic.gameTheoreticState.latestSycophancy.sycophancyLevel === 'authentic' ? '✓ 批判性充分' :
+                     topic.gameTheoreticState.latestSycophancy.sycophancyLevel === 'mild_conformity' ? '⚠️ 轻度附和' : '⚠️ 高谄媚偏见'}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Wave 2 P0-5: 异构模型多样性指数 (Model Diversity) */}
+          {topic.gameTheoreticState?.modelDiversity && (
+            <div className="flex items-center justify-between gap-2 p-1.5 rounded-lg bg-surface border border-border/80 shadow-2xs">
+              <div className="flex items-center gap-1.5 text-fg">
+                <BrainCircuit className="w-3 h-3 text-purple-500 shrink-0" />
+                <span className="font-semibold">异构模型多样性:</span>
+                <span className="font-mono text-[9px] text-fg-muted">
+                  指数: {(topic.gameTheoreticState.modelDiversity.score * 100).toFixed(0)}% · 家族: {Object.keys(topic.gameTheoreticState.modelDiversity.familyDistribution).join(', ')}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {topic.gameTheoreticState.modelDiversity.isHomogeneous ? (
+                  <span className="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-600 dark:text-rose-400 font-medium font-sans">
+                    ⚠️ 同质化模型偏见警示
+                  </span>
+                ) : (
+                  <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-medium font-sans">
+                    ✓ 异构互补对抗
                   </span>
                 )}
               </div>
@@ -1495,13 +1555,20 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                         <Scale className="w-3.5 h-3.5 text-amber-500" />
                         <span>MCDA 运筹决策矩阵 (BWM 最优最劣法)</span>
                       </div>
-                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-medium ${
-                        mcda.consistencyPassed 
-                          ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' 
-                          : 'bg-amber-500/15 text-amber-600'
-                      }`}>
-                        ξ* = {mcda.consistencyIndex} ({mcda.consistencyPassed ? '✓ 逻辑严密一致' : '⚠️ 需关注'})
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {mcda.confidenceMatrix && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-blue-500/15 text-blue-600 dark:text-blue-400 font-medium">
+                            ReConcile 置信度加权
+                          </span>
+                        )}
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-medium ${
+                          mcda.consistencyPassed 
+                            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' 
+                            : 'bg-amber-500/15 text-amber-600'
+                        }`}>
+                          ξ* = {mcda.consistencyIndex} ({mcda.consistencyPassed ? '✓ 逻辑严密一致' : '⚠️ 需关注'})
+                        </span>
+                      </div>
                     </div>
 
                     {/* Criteria Weights */}

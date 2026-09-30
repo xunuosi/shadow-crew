@@ -30,6 +30,7 @@ export interface SolveBwmInput {
   othersToWorst: number[];      // 维度顺序与 criteria 一致，其他准则相对于最差准则的偏好度 (1~9)
   throwOnDegeneracy?: boolean;  // 遇到退化输入时是否抛出异常，默认 true
   scoreProvenance?: Record<string, Record<string, string>>; // 评分证据溯源链 (P0-3)
+  confidenceMatrix?: Record<string, Record<string, number>>; // 各方案在各准则上的校准置信度 (0.0~1.0, P0-5 ReConcile)
 }
 
 /**
@@ -212,6 +213,7 @@ export function solveDeterministicBwm(input: SolveBwmInput): McdaDecisionPayload
       status: 'rejected',
       rejectionReason: 'insufficient_information',
       scoreProvenance: input.scoreProvenance,
+      confidenceMatrix: input.confidenceMatrix,
     };
   }
 
@@ -232,6 +234,7 @@ export function solveDeterministicBwm(input: SolveBwmInput): McdaDecisionPayload
       status: 'rejected',
       rejectionReason: solved.rejectionReason,
       scoreProvenance: input.scoreProvenance,
+      confidenceMatrix: input.confidenceMatrix,
     };
   }
 
@@ -262,7 +265,8 @@ export function solveDeterministicBwm(input: SolveBwmInput): McdaDecisionPayload
         ? boundedScore / 10 
         : (10 - boundedScore) / 10;
 
-      totalUtility += weights[idx] * normalizedScore;
+      const conf = input.confidenceMatrix?.[alt]?.[c.id] ?? 1.0;
+      totalUtility += weights[idx] * normalizedScore * conf;
     });
 
     return {
@@ -293,5 +297,6 @@ export function solveDeterministicBwm(input: SolveBwmInput): McdaDecisionPayload
     ranking: rankingList,
     status: 'optimal',
     scoreProvenance: input.scoreProvenance,
+    confidenceMatrix: input.confidenceMatrix,
   };
 }

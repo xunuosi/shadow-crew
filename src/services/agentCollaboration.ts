@@ -11,6 +11,8 @@ import {
   DisputeSpanPacket,
   ArgumentNode,
   GroundingEvidence,
+  SycophancyEvaluation,
+  ModelDiversityEvaluation,
 } from '../types';
 import {
   solveDeterministicBwm,
@@ -32,6 +34,13 @@ import {
   parseVerifierOutput,
   processVerifierEvidenceChain,
   generateDynamicRulingDraft,
+  estimateBaselineSycophancyScore,
+  evaluateDynamicSycophancyScore,
+  detectSycophanticSurrender,
+  applySycophancyDiscountToSprt,
+  detectModelFamily,
+  calculateModelDiversity,
+  calculateConfidenceMatrix,
 } from './cogno';
 
 export interface CollaborationCascade {
@@ -274,6 +283,7 @@ export function buildTopicPrompt(options: {
 2. 架构补丁与修正方案 (Patch v2)：若漏洞属实，提出具体的容灾、降级、锁机制或重构设计；
 3. 性能/复杂度折中说明：补丁方案对原架构的延迟、吞吐与维护成本有何影响；
 4. 交付准备：给出可供仲裁官定案评估的最终建议。
+【防谄媚守则 (Anti-Sycophancy)】: 严禁无原则全盘顺从或空洞认错！你必须以客观工程事实、防御补丁（Patch）或架构权衡进行自洽答辩，杜绝“您说得对、全盘放弃原案”式的敷衍认输。
 无需在正文 @ 任何人，平台状态机将自动汇总攻防论据并提交仲裁。
 
 【红队反例质询 (攻击靶点)】:
@@ -588,6 +598,8 @@ export interface GenerateMcdaOptions {
   topicDescription?: string;
   argumentNodes?: ArgumentNode[];
   evidences?: GroundingEvidence[];
+  sycophancy?: SycophancyEvaluation;
+  modelDiversity?: ModelDiversityEvaluation;
 }
 
 /**
@@ -603,6 +615,8 @@ export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): 
     topicDescription = '',
     argumentNodes = [],
     evidences = [],
+    sycophancy,
+    modelDiversity,
   } = options;
 
   const fullCorpus = [topicTitle, topicDescription, arbiterText, proposalText, critiqueText, defenseText].join('\n').toLowerCase();
@@ -776,6 +790,15 @@ export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): 
     }
   });
 
+  // 6. 计算方案-准则置信度矩阵 (ReConcile 置信度动态加权)
+  const confidenceMatrix = calculateConfidenceMatrix({
+    alternatives,
+    criteriaIds: criteria.map((c) => c.id),
+    evidences,
+    argumentNodes,
+    sycophancy,
+  });
+
   return solveDeterministicBwm({
     solverType: 'BWM',
     criteria,
@@ -786,6 +809,7 @@ export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): 
     bestToOthers,
     othersToWorst,
     scoreProvenance,
+    confidenceMatrix,
   });
 }
 
@@ -829,6 +853,13 @@ export {
   parseVerifierOutput,
   processVerifierEvidenceChain,
   generateDynamicRulingDraft,
+  estimateBaselineSycophancyScore,
+  evaluateDynamicSycophancyScore,
+  detectSycophanticSurrender,
+  applySycophancyDiscountToSprt,
+  detectModelFamily,
+  calculateModelDiversity,
+  calculateConfidenceMatrix,
 };
 
 

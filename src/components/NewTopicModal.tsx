@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Agent, Channel, DiscussionMode, GameRolesConfig, GameRoleType } from '../types';
-import { X, Sparkles, Plus, Bot, Shield, Check, GitBranch, Maximize2, Minimize2, Swords, Scale, Crown } from 'lucide-react';
+import { X, Sparkles, Plus, Bot, Shield, Check, GitBranch, Maximize2, Minimize2, Swords, Scale, Crown, AlertTriangle } from 'lucide-react';
 import { ResizeHandle } from './ResizeHandle';
+import { calculateModelDiversity } from '../services/cogno';
 
 interface NewTopicModalProps {
   isOpen: boolean;
@@ -34,6 +35,19 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
   const prevChannelIdRef = useRef<string | undefined>(undefined);
   const agentsRef = useRef(agents);
   agentsRef.current = agents;
+
+  const currentRolesConfig: GameRolesConfig = useMemo(() => ({
+    proposers: selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'proposer'),
+    challengers: selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'challenger'),
+    verifiers: selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'verifier'),
+    arbiters: selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'arbiter'),
+    humanIsArbiter,
+  }), [selectedAgentIds, agentRoles, humanIsArbiter]);
+
+  const modelDiversity = useMemo(() => {
+    if (discussionMode !== 'game_theoretic') return null;
+    return calculateModelDiversity(agents, currentRolesConfig);
+  }, [discussionMode, agents, currentRolesConfig]);
 
   const autoMapRoles = (agentList: Agent[]) => {
     const mapping: Record<string, GameRoleType> = {};
@@ -517,6 +531,41 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
               </div>
             )}
           </div>
+
+          {/* Wave 2 P0-5: 异构模型多样性指数与同质化偏见预警 (ReConcile) */}
+          {discussionMode === 'game_theoretic' && modelDiversity && (
+            <div className={`p-2.5 rounded-xl border text-xs space-y-1.5 ${
+              modelDiversity.isHomogeneous
+                ? 'bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-300'
+                : modelDiversity.score >= 0.8
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
+                : 'bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-300'
+            }`}>
+              <div className="flex items-center justify-between font-semibold">
+                <div className="flex items-center gap-1.5">
+                  <Shield className="w-3.5 h-3.5" />
+                  <span>异构模型多样性评估 (Model Diversity Index)</span>
+                </div>
+                <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-surface/60 border border-current/20">
+                  多样性指数: {(modelDiversity.score * 100).toFixed(0)}%
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-[10px] opacity-90 flex-wrap">
+                <span className="font-mono">参与模型家族:</span>
+                {Object.entries(modelDiversity.familyDistribution).map(([fam, count]) => (
+                  <span key={fam} className="px-1.5 py-0.5 rounded bg-surface/50 border border-current/15 font-mono">
+                    {fam}: {count}位
+                  </span>
+                ))}
+              </div>
+              {modelDiversity.isHomogeneous && modelDiversity.warnings.length > 0 && (
+                <div className="flex items-start gap-1.5 text-[11px] font-medium pt-1 border-t border-rose-500/20 text-rose-600 dark:text-rose-300 leading-relaxed">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-rose-500" />
+                  <span>{modelDiversity.warnings[0]}</span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Buttons */}
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-border mt-2 shrink-0">

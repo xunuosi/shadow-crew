@@ -86,6 +86,9 @@ import {
   STAGE_CONTRACT_MAX_RETRIES,
   tieredGroundingGovernor,
   processVerifierEvidenceChain,
+  evaluateDynamicSycophancyScore,
+  applySycophancyDiscountToSprt,
+  calculateModelDiversity,
 } from './services/agentCollaboration';
 
 export default function App() {
@@ -1492,6 +1495,10 @@ export default function App() {
       currentChannelAgents.some((a) => a.id === id)
     );
     const isGame = topicData.discussionMode === 'game_theoretic';
+    const modelDiversity = isGame && topicData.gameRoles
+      ? calculateModelDiversity(agents, topicData.gameRoles)
+      : undefined;
+
     const newTopic: TopicMessageData = {
       id: topicId,
       channelId: activeChannel.id,
@@ -1505,6 +1512,11 @@ export default function App() {
         ? {
             currentStage: 'proposal',
             isChallengerResponded: false,
+            modelDiversity,
+            cognoNexus: {
+              committedStates: [],
+              modelDiversity,
+            },
           }
         : undefined,
       authorId: 'user-norris',
@@ -1538,8 +1550,12 @@ export default function App() {
       ? `\n- 🔍 接地者：${topicData.gameRoles.verifiers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、')}`
       : '';
 
+    const diversityWarning = modelDiversity?.isHomogeneous && modelDiversity.warnings.length > 0
+      ? `\n\n${modelDiversity.warnings[0]}`
+      : '';
+
     const initContent = isGame && topicData.gameRoles
-      ? `已发起 4+1 认知协同决策议题【${topicData.title}】。\n目标背景：${topicData.description || '开始架构决策攻防推演。'}\n【4+1 协同角色配置】：\n- 🏛️ 提案者：${topicData.gameRoles.proposers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- ⚔️ 红队对抗：${topicData.gameRoles.challengers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}${verifiersSummary}\n- ⚖️ 流程综合：${topicData.gameRoles.arbiters.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- 👤 终局裁判：${topicData.gameRoles.humanIsArbiter ? 'Norris_M5Pro (人类首席仲裁官, 持法槌)' : '已委派 AI 综合仲裁'}`
+      ? `已发起 4+1 认知协同决策议题【${topicData.title}】。\n目标背景：${topicData.description || '开始架构决策攻防推演。'}\n【4+1 协同角色配置】：\n- 🏛️ 提案者：${topicData.gameRoles.proposers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- ⚔️ 红队对抗：${topicData.gameRoles.challengers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}${verifiersSummary}\n- ⚖️ 流程综合：${topicData.gameRoles.arbiters.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- 👤 终局裁判：${topicData.gameRoles.humanIsArbiter ? 'Norris_M5Pro (人类首席仲裁官, 持法槌)' : '已委派 AI 综合仲裁'}${diversityWarning}`
       : `已发起议题【${topicData.title}】。\n目标背景：${topicData.description || '开始方案推演。'}\n指派 Agent：${validAssignedAgentIds.length > 0 ? validAssignedAgentIds.map(id => agents.find(a => a.id === id)?.name).filter(Boolean).join('、') : '暂无 (可在抽屉中指派)'}。`;
 
     setMessages((prev) => ({
@@ -3259,6 +3275,17 @@ export default function App() {
         }
         delete stageRefineRetriesRef.current[`${topicId}:defense`];
 
+        // Wave 2 P0-4: 评估答辩者的动态谄媚度 (Dynamic Sycophancy Score, DSS)
+        const sycophancyEval = evaluateDynamicSycophancyScore(proposerAgent, acpResp.textResponse);
+        logGameTheoreticTelemetry('sycophancy_evaluated', topicId, {
+          stage: 'defense',
+          agentId: proposerAgent.id,
+          dssScore: sycophancyEval.dss,
+          bssScore: sycophancyEval.bss,
+          gamma: sycophancyEval.discountFactorGamma,
+          surrenderDetected: sycophancyEval.surrenderDetected,
+        });
+
         // 显式提取接地实证真值率并显式注入 SPRT (R-1 接线三件套)
         const verificationText = targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent || '';
         const groundedTrueRatio = extractGroundedTrueRatio(verificationText);
@@ -3268,12 +3295,16 @@ export default function App() {
         });
 
         // CognoNexus 阶段 3: 评估答辩修正后的对齐分数与似然比
-        const sprtScoreAfterDefense = estimateRoundAlignmentScore({
+        const rawSprtScoreAfterDefense = estimateRoundAlignmentScore({
           proposalText: targetProposalText,
           critiqueText: targetChallengeText,
           defenseText: acpResp.textResponse,
           groundedTrueRatio,
         });
+
+        // 施加谄媚折减后的真实对齐分数 (Sharma et al. 2023)
+        const sprtScoreAfterDefense = applySycophancyDiscountToSprt(rawSprtScoreAfterDefense, sycophancyEval);
+
         const sprtStateAfterDefense = stepSprtGovernor({
           priorState: currentTopic.gameTheoreticState?.sprtState,
           currentRound: (currentTopic.gameTheoreticState?.roundCount || 1) + 2,
@@ -3305,11 +3336,13 @@ export default function App() {
               quorumAlert: '⚠️ SPRT 似然比跌破死锁下界 (Deadlock Escalation)，答辩未能化解分歧，已熔断流转',
               sprtState: sprtStateAfterDefense,
               minorityReport: old.gameTheoreticState?.minorityReport,
+              latestSycophancy: sycophancyEval,
               cognoNexus: {
                 ...old.gameTheoreticState?.cognoNexus,
                 committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
                 sprtState: sprtStateAfterDefense,
                 minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
+                latestSycophancy: sycophancyEval,
               },
             },
           }));
@@ -3379,11 +3412,13 @@ export default function App() {
               isDefenseResponded: false,
               sprtState: sprtStateAfterDefense,
               minorityReport: old.gameTheoreticState?.minorityReport,
+              latestSycophancy: sycophancyEval,
               cognoNexus: {
                 ...old.gameTheoreticState?.cognoNexus,
                 committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
                 sprtState: sprtStateAfterDefense,
                 minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
+                latestSycophancy: sycophancyEval,
               },
             },
           }));
@@ -3439,11 +3474,13 @@ export default function App() {
             isDefenseResponded: true,
             sprtState: sprtStateAfterDefense,
             minorityReport: old.gameTheoreticState?.minorityReport,
+            latestSycophancy: sycophancyEval,
             cognoNexus: {
               ...old.gameTheoreticState?.cognoNexus,
               committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
               sprtState: sprtStateAfterDefense,
               minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
+              latestSycophancy: sycophancyEval,
             },
           },
         }));
@@ -3649,7 +3686,7 @@ export default function App() {
             missingRequirements: contractValidation.missingRequirements,
           });
 
-          // 求解确定性运筹决策矩阵并进行一致性硬门禁检验 (R-1 / P0-3)
+          // 求解确定性运筹决策矩阵并进行一致性硬门禁检验 (R-1 / P0-3 / P0-5 ReConcile 置信度加权)
           const mcdaPayload = generateDeterministicMcdaPayload({
             arbiterText: acpResp.textResponse,
             proposalText: targetProposalText,
@@ -3659,6 +3696,8 @@ export default function App() {
             topicDescription: currentTopic.description,
             argumentNodes: currentTopic.gameTheoreticState?.cognoNexus?.committedStates,
             evidences: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain,
+            sycophancy: currentTopic.gameTheoreticState?.latestSycophancy,
+            modelDiversity: currentTopic.gameTheoreticState?.modelDiversity,
           });
 
           logGameTheoreticTelemetry('consistency_gate_evaluation', topicId, {

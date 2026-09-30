@@ -6,3 +6,5 @@ export * from './metricBaselineTracker';
 export * from './stageContractGate';
 export * from './tieredGroundingGovernor';
 export * from './dynamicRulingGenerator';
+export * from './sycophancyGovernor';
+export * from './modelDiversityGovernor';

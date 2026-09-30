@@ -7,6 +7,7 @@
  */
 
 import { GameTheoreticStage } from '../../types';
+import { detectSycophanticSurrender } from './sycophancyGovernor';
 
 export interface StageContractValidationResult {
   isValid: boolean;
@@ -101,6 +102,11 @@ export function validateStageContract(
       const hasDefenseOrPatch = /(答辩|回应|补丁|修正|防御|优化|缓解|改动|重构|弥补|方案调整|针对)/i.test(trimmed);
       if (!hasDefenseOrPatch) {
         missingRequirements.push('未针对红队反例提出明确的答辩阐述或架构防御补丁 (Patch)');
+      }
+      // P0-4: 谄媚式无原则全盘妥协硬拦截 (Anti-Sycophancy Gate)
+      const surrenderCheck = detectSycophanticSurrender(trimmed);
+      if (surrenderCheck.isSurrender) {
+        missingRequirements.push(surrenderCheck.reason || '检测到纯附和式谄媚妥协，严禁无技术依据地全盘推翻主张，请给出具体的架构防御补丁或权衡论据');
       }
       break;
     }

@@ -15,7 +15,9 @@ export type GameTheoreticTelemetryEventType =
   | 'topic_arbitration_concluded'
   | 'human_intervention_triggered'
   | 'claim_pruning_anomaly'
-  | 'p2_loopback_triggered';
+  | 'p2_loopback_triggered'
+  | 'sycophancy_evaluated'
+  | 'model_diversity_evaluated';
 
 export interface TelemetryEvent {
   id: string;

@@ -144,6 +144,7 @@ export interface Agent {
   modelLatencyMs?: number;
   isModelHealthy?: boolean;
   isManagedByYou?: boolean;
+  baselineSycophancyScore?: number; // BSS 静态历史附和分 (0.0~1.0, P0-4)
   
   // ACP Protocol Config
   acpTransport: AcpTransport;
@@ -286,6 +287,8 @@ export interface GameTheoreticState {
   sprtState?: SprtGovernorState;
   minorityReport?: MinorityReport;
   cognoNexus?: CognoNexusState;
+  latestSycophancy?: SycophancyEvaluation; // 最新谄媚度评估记录 (P0-4)
+  modelDiversity?: ModelDiversityEvaluation; // 参与角色模型异构多样性评估 (P0-5)
   roundCount?: number;                   // 当前博弈轮次计数 (P2 回边使用)
   isSafetyCharterSigned?: boolean;       // 人类是否已签署 T2 高危工具执行安全宪章
   telemetryLogIds?: string[];
@@ -350,6 +353,27 @@ export interface McdaDecisionPayload {
   status?: 'optimal' | 'rejected'; // 求解状态 (R-2 退化拒绝支持)
   rejectionReason?: 'insufficient_information' | 'inconsistent_matrix';
   scoreProvenance?: Record<string, Record<string, string>>; // 评分证据来源追溯链 (P0-3 真实讨论绑定)
+  confidenceMatrix?: Record<string, Record<string, number>>; // 各方案在各准则上的校准置信度 (0.0~1.0, P0-5 ReConcile)
+}
+
+export interface SycophancyEvaluation {
+  agentId: string;
+  agentName: string;
+  bss: number; // Baseline Sycophancy Score (0.0 ~ 1.0 静态先验附和分)
+  dss: number; // Dynamic Sycophancy Score (0.0 ~ 1.0 动态行为附和分)
+  discountFactorGamma: number; // γ = 1 - min(0.6, 0.4*DSS + 0.2*BSS)
+  sycophancyLevel: 'authentic' | 'mild_conformity' | 'sycophantic';
+  signals: string[];
+  surrenderDetected?: boolean;
+  surrenderReason?: string;
+  evaluatedAt: string;
+}
+
+export interface ModelDiversityEvaluation {
+  score: number; // 0.0 ~ 1.0 (异构多样性评分)
+  isHomogeneous: boolean; // 是否同质化严重 (< 0.5)
+  familyDistribution: Record<string, string[]>; // family -> [agentNames]
+  warnings: string[];
 }
 
 export interface SprtGovernorState {
@@ -382,6 +406,8 @@ export interface CognoNexusState {
   mcdaPayload?: McdaDecisionPayload;      // 确定性运筹数学决策矩阵
   sprtState?: SprtGovernorState;          // SPRT 调控器状态
   minorityReport?: MinorityReport;        // 少数派异议报告
+  latestSycophancy?: SycophancyEvaluation; // 谄媚度评估记录 (P0-4)
+  modelDiversity?: ModelDiversityEvaluation; // 角色模型异构性评估 (P0-5)
 }
 
 export interface GameRolesConfig {
