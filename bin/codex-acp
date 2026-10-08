@@ -4,7 +4,7 @@
  * Exposes OpenAI Codex CLI as a standard ACP stdio server for Shadow Crew / Shinobi.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
@@ -12,27 +12,125 @@ import * as os from 'node:os';
 
 const HOME = os.homedir();
 
-// Locate local codex binary
-function findCodexBinary() {
-  if (process.env.CODEX_BINARY && fs.existsSync(process.env.CODEX_BINARY)) {
-    return process.env.CODEX_BINARY;
-  }
-  const candidates = [
-    path.join(HOME, '.local/bin/codex'),
-    path.join(HOME, '.codex/plugins/.plugin-appserver/codex'),
-    '/Applications/ChatGPT.app/Contents/Resources/codex',
-    '/opt/homebrew/bin/codex',
-    '/usr/local/bin/codex',
+/**
+ * 子进程 PATH：GUI 守护进程继承的 PATH 往往不含用户 shell 的安装目录，这里显式补齐。
+ * 探针与实际执行共用同一份 PATH，保证"探测通过 = 执行可用"。
+ */
+function codexChildEnv() {
+  const searchPaths = [
+    path.join(HOME, '.local/bin'),
+    path.join(HOME, '.cargo/bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
   ];
-  for (const c of candidates) {
-    try {
-      if (fs.existsSync(c)) return c;
-    } catch {}
-  }
-  return 'codex';
+  return {
+    ...process.env,
+    PATH: [...searchPaths, process.env.PATH || ''].filter(Boolean).join(path.delimiter),
+  };
 }
 
-const CODEX_BIN = findCodexBinary();
+/**
+ * 判定一个路径是否真的是可执行的普通文件。
+ * 关键点：必须 realpath + stat + X_OK 三重校验——断链软链（如升级 ChatGPT.app 后
+ * ~/.local/bin/codex 指向已删除的旧路径）在 existsSync/access 下会以 ENOENT 形式暴露，
+ * 绝不能被当成可用二进制。
+ */
+function resolveExecutable(p) {
+  if (!p) return null;
+  try {
+    const real = fs.realpathSync(p);
+    const st = fs.statSync(real);
+    if (!st.isFile() || st.size === 0) return null;
+    fs.accessSync(real, fs.constants.X_OK);
+    return real;
+  } catch {
+    return null;
+  }
+}
+
+/** 显式 PATH 查找（每个目录逐一校验），不使用 shell 猜测 */
+function lookupOnPath(name) {
+  for (const dir of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+    const resolved = resolveExecutable(path.join(dir, name));
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+/**
+ * Codex 二进制的已知安装布局（按优先级）：
+ * - ChatGPT / Codex 桌面端 bundle 现行布局（codex-package.json layoutVersion 1）：
+ *   <App>.app/Contents/Resources/codex-cli/bin/codex → CodexCLI.app/Contents/MacOS/codex
+ * - 旧版桌面端布局：<App>.app/Contents/Resources/codex（0.15x 之前）
+ * - 独立安装：Homebrew / npm / cargo / uv 等
+ */
+function codexCandidatePaths() {
+  return [
+    path.join(HOME, '.local/bin/codex'),
+    path.join(HOME, '.codex/plugins/.plugin-appserver/codex'),
+    '/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex',
+    '/Applications/ChatGPT.app/Contents/Resources/codex',
+    '/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex',
+    '/Applications/Codex.app/Contents/Resources/codex',
+    path.join(HOME, 'Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex'),
+    path.join(HOME, 'Applications/Codex.app/Contents/Resources/codex-cli/bin/codex'),
+    '/opt/homebrew/bin/codex',
+    '/usr/local/bin/codex',
+    path.join(HOME, '.cargo/bin/codex'),
+    path.join(HOME, '.bun/bin/codex'),
+    path.join(HOME, '.npm-global/bin/codex'),
+  ].filter(Boolean);
+}
+
+function findCodexBinary() {
+  // 用户显式指定的二进制优先级最高；若其无效则直接判定不可用，绝不静默回退到其他候选
+  const explicit = process.env.CODEX_BINARY;
+  if (explicit) {
+    const resolved = resolveExecutable(explicit);
+    if (resolved) return { bin: resolved, probed: [explicit], explicitInvalid: null };
+    return { bin: null, probed: [explicit], explicitInvalid: explicit };
+  }
+
+  const probed = [];
+  for (const c of codexCandidatePaths()) {
+    probed.push(c);
+    const resolved = resolveExecutable(c);
+    if (resolved) return { bin: resolved, probed, explicitInvalid: null };
+  }
+
+  const onPath = lookupOnPath('codex');
+  if (onPath) return { bin: onPath, probed: [...probed, `PATH:codex`], explicitInvalid: null };
+
+  return { bin: null, probed, explicitInvalid: null };
+}
+
+const codexResolution = findCodexBinary();
+const CODEX_BIN = codexResolution.bin;
+
+function codexUnavailableReason() {
+  if (codexResolution.explicitInvalid) {
+    return `环境变量 CODEX_BINARY 指向的路径不是可执行文件：${codexResolution.explicitInvalid}`;
+  }
+  return `未找到可执行的 codex 二进制（已探测：${codexResolution.probed.join('、')}）`;
+}
+
+let cachedCodexVersion = null;
+function codexVersion() {
+  if (cachedCodexVersion) return cachedCodexVersion;
+  try {
+    const out = execFileSync(CODEX_BIN, ['--version'], {
+      timeout: 5000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: codexChildEnv(),
+    }).trim();
+    const matched = out.match(/\d+\.\d+\.[0-9A-Za-z.\-]+/);
+    cachedCodexVersion = matched ? matched[0] : out.split('\n').pop() || 'unknown';
+  } catch {
+    cachedCodexVersion = 'unknown';
+  }
+  return cachedCodexVersion;
+}
 let currentCwd = process.cwd();
 let activeSessionId = `codex-sess-${Date.now()}`;
 let sessionSystemPrompt = '';
@@ -87,17 +185,29 @@ rl.on('line', async (line) => {
 
   // 1. initialize
   if (method === 'initialize') {
+    // 后端二进制缺失时直接以 JSON-RPC error 拒绝握手，避免平台把"适配器存活"误判为"Agent 可用"
+    if (!CODEX_BIN) {
+      sendError(
+        id,
+        -32001,
+        `Codex ACP 适配器不可用：${codexUnavailableReason()}。请安装 Codex CLI，或设置 CODEX_BINARY 指向可执行文件。`
+      );
+      return;
+    }
     sendResult(id, {
       protocolVersion: 1,
       agentInfo: {
         name: 'OpenAI Codex',
-        version: '0.153.4',
+        version: codexVersion(),
         description: 'OpenAI Codex CLI ACP Agent',
       },
       capabilities: {
         prompts: { listChanged: true },
         tools: { listChanged: true },
         streaming: true,
+      },
+      _meta: {
+        codexBinary: CODEX_BIN,
       },
     });
     return;
@@ -119,6 +229,14 @@ rl.on('line', async (line) => {
 
   // 3. session/prompt
   if (method === 'session/prompt') {
+    if (!CODEX_BIN) {
+      sendResult(id, {
+        text_response: `⚠️ Codex 不可用：${codexUnavailableReason()}。`,
+        stopReason: 'error',
+      });
+      return;
+    }
+
     const rawPrompt = params?.prompt;
     let userPromptText = '';
 
@@ -148,10 +266,7 @@ rl.on('line', async (line) => {
 
     const child = spawn(CODEX_BIN, args, {
       cwd: currentCwd && fs.existsSync(currentCwd) ? currentCwd : undefined,
-      env: {
-        ...process.env,
-        PATH: `${path.join(HOME, '.local/bin')}:${path.join(HOME, '.cargo/bin')}:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}`,
-      },
+      env: codexChildEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -221,7 +336,7 @@ rl.on('line', async (line) => {
 
     child.on('error', (err) => {
       sendResult(id, {
-        text_response: `⚠️ 无法启动 Codex 进程: ${err.message}\n请检查 ${CODEX_BIN} 是否存在并可执行。`,
+        text_response: `⚠️ 无法启动 Codex 进程 (${CODEX_BIN}): ${err.message}\n${codexUnavailableReason()}。`,
         stopReason: 'error',
       });
     });
