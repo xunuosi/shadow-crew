@@ -60,7 +60,7 @@ import { RustTauriArchitectureHub } from './components/RustTauriArchitectureHub'
 import { AgentDashboard } from './components/AgentDashboard';
 import { MemoryExportModal } from './components/MemoryExportModal';
 import { MemoryImportModal } from './components/MemoryImportModal';
-import { sendPromptToAcpAgent, probeRemoteAcpConnection, buildAgentLaunchEnv, buildThinkingProcessFromAcp } from './services/acpClient';
+import { sendPromptToAcpAgent, probeRemoteAcpConnection, buildAgentLaunchEnv, buildThinkingProcessFromAcp, extractArbitrationRulingFromAcpResponse } from './services/acpClient';
 import { isAgentOffline, isAgentOnline } from './utils/agentRuntime';
 import { saveMessagesBatchToDb, loadMessagesFromDb } from './services/dbClient';
 import { DEFAULT_MODEL_NAME } from './config/models';
@@ -3705,7 +3705,10 @@ export default function App() {
             evidences: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain,
           });
 
-          // 将求解出的 MCDA 矩阵与 ColMAD 报表持久化至议题博弈状态中
+          // 提取由 Arbiter Agent 通过 submit_arbitration_ruling 工具或结构化契约提交的裁决书草案
+          const extractedRulingDraft = acpResp.rulingDraft || extractArbitrationRulingFromAcpResponse(acpResp, arbiterAgent.name);
+
+          // 将求解出的 MCDA 矩阵、ColMAD 报表与裁决草案持久化至议题博弈状态中
           updateTopicDataInState(topicId, (old) => ({
             ...old,
             gameTheoreticState: {
@@ -3713,6 +3716,7 @@ export default function App() {
               minorityReport: old.gameTheoreticState?.minorityReport,
               mcdaPayload,
               colMadReport,
+              rulingDraft: extractedRulingDraft || old.gameTheoreticState?.rulingDraft,
               cognoNexus: {
                 ...old.gameTheoreticState?.cognoNexus,
                 minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
@@ -3733,9 +3737,10 @@ export default function App() {
             isAgent: true,
             agentBadge: mcdaPayload.consistencyPassed ? 'Gavel Ready' : 'Consistency Warning',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: mcdaPayload.consistencyPassed
+            content: (mcdaPayload.consistencyPassed
               ? `⚖️ **AI 仲裁建言已生成 (✓ 逻辑严密一致, ξ* = ${mcdaPayload.consistencyIndex})**：立论、反例压测、接地实证与答辩补丁已完成审查。请人类首席仲裁官查阅交锋要点，在下方【仲裁法槌控制台】选择【采纳提案】、【采纳红队】或【权衡矩阵】敲响法槌定案，并可指派 Agent 进入工程代码落地实施。`
-              : `⚖️ **AI 仲裁建言已生成 (⚠️ 运筹逻辑一致性未通过, ξ* = ${mcdaPayload.consistencyIndex} > 0.12)**：准则偏好存在传递性冲突。系统已硬锁定直接批准，请人类首席仲裁官查阅要点，在下方【仲裁法槌控制台】勾选特权豁免，或重新调校准则权重后定案。`,
+              : `⚖️ **AI 仲裁建言已生成 (⚠️ 运筹逻辑一致性未通过, ξ* = ${mcdaPayload.consistencyIndex} > 0.12)**：准则偏好存在传递性冲突。系统已硬锁定直接批准，请人类首席仲裁官查阅要点，在下方【仲裁法槌控制台】勾选特权豁免，或重新调校准则权重后定案。`
+            ) + (extractedRulingDraft ? `\n\n📄 **[活体 ADR 画布更新]** 仲裁官已通过 \`submit_arbitration_ruling\` 提交标准裁决草案，法槌控制台已精准预载权衡要点。` : ''),
           };
 
           setMessages((prev) => {

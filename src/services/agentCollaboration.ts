@@ -33,7 +33,6 @@ import {
   tieredGroundingGovernor,
   parseVerifierOutput,
   processVerifierEvidenceChain,
-  generateDynamicRulingDraft,
   estimateBaselineSycophancyScore,
   evaluateDynamicSycophancyScore,
   detectSycophanticSurrender,
@@ -356,12 +355,25 @@ ${topic.targetChallengeText || '详见前序脉络'}
 
       gameModeDirective = `\n\n【博弈编排 - ⚖️ 阶段 5: 中立综合协调与权衡决策 (Synthesizer / Arbiter)】:
 你是本议题的中立流程综合官与决策协调者 (Synthesizer / Arbiter)。提案方案、红队反例、接地实证及答辩补丁已进入终局仲裁。
-【仲裁守则】:
+【仲裁守则与交付契约】:
 保持客观中立，依据可行性、健壮性与 ROI：
 1. 梳理双方分歧焦点与核心论据；
 2. 全面审视红队的反例质疑、接地验证智能体的物理实证报告以及提案官的防御修正/补丁方案；
-3. 输出客观的《架构决策权衡矩阵 (Trade-off Matrix)》；
-4. 调度确定性多属性决策分析 (MCDA) 算法求解，给出终局裁定方案与落地行动建议（若人类首席仲裁官持有最终裁决法槌，你的分析将作为定案的核心依据）。
+3. 提炼客观的《架构决策权衡矩阵 (Trade-off Matrix)》；
+4. 【结构化裁决书交付 (直通宿主 ADR 画布与仲裁法槌)】：
+   优先调用宿主 \`submit_arbitration_ruling\` 工具；或在回复末尾附带标准裁决草案块：
+<<<RULING_DRAFT>>>
+{
+  "decision_type": "adopt_proposer", // "adopt_proposer" | "reject_rebuild" | "trade_off_matrix"
+  "summary": "简明定案陈词与核心决策动因",
+  "trade_off_points": [
+    "优先保障... (权重 ...)，适度折中...",
+    "建立...机制防范红队提出的边界缺陷"
+  ],
+  "impacted_files": ["src/..."],
+  "solution": "落地工程实施或架构补丁要求"
+}
+<<<RULING_DRAFT_END>>>
 无需在正文 @ 任何人。
 
 【立论方案 (Proposal v1)】:
@@ -856,7 +868,6 @@ export {
   tieredGroundingGovernor,
   parseVerifierOutput,
   processVerifierEvidenceChain,
-  generateDynamicRulingDraft,
   estimateBaselineSycophancyScore,
   evaluateDynamicSycophancyScore,
   detectSycophanticSurrender,

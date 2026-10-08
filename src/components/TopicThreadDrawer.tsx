@@ -42,7 +42,8 @@ import {
   AlertTriangle,
   Wrench,
   Play,
-  Zap
+  Zap,
+  FileText
 } from 'lucide-react';
 import { MentionSuggestions } from './MentionSuggestions';
 import { renderFormattedContent } from '../utils/formatMentions';
@@ -50,7 +51,8 @@ import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ResizeHandle } from './ResizeHandle';
 import { getDraft, saveDraft, clearDraft } from '../services/draftService';
-import { logGameTheoreticTelemetry, generateDynamicRulingDraft } from '../services/agentCollaboration';
+import { logGameTheoreticTelemetry } from '../services/agentCollaboration';
+import { LivingAdrCanvas } from './LivingAdrCanvas';
 
 interface TopicThreadDrawerProps {
   isOpen: boolean;
@@ -114,6 +116,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   const [newPointInput, setNewPointInput] = useState('');
   const [exemptionChecked, setExemptionChecked] = useState(false);
   const [exemptionReason, setExemptionReason] = useState('');
+  const [activeDrawerView, setActiveDrawerView] = useState<'stream' | 'adr'>('stream');
 
   // 顶部议题上下文与推演看板折叠状态 (扩大消息浏览区域)
   const [isHeaderCollapsed, setIsHeaderCollapsed] = useState<boolean>(() => {
@@ -141,6 +144,69 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     topic?.discussionMode !== 'game_theoretic' ||
     topic?.gameTheoreticState?.isChallengerResponded !== false;
 
+  const resolveRulingDraftForModal = (
+    type: RulingDecisionType
+  ): {
+    rulingSummary: string;
+    rulingSolution: string;
+    rulingImpactedFiles: string;
+    tradeOffPoints: string[];
+  } => {
+    const existingDraft = topic?.gameTheoreticState?.rulingDraft;
+
+    // 1. 若综合仲裁官通过 submit_arbitration_ruling 工具已提交草案，优先采用
+    if (existingDraft) {
+      return {
+        rulingSummary: existingDraft.summary || '',
+        rulingSolution: existingDraft.solution || '',
+        rulingImpactedFiles: (existingDraft.impactedFiles || []).join(', '),
+        tradeOffPoints: existingDraft.tradeOffPoints || [],
+      };
+    }
+
+    // 2. 否则生成清晰干净的默认草案（绝无死板截断与污染前缀）
+    const topicTitle = topic?.title || '当前研讨议题';
+    const mcda = topic?.gameTheoreticState?.mcdaPayload;
+    const tradeOffPoints: string[] = [];
+
+    if (mcda?.computedWeights && mcda?.criteria && mcda.criteria.length >= 2) {
+      const sorted = [...mcda.criteria]
+        .map((c) => ({ name: c.name, weight: mcda.computedWeights[c.id] ?? 0 }))
+        .sort((a, b) => b.weight - a.weight);
+      const top = sorted[0];
+      const bottom = sorted[sorted.length - 1];
+      if (top && bottom && top.name !== bottom.name) {
+        tradeOffPoints.push(
+          `优先保障【${top.name}】(确定性权重 ${(top.weight * 100).toFixed(0)}%)，适度折中【${bottom.name}】开销`
+        );
+      }
+    }
+
+    let rulingSummary = '';
+    let rulingSolution = '';
+
+    if (type === 'adopt_proposer') {
+      rulingSummary = `经博弈推演与实证检验，围绕“${topicTitle}”的提案方案具备落地可行性与工程优势，准予合并交付。`;
+      rulingSolution = `采纳提案官核心架构设计与防御补丁，按标准实施交付并建立运行期监控。`;
+      tradeOffPoints.push(`严格执行红队审查确立的边界前置校验，杜绝极端工况下的状态穿透`);
+    } else if (type === 'reject_rebuild') {
+      rulingSummary = `红队对抗官与接地实证检验揭示“${topicTitle}”方案存在关键架构漏洞或实证证伪，原方案予以驳回重构。`;
+      rulingSolution = `驳回当前提案架构。由责任团队全面吸收红队反例要点，重新确立安全假设并提交新版方案。`;
+      tradeOffPoints.push(`拒绝以牺牲系统健壮性为代价的局部优化，强制推倒单点失效架构`);
+    } else {
+      rulingSummary = `围绕“${topicTitle}”，两造各有技术权衡。依据运筹权衡矩阵构建折中方案，分阶段演进推进。`;
+      rulingSolution = `采纳折中权衡演进路径：第一阶段快速落地核心主线功能，第二阶段完善防御补偿与容灾审计。`;
+      tradeOffPoints.push(`第一阶段优先交付核心基准业务流，沉淀基础能力并收集压测指标`);
+    }
+
+    return {
+      rulingSummary,
+      rulingSolution,
+      rulingImpactedFiles: '',
+      tradeOffPoints,
+    };
+  };
+
   const handleOpenRuling = (type: RulingDecisionType) => {
     setRulingType(type);
     setExemptionChecked(false);
@@ -152,20 +218,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       : (topic?.gameRoles?.proposers?.[0] || topic?.gameRoles?.arbiters?.[0] || '');
     setSelectedExecutorId(defaultExecutor);
 
-    // 基于本议题真实讨论脉络、MCDA 运筹权重分布与冲突切片，动态生成专属裁决草案
-    const draft = generateDynamicRulingDraft({
-      topicTitle: topic?.title || '当前研讨议题',
-      topicDescription: topic?.description,
-      rulingType: type,
-      targetProposalContent: topic?.gameTheoreticState?.targetProposalContent,
-      targetChallengeContent: topic?.gameTheoreticState?.targetChallengeContent,
-      targetVerificationContent: topic?.gameTheoreticState?.targetVerificationContent,
-      targetDefenseContent: topic?.gameTheoreticState?.targetDefenseContent,
-      mcdaPayload: topic?.gameTheoreticState?.mcdaPayload,
-      currentDispute: topic?.gameTheoreticState?.cognoNexus?.currentDispute,
-      messages: (messages || []).map((m) => ({ content: m.content, authorName: m.authorName })),
-    });
-
+    const draft = resolveRulingDraftForModal(type);
     setRulingSummary(draft.rulingSummary);
     setRulingSolution(draft.rulingSolution);
     setRulingImpactedFiles(draft.rulingImpactedFiles);
@@ -182,20 +235,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       : (topic?.gameRoles?.proposers?.[0] || topic?.gameRoles?.arbiters?.[0] || '');
     setSelectedExecutorId(defaultExecutor);
 
-    // 动态适应切换后的裁决类型
-    const draft = generateDynamicRulingDraft({
-      topicTitle: topic?.title || '当前研讨议题',
-      topicDescription: topic?.description,
-      rulingType: type,
-      targetProposalContent: topic?.gameTheoreticState?.targetProposalContent,
-      targetChallengeContent: topic?.gameTheoreticState?.targetChallengeContent,
-      targetVerificationContent: topic?.gameTheoreticState?.targetVerificationContent,
-      targetDefenseContent: topic?.gameTheoreticState?.targetDefenseContent,
-      mcdaPayload: topic?.gameTheoreticState?.mcdaPayload,
-      currentDispute: topic?.gameTheoreticState?.cognoNexus?.currentDispute,
-      messages: (messages || []).map((m) => ({ content: m.content, authorName: m.authorName })),
-    });
-
+    const draft = resolveRulingDraftForModal(type);
     setRulingSummary(draft.rulingSummary);
     setRulingSolution(draft.rulingSolution);
     if (draft.tradeOffPoints.length > 0) {
@@ -1299,8 +1339,66 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     </>
   )}
 
-      {/* 3. Topic Message Stream */}
-      <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-4 font-sans select-text">
+      {/* View Switcher: 攻防辩论流 vs 活体 ADR 决策画布 */}
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-surface shrink-0">
+        <div className="flex items-center gap-1.5 p-0.5 rounded-xl bg-surface-subtle border border-border/60">
+          <button
+            type="button"
+            onClick={() => setActiveDrawerView('stream')}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeDrawerView === 'stream'
+                ? 'bg-surface text-fg font-semibold shadow-2xs border border-border/80'
+                : 'text-fg-muted hover:text-fg hover:bg-surface-hover/50'
+            }`}
+          >
+            <span>💬 辩论记录</span>
+            <span className="font-mono text-[10px] px-1.5 py-0.2 rounded-full bg-surface-subtle border border-border/40 text-fg-muted">
+              {messages.length}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveDrawerView('adr')}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              activeDrawerView === 'adr'
+                ? 'bg-surface text-fg font-semibold shadow-2xs border border-border/80 text-purple-600 dark:text-purple-400'
+                : 'text-fg-muted hover:text-fg hover:bg-surface-hover/50'
+            }`}
+          >
+            <FileText className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+            <span>活体 ADR 画布</span>
+            {(topic.gameTheoreticState?.rulingDraft || topic.rulingRecord) && (
+              <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-purple-500/15 text-purple-600 dark:text-purple-400 font-mono font-bold animate-pulse">
+                {topic.rulingRecord ? '已定案' : '草案就绪'}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {activeDrawerView === 'adr' && (
+          <div className="text-[10px] text-fg-muted font-mono flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            <span>Architecture Decision Record</span>
+          </div>
+        )}
+      </div>
+
+      {activeDrawerView === 'adr' ? (
+        <LivingAdrCanvas
+          topic={topic}
+          agents={agents}
+          messages={messages}
+          onOpenRuling={(type) => handleOpenRuling(type)}
+          onExecutePatch={onExecuteTopicPatch ? () => {
+            const initialExec = topic.rulingRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId || candidateAgentsWithGameRoles[0]?.id || '';
+            setSelectedExecutorId(initialExec);
+            setShowAssignExecutorModal(true);
+          } : undefined}
+        />
+      ) : (
+        <>
+          {/* 3. Topic Message Stream */}
+          <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-4 font-sans select-text">
         {messages.length === 0 ? (
           <div className="text-center py-10 text-fg-muted">
             <div className="text-2xl mb-2">💬</div>
@@ -2123,6 +2221,8 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         </div>
       </div>
     </div>
+        </>
+      )}
 
       {/* 5. Resolve & Merge Confirmation Modal */}
       {showResolveModal && (

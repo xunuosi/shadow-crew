@@ -292,6 +292,7 @@ export interface GameTheoreticState {
   colMadReport?: ColMadSessionReport;    // ColMAD 增量事实贡献与声誉报表 (P1-3)
   roundCount?: number;                   // 当前博弈轮次计数 (P2 回边使用)
   isSafetyCharterSigned?: boolean;       // 人类是否已签署 T2 高危工具执行安全宪章
+  rulingDraft?: ArbitrationRulingDraft;  // 由综合仲裁官通过 submit_arbitration_ruling MCP 工具提交的结构化裁决书草案
   telemetryLogIds?: string[];
 }
 
@@ -449,6 +450,20 @@ export interface GameRolesConfig {
 }
 
 export type RulingDecisionType = 'adopt_proposer' | 'reject_rebuild' | 'trade_off_matrix';
+
+/**
+ * 由综合仲裁官 (Arbiter) 通过 MCP 工具 `submit_arbitration_ruling`
+ * 或结构化契约提交的架构裁决草案 (Architecture Decision Ruling Draft)
+ */
+export interface ArbitrationRulingDraft {
+  decisionType: RulingDecisionType;
+  summary: string;
+  tradeOffPoints: string[];
+  impactedFiles: string[];
+  solution?: string;
+  submittedBy?: string;
+  submittedAt?: string;
+}
 
 export interface RulingRecord {
   decisionType: RulingDecisionType;

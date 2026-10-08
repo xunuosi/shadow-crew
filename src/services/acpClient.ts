@@ -1,4 +1,4 @@
-import { Agent, CartridgeCitation, MemoryCartridgeItem } from '../types';
+import { Agent, CartridgeCitation, MemoryCartridgeItem, ArbitrationRulingDraft, RulingDecisionType } from '../types';
 import { resolveAgentModelConfig, isModelConfigReady, callLlmModel } from './llmService';
 import { isAgentOffline } from '../utils/agentRuntime';
 
@@ -14,7 +14,8 @@ export interface AcpSendPromptOptions {
 export interface AcpAgentResponse {
   textResponse: string;
   memoryActions?: Array<{ action: string; key: string; detail: string }>;
-  mcpToolCalls?: Array<{ server_name: string; tool_name: string; status: string }>;
+  mcpToolCalls?: Array<{ server_name: string; tool_name: string; status: string; arguments?: any }>;
+  rulingDraft?: ArbitrationRulingDraft;
   cartridgeCitation?: CartridgeCitation;
   workspaceDiffs?: Array<{ filename: string; diff: string; additions: number; deletions: number }>;
   durationMs: number;
@@ -23,6 +24,95 @@ export interface AcpAgentResponse {
   isError?: boolean;
   stopReason?: string;
   raw?: any;
+}
+
+/**
+ * 从 ACP 响应（原生 MCP 工具调用或结构化契约块）中提取仲裁定案裁决书草案
+ */
+export function extractArbitrationRulingFromAcpResponse(
+  acpResp: Partial<AcpAgentResponse>,
+  authorName?: string
+): ArbitrationRulingDraft | undefined {
+  const text = acpResp.textResponse || '';
+  const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  // 1. 优先从 MCP Tool 调用记录或 raw 中提取 submit_arbitration_ruling 参数
+  if (acpResp.raw && typeof acpResp.raw === 'object') {
+    const rawCalls =
+      acpResp.raw.mcp_tool_calls ||
+      acpResp.raw.result?.mcp_tool_calls ||
+      acpResp.mcpToolCalls ||
+      [];
+    if (Array.isArray(rawCalls)) {
+      const rulingCall = rawCalls.find(
+        (c: any) =>
+          c.tool_name === 'submit_arbitration_ruling' ||
+          c.tool === 'submit_arbitration_ruling' ||
+          c.name === 'submit_arbitration_ruling'
+      );
+      if (rulingCall && (rulingCall.arguments || rulingCall.args)) {
+        const args = rulingCall.arguments || rulingCall.args;
+        const rawDecision = args.decision_type || args.decisionType || 'trade_off_matrix';
+        const validDecision: RulingDecisionType =
+          rawDecision === 'adopt_proposer' || rawDecision === 'reject_rebuild' || rawDecision === 'trade_off_matrix'
+            ? rawDecision
+            : 'trade_off_matrix';
+        return {
+          decisionType: validDecision,
+          summary: String(args.summary || '已通过 MCP 工具提交仲裁定案裁决').trim(),
+          tradeOffPoints: Array.isArray(args.trade_off_points)
+            ? args.trade_off_points.map(String).filter((s) => s.trim().length > 0)
+            : [],
+          impactedFiles: Array.isArray(args.impacted_files)
+            ? args.impacted_files.map(String).filter((s) => s.trim().length > 0)
+            : [],
+          solution: args.solution ? String(args.solution).trim() : undefined,
+          submittedBy: authorName,
+          submittedAt: now,
+        };
+      }
+    }
+  }
+
+  // 2. 尝试从文本正文中的结构化块 <<<RULING_DRAFT>>> { ... } <<<RULING_DRAFT_END>>> 解析
+  const blockMatch =
+    text.match(/<<<RULING_DRAFT>>>([\s\S]*?)<<<RULING_DRAFT_END>>>/i) ||
+    text.match(/```(?:json)?\s*(\{\s*"decision_?type"[\s\S]*?\})\s*```/i);
+
+  if (blockMatch && blockMatch[1]) {
+    try {
+      const parsed = JSON.parse(blockMatch[1].trim());
+      const rawDecision = parsed.decision_type || parsed.decisionType || 'trade_off_matrix';
+      const validDecision: RulingDecisionType =
+        rawDecision === 'adopt_proposer' || rawDecision === 'reject_rebuild' || rawDecision === 'trade_off_matrix'
+          ? rawDecision
+          : 'trade_off_matrix';
+
+      const tradeOffs = Array.isArray(parsed.trade_off_points || parsed.tradeOffPoints)
+        ? (parsed.trade_off_points || parsed.tradeOffPoints).map(String).filter((s: string) => s.trim().length > 0)
+        : [];
+
+      const files = Array.isArray(parsed.impacted_files || parsed.impactedFiles)
+        ? (parsed.impacted_files || parsed.impactedFiles).map(String).filter((s: string) => s.trim().length > 0)
+        : typeof (parsed.impacted_files || parsed.impactedFiles) === 'string'
+        ? (parsed.impacted_files || parsed.impactedFiles).split(',').map((s: string) => s.trim()).filter(Boolean)
+        : [];
+
+      return {
+        decisionType: validDecision,
+        summary: String(parsed.summary || '经综合仲裁审议定案').trim(),
+        tradeOffPoints: tradeOffs,
+        impactedFiles: files,
+        solution: parsed.solution ? String(parsed.solution).trim() : undefined,
+        submittedBy: authorName,
+        submittedAt: now,
+      };
+    } catch (e) {
+      console.warn('[acpClient] Failed to parse structured ruling draft block:', e);
+    }
+  }
+
+  return undefined;
 }
 
 /**

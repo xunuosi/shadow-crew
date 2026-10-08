@@ -151,6 +151,39 @@ pub fn get_tools_list() -> Value {
                 },
                 "required": ["filename", "content"]
             }
+        },
+        {
+            "name": "submit_arbitration_ruling",
+            "description": "提交本议题的架构仲裁定案裁决书与权衡决策 (Architecture Decision Ruling)。将结构化裁决元数据直接上报至宿主与 ADR 画布。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "decision_type": {
+                        "type": "string",
+                        "enum": ["adopt_proposer", "reject_rebuild", "trade_off_matrix"],
+                        "description": "终局裁决类型：adopt_proposer(采纳提案), reject_rebuild(采纳红队驳回重构), trade_off_matrix(综合权衡矩阵)"
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "裁决总览陈词与定案依据"
+                    },
+                    "trade_off_points": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "关键权衡折中要点清单（如牺牲 X 换取 Y、引入 Z 防范边界反例）"
+                    },
+                    "impacted_files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "本次决议限定改动的受影响文件列表（约束安全爆炸半径）"
+                    },
+                    "solution": {
+                        "type": "string",
+                        "description": "落地方案或重构路径概要 (可选)"
+                    }
+                },
+                "required": ["decision_type", "summary", "trade_off_points", "impacted_files"]
+            }
         }
     ])
 }
@@ -218,6 +251,43 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
             let channel_id = arguments["channel_id"].as_str();
             fs::write_channel_artifact(filename, content, channel_id).await
         }
+        "submit_arbitration_ruling" => {
+            let decision_type = arguments["decision_type"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 decision_type"))?;
+            let summary = arguments["summary"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 summary"))?;
+            let trade_off_points = arguments["trade_off_points"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 trade_off_points 数组"))?;
+            let impacted_files = arguments["impacted_files"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 impacted_files 数组"))?;
+            let solution = arguments["solution"].as_str().unwrap_or_default();
+
+            let formatted_points = trade_off_points
+                .iter()
+                .filter_map(|p| p.as_str())
+                .map(|p| format!("  • {}", p))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let formatted_files = impacted_files
+                .iter()
+                .filter_map(|f| f.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            Ok(format!(
+                "✓ 【仲裁定案裁决书】已成功提交至宿主与 ADR 画布：\n• 裁决类型: {}\n• 核心决议: {}\n• 关键权衡点:\n{}\n• 约束安全爆炸半径文件: {}\n{}",
+                decision_type,
+                summary,
+                formatted_points,
+                if formatted_files.is_empty() { "无" } else { &formatted_files },
+                if solution.is_empty() { String::new() } else { format!("• 实施路径概要: {}", solution) }
+            ))
+        }
         unknown => Err(anyhow!("未知的 MCP 工具名称: {}", unknown)),
     }
 }
@@ -239,6 +309,7 @@ mod tests {
         assert!(names.contains(&"list_dir"));
         assert!(names.contains(&"search_code"));
         assert!(names.contains(&"write_channel_artifact"));
+        assert!(names.contains(&"submit_arbitration_ruling"));
     }
 
     #[tokio::test]
@@ -264,6 +335,24 @@ mod tests {
         assert!(res.contains("test_dispatch_adr.md"));
 
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_submit_ruling() {
+        let args = json!({
+            "decision_type": "trade_off_matrix",
+            "summary": "围绕分布式缓存一致性进行两阶段推进",
+            "trade_off_points": [
+                "优先保障强一致性 (确定性权重 45%)",
+                "适度接受 5ms 本地内存对账延迟"
+            ],
+            "impacted_files": ["src/services/cache.ts", "config/redis.toml"],
+            "solution": "第一阶段启用本地原子流水号，第二阶段按需配置旁路对账"
+        });
+        let res = dispatch_tool_call("submit_arbitration_ruling", &args).await.unwrap();
+        assert!(res.contains("✓ 【仲裁定案裁决书】已成功提交"));
+        assert!(res.contains("src/services/cache.ts"));
+        assert!(res.contains("优先保障强一致性"));
     }
 }
 
