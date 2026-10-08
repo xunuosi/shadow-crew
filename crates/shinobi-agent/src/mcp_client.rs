@@ -61,13 +61,22 @@ pub struct NativeMcpClient {
 
 impl NativeMcpClient {
     /// 启动并连接至内置原生 MCP 服务 (shinobi-dev-mcp)
-    pub async fn spawn_and_connect(workdir: Option<&str>) -> Result<Self> {
+    pub async fn spawn_and_connect(workdir: Option<&str>, channel_id: Option<&str>) -> Result<Self> {
         let binary_path = resolve_shinobi_dev_mcp_path();
         let mut cmd = Command::new(&binary_path);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
+
+        if let Ok(home) = std::env::var("SHINOBI_HOME") {
+            cmd.env("SHINOBI_HOME", home);
+        }
+        if let Some(cid) = channel_id {
+            if !cid.trim().is_empty() {
+                cmd.env("SHINOBI_CHANNEL_ID", cid.trim());
+            }
+        }
 
         if let Some(dir) = workdir {
             if !dir.trim().is_empty() {
@@ -263,7 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_native_mcp_client_connection() {
-        let client_res = NativeMcpClient::spawn_and_connect(None).await;
+        let client_res = NativeMcpClient::spawn_and_connect(None, None).await;
         if let Ok(mut client) = client_res {
             let tools = client.get_tools();
             assert!(!tools.is_empty(), "Tools list should not be empty");

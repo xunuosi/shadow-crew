@@ -30,12 +30,14 @@ import {
   Lock,
   UserPlus,
   Quote,
-  PanelLeft
+  PanelLeft,
+  FolderArchive
 } from 'lucide-react';
 import { renderFormattedContent } from '../utils/formatMentions';
 import { isAgentOffline } from '../utils/agentRuntime';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
+import { openChannelArtifactsFolder } from '../services/dbClient';
 
 interface ChatTimelineProps {
   messages: Message[];
@@ -459,6 +461,27 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             <span className="hidden @xl:inline font-mono">ACP</span>
           </button>
 
+          {/* Channel Artifacts Folder Toggle */}
+          {(channel || (activeThread.type !== 'dm' && activeThread.channelId)) && (
+            <button
+              onClick={async () => {
+                const targetChannelId = channel?.id || activeThread.channelId;
+                if (targetChannelId) {
+                  try {
+                    await openChannelArtifactsFolder(targetChannelId);
+                  } catch (e) {
+                    console.error('Failed to open artifacts directory:', e);
+                  }
+                }
+              }}
+              className="hidden @lg:flex px-2 py-1 rounded-lg hover:text-amber-500 hover:bg-surface-hover border border-transparent hover:border-amber-500/30 transition-all items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
+              title="打开当前频道专属产物归档目录 (~/.shinobi/channels/<channel_id>/artifacts/)"
+            >
+              <FolderArchive className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              <span className="hidden @xl:inline font-mono">产物 (Artifacts)</span>
+            </button>
+          )}
+
           {/* Collaborator Count & List */}
           <div className="hidden @xl:block relative shrink-0">
             <button 
@@ -555,6 +578,26 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                   <Users className="w-4 h-4 text-fg-muted shrink-0" />
                   <span>查看协同成员 ({activeAgents.length + 1})</span>
                 </button>
+
+                {(channel || (activeThread.type !== 'dm' && activeThread.channelId)) && (
+                  <button
+                    onClick={async () => {
+                      const targetChannelId = channel?.id || activeThread.channelId;
+                      if (targetChannelId) {
+                        try {
+                          await openChannelArtifactsFolder(targetChannelId);
+                        } catch (e) {
+                          console.error('Failed to open artifacts directory:', e);
+                        }
+                      }
+                      setShowMoreMenu(false);
+                    }}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-hover text-fg transition-colors cursor-pointer"
+                  >
+                    <FolderArchive className="w-4 h-4 text-amber-500 shrink-0" />
+                    <span>打开落地产物目录 (Artifacts)</span>
+                  </button>
+                )}
 
                 {onOpenDeleteChannelModal && channel && (
                   <>

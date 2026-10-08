@@ -22,26 +22,70 @@ pub struct DatabaseManager {
     db_path: String,
 }
 
-/// 解析默认 SQLite 记忆与数据持久化路径
+/// 获取用户级全局 Shinobi 根目录 (~/.shinobi)
+pub fn get_shinobi_home_dir() -> std::path::PathBuf {
+    let base = std::env::var("SHINOBI_HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            if cfg!(target_os = "windows") {
+                std::env::var("USERPROFILE").ok().map(std::path::PathBuf::from)
+            } else {
+                std::env::var("HOME").ok().map(std::path::PathBuf::from)
+            }
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join(".shinobi")
+}
+
+/// 获取指定频道的私有工作区目录 (~/.shinobi/channels/<channel_id>)
+pub fn get_channel_dir(channel_id: &str) -> std::path::PathBuf {
+    let clean_id = if channel_id.trim().is_empty() {
+        "chan-default"
+    } else {
+        channel_id.trim()
+    };
+    let channels_dir = get_shinobi_home_dir().join("channels").join(clean_id);
+    let _ = std::fs::create_dir_all(&channels_dir);
+    let _ = std::fs::create_dir_all(channels_dir.join("artifacts"));
+    let _ = std::fs::create_dir_all(channels_dir.join("scratch"));
+    channels_dir
+}
+
+/// 解析默认 SQLite 记忆与数据持久化路径 (收敛至 ~/.shinobi/global_memory.sqlite，并自动迁移遗留数据)
 pub fn get_default_db_path() -> String {
     if let Ok(env_path) = std::env::var("SHINOBI_MEMORY_DB") {
-        return env_path;
-    }
-    if let Ok(curr) = std::env::current_dir() {
-        let direct = curr.join("shinobi_agent_memory.db");
-        if direct.exists() {
-            return direct.to_string_lossy().to_string();
+        if !env_path.trim().is_empty() {
+            return env_path;
         }
-        if curr.ends_with("src-tauri") {
-            let parent_db = curr.join("../shinobi_agent_memory.db");
-            if parent_db.exists() {
-                return parent_db.to_string_lossy().to_string();
+    }
+
+    let shinobi_dir = get_shinobi_home_dir();
+    let _ = std::fs::create_dir_all(&shinobi_dir);
+
+    let target_db = shinobi_dir.join("global_memory.sqlite");
+
+    // 检查并静默迁移项目目录下的旧数据库 (shinobi_agent_memory.db)
+    if !target_db.exists() {
+        if let Ok(curr) = std::env::current_dir() {
+            let candidates = [
+                curr.join("shinobi_agent_memory.db"),
+                curr.join("../shinobi_agent_memory.db"),
+                curr.join("src-tauri/shinobi_agent_memory.db"),
+            ];
+            for old_db in candidates {
+                if old_db.exists() && old_db.is_file() {
+                    if let Ok(_) = std::fs::copy(&old_db, &target_db) {
+                        tracing::info!("Successfully migrated legacy database from {} to {}", old_db.display(), target_db.display());
+                        let _ = std::fs::rename(&old_db, old_db.with_extension("db.migrated_bak"));
+                        break;
+                    }
+                }
             }
         }
-        direct.to_string_lossy().to_string()
-    } else {
-        "shinobi_agent_memory.db".to_string()
     }
+
+    target_db.to_string_lossy().to_string()
 }
 
 impl DatabaseManager {

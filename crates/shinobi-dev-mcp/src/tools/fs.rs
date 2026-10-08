@@ -234,6 +234,71 @@ pub async fn search_code(
     }
 }
 
+/// 解析用户级 Shinobi 根目录 (~/.shinobi)
+pub fn get_shinobi_home_dir() -> std::path::PathBuf {
+    let base = std::env::var("SHINOBI_HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            if cfg!(target_os = "windows") {
+                std::env::var("USERPROFILE").ok().map(std::path::PathBuf::from)
+            } else {
+                std::env::var("HOME").ok().map(std::path::PathBuf::from)
+            }
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    if base.ends_with(".shinobi") {
+        base
+    } else {
+        base.join(".shinobi")
+    }
+}
+
+/// 解析指定频道的落地产物目录 (~/.shinobi/channels/<channel_id>/artifacts/)
+pub fn get_channel_artifacts_dir(channel_id: Option<&str>) -> std::path::PathBuf {
+    let clean_id = channel_id
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .or_else(|| std::env::var("SHINOBI_CHANNEL_ID").ok().filter(|s| !s.trim().is_empty()))
+        .unwrap_or_else(|| "chan-default".to_string());
+
+    let artifacts_dir = get_shinobi_home_dir()
+        .join("channels")
+        .join(clean_id)
+        .join("artifacts");
+    let _ = std::fs::create_dir_all(&artifacts_dir);
+    artifacts_dir
+}
+
+/// 将关键技术产物 (ADR 架构决策、推演设计白皮书、补丁 diff) 归档至当前频道专属产物目录
+pub async fn write_channel_artifact(
+    filename: &str,
+    content: &str,
+    channel_id: Option<&str>,
+) -> Result<String> {
+    let p = Path::new(filename);
+    let clean_name = p
+        .file_name()
+        .ok_or_else(|| anyhow!("无效的产物文件名: {}", filename))?;
+    let artifacts_dir = get_channel_artifacts_dir(channel_id);
+    fs::create_dir_all(&artifacts_dir)
+        .await
+        .map_err(|e| anyhow!("创建产物目录失败 [{}]: {}", artifacts_dir.display(), e))?;
+
+    let target_path = artifacts_dir.join(clean_name);
+
+    fs::write(&target_path, content.as_bytes())
+        .await
+        .map_err(|e| anyhow!("写入产物失败 [{}]: {}", target_path.display(), e))?;
+
+    Ok(format!(
+        "产物已成功归档到当前频道专属产物目录: {} (大小: {} 字节)",
+        target_path.display(),
+        content.len()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +326,19 @@ mod tests {
         assert!(read_after.contains("hello world"));
 
         let _ = fs::remove_file(test_file).await;
+    }
+
+    #[tokio::test]
+    async fn test_write_channel_artifact() {
+        let temp_dir = std::env::temp_dir().join("shinobi_mcp_test_art");
+        std::env::set_var("SHINOBI_HOME", &temp_dir);
+
+        let res = write_channel_artifact("adr_001.md", "# ADR 001\nDecisions made.", Some("test-chan")).await;
+        assert!(res.is_ok());
+        let msg = res.unwrap();
+        assert!(msg.contains("adr_001.md"));
+        assert!(msg.contains("test-chan"));
+
+        let _ = fs::remove_dir_all(&temp_dir).await;
     }
 }

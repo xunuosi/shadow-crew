@@ -8,14 +8,57 @@ use shinobi_protocol::{AcpPromptResult, MemoryTrace};
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
+/// 解析用户级全局 Shinobi 根目录 (~/.shinobi)
+fn get_shinobi_home_dir() -> std::path::PathBuf {
+    let base = std::env::var("SHINOBI_HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            if cfg!(target_os = "windows") {
+                std::env::var("USERPROFILE").ok().map(std::path::PathBuf::from)
+            } else {
+                std::env::var("HOME").ok().map(std::path::PathBuf::from)
+            }
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    if base.ends_with(".shinobi") {
+        base
+    } else {
+        base.join(".shinobi")
+    }
+}
+
+/// 解析并创建指定频道的独立私有工作区 (~/.shinobi/channels/<channel_id>)
+fn get_channel_dir(channel_id: &str) -> std::path::PathBuf {
+    let clean_id = if channel_id.trim().is_empty() {
+        "chan-default"
+    } else {
+        channel_id.trim()
+    };
+    let channels_dir = get_shinobi_home_dir().join("channels").join(clean_id);
+    let _ = std::fs::create_dir_all(&channels_dir);
+    let _ = std::fs::create_dir_all(channels_dir.join("artifacts"));
+    let _ = std::fs::create_dir_all(channels_dir.join("scratch"));
+    channels_dir
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 实例化私有持久化 SQLite 记忆引擎 (每个开发者的影替身独立持有一份，支持通过环境变量沙盒化隔离)
-    let db_path = std::env::var("SHINOBI_MEMORY_DB").unwrap_or_else(|_| "shinobi_agent_memory.db".to_string());
+    // 实例化私有持久化 SQLite 记忆引擎 (收敛至 ~/.shinobi/global_memory.sqlite)
+    let db_path = std::env::var("SHINOBI_MEMORY_DB")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            let shinobi_home = get_shinobi_home_dir();
+            let _ = std::fs::create_dir_all(&shinobi_home);
+            shinobi_home.join("global_memory.sqlite").to_string_lossy().to_string()
+        });
+    let is_first_init = !std::path::Path::new(&db_path).exists();
     let memory_store = AgentMemoryStore::new(&db_path)?;
 
-    // 若使用的是默认主数据库，写入初始替身认知
-    if db_path == "shinobi_agent_memory.db" {
+    // 若新创建的主数据库，写入初始替身认知
+    if is_first_init {
         let _ = memory_store.store(
             "identity",
             "alter_ego_role",
@@ -37,6 +80,7 @@ async fn main() -> Result<()> {
     let mut session_system_prompt: Option<String> = None;
     let mut mcp_client: Option<mcp_client::SharedMcpClient> = None;
     let mut session_cwd: Option<String> = None;
+    let mut session_channel_id = "chan-default".to_string();
 
     // 持续监听来自 Tauri 宿主或父进程的 stdio JSON-RPC 2.0 请求
     for line in reader.lines() {
@@ -70,6 +114,27 @@ async fn main() -> Result<()> {
                     out.flush()?;
                 }
             } else if method == "session/new" {
+                if let Some(cid) = params.get("channelId").and_then(|v| v.as_str()) {
+                    if !cid.trim().is_empty() {
+                        session_channel_id = cid.trim().to_string();
+                    }
+                }
+
+                let channel_dir = get_channel_dir(&session_channel_id);
+                let meta_file = channel_dir.join("meta.json");
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let meta_obj = serde_json::json!({
+                    "channelId": session_channel_id,
+                    "createdAt": now_secs,
+                    "lastActive": now_secs,
+                    "artifactsDir": channel_dir.join("artifacts").to_string_lossy(),
+                    "scratchDir": channel_dir.join("scratch").to_string_lossy(),
+                });
+                let _ = std::fs::write(&meta_file, meta_obj.to_string());
+
                 session_system_prompt = params
                     .get("systemPrompt")
                     .and_then(|v| v.as_str())
@@ -81,7 +146,7 @@ async fn main() -> Result<()> {
 
                 // 连接 Shinobi 原生内置 MCP 工具服务 (shinobi-dev-mcp)
                 if mcp_client.is_none() {
-                    match mcp_client::NativeMcpClient::spawn_and_connect(session_cwd.as_deref()).await {
+                    match mcp_client::NativeMcpClient::spawn_and_connect(session_cwd.as_deref(), Some(&session_channel_id)).await {
                         Ok(client) => {
                             let tool_names: Vec<String> = client
                                 .get_tools()
@@ -139,15 +204,44 @@ async fn main() -> Result<()> {
                         .unwrap_or_default()
                 };
 
+                let prompt_channel_id = params
+                    .get("channelId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| session_channel_id.clone());
+                let current_channel_dir = get_channel_dir(&prompt_channel_id);
+
+                // 更新 channel 活跃状态
+                let meta_file = current_channel_dir.join("meta.json");
+                if meta_file.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&meta_file) {
+                        if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+                            let now_secs = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            val["lastActive"] = serde_json::json!(now_secs);
+                            let _ = std::fs::write(&meta_file, val.to_string());
+                        }
+                    }
+                }
+
                 // 若此前未能启动 MCP，在 prompt 接收时尝试二次懒加载挂载
                 if mcp_client.is_none() {
-                    if let Ok(client) = mcp_client::NativeMcpClient::spawn_and_connect(session_cwd.as_deref()).await {
+                    if let Ok(client) = mcp_client::NativeMcpClient::spawn_and_connect(session_cwd.as_deref(), Some(&prompt_channel_id)).await {
                         mcp_client = Some(Arc::new(tokio::sync::Mutex::new(client)));
                     }
                 }
                 
-                // 1. 从私有记忆库召回关键知识
-                let recalled = memory_store.recall_relevant(query).unwrap_or_default();
+                // 1. 从私有记忆库召回关键知识 (全局核心认知 + 频道私有知识)
+                let mut recalled = memory_store.recall_relevant(query).unwrap_or_default();
+                let channel_mem_path = current_channel_dir.join("memory.sqlite").to_string_lossy().to_string();
+                if let Ok(channel_mem_store) = AgentMemoryStore::new(&channel_mem_path) {
+                    if let Ok(chan_recalled) = channel_mem_store.recall_relevant(query) {
+                        recalled.extend(chan_recalled);
+                    }
+                }
+
                 let mut memory_traces = Vec::new();
                 for r in &recalled {
                     memory_traces.push(MemoryTrace {
@@ -167,6 +261,15 @@ async fn main() -> Result<()> {
                         system_prompt.push_str(&format!("- ({}) {}\n", r.key, r.content));
                     }
                 }
+
+                let artifacts_dir = current_channel_dir.join("artifacts").to_string_lossy().to_string();
+                let scratch_dir = current_channel_dir.join("scratch").to_string_lossy().to_string();
+                system_prompt.push_str(&format!(
+                    "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 落地产物目录 (Artifacts): {}\n- 临时调试目录 (Scratch): {}\n提示: 如需沉淀正式技术推演文档、ADR 架构决策或代码 Patch，请优先调用 `write_channel_artifact` 工具安全保存至频道专属产物目录。\n",
+                    prompt_channel_id,
+                    artifacts_dir,
+                    scratch_dir
+                ));
 
                 let session_id = params.get("sessionId").and_then(|v| v.as_str()).unwrap_or("shinobi-session-default");
                 let session_id_owned = session_id.to_string();

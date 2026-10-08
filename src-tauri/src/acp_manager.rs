@@ -9,54 +9,30 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
 
-/// 格式化并写入本地持久化日志文件 (logs/acp.log)
+/// 格式化并写入本地持久化日志文件 (~/.shinobi/logs/acp.log)
 pub fn log_acp_event(agent_id: &str, direction: &str, line: &str) {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
     let formatted = format!("[{}] [{}] [{}] {}\n", now, agent_id, direction, line);
 
-    // 写入当前工作区 logs/acp.log
-    let _ = std::fs::create_dir_all("logs");
+    let logs_dir = crate::db_manager::get_shinobi_home_dir().join("logs");
+    let _ = std::fs::create_dir_all(&logs_dir);
+    let log_file = logs_dir.join("acp.log");
+
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("logs/acp.log")
+        .open(&log_file)
     {
         use std::io::Write;
         let _ = file.write_all(formatted.as_bytes());
     }
-
-    // 若当前工作目录为 src-tauri，同时同步落盘至项目根目录 logs/acp.log
-    if let Ok(curr) = std::env::current_dir() {
-        if curr.ends_with("src-tauri") {
-            let _ = std::fs::create_dir_all("../logs");
-            if let Ok(mut root_file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("../logs/acp.log")
-            {
-                use std::io::Write;
-                let _ = root_file.write_all(formatted.as_bytes());
-            }
-        }
-    }
 }
 
 pub fn get_acp_log_path() -> String {
-    if let Ok(curr) = std::env::current_dir() {
-        let direct = curr.join("logs/acp.log");
-        if direct.exists() {
-            return direct.to_string_lossy().to_string();
-        }
-        if curr.ends_with("src-tauri") {
-            let parent_log = curr.join("../logs/acp.log");
-            if parent_log.exists() {
-                return parent_log.to_string_lossy().to_string();
-            }
-        }
-        direct.to_string_lossy().to_string()
-    } else {
-        "logs/acp.log".to_string()
-    }
+    let logs_dir = crate::db_manager::get_shinobi_home_dir().join("logs");
+    let _ = std::fs::create_dir_all(&logs_dir);
+    let log_file = logs_dir.join("acp.log");
+    log_file.to_string_lossy().to_string()
 }
 
 pub fn read_recent_acp_logs(lines_count: usize) -> String {
@@ -267,10 +243,15 @@ impl AcpProcessManager {
         let program = parts[0];
         let args = &parts[1..];
 
+        let shinobi_home = crate::db_manager::get_shinobi_home_dir();
+        let default_db = crate::db_manager::get_default_db_path();
+
         let mut cmd = Command::new(program);
         cmd.args(args)
             .current_dir(cwd)
             .env("PATH", &extra_paths)
+            .env("SHINOBI_HOME", &shinobi_home)
+            .env("SHINOBI_MEMORY_DB", &default_db)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -806,7 +787,8 @@ impl AcpProcessManager {
             }
             let mut params = serde_json::json!({
                 "cwd": &agent.cwd,
-                "mcpServers": []
+                "mcpServers": [],
+                "channelId": room_id
             });
             // 对标 Buzz: 在 session/new 时将系统公约与人设注入底层（支持标准协议与 Claude Code 的 _meta）
             if let Some(sp) = system_prompt {
@@ -863,6 +845,7 @@ impl AcpProcessManager {
             "method": "session/prompt",
             "params": {
                 "sessionId": current_session_id,
+                "channelId": room_id,
                 "prompt": [
                     {
                         "type": "text",

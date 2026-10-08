@@ -262,3 +262,44 @@ export function exportMessagesAsJsonFile(messages: Message[]): void {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+export interface ChannelDirInfo {
+  channelDir: string;
+  artifactsDir: string;
+  scratchDir: string;
+  memoryDb: string;
+  globalDir: string;
+}
+
+/**
+ * 打开当前频道的落地产物工作区目录 (在系统访达/资源管理器中弹出)
+ */
+export async function openChannelArtifactsFolder(channelId: string): Promise<string> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      const path = await invoke('open_channel_artifacts_dir', { channelId });
+      return path;
+    } catch (e) {
+      console.error('[dbClient] open_channel_artifacts_dir failed:', e);
+      throw e;
+    }
+  }
+  return `~/.shinobi/channels/${channelId}/artifacts/`;
+}
+
+/**
+ * 获取当前频道与全局 Shinobi 路径信息
+ */
+export async function getChannelDirInfo(channelId: string): Promise<ChannelDirInfo | null> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      return await invoke('get_channel_dir_info', { channelId });
+    } catch (e) {
+      console.error('[dbClient] get_channel_dir_info failed:', e);
+    }
+  }
+  return null;
+}
+

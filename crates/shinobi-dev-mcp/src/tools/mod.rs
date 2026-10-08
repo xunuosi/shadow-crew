@@ -129,6 +129,28 @@ pub fn get_tools_list() -> Value {
                 },
                 "required": ["pattern"]
             }
+        },
+        {
+            "name": "write_channel_artifact",
+            "description": "将正式技术产物 (如 ADR 架构决策文档、推演方案白皮书、关键补丁 diff) 永久归档至当前频道专属产物目录 (~/.shinobi/channels/<channel_id>/artifacts/)。可被系统访达一键查看。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "产物文件名 (如 adr_001_storage.md, refactor_plan.md, changes.diff)"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "产物完整文本内容"
+                    },
+                    "channel_id": {
+                        "type": "string",
+                        "description": "可选的目标频道 ID (若省略则默认写入当前所属频道)"
+                    }
+                },
+                "required": ["filename", "content"]
+            }
         }
     ])
 }
@@ -186,6 +208,16 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
             let max_results = arguments["max_results"].as_u64().map(|v| v as usize);
             fs::search_code(pattern, path, max_results).await
         }
+        "write_channel_artifact" => {
+            let filename = arguments["filename"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 filename"))?;
+            let content = arguments["content"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 content"))?;
+            let channel_id = arguments["channel_id"].as_str();
+            fs::write_channel_artifact(filename, content, channel_id).await
+        }
         unknown => Err(anyhow!("未知的 MCP 工具名称: {}", unknown)),
     }
 }
@@ -198,7 +230,7 @@ mod tests {
     fn test_tools_list_schema() {
         let list = get_tools_list();
         let arr = list.as_array().expect("tools list must be array");
-        assert!(arr.len() >= 6);
+        assert!(arr.len() >= 7);
         let names: Vec<&str> = arr.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(names.contains(&"shell"));
         assert!(names.contains(&"read_file"));
@@ -206,6 +238,7 @@ mod tests {
         assert!(names.contains(&"str_replace"));
         assert!(names.contains(&"list_dir"));
         assert!(names.contains(&"search_code"));
+        assert!(names.contains(&"write_channel_artifact"));
     }
 
     #[tokio::test]
@@ -215,6 +248,22 @@ mod tests {
         });
         let res = dispatch_tool_call("shell", &args).await.unwrap();
         assert!(res.contains("shinobi dispatch ok"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_write_artifact() {
+        let temp_dir = std::env::temp_dir().join("shinobi_dispatch_test_art");
+        std::env::set_var("SHINOBI_HOME", &temp_dir);
+
+        let args = json!({
+            "filename": "test_dispatch_adr.md",
+            "content": "# Test Dispatch ADR",
+            "channel_id": "test-dispatch-chan"
+        });
+        let res = dispatch_tool_call("write_channel_artifact", &args).await.unwrap();
+        assert!(res.contains("test_dispatch_adr.md"));
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
 }
 
