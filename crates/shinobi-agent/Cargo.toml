@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 shinobi-protocol = { path = "../shinobi-protocol" }
 tokio.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true
