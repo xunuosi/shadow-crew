@@ -1,5 +1,6 @@
 import { Agent, CartridgeCitation, MemoryCartridgeItem } from '../types';
 import { resolveAgentModelConfig, isModelConfigReady, callLlmModel } from './llmService';
+import { isAgentOffline } from '../utils/agentRuntime';
 
 export interface AcpSendPromptOptions {
   agent: Agent;
@@ -466,10 +467,14 @@ export async function sendPromptToAcpAgent(
   // 1. JIT 动态外挂记忆召回 (有限上下文防塞爆)
   const { enhancedPrompt, citation } = recallRelevantCartridgeMemories(agent, prompt);
 
-  // 1.1 严格通信准入：若 Agent 尚未由用户手动点击 Start 开启通信 (处于 idle 离线)，拒绝自动发起通信
-  if (agent.status === 'idle') {
+  // 1.1 严格通信准入：若 Agent 未由用户点击 Start 开启通信（idle），或进程/握手异常（error），拒绝发起通信
+  if (isAgentOffline(agent)) {
+    const reason =
+      agent.status === 'error'
+        ? `当前状态为连接异常${agent.statusDetail ? `（${agent.statusDetail}）` : ''}`
+        : '当前处于离线未连接状态';
     return {
-      textResponse: `🔌 **Agent 通信尚未开启**：【${agent.name}】当前处于离线未连接状态。\n\n根据产品功能规范，请先在 **Agents & 编队** 控制面板点击该 Agent 头像下方的【Start】按钮开启 ACP 通信连接后，再进行指令协作。`,
+      textResponse: `🔌 **Agent 通信不可用**：【${agent.name}】${reason}，本轮指令未派发给该 Agent。\n\n请先在 **Agents & 编队** 控制面板点击该 Agent 头像下方的【Start】按钮开启 ACP 通信连接；若显示连接异常，请先修复其运行环境后重新 Start。`,
       cartridgeCitation: citation,
       durationMs: Date.now() - startTime,
       isRealProcess: false,

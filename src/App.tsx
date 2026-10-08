@@ -61,6 +61,7 @@ import { AgentDashboard } from './components/AgentDashboard';
 import { MemoryExportModal } from './components/MemoryExportModal';
 import { MemoryImportModal } from './components/MemoryImportModal';
 import { sendPromptToAcpAgent, probeRemoteAcpConnection, buildAgentLaunchEnv, buildThinkingProcessFromAcp } from './services/acpClient';
+import { isAgentOffline, isAgentOnline } from './utils/agentRuntime';
 import { saveMessagesBatchToDb, loadMessagesFromDb } from './services/dbClient';
 import { DEFAULT_MODEL_NAME } from './config/models';
 import { resolveAgentModelConfig } from './services/llmService';
@@ -1759,8 +1760,8 @@ export default function App() {
 
     const targetAgent = targetAgents[0];
 
-    // 严格检查通信状态：若未手动点击 Start 开启通信，则进行拦截并引导，尝试继续唤醒后续已连接的协作者
-    if (targetAgent.status === 'idle') {
+    // 严格检查通信状态：若未手动点击 Start 开启通信（或握手失败），则进行拦截并引导，尝试继续唤醒后续已连接的协作者
+    if (isAgentOffline(targetAgent)) {
       const offlineNotice: Message = {
         id: `msg-offline-collab-${Date.now()}`,
         threadId: roomId,
@@ -2146,7 +2147,7 @@ export default function App() {
         return;
       }
 
-      if (challengerAgent.status === 'idle') {
+      if (isAgentOffline(challengerAgent)) {
         inFlightHandoverRef.current.delete(handoverKey);
         updateTopicDataInState(topicId, (old) => ({
           ...old,
@@ -2609,7 +2610,7 @@ export default function App() {
       const verifierIds = currentTopic.gameRoles?.verifiers || [];
       const verifierAgent = candidateAgents.find((a) => verifierIds.includes(a.id));
 
-      if (!verifierAgent || verifierAgent.status === 'idle') {
+      if (!verifierAgent || isAgentOffline(verifierAgent)) {
         inFlightHandoverRef.current.delete(handoverKey);
 
         const offlineReason = !verifierAgent
@@ -2984,7 +2985,7 @@ export default function App() {
       const proposerIds = currentTopic.gameRoles?.proposers || [];
       const proposerAgent = candidateAgents.find((a) => proposerIds.includes(a.id));
 
-      if (!proposerAgent || proposerAgent.status === 'idle') {
+      if (!proposerAgent || isAgentOffline(proposerAgent)) {
         inFlightHandoverRef.current.delete(handoverKey);
 
         const offlineReason = !proposerAgent
@@ -3547,11 +3548,11 @@ export default function App() {
       const arbiterIds = currentTopic.gameRoles?.arbiters || [];
       const arbiterAgent = candidateAgents.find((a) => arbiterIds.includes(a.id));
 
-      if (!arbiterAgent || arbiterAgent.status === 'idle') {
+      if (!arbiterAgent || isAgentOffline(arbiterAgent)) {
         inFlightHandoverRef.current.delete(handoverKey);
       }
 
-      if (arbiterAgent && arbiterAgent.status !== 'idle') {
+      if (arbiterAgent && isAgentOnline(arbiterAgent)) {
         const execKey = `${topicId}:${arbiterAgent.id}`;
         setIsGenerating(true);
         setActiveExecutions((prev) => ({
@@ -4060,10 +4061,17 @@ export default function App() {
     }
 
     // 检查通信状态：分离离线与已连接的 Agent
-    const offlineAgents = respondingAgents.filter((a) => a.status === 'idle');
-    const onlineAgents = respondingAgents.filter((a) => a.status !== 'idle');
+    const offlineAgents = respondingAgents.filter((a) => isAgentOffline(a));
+    const onlineAgents = respondingAgents.filter((a) => isAgentOnline(a));
 
     if (offlineAgents.length > 0) {
+      const offlineDetails = offlineAgents
+        .map((a) =>
+          a.status === 'error'
+            ? `• **${a.name}**：连接异常${a.statusDetail ? ` — ${a.statusDetail}` : ''}`
+            : `• **${a.name}**：通信尚未开启`
+        )
+        .join('\n');
       setTimeout(() => {
         const offlineNotice: Message = {
           id: `msg-offline-topic-${Date.now()}`,
@@ -4076,7 +4084,7 @@ export default function App() {
           isAgent: true,
           agentBadge: 'Communication Required',
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `🔌 **Agent 通信尚未开启**：${offlineAgents.map((a) => `**${a.name}**`).join('、')} 当前处于离线/未连接状态。\n\n根据产品规范，在与其协作推演前，需先在左侧「Agents & 编队」控制面板点击对应 Agent 头像下方的【Start】按钮开启 ACP 通信连接。`,
+          content: `🔌 **Agent 通信不可用，本轮不派发推演**：\n${offlineDetails}\n\n根据产品规范，在与其协作推演前，需先在左侧「Agents & 编队」控制面板点击对应 Agent 头像下方的【Start】按钮开启 ACP 通信连接；若显示连接异常，请先修复其运行环境后重新 Start。`,
         };
         setMessages((prev) => ({
           ...prev,
@@ -4559,7 +4567,7 @@ export default function App() {
       } : old.rulingRecord,
     }));
 
-    if (executorAgent.status === 'idle') {
+    if (isAgentOffline(executorAgent)) {
       const offlineNotice: Message = {
         id: `msg-offline-exec-${Date.now()}`,
         threadId: topicId,
@@ -5156,8 +5164,8 @@ export default function App() {
 
     const primaryResponder = respondingAgents[0];
 
-    // 严格检查通信状态：若未手动点击 Start 开启通信，则进行拦截并引导
-    if (primaryResponder.status === 'idle') {
+    // 严格检查通信状态：若未手动点击 Start 开启通信（或握手失败），则进行拦截并引导
+    if (isAgentOffline(primaryResponder)) {
       setTimeout(() => {
         const offlineNotice: Message = {
           id: `msg-offline-${Date.now()}`,

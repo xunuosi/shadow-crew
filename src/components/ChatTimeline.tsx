@@ -33,6 +33,7 @@ import {
   PanelLeft
 } from 'lucide-react';
 import { renderFormattedContent } from '../utils/formatMentions';
+import { isAgentOffline } from '../utils/agentRuntime';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
 
@@ -319,10 +320,10 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                   />
                 </div>
                 <span className="truncate">DM with <span className="text-accent font-semibold">{dmTargetAgent?.name || activeThread.authorName}</span></span>
-                {dmTargetAgent && dmTargetAgent.status === 'idle' && (
-                  <span className="hidden @md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 border border-zinc-500/25 text-[10px] font-mono shrink-0" title="通信未开启，请先在 Agents 面板点击 Start 开启连接">
+                {dmTargetAgent && isAgentOffline(dmTargetAgent) && (
+                  <span className="hidden @md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 border border-zinc-500/25 text-[10px] font-mono shrink-0" title={dmTargetAgent.status === 'error' ? `连接异常${dmTargetAgent.statusDetail ? `：${dmTargetAgent.statusDetail}` : ''}` : '通信未开启，请先在 Agents 面板点击 Start 开启连接'}>
                     <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500" />
-                    <span>未开启通信 (Offline)</span>
+                    <span>{dmTargetAgent.status === 'error' ? '连接异常 (Error)' : '未开启通信 (Offline)'}</span>
                   </span>
                 )}
                 {dmTargetAgent && (dmTargetAgent.status === 'running' || dmTargetAgent.status === 'thinking') && currentThreadExecutions.length === 0 && (
