@@ -1,8 +1,10 @@
+mod tools;
+
 use anyhow::Result;
 use serde_json::json;
 use std::io::{self, BufRead, Write};
 
-/// 开发者 MCP 技能服务 (提供 AST 索引、Git 变更审查与沙盒命令运行)
+/// Shinobi 原生内置开发工具 MCP 服务 (支持 shell / read_file / write_file / str_replace / search_code / list_dir)
 #[tokio::main]
 async fn main() -> Result<()> {
     let stdin = io::stdin();
@@ -17,46 +19,107 @@ async fn main() -> Result<()> {
 
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
             let method = val["method"].as_str().unwrap_or_default();
-            let id = val["id"].as_u64().unwrap_or(0);
+            let id = val.get("id").cloned();
 
-            let resp = match method {
-                "tools/list" => json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": {
-                        "tools": [
-                            {
-                                "name": "cargo_clippy",
-                                "description": "运行本地代码静态检查"
+            // 若为通知消息 (Notification, 无 id)，处理后不回复
+            if id.is_none() {
+                continue;
+            }
+            let req_id = id.unwrap();
+
+            match method {
+                "initialize" => {
+                    let resp = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "protocolVersion": "2024-11-05",
+                            "serverInfo": {
+                                "name": "shinobi-dev-mcp",
+                                "version": "0.1.0"
                             },
-                            {
-                                "name": "git_diff_summary",
-                                "description": "生成当前分支针对主干的 Unified Diff 摘要"
+                            "capabilities": {
+                                "tools": {
+                                    "listChanged": false
+                                }
                             }
-                        ]
-                    }
-                }),
-                "tools/call" => json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": {
-                        "code": -32000,
-                        "message": "Tool execution sandbox not initialized (fail-closed policy enforced). Arbitrary mock execution disabled.",
-                        "data": {
-                            "status": "failed_closed",
-                            "policy": "R-7-fail-closed"
                         }
-                    }
-                }),
-                _ => json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32601, "message": "Method not found" }
-                }),
-            };
+                    });
+                    writeln!(stdout, "{}", resp)?;
+                    stdout.flush()?;
+                }
+                "tools/list" => {
+                    let resp = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "tools": tools::get_tools_list()
+                        }
+                    });
+                    writeln!(stdout, "{}", resp)?;
+                    stdout.flush()?;
+                }
+                "tools/call" => {
+                    let params = &val["params"];
+                    let tool_name = params["name"].as_str().unwrap_or_default();
+                    let arguments = &params["arguments"];
 
-            writeln!(stdout, "{}", resp.to_string())?;
-            stdout.flush()?;
+                    let call_result = tools::dispatch_tool_call(tool_name, arguments).await;
+
+                    let resp = match call_result {
+                        Ok(output_text) => json!({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": output_text
+                                    }
+                                ],
+                                "isError": false
+                            }
+                        }),
+                        Err(e) => json!({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": format!("执行工具 [{}] 出错: {:#}", tool_name, e)
+                                    }
+                                ],
+                                "isError": true
+                            }
+                        }),
+                    };
+
+                    writeln!(stdout, "{}", resp)?;
+                    stdout.flush()?;
+                }
+                "ping" => {
+                    let resp = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {}
+                    });
+                    writeln!(stdout, "{}", resp)?;
+                    stdout.flush()?;
+                }
+                _ => {
+                    let resp = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": -32601,
+                            "message": format!("未支持的 MCP 方法: {}", method)
+                        }
+                    });
+                    writeln!(stdout, "{}", resp)?;
+                    stdout.flush()?;
+                }
+            }
         }
     }
 

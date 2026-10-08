@@ -13,6 +13,7 @@ export interface AcpSendPromptOptions {
 export interface AcpAgentResponse {
   textResponse: string;
   memoryActions?: Array<{ action: string; key: string; detail: string }>;
+  mcpToolCalls?: Array<{ server_name: string; tool_name: string; status: string }>;
   cartridgeCitation?: CartridgeCitation;
   workspaceDiffs?: Array<{ filename: string; diff: string; additions: number; deletions: number }>;
   durationMs: number;
@@ -21,6 +22,40 @@ export interface AcpAgentResponse {
   isError?: boolean;
   stopReason?: string;
   raw?: any;
+}
+
+/**
+ * 根据 ACP 响应 (包含记忆召回与原生 MCP 工具调用) 构建标准化 ThinkingProcess
+ */
+export function buildThinkingProcessFromAcp(
+  acpResp: AcpAgentResponse,
+  defaultSummary = '已检索私有记忆库并完成技术边界考量'
+) {
+  const hasMem = acpResp.memoryActions && acpResp.memoryActions.length > 0;
+  const hasMcp = acpResp.mcpToolCalls && acpResp.mcpToolCalls.length > 0;
+
+  if (!hasMem && !hasMcp) {
+    return undefined;
+  }
+
+  const details: string[] = [];
+  if (hasMem) {
+    details.push(...acpResp.memoryActions!.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`));
+  }
+  if (hasMcp) {
+    details.push(...acpResp.mcpToolCalls!.map((t) => `[MCP TOOL] ${t.server_name} -> ${t.tool_name} (${t.status})`));
+  }
+
+  const summary = hasMcp
+    ? `已执行 ${acpResp.mcpToolCalls!.length} 项原生 MCP 工具调用并完成推演`
+    : defaultSummary;
+
+  return {
+    duration: `${acpResp.durationMs}ms`,
+    tokens: Math.round(acpResp.textResponse.length * 1.3),
+    summary,
+    detail: details.join('\n'),
+  };
 }
 
 /**
@@ -503,6 +538,7 @@ export async function sendPromptToAcpAgent(
           isEmptyTurn: isEmpty,
           stopReason: res.stopReason,
           memoryActions: res.memory_actions || [],
+          mcpToolCalls: res.mcp_tool_calls || [],
           cartridgeCitation: citation,
           workspaceDiffs: res.workspace_diffs || [],
           durationMs,
@@ -513,6 +549,7 @@ export async function sendPromptToAcpAgent(
         return {
           textResponse: response.text_response,
           memoryActions: response.memory_actions || [],
+          mcpToolCalls: response.mcp_tool_calls || [],
           cartridgeCitation: citation,
           workspaceDiffs: response.workspace_diffs || [],
           durationMs,

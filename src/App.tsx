@@ -60,7 +60,7 @@ import { RustTauriArchitectureHub } from './components/RustTauriArchitectureHub'
 import { AgentDashboard } from './components/AgentDashboard';
 import { MemoryExportModal } from './components/MemoryExportModal';
 import { MemoryImportModal } from './components/MemoryImportModal';
-import { sendPromptToAcpAgent, probeRemoteAcpConnection, buildAgentLaunchEnv } from './services/acpClient';
+import { sendPromptToAcpAgent, probeRemoteAcpConnection, buildAgentLaunchEnv, buildThinkingProcessFromAcp } from './services/acpClient';
 import { saveMessagesBatchToDb, loadMessagesFromDb } from './services/dbClient';
 import { DEFAULT_MODEL_NAME } from './config/models';
 import { resolveAgentModelConfig } from './services/llmService';
@@ -1947,17 +1947,7 @@ export default function App() {
         agentBadge: `${targetAgent.modelBadge?.split(' ')[0] || 'Local'} · 协同响应 (Hop ${nextDepth})`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         content: acpResp.textResponse,
-        thinkingProcess:
-          acpResp.memoryActions && acpResp.memoryActions.length > 0
-            ? {
-                duration: `${acpResp.durationMs}ms`,
-                tokens: Math.round(acpResp.textResponse.length * 1.3),
-                summary: `已基于协同上下文完成审查与规约对齐`,
-                detail: acpResp.memoryActions
-                  .map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`)
-                  .join('\n'),
-              }
-            : undefined,
+        thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已基于协同上下文完成审查与规约对齐'),
         diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
         cartridgeCitation: acpResp.cartridgeCitation,
         collaborationInfo: {
@@ -2292,12 +2282,7 @@ export default function App() {
           content: acpResp.textResponse,
           gameStage: 'challenge',
           gameRole: 'challenger',
-          thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
-            duration: `${acpResp.durationMs}ms`,
-            tokens: Math.round(acpResp.textResponse.length * 1.3),
-            summary: `已完成反例边界与架构证伪推演`,
-            detail: acpResp.memoryActions.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n'),
-          } : undefined,
+          thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成反例边界与架构证伪推演'),
           diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
           cartridgeCitation: acpResp.cartridgeCitation,
         };
@@ -2773,12 +2758,7 @@ export default function App() {
           content: acpResp.textResponse,
           gameStage: 'verification',
           gameRole: 'verifier',
-          thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
-            duration: `${acpResp.durationMs}ms`,
-            tokens: Math.round(acpResp.textResponse.length * 1.3),
-            summary: `已完成工具执行与物理事实接地验证`,
-            detail: acpResp.memoryActions.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n'),
-          } : undefined,
+          thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成工具执行与物理事实接地验证'),
           diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
           cartridgeCitation: acpResp.cartridgeCitation,
         };
@@ -3159,12 +3139,7 @@ export default function App() {
           content: acpResp.textResponse,
           gameStage: 'defense',
           gameRole: 'proposer',
-          thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
-            duration: `${acpResp.durationMs}ms`,
-            tokens: Math.round(acpResp.textResponse.length * 1.3),
-            summary: `已完成反例答辩与架构防御补丁构建`,
-            detail: acpResp.memoryActions.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n'),
-          } : undefined,
+          thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成反例答辩与架构防御补丁构建'),
           diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
           cartridgeCitation: acpResp.cartridgeCitation,
         };
@@ -3683,12 +3658,7 @@ export default function App() {
             content: acpResp.textResponse,
             gameStage: 'arbitration',
             gameRole: 'arbiter',
-            thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
-              duration: `${acpResp.durationMs}ms`,
-              tokens: Math.round(acpResp.textResponse.length * 1.3),
-              summary: `已完成立论、反例与答辩补丁的综合仲裁审查`,
-              detail: acpResp.memoryActions.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n'),
-            } : undefined,
+            thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成立论、反例与答辩补丁的综合仲裁审查'),
             diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
             cartridgeCitation: acpResp.cartridgeCitation,
           };
@@ -4336,12 +4306,7 @@ export default function App() {
               : `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : agent.isRemote ? 'ACP Remote' : '协作'}`,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             content: acpResp.textResponse,
-            thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
-              duration: `${acpResp.durationMs}ms`,
-              tokens: Math.round(acpResp.textResponse.length * 1.3),
-              summary: isGameTheoretic ? `已完成博弈推演与技术边界审定` : `已检索私有记忆库并完成技术边界考量`,
-              detail: acpResp.memoryActions.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n'),
-            } : undefined,
+            thinkingProcess: buildThinkingProcessFromAcp(acpResp, isGameTheoretic ? '已完成博弈推演与技术边界审定' : '已检索私有记忆库并完成技术边界考量'),
             diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
             cartridgeCitation: acpResp.cartridgeCitation,
             collaborationInfo: {
@@ -4726,12 +4691,7 @@ export default function App() {
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         content: acpResp.textResponse,
         gameStage: 'concluded',
-        thinkingProcess: acpResp.memoryActions && acpResp.memoryActions.length > 0 ? {
-          duration: `${acpResp.durationMs}ms`,
-          tokens: Math.round(acpResp.textResponse.length * 1.3),
-          summary: `已完成仲裁裁决的代码工程补丁实现`,
-          detail: acpResp.memoryActions.map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`).join('\n'),
-        } : undefined,
+        thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成仲裁裁决的代码工程补丁实现'),
         diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
         cartridgeCitation: acpResp.cartridgeCitation,
       };
@@ -5314,17 +5274,7 @@ export default function App() {
           agentBadge: `${primaryResponder.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : primaryResponder.isRemote ? 'ACP Remote' : 'ACP'}`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           content: acpResp.textResponse,
-          thinkingProcess:
-            acpResp.memoryActions && acpResp.memoryActions.length > 0
-              ? {
-                  duration: `${acpResp.durationMs}ms`,
-                  tokens: Math.round(acpResp.textResponse.length * 1.3),
-                  summary: `已检索私有记忆库并完成技术边界考量`,
-                  detail: acpResp.memoryActions
-                    .map((m) => `[${m.action.toUpperCase()}] ${m.key}: ${m.detail}`)
-                    .join('\n'),
-                }
-              : undefined,
+          thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已检索私有记忆库并完成技术边界考量'),
           diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
           cartridgeCitation: acpResp.cartridgeCitation,
           collaborationInfo: {
