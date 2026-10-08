@@ -112,6 +112,8 @@ pub struct RunningAgent {
     pub session_active_req: Arc<TokioMutex<HashMap<String, u64>>>,
     pub is_alive: Arc<AtomicBool>,
     pub initialized: Arc<AtomicBool>,
+    /// ACP 握手被 Agent 明确拒绝时的根因。存在即代表本进程不可用，运行态必须报 error。
+    pub init_error: Arc<TokioMutex<Option<String>>>,
     pub auth_state: Arc<TokioMutex<String>>,
     pub status_detail: Arc<TokioMutex<Option<String>>>,
     pub session_ids: Arc<TokioMutex<HashMap<String, String>>>,
@@ -155,15 +157,13 @@ impl AcpProcessManager {
             let is_alive = agent.is_alive.load(Ordering::SeqCst);
             let is_initialized = agent.initialized.load(Ordering::SeqCst);
             let auth_state = agent.auth_state.lock().await.clone();
-            let status_detail = agent.status_detail.lock().await.clone();
-
-            let status = if !is_alive {
-                "idle".to_string()
-            } else if auth_state == "auth_required" {
-                "auth_required".to_string()
-            } else {
-                "running".to_string()
+            let init_error = agent.init_error.lock().await.clone();
+            let status_detail = match init_error.clone() {
+                Some(err) => Some(err),
+                None => agent.status_detail.lock().await.clone(),
             };
+
+            let status = derive_runtime_status(is_alive, &auth_state, init_error.is_some()).to_string();
 
             statuses.push(AgentRuntimeStatus {
                 agent_id: id.clone(),
@@ -335,6 +335,7 @@ impl AcpProcessManager {
             Arc::new(TokioMutex::new(HashMap::new()));
         let is_alive = Arc::new(AtomicBool::new(true));
         let initialized = Arc::new(AtomicBool::new(false));
+        let init_error = Arc::new(TokioMutex::new(None::<String>));
         let auth_state = Arc::new(TokioMutex::new("ok".to_string()));
         let status_detail = Arc::new(TokioMutex::new(None::<String>));
         let session_ids = Arc::new(TokioMutex::new(HashMap::new()));
@@ -593,6 +594,7 @@ impl AcpProcessManager {
                 session_active_req,
                 is_alive: is_alive.clone(),
                 initialized: initialized.clone(),
+                init_error: init_error.clone(),
                 auth_state: auth_state.clone(),
                 status_detail: status_detail.clone(),
                 session_ids,
@@ -633,13 +635,32 @@ impl AcpProcessManager {
 
         match tokio::time::timeout(Duration::from_millis(3000), init_rx).await {
             Ok(Ok(resp)) => {
-                tracing::info!("[Agent {}] Immediate initialize succeeded: {:?}", agent_id, resp);
-                log_acp_event(agent_id, "INIT_OK", &format!("ACP initialize handshake confirmed: {:?}", resp.get("result")));
-                initialized.store(true, Ordering::SeqCst);
+                if let Some(err) = resp.get("error") {
+                    // ACP initialize 返回 JSON-RPC error = Agent 明确拒绝握手，绝不可视为可用
+                    let err_code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+                    let err_msg = err
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("unknown error");
+                    let detail = format!("ACP initialize 握手被拒绝 (code {}): {}", err_code, err_msg);
+                    tracing::error!("[Agent {}] {}", agent_id, detail);
+                    log_acp_event(agent_id, "INIT_REJECTED", &detail);
+                    initial_status = "error".to_string();
+                    detail_msg = Some(detail.clone());
+                    *init_error.lock().await = Some(detail);
+                } else {
+                    tracing::info!("[Agent {}] Immediate initialize succeeded: {:?}", agent_id, resp);
+                    log_acp_event(agent_id, "INIT_OK", &format!("ACP initialize handshake confirmed: {:?}", resp.get("result")));
+                    initialized.store(true, Ordering::SeqCst);
+                }
             }
             Ok(Err(_)) => {
+                let detail = "Agent 在 ACP initialize 期间关闭了连接".to_string();
                 tracing::warn!("[Agent {}] Initialize channel closed immediately", agent_id);
-                detail_msg = Some("Agent closed connection during ACP initialize".to_string());
+                log_acp_event(agent_id, "INIT_FAILED", &detail);
+                initial_status = "error".to_string();
+                detail_msg = Some(detail.clone());
+                *init_error.lock().await = Some(detail);
             }
             Err(_) => {
                 tracing::warn!("[Agent {}] Immediate initialize timed out, marking initialized for backward compat", agent_id);
@@ -725,8 +746,40 @@ impl AcpProcessManager {
             let _ = agent.stdin_tx.send(init_req.to_string()).await;
             match tokio::time::timeout(Duration::from_secs(5), init_rx).await {
                 Ok(Ok(resp)) => {
-                    tracing::info!("[Agent {}] initialize succeeded: {:?}", agent_id, resp);
-                    agent.initialized.store(true, Ordering::SeqCst);
+                    if let Some(err) = resp.get("error") {
+                        let err_msg = err
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("unknown error");
+                        let detail = format!("ACP initialize 握手被拒绝: {}", err_msg);
+                        tracing::error!("[Agent {}] lazy {}", agent_id, detail);
+                        log_acp_event(agent_id, "INIT_REJECTED", &detail);
+                        *agent.init_error.lock().await = Some(detail.clone());
+                        *agent.status_detail.lock().await = Some(detail.clone());
+                        let _ = agent.app_handle.emit(
+                            "acp:status_change",
+                            serde_json::json!({
+                                "agent_id": agent_id,
+                                "status": "error",
+                                "status_detail": detail,
+                            }),
+                        );
+                    } else {
+                        tracing::info!("[Agent {}] initialize succeeded: {:?}", agent_id, resp);
+                        agent.initialized.store(true, Ordering::SeqCst);
+                        // 握手恢复成功，清除历史错误态并回正运行态
+                        if agent.init_error.lock().await.take().is_some() {
+                            *agent.status_detail.lock().await = None;
+                            let _ = agent.app_handle.emit(
+                                "acp:status_change",
+                                serde_json::json!({
+                                    "agent_id": agent_id,
+                                    "status": "running",
+                                    "status_detail": serde_json::Value::Null,
+                                }),
+                            );
+                        }
+                    }
                 }
                 _ => {
                     tracing::warn!("[Agent {}] initialize timed out or skipped, marking initialized", agent_id);
@@ -966,5 +1019,49 @@ impl AcpProcessManager {
         }
 
         response
+    }
+}
+
+/// 由「进程存活 / 鉴权 / ACP 握手」三要素推导对外运行态。
+///
+/// 关键约束：进程存活但 ACP initialize 被拒绝时（例如适配器后端二进制缺失）必须是 error，
+/// 绝不允许上报 running——进程活着只证明适配器在监听，不证明它能承载任何 prompt。
+fn derive_runtime_status(is_alive: bool, auth_state: &str, has_init_error: bool) -> &'static str {
+    if !is_alive {
+        "idle"
+    } else if auth_state == "auth_required" {
+        "auth_required"
+    } else if has_init_error {
+        "error"
+    } else {
+        "running"
+    }
+}
+
+#[cfg(test)]
+mod runtime_status_tests {
+    use super::derive_runtime_status;
+
+    #[test]
+    fn dead_process_is_idle() {
+        assert_eq!(derive_runtime_status(false, "ok", false), "idle");
+        assert_eq!(derive_runtime_status(false, "ok", true), "idle");
+    }
+
+    #[test]
+    fn rejected_handshake_never_reports_running() {
+        // 复现 MyCodex 场景：codex-acp 适配器进程存活，但 initialize 因 codex 缺失返回 JSON-RPC error
+        assert_eq!(derive_runtime_status(true, "ok", true), "error");
+    }
+
+    #[test]
+    fn healthy_handshake_is_running() {
+        assert_eq!(derive_runtime_status(true, "ok", false), "running");
+    }
+
+    #[test]
+    fn auth_required_outranks_init_error() {
+        assert_eq!(derive_runtime_status(true, "auth_required", false), "auth_required");
+        assert_eq!(derive_runtime_status(true, "auth_required", true), "auth_required");
     }
 }

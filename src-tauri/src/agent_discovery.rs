@@ -163,6 +163,8 @@ pub fn resolve_command_path(command: &str) -> Option<PathBuf> {
     dirs.push(PathBuf::from("/opt/homebrew/bin"));
     dirs.push(PathBuf::from("/usr/local/bin"));
     dirs.push(PathBuf::from("/Applications/ChatGPT.app/Contents/Resources"));
+    // ChatGPT/Codex 桌面端现行 bundle 布局（codex-package.json layoutVersion 1）
+    dirs.push(PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin"));
     dirs.push(PathBuf::from("./bin"));
     dirs.push(PathBuf::from("../bin"));
 
