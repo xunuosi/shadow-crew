@@ -1,3 +1,4 @@
+mod llm;
 mod memory;
 
 use anyhow::Result;
@@ -29,6 +30,10 @@ async fn main() -> Result<()> {
     let mut stdout = io::stdout();
     let reader = stdin.lock();
 
+    // 底座模型配置由宿主通过 SHADOW_CREW_LLM_* 环境变量注入
+    let llm_config = llm::LlmConfig::from_env();
+    let mut session_system_prompt: Option<String> = None;
+
     // 持续监听来自 Tauri 宿主或父进程的 stdio JSON-RPC 2.0 请求
     for line in reader.lines() {
         let line = line?;
@@ -59,6 +64,10 @@ async fn main() -> Result<()> {
                 writeln!(stdout, "{}", resp.to_string())?;
                 stdout.flush()?;
             } else if method == "session/new" {
+                session_system_prompt = params
+                    .get("systemPrompt")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let resp = serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -102,28 +111,25 @@ async fn main() -> Result<()> {
                     });
                 }
 
-                // 2. 生成结构化响应
-                let display_query = if query.chars().count() > 30 {
-                    format!("{}...", query.chars().take(30).collect::<String>())
-                } else if query.is_empty() {
-                    "ACP 连通性测试".to_string()
-                } else {
-                    query.to_string()
+                // 2. 以人设 + 召回记忆为上下文，调用底座模型进行真实推演
+                let mut system_prompt = session_system_prompt.clone().unwrap_or_else(|| {
+                    "你是 Shinobi，用户的 AI 影替身，代表主人参与技术架构推演与代码审查。请给出专业、严谨、可落地的回答。".to_string()
+                });
+                if !recalled.is_empty() {
+                    system_prompt.push_str("\n\n[私有记忆库召回的专属规范，推演时必须遵循]:\n");
+                    for r in &recalled {
+                        system_prompt.push_str(&format!("- ({}) {}\n", r.key, r.content));
+                    }
+                }
+
+                let response_text = match &llm_config {
+                    None => "⚠️ Shinobi 尚未配置底座模型：请在 Agent 的模型配置或全局模型设置中填入模型 ID 与 API Key 后重试。".to_string(),
+                    Some(cfg) => match llm::complete(cfg, &system_prompt, query).await {
+                        Ok(text) => text,
+                        Err(e) => format!("⚠️ Shinobi 底座模型调用失败：{:#}", e),
+                    },
                 };
 
-                let is_collaboration = query.contains("[🤝 团队协同协作请求");
-                let response_text = if is_collaboration {
-                    format!(
-                        "【Shinobi 替身协同响应】已接收到团队跨智能体协作请求，已基于本地 SQLite 私有记忆库召回 {} 条专属架构规约：\n\n• **架构方案审查**：针对前序方案已完成技术对齐与依赖边界评估。\n• **规约约束确认**：请确保遵循 Rust 异步 Tokio / anyhow 错误处理及前端规范。\n• **协同状态**：本轮协同推演达成一致，随时可推进下一步代码实现与验证。",
-                        recalled.len()
-                    )
-                } else {
-                    format!(
-                        "【Shinobi 替身响应】已从私有记忆库召回 {} 条专属规范，针对「{}」推演完成：\n\n• **链路状态**：本地 ACP Stdio JSON-RPC 2.0 管道运行正常，通信端对端畅通。\n• **工作区挂载**：已就绪，随时可执行架构分析、任务推演与代码评审。",
-                        recalled.len(),
-                        display_query
-                    )
-                };
 
                 let session_id = params.get("sessionId").and_then(|v| v.as_str()).unwrap_or("shinobi-session-default");
                 let chunk_notification = serde_json::json!({

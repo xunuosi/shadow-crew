@@ -60,7 +60,7 @@ import { RustTauriArchitectureHub } from './components/RustTauriArchitectureHub'
 import { AgentDashboard } from './components/AgentDashboard';
 import { MemoryExportModal } from './components/MemoryExportModal';
 import { MemoryImportModal } from './components/MemoryImportModal';
-import { sendPromptToAcpAgent, probeRemoteAcpConnection } from './services/acpClient';
+import { sendPromptToAcpAgent, probeRemoteAcpConnection, buildAgentLaunchEnv } from './services/acpClient';
 import { saveMessagesBatchToDb, loadMessagesFromDb } from './services/dbClient';
 import { DEFAULT_MODEL_NAME } from './config/models';
 import { resolveAgentModelConfig } from './services/llmService';
@@ -802,7 +802,7 @@ export default function App() {
             agentId: agent.id,
             command: agent.acpCommandOrUrl,
             cwd: agent.workspace?.rootPath || activeProject?.localWorkspaceRoot || '.',
-            envVars: agent.envVars || [],
+            envVars: buildAgentLaunchEnv(agent),
           });
           syncRunningAgentsWithBackend();
         } catch (err: any) {

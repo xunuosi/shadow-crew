@@ -393,6 +393,28 @@ export async function sendPromptToRemoteAcpWebSocket(
 }
 
 /**
+ * 构造本地 ACP 进程的启动环境变量。
+ * 内置自研 shinobi-agent 自身不持有模型配置，由宿主将「Agent 私有模型 > 全局默认模型」
+ * 解析结果通过 SHADOW_CREW_LLM_* 注入；外部独立 ACP 运行时（如 Claude Code）沿用其自身 ENV，不做注入。
+ */
+export function buildAgentLaunchEnv(agent: Agent): Array<{ key: string; value: string }> {
+  const envVars = [...(agent.envVars || [])];
+  const command = agent.acpCommandOrUrl || './target/debug/shinobi-agent';
+  if (command.includes('shinobi-agent')) {
+    const cfg = resolveAgentModelConfig(agent);
+    envVars.push(
+      { key: 'SHADOW_CREW_LLM_PROVIDER', value: cfg.provider },
+      { key: 'SHADOW_CREW_LLM_MODEL_ID', value: cfg.modelId },
+      { key: 'SHADOW_CREW_LLM_BASE_URL', value: cfg.baseUrl || '' },
+      { key: 'SHADOW_CREW_LLM_API_KEY', value: cfg.apiKey || '' },
+      { key: 'SHADOW_CREW_LLM_TEMPERATURE', value: String(cfg.temperature ?? 0.7) },
+      { key: 'SHADOW_CREW_LLM_MAX_TOKENS', value: String(cfg.maxTokens ?? 4096) }
+    );
+  }
+  return envVars;
+}
+
+/**
  * 统一多模态 ACP 通信入口
  * 具备：
  * 1. JIT 外挂记忆智能检索与引用构建
@@ -454,13 +476,16 @@ export async function sendPromptToAcpAgent(
     try {
       console.log(`[ACP Client] Invoking real ACP agent process: ${agent.id} (${agent.name})`);
 
+      const launchCommand = agent.acpCommandOrUrl || './target/debug/shinobi-agent';
+      const launchEnvVars = buildAgentLaunchEnv(agent);
+
       const response = await tauriInvoke('send_prompt_to_agent', {
         agentId: agent.id,
         roomId,
         prompt: enhancedPrompt,
-        command: agent.acpCommandOrUrl || './target/debug/shinobi-agent',
+        command: launchCommand,
         cwd: agent.workspace?.rootPath || '.',
-        envVars: agent.envVars || [],
+        envVars: launchEnvVars,
         systemPrompt: options.systemPrompt,
       });
 
