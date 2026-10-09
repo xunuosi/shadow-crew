@@ -92,6 +92,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   });
 
   const drafts = useAllDrafts();
+  const isChatView = currentMainView === 'chat';
 
   return (
     <aside
@@ -230,7 +231,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               channels
                 .filter((c) => (!activeProjectId || !c.projectId || c.projectId === activeProjectId) && c.status !== 'deleted')
                 .map((channel) => {
-                const isActive = channel.id === activeChannelId;
+                const isActive = isChatView && channel.id === activeChannelId;
                 const memberCount = channel.memberIds?.length || 1;
 
                 return (
@@ -360,7 +361,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 return first.length > 8 ? `${first.slice(0, 7)}…` : first;
               };
 
-              const isSelected = activeThreadId === `thread-dm-${agent.id}`;
+              const isSelected = isChatView && activeThreadId === `thread-dm-${agent.id}`;
               const dmThreadId = `thread-dm-${agent.id}`;
               const isAgentActiveInThisDm = activeExecutions.some(
                 (e) => e.agentId === agent.id && e.threadId === dmThreadId
