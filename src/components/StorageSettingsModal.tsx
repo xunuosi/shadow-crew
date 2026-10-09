@@ -147,7 +147,7 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-xs p-4 select-none animate-in fade-in duration-150">
-      <div className="bg-surface border border-border rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col text-xs text-fg">
+      <div className="bg-surface border border-border rounded-3xl w-full max-w-2xl lg:max-w-3xl shadow-2xl overflow-hidden flex flex-col text-xs text-fg">
         {/* Header */}
         <div className="px-6 py-4 border-b border-border flex items-center justify-between bg-surface-subtle">
           <div className="flex items-center gap-2.5">
@@ -260,17 +260,17 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
           <div className="space-y-3">
             {/* 卡片 A: 可安全清理项 (Safe Clean) 🟢 */}
             <div className="p-4 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                  <span className="font-bold text-xs text-fg">
-                    ACP 进程运行日志与临时 Scratch 缓存
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                  <span className="font-bold text-xs text-fg truncate">
+                    ACP 进程运行日志与临时缓存
                   </span>
-                  <span className="px-1.5 py-0.2 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-mono">
+                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-mono whitespace-nowrap shrink-0">
                     🟢 完全安全 · 随时可清
                   </span>
                 </div>
-                <span className="font-mono text-xs font-semibold text-emerald-400">
+                <span className="font-mono text-xs font-semibold text-emerald-400 whitespace-nowrap shrink-0">
                   {formatBytes(stats?.logsSizeBytes || 0)}
                 </span>
               </div>
@@ -284,7 +284,7 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
                 <button
                   onClick={handleClearSafeCache}
                   disabled={cleaning || (stats?.logsSizeBytes || 0) === 0}
-                  className="px-2.5 py-1 rounded-lg bg-surface border border-border hover:border-emerald-500/50 text-fg hover:text-emerald-400 text-xs transition-colors cursor-pointer disabled:opacity-40"
+                  className="px-2.5 py-1 rounded-lg bg-surface border border-border hover:border-emerald-500/50 text-fg hover:text-emerald-400 text-xs transition-colors cursor-pointer disabled:opacity-40 shrink-0"
                 >
                   清空日志与 WAL
                 </button>
@@ -293,19 +293,18 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
 
             {/* 卡片 B: 会话与协作历史 (Archivable History) 🟡 */}
             <div className="p-4 rounded-2xl border border-amber-500/20 bg-amber-500/5 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-amber-400" />
-                  <span className="font-bold text-xs text-fg">
-                    频道、话题会话与 Diff 审查历史
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                  <span className="font-bold text-xs text-fg truncate">
+                    频道与话题会话协作历史
                   </span>
-                  <span className="px-1.5 py-0.2 rounded text-[10px] bg-amber-500/20 text-amber-400 font-mono">
-                    🟡 半持久化 · 建议先导出备份
+                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400 font-mono whitespace-nowrap shrink-0">
+                    🟡 半持久化 · 建议先备份
                   </span>
                 </div>
-                <span className="font-mono text-xs font-semibold text-amber-400">
-                  {stats?.totalMessagesCount || messages.length} 条消息 (
-                  {formatBytes(stats?.archivableBytes || 0)})
+                <span className="font-mono text-xs font-semibold text-amber-400 whitespace-nowrap shrink-0">
+                  {stats?.totalMessagesCount || messages.length} 条消息 ({formatBytes(stats?.archivableBytes || 0)})
                 </span>
               </div>
               <p className="text-[11px] text-fg-muted leading-relaxed">
@@ -315,7 +314,7 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
                 <span className="text-[10px] text-fg-secondary">
                   建议定期导出 JSON 归档后按需清理
                 </span>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                   <button
                     onClick={handleExportMessages}
                     className="px-2.5 py-1 rounded-lg bg-surface border border-border hover:border-amber-500/50 text-fg hover:text-amber-400 text-xs transition-colors flex items-center gap-1 cursor-pointer"
@@ -340,19 +339,18 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
 
             {/* 卡片 C: Agent 私有长期记忆 (Protected Core) 🛡️ */}
             <div className="p-4 rounded-2xl border border-accent/20 bg-accent/5 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="w-4 h-4 text-accent" />
-                  <span className="font-bold text-xs text-fg">
-                    Agent 替身专属长期记忆库 (Memory Bank)
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <ShieldCheck className="w-4 h-4 text-accent shrink-0" />
+                  <span className="font-bold text-xs text-fg whitespace-nowrap">
+                    Agent 专属长期记忆库
                   </span>
-                  <span className="px-1.5 py-0.2 rounded text-[10px] bg-accent/20 text-accent font-mono">
-                    🛡️ 受保护核心资产 · 严禁盲删
+                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-accent/20 text-accent font-mono whitespace-nowrap shrink-0">
+                    🛡️ 受保护核心资产
                   </span>
                 </div>
-                <span className="font-mono text-xs font-semibold text-accent">
-                  {stats?.totalMemoriesCount || 0} 条沉淀记忆 (
-                  {formatBytes(stats?.protectedBytes || 0)})
+                <span className="font-mono text-xs font-semibold text-accent whitespace-nowrap shrink-0">
+                  {stats?.totalMemoriesCount || 0} 条记忆 ({formatBytes(stats?.protectedBytes || 0)})
                 </span>
               </div>
               <p className="text-[11px] text-fg-muted leading-relaxed">
@@ -368,7 +366,7 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
                       onClose();
                       onOpenMemoryExport();
                     }}
-                    className="px-2.5 py-1 rounded-lg bg-surface border border-border hover:border-accent text-accent text-xs transition-colors flex items-center gap-1 cursor-pointer"
+                    className="px-2.5 py-1 rounded-lg bg-surface border border-border hover:border-accent text-accent text-xs transition-colors flex items-center gap-1 cursor-pointer shrink-0"
                   >
                     <Sliders className="w-3 h-3" />
                     <span>记忆卡带导出/导入 (.acpmem)</span>
@@ -379,12 +377,12 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
 
             {/* 卡片 D: 浏览器 LocalStorage 偏好配置 (UI Preferences) */}
             <div className="p-4 rounded-2xl border border-border bg-surface-subtle space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-xs text-fg flex items-center gap-1.5">
-                  <Sliders className="w-3.5 h-3.5 text-fg-muted" />
-                  <span>UI 布局、草稿与偏好缓存 (LocalStorage)</span>
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-bold text-xs text-fg flex items-center gap-1.5 min-w-0">
+                  <Sliders className="w-3.5 h-3.5 text-fg-muted shrink-0" />
+                  <span className="truncate">UI 布局、草稿与偏好缓存 (LocalStorage)</span>
                 </span>
-                <span className="font-mono text-xs text-fg-muted">
+                <span className="font-mono text-xs text-fg-muted whitespace-nowrap shrink-0">
                   {formatBytes(stats?.localStorageUsageBytes || 0)} / ~5 MB (
                   {(
                     ((stats?.localStorageUsageBytes || 0) / (5 * 1024 * 1024)) *
