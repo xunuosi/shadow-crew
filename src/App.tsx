@@ -4576,7 +4576,7 @@ export default function App() {
         isAgent: true,
         agentBadge: 'Communication Required',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: `🔌 **执行 Agent 通信尚未开启**：已指派 **${executorAgent.name}** 落地执行代码补丁，但该 Agent 当前处于离线状态。\n\n请在左侧面板点击【Start】开启 ACP 通信后重新指派落地。`,
+        content: `🔌 **执行 Agent 通信尚未开启**：已指派 **${executorAgent.name}** 推进定案决议落地，但该 Agent 当前处于离线状态。\n\n请在左侧面板点击【Start】开启 ACP 通信后重新指派落地。`,
       };
       setMessages((prev) => ({
         ...prev,
@@ -4641,7 +4641,7 @@ export default function App() {
         assignedExecutorId: executorAgent.id,
         executionStatus: 'running',
         executionStartedAt: startTimeMs,
-        executionSummary: `正在由 ${executorAgent.name} 生成代码变更与工程补丁...`,
+        executionSummary: `正在由 ${executorAgent.name} 执行定案决议并生成交付成果...`,
       },
       decisionRecord: old.decisionRecord
         ? {
@@ -4675,7 +4675,7 @@ export default function App() {
             const baseContent = m.content.split('\n\n---\n')[0];
             return {
               ...m,
-              content: `${baseContent}\n\n---\n⏳ **工程落地进度**：已委派 **${executorAgent.name}** (${executorAgent.handle}) 正在编写 Unified Diff 代码补丁...`,
+              content: `${baseContent}\n\n---\n⏳ **决议落地进度**：已委派 **${executorAgent.name}** (${executorAgent.handle}) 正在推进定案决议落地...`,
             };
           }
           return m;
@@ -4694,7 +4694,7 @@ export default function App() {
         threadId: topicId,
         topicId,
         status: 'thinking',
-        currentActionDetail: `正在基于仲裁定案裁决书生成落地实现补丁与工程代码 (Stage: 🛠️ 实施落地)...`,
+        currentActionDetail: `正在基于定案决议执行落地任务与交付输出 (Stage: 🛠️ 决议落地)...`,
         startedAt: startTimeMs,
         cascadeHop: 5,
       },
@@ -4716,8 +4716,8 @@ export default function App() {
       isAgent: true,
       isPending: true,
       startedAt: startTimeMs,
-      pendingHint: '正在基于终局裁决方案与架构权衡约束，编写代码补丁与工程落地变更 (Stage: 🛠️ 落地实施)...',
-      agentBadge: `${executorAgent.modelBadge?.split(' ')[0] || 'Local'} · 🛠️ 落地实施 (编写补丁中...)`,
+      pendingHint: '正在基于定案决议与权衡约束，推进落地执行并整理交付成果 (Stage: 🛠️ 决议落地)...',
+      agentBadge: `${executorAgent.modelBadge?.split(' ')[0] || 'Local'} · 🛠️ 决议落地 (执行中...)`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       content: '',
       gameStage: 'concluded',
@@ -4771,7 +4771,7 @@ export default function App() {
       });
 
       if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
-        throw new Error(acpResp.isError ? acpResp.textResponse : '执行 Agent 返回空响应，未生成有效代码补丁。');
+        throw new Error(acpResp.isError ? acpResp.textResponse : '执行 Agent 返回空响应，未生成有效交付内容。');
       }
 
       const extractedDiffs =
@@ -4779,6 +4779,7 @@ export default function App() {
           ? acpResp.workspaceDiffs
           : extractWorkspaceDiffsFromText(acpResp.textResponse, decision.impactedFiles);
 
+      const execMeta = acpResp.executionMeta;
       const completedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
       const execReply: Message = {
@@ -4791,11 +4792,14 @@ export default function App() {
         authorAvatar: executorAgent.avatar,
         isAgent: true,
         isPending: false,
-        agentBadge: `${executorAgent.modelBadge?.split(' ')[0] || 'Local'} · 🛠️ 落地补丁交付`,
+        agentBadge: `${executorAgent.modelBadge?.split(' ')[0] || 'Local'} · ${execMeta?.podTitle || '🛠️ 决议落地交付'}`,
         timestamp: completedAt,
         content: acpResp.textResponse,
         gameStage: 'concluded',
-        thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成仲裁裁决的代码工程补丁实现'),
+        thinkingProcess: buildThinkingProcessFromAcp(
+          acpResp,
+          execMeta?.statusSummary || '已完成定案决议落地执行交付'
+        ),
         diffView: extractedDiffs.length > 0 ? extractedDiffs[0] : undefined,
         diffViews: extractedDiffs.length > 0 ? extractedDiffs : undefined,
         relatedTopicId: topicId,
@@ -4833,10 +4837,12 @@ export default function App() {
                       executionStatus: 'completed' as const,
                       executionCompletedAt: completedAt,
                       executionDiffs: extractedDiffs,
+                      executionUiMeta: execMeta,
                       executionSummary:
-                        extractedDiffs.length > 0
-                          ? `已生成 ${extractedDiffs.length} 个文件补丁 (+${totalAdd}/-${totalDel})`
-                          : '已完成工程落地实现报告',
+                        execMeta?.statusSummary ||
+                        (extractedDiffs.length > 0
+                          ? `已生成 ${extractedDiffs.length} 个工作区交付文件 (+${totalAdd}/-${totalDel})`
+                          : '已完成定案决议落地执行报告'),
                     },
                   },
                 };
@@ -4849,8 +4855,8 @@ export default function App() {
                   diffViews: extractedDiffs.length > 0 ? extractedDiffs : m.diffViews,
                   content:
                     extractedDiffs.length > 0
-                      ? `${baseContent}\n\n---\n✅ **工程落地补丁已就绪 (${completedAt})**：由 **${executorAgent.name}** 生成了 **${extractedDiffs.length}** 个文件变更补丁 (\`+${totalAdd} / -${totalDel}\`)，可在议题卡片或 Codex 视图中一键审查合入本地工作区。`
-                      : `${baseContent}\n\n---\n✅ **工程落地已完成 (${completedAt})**：**${executorAgent.name}** 已在议题抽屉内交付落地实施方案。`,
+                      ? `${baseContent}\n\n---\n✅ **${execMeta?.podTitle || '决议落地变更已就绪'} (${completedAt})**：由 **${executorAgent.name}** 完成了 **${execMeta?.statusSummary || `${extractedDiffs.length} 个文件变更 (+${totalAdd} / -${totalDel})`}**，可在议题卡片或审查视图中一键核对并合入本地工作区。`
+                      : `${baseContent}\n\n---\n✅ **${execMeta?.podTitle || '决议落地已完成'} (${completedAt})**：**${executorAgent.name}** 已在议题抽屉内完成交付（${execMeta?.statusSummary || '详见抽屉内执行报告'}）。`,
                 };
               }
               return m;
@@ -4883,7 +4889,7 @@ export default function App() {
         isAgent: true,
         agentBadge: 'ACP Error',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: `⚠️ **代码落地实施异常**：${errText}`,
+        content: `⚠️ **决议落地执行异常**：${errText}`,
         gameStage: 'concluded',
         relatedTopicId: topicId,
       };
@@ -5099,19 +5105,20 @@ export default function App() {
         },
       }));
 
+      const execMeta = currentTopic?.gameTheoreticState?.executionUiMeta;
       const applyConfirmMsg: Message = {
         id: `topic-patch-applied-${Date.now()}`,
         threadId: targetTopicId,
         channelId: topicChannel?.id,
         authorId: 'system',
-        authorName: 'Shadow Crew 工程合入引擎',
+        authorName: 'Shadow Crew 工作区合入引擎',
         authorHandle: '@workspace-patcher',
         authorAvatar: '⚖️',
         isAgent: true,
         agentBadge: 'Workspace Applied',
         timestamp: appliedAt,
         relatedTopicId: targetTopicId,
-        content: `✅ **代码补丁已物理合入本地工作区**\n\n- **合入摘要**：${res.summary}\n- **归档目录**：\`${res.artifactsDir}\`\n- **变更文件明细**：\n${res.appliedFiles.map((f) => `  • \`${f.filename}\` → \`${f.targetPath}\` (${f.mode})`).join('\n')}`,
+        content: `✅ **${execMeta?.podTitle || '决议交付文件'}已物理合入本地工作区**\n\n- **合入摘要**：${res.summary}\n- **归档目录**：\`${res.artifactsDir}\`\n- **变更文件明细**：\n${res.appliedFiles.map((f) => `  • \`${f.filename}\` → \`${f.targetPath}\` (${f.mode})`).join('\n')}`,
       };
 
       setMessages((prev) => {
@@ -5129,7 +5136,7 @@ export default function App() {
                 const baseContent = m.content.split('\n\n---\n')[0];
                 return {
                   ...m,
-                  content: `${baseContent}\n\n---\n🎉 **工程落地已合入工作区 (${appliedAt})**：${res.summary}（归档于 \`${res.artifactsDir}\`）`,
+                  content: `${baseContent}\n\n---\n🎉 **${execMeta?.podTitle || '决议交付'}已合入工作区 (${appliedAt})**：${res.summary}（归档于 \`${res.artifactsDir}\`）`,
                 };
               }
               return m;

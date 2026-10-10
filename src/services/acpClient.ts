@@ -1,4 +1,4 @@
-import { Agent, CartridgeCitation, MemoryCartridgeItem, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem } from '../types';
+import { Agent, CartridgeCitation, MemoryCartridgeItem, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem, TopicExecutionUiMeta } from '../types';
 import { resolveAgentModelConfig, isModelConfigReady, callLlmModel } from './llmService';
 import { isAgentOffline } from '../utils/agentRuntime';
 
@@ -18,12 +18,60 @@ export interface AcpAgentResponse {
   rulingDraft?: ArbitrationRulingDraft;
   cartridgeCitation?: CartridgeCitation;
   workspaceDiffs?: TopicPatchDiffItem[];
+  executionMeta?: TopicExecutionUiMeta;
   durationMs: number;
   isRealProcess: boolean;
   isEmptyTurn?: boolean;
   isError?: boolean;
   stopReason?: string;
   raw?: any;
+}
+
+/**
+ * 从执行 Agent 响应正文中解析结构化 UI 描述契约块 <<<EXECUTION_META>>>...<<<EXECUTION_META_END>>>
+ * 并自动剥离原始契约标签，确保展示给用户的 Markdown 正文干净无协议噪音
+ */
+export function extractExecutionMetaFromAcpResponse(rawText: string): {
+  executionMeta?: TopicExecutionUiMeta;
+  cleanedText: string;
+} {
+  if (!rawText || !rawText.trim()) {
+    return { cleanedText: rawText };
+  }
+
+  const metaRegex = /<<<EXECUTION_META>>>([\s\S]*?)<<<EXECUTION_META_END>>>/i;
+  const fallbackJsonRegex = /```(?:json)?\s*(\{\s*"sectionTitle"[\s\S]*?"podTitle"[\s\S]*?\})\s*```/i;
+
+  const match = rawText.match(metaRegex) || rawText.match(fallbackJsonRegex);
+  if (!match || !match[1]) {
+    return { cleanedText: rawText };
+  }
+
+  let executionMeta: TopicExecutionUiMeta | undefined;
+  try {
+    const jsonRaw = match[1].trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+    const parsed = JSON.parse(jsonRaw);
+    if (parsed && typeof parsed === 'object') {
+      const deliverableKind: 'workspace_files' | 'report_only' =
+        parsed.deliverableKind === 'report_only' ? 'report_only' : 'workspace_files';
+      executionMeta = {
+        sectionTitle: String(parsed.sectionTitle || '决议落地执行与交付产物').trim(),
+        podTitle: String(parsed.podTitle || '🛠️ 决议落地交付').trim(),
+        statusSummary: String(parsed.statusSummary || '已完成定案决议落地交付').trim(),
+        deliverableKind,
+        reviewActionLabel: parsed.reviewActionLabel ? String(parsed.reviewActionLabel).trim() : undefined,
+        applyActionLabel: parsed.applyActionLabel ? String(parsed.applyActionLabel).trim() : undefined,
+      };
+    }
+  } catch (e) {
+    console.warn('[acpClient] Failed to parse <<<EXECUTION_META>>> block:', e);
+  }
+
+  const cleanedText = rawText.replace(match[0], '').trim();
+  return {
+    executionMeta,
+    cleanedText: cleanedText || rawText,
+  };
 }
 
 /**
@@ -627,32 +675,36 @@ export async function sendPromptToAcpAgent(
         const res = response.result;
         const rawText = res.text_response || '';
         const isEmpty = !rawText.trim();
-        const text = rawText || (res.stopReason ? `【${agent.name}】ACP 任务已完成 (stopReason: ${res.stopReason})` : JSON.stringify(res));
+        const fullText = rawText || (res.stopReason ? `【${agent.name}】ACP 任务已完成 (stopReason: ${res.stopReason})` : JSON.stringify(res));
+        const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(fullText);
         const nativeDiffs: TopicPatchDiffItem[] = Array.isArray(res.workspace_diffs) && res.workspace_diffs.length > 0
           ? res.workspace_diffs
-          : extractWorkspaceDiffsFromText(text);
+          : extractWorkspaceDiffsFromText(cleanedText);
         return {
-          textResponse: text,
+          textResponse: cleanedText,
           isEmptyTurn: isEmpty,
           stopReason: res.stopReason,
           memoryActions: res.memory_actions || [],
           mcpToolCalls: res.mcp_tool_calls || [],
           cartridgeCitation: citation,
           workspaceDiffs: nativeDiffs,
+          executionMeta,
           durationMs,
           isRealProcess: true,
           raw: response,
         };
       } else if (response && response.text_response) {
+        const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(response.text_response);
         const nativeDiffs: TopicPatchDiffItem[] = Array.isArray(response.workspace_diffs) && response.workspace_diffs.length > 0
           ? response.workspace_diffs
-          : extractWorkspaceDiffsFromText(response.text_response);
+          : extractWorkspaceDiffsFromText(cleanedText);
         return {
-          textResponse: response.text_response,
+          textResponse: cleanedText,
           memoryActions: response.memory_actions || [],
           mcpToolCalls: response.mcp_tool_calls || [],
           cartridgeCitation: citation,
           workspaceDiffs: nativeDiffs,
+          executionMeta,
           durationMs,
           isRealProcess: true,
           raw: response,
@@ -712,10 +764,11 @@ export async function sendPromptToAcpAgent(
 
       const llmResult = await callLlmModel(modelConfig, enhancedPrompt, llmSystemPrompt);
       const durationMs = Date.now() - startTime;
-      const extractedDiffs = extractWorkspaceDiffsFromText(llmResult.textResponse);
+      const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(llmResult.textResponse);
+      const extractedDiffs = extractWorkspaceDiffsFromText(cleanedText);
 
       return {
-        textResponse: llmResult.textResponse,
+        textResponse: cleanedText,
         memoryActions: [
           {
             action: 'recall',
@@ -725,6 +778,7 @@ export async function sendPromptToAcpAgent(
         ],
         cartridgeCitation: citation,
         workspaceDiffs: extractedDiffs,
+        executionMeta,
         durationMs,
         isRealProcess: true,
       };
@@ -758,12 +812,14 @@ export async function sendPromptToAcpAgent(
   let simulatedText = '';
   const memoryActions: Array<{ action: string; key: string; detail: string }> = [];
 
-  if (prompt.includes('[🛠️ 议题仲裁定案代码落地实施任务')) {
+  if (prompt.includes('[🛠️ 议题定案决议落地执行任务') || prompt.includes('[🛠️ 议题仲裁定案代码落地实施任务')) {
     const fileMatch = prompt.match(/• `([^`]+)`/);
     const targetFile = fileMatch ? fileMatch[1] : 'src/services/consensusImpl.ts';
+    const topicTitleMatch = prompt.match(/【所属议题】:\s*【([^】]+)】/);
+    const topicShortTitle = (topicTitleMatch?.[1] || '定案决议').slice(0, 14);
     simulatedText =
-      `### 🛠️ 仲裁定案工程代码补丁已生成\n\n` +
-      `已由 **${agent.name}** 严格按照终局裁决书要求与爆炸半径约束完成工程落地实现：\n\n` +
+      `### 🛠️ 「${topicShortTitle}」落地执行成果交付\n\n` +
+      `已由 **${agent.name}** 严格按照终局定案要求完成落地实现：\n\n` +
       `\`\`\`diff\n` +
       `--- a/${targetFile}\n` +
       `+++ b/${targetFile}\n` +
@@ -771,7 +827,7 @@ export async function sendPromptToAcpAgent(
       `-export function legacyHandler() {\n` +
       `-  return false;\n` +
       `-}\n` +
-      `+// 依据仲裁定案自动落地的工程实现补丁\n` +
+      `+// 依据定案决议自动落地的工程实现\n` +
       `+export interface ArbitrationEnforcedOptions {\n` +
       `+  requestId: string;\n` +
       `+  signature: string;\n` +
@@ -789,11 +845,21 @@ export async function sendPromptToAcpAgent(
       `+  return true;\n` +
       `+}\n` +
       `\`\`\`\n\n` +
-      `• **变更验证**：已通过边界条件校验与幂等保护检查，可点击下方「一键合入本地工作区」将补丁物理写入工程。`;
+      `• **交付校验**：已通过边界条件校验与幂等保护检查，可点击下方按钮审查变更并合入本地工作区。\n\n` +
+      `<<<EXECUTION_META>>>\n` +
+      JSON.stringify({
+        sectionTitle: `${topicShortTitle} · 落地实现与变更交付`,
+        podTitle: `🛠️ ${topicShortTitle.slice(0, 6)}落地交付`,
+        statusSummary: `已完成 ${targetFile} 的定案落地变更与边界校验`,
+        deliverableKind: 'workspace_files',
+        reviewActionLabel: '审查变更 Diff',
+        applyActionLabel: '一键合入本地工作区',
+      }) +
+      `\n<<<EXECUTION_META_END>>>`;
     memoryActions.push({
       action: 'write',
-      key: 'patch_generation',
-      detail: `已针对 ${targetFile} 生成 Unified Diff 落地补丁`,
+      key: 'execution_deliverable',
+      detail: `已针对 ${targetFile} 生成落地变更与 UI 描述契约`,
     });
   } else if (agent.isGuestClone) {
     simulatedText =
@@ -840,11 +906,14 @@ export async function sendPromptToAcpAgent(
       `*(💡 提示：当前 Agent 处于拟真回放模式。可在卡片配置中填入真实模型 API Key)*`;
   }
 
+  const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(simulatedText);
+
   return {
-    textResponse: simulatedText,
+    textResponse: cleanedText,
     memoryActions,
     cartridgeCitation: citation,
-    workspaceDiffs: extractWorkspaceDiffsFromText(simulatedText),
+    workspaceDiffs: extractWorkspaceDiffsFromText(cleanedText),
+    executionMeta,
     durationMs,
     isRealProcess: false,
   };

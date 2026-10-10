@@ -730,11 +730,13 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                     <span className="text-[10px] font-mono opacity-80">@{exAgent.name}</span>
                   )}
 
-                  {st === 'running' && <span className="text-[10px] font-mono">编码中</span>}
+                  {st === 'running' && <span className="text-[10px] font-mono">执行中</span>}
                   {st === 'queued' && <span className="text-[10px] font-mono">排队中</span>}
-                  {st === 'completed' && diffs.length > 0 && (
+                  {st === 'completed' && (
                     <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-surface/80 border border-border/60">
-                      +{addCount}/-{delCount} 待合入
+                      {diffs.length > 0
+                        ? `+${addCount}/-${delCount} 待合入`
+                        : t.gameTheoreticState?.executionUiMeta?.podTitle || '已交付'}
                     </span>
                   )}
                   {hasOverlap && (

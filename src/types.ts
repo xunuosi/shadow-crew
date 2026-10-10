@@ -276,6 +276,21 @@ export interface TopicPatchDiffItem {
   targetPath?: string;
 }
 
+export interface TopicExecutionUiMeta {
+  /** ADR 第 5 节及抽屉栏的动态主标题（由执行 Agent 根据实际任务性质命名） */
+  sectionTitle: string;
+  /** 主时间轴卡片落地舱短标签（如："🛠️ 幂等锁补丁交付"、"📄 规范文档落盘"、"📋 排查执行预案"） */
+  podTitle: string;
+  /** 一句话交付摘要（直接展示在主时间轴卡片、并行看板与系统公告中） */
+  statusSummary: string;
+  /** 交付物交互形态：workspace_files 表示包含需审查/合入的工作区文件变更；report_only 表示纯方案/结论报告 */
+  deliverableKind: 'workspace_files' | 'report_only';
+  /** 审查/预览按钮动态文案（如："审查代码 Diff"、"预览文档变更"、"查看 SQL 脚本"） */
+  reviewActionLabel?: string;
+  /** 合入/写入按钮动态文案（如："一键合入本地仓库"、"写入本地文档目录"、"应用配置变更"） */
+  applyActionLabel?: string;
+}
+
 export interface GameTheoreticState {
   currentStage: GameTheoreticStage;
   targetProposalMessageId?: string;
@@ -300,6 +315,7 @@ export interface GameTheoreticState {
   executionSummary?: string;
   executionDiffs?: TopicPatchDiffItem[];
   executionArtifactsDir?: string;
+  executionUiMeta?: TopicExecutionUiMeta;
   mcdaPayload?: McdaDecisionPayload;
   sprtState?: SprtGovernorState;
   minorityReport?: MinorityReport;

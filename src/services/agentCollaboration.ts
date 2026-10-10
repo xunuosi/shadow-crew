@@ -505,38 +505,47 @@ export interface BuildExecutionPromptOptions {
 }
 
 /**
- * 构造仲裁定案/共识合流后落地实施阶段的工程代码实施提示词
- * 将大脑（治理决策层）的裁决转化为双手（代码工程落地）的执行补丁
+ * 构造仲裁定案/共识合流后落地实施阶段的执行提示词
+ * 由落地 Agent 根据任务真实属性交付产物（工程代码 Diff、规范文档、脚本或执行报告）并输出结构化 UI 描述契约
  */
 export function buildExecutionPrompt(options: BuildExecutionPromptOptions): string {
   const { topic, executorAgent, decision } = options;
 
   const filesList = decision.impactedFiles && decision.impactedFiles.length > 0
     ? decision.impactedFiles.map((f) => `• \`${f}\``).join('\n')
-    : '• (根据方案内容自行确定需要新建或修改的文件范围)';
+    : '• (未强制限定特定文件；若任务涉及代码/文档/配置落盘请自行指定路径，若属纯方案/排查结论可直接输出报告)';
 
   const tradeOffs = decision.tradeOffPoints && decision.tradeOffPoints.length > 0
     ? `\n【关键权衡折中约束 (Trade-off Constraints)】:\n${decision.tradeOffPoints.map((p) => `• ${p}`).join('\n')}\n`
     : '';
 
-  return `[🛠️ 议题仲裁定案代码落地实施任务 (Post-Arbitration Code Implementation)]
+  return `[🛠️ 议题定案决议落地执行任务 (Post-Resolution Execution & Deliverable)]
 【执行负责人】: ${executorAgent.name} (${executorAgent.handle} · ${executorAgent.role})
 【所属议题】: 【${topic.title}】 (ID: ${topic.topicId})
 【议题背景与需求】:
 ${topic.description?.trim() || topic.title}
 
-【终局裁定方案 (Arbitration Ruling Summary)】:
+【终局裁定结论 (Resolution Summary)】:
 ${decision.summary}
-${decision.solution ? `\n【落地方案与架构补丁要求】:\n${decision.solution}` : ''}${tradeOffs}
-【涉及受影响文件列表】:
+${decision.solution ? `\n【落地方案与执行要求】:\n${decision.solution}` : ''}${tradeOffs}
+【涉及受影响文件参考】:
 ${filesList}
 
-【落地实施硬性指令要求】:
-1. 你已被选定为本议题仲裁定案的**具体代码落地执行智能体**。请将上述博弈推演与仲裁定案结论转化为**真实的工程代码实现与补丁方案**；
-2. 对于每个修改或新增的文件，**必须**输出标准 Unified Diff 代码块（使用 \`\`\`diff 包裹，并在首行注明 \`--- a/文件路径\` 与 \`+++ b/文件路径\`），或在完整实现代码块首行注明 \`// filepath: 文件路径\`，以便工作台自动解析并物理合入本地工程仓库；
-3. 若涉及配置或依赖变更，请输出具体的命令与配置项；
-4. 严格遵守上述权衡约束，确保补丁具备边界校验、并发安全与向后兼容性；
-5. 无需在正文中 @ 任何人，直接交付高质量落地方案与可合入的代码补丁！`;
+【落地实施与 UI 契约输出要求】:
+1. 你已被指派为本议题定案决议的**落地执行智能体**。请依据上述定案结论与你的专职角色，直接产出真实的落地交付物（如工程代码变更、架构/需求规范文档、配置/SQL 脚本或专项执行报告）；
+2. 若本次落地涉及修改或新建工作区文件（代码、文档、配置等），请为每个文件输出标准 Unified Diff 块（使用 \`\`\`diff 包裹，首行注明 \`--- a/文件路径\` 与 \`+++ b/文件路径\`），或在代码块首行注明 \`// filepath: 文件路径\`，以便工作台自动解析并支持一键物理合入；若本议题属于纯方案规划或分析结论、无需改动工作区文件，则直接输出结构化 Markdown 报告，不要强行编造伪代码；
+3. **【强制 UI 描述契约】**：为使工作台 UI 动态适配本次交付物的真实业务语义，你**必须**在回复的最末尾附带如下格式的 JSON 元数据块（系统解析后会自动从展示正文中隐藏该块）：
+<<<EXECUTION_META>>>
+{
+  "sectionTitle": "贴合本次交付物性质的章节标题（例如：订单幂等锁实现与单测补丁 / OAuth2 鉴权 ADR 规范落盘 / 慢查询根因排查与止血执行预案）",
+  "podTitle": "带 Emoji 的简短落地舱名称（10字以内，例如：🛠️ 幂等锁代码交付 / 📄 鉴权规范落盘 / 📋 止血执行预案）",
+  "statusSummary": "一句话交付成果摘要（40字以内，用于主时间轴卡片与系统通知展示）",
+  "deliverableKind": "workspace_files 或 report_only（有工作区文件/文档变更时填 workspace_files，纯报告无文件变更时填 report_only）",
+  "reviewActionLabel": "审查按钮动态文案（例如：审查代码 Diff / 预览文档变更 / 查看脚本 Diff）",
+  "applyActionLabel": "合入按钮动态文案（例如：一键合入本地仓库 / 写入本地文档目录 / 应用配置变更）"
+}
+<<<EXECUTION_META_END>>>
+4. 无需在正文中 @ 任何人，直接交付高质量落地成果！`;
 }
 
 interface CriterionCandidate {

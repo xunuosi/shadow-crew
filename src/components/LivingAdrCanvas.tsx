@@ -175,19 +175,26 @@ export function generateAdrMarkdown(topic: TopicMessageData, agents: Agent[]): s
     md += `\n`;
   }
 
-  // 5. Implementation & Workspace Patch
+  // 5. Resolution Execution & Deliverables
   const executorId = ruling?.executorId || topic.gameTheoreticState?.assignedExecutorId || topic.decisionRecord?.executorId;
   const execStatus = topic.gameTheoreticState?.executionStatus;
   const execDiffs = topic.gameTheoreticState?.executionDiffs || [];
-  if (executorId || execDiffs.length > 0) {
-    md += `## 5. 代码落地实现与工程补丁 (Implementation & Workspace Patch)\n\n`;
+  const execMeta = topic.gameTheoreticState?.executionUiMeta;
+  if (executorId || execDiffs.length > 0 || execMeta) {
+    md += `## ${execMeta?.sectionTitle || '5. 决议落地与执行交付 (Resolution Execution & Deliverables)'}\n\n`;
     md += `- **负责落地 Agent**: ${getAgentName(executorId) || '未指派'}\n`;
-    md += `- **执行状态**: \`${execStatus || 'completed'}\`\n\n`;
+    md += `- **执行状态**: \`${execStatus || 'completed'}\`\n`;
+    if (execMeta?.statusSummary) {
+      md += `- **交付摘要**: ${execMeta.statusSummary}\n`;
+    }
+    md += `\n`;
     if (execDiffs.length > 0) {
       execDiffs.forEach((d) => {
         md += `### \`${d.filename}\` (+${d.additions} / -${d.deletions})\n\n`;
         md += `\`\`\`diff\n${d.diff}\n\`\`\`\n\n`;
       });
+    } else if (topic.gameTheoreticState?.executionSummary) {
+      md += `### 执行交付纪要\n\n${topic.gameTheoreticState.executionSummary}\n\n`;
     }
   }
 
@@ -576,14 +583,19 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
           )}
         </div>
 
-        {/* Section 5: Implementation & Workspace Patch (Post-Arbitration Execution Loop) */}
+        {/* Section 5: Resolution Execution & Deliverables (Agent-Driven UI Meta) */}
         <div className="p-3.5 rounded-xl bg-emerald-500/[0.08] border border-emerald-500/30 space-y-2.5">
           <div className="flex items-center justify-between border-b border-emerald-500/25 pb-1.5">
             <div className="flex items-center gap-1.5 font-bold text-fg text-xs">
               <span className="w-1.5 h-3.5 rounded-full bg-emerald-500 shrink-0" />
-              <span>5. 代码落地实现与工程补丁 (Implementation & Workspace Patch)</span>
+              <span>
+                {topic.gameTheoreticState?.executionUiMeta?.sectionTitle ||
+                  '5. 决议落地与执行交付 (Resolution Execution & Deliverables)'}
+              </span>
             </div>
-            <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono font-medium">🛠️ Executor</span>
+            <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono font-medium">
+              {topic.gameTheoreticState?.executionUiMeta?.podTitle || '🛠️ Executor'}
+            </span>
           </div>
 
           {/* Multi-Topic Blast-Radius Overlap Alert */}
@@ -595,7 +607,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                 <span>
                   当前频道内存在其他并行落地议题同时涉及{' '}
                   <code className="font-mono px-1 py-0.2 rounded bg-amber-500/20">{overlappingFiles.join(', ')}</code>
-                  ，合入补丁前请通过 Diff 视图核对顺序。
+                  ，合入变更前请通过审查视图核对顺序。
                 </span>
               </div>
             </div>
@@ -627,14 +639,17 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                 <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-mono">
                   <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
                   <span>
-                    正在编写工程补丁 ({activeExec ? ((now - activeExec.startedAt) / 1000).toFixed(1) : ((now - (topic.gameTheoreticState?.executionStartedAt || now)) / 1000).toFixed(1)}s)
+                    正在执行定案决议 ({activeExec ? ((now - activeExec.startedAt) / 1000).toFixed(1) : ((now - (topic.gameTheoreticState?.executionStartedAt || now)) / 1000).toFixed(1)}s)
                   </span>
                 </span>
               )}
               {!isRunning && executionStatus === 'completed' && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-semibold">
                   <CheckCircle2 className="w-3 h-3" />
-                  <span>补丁已生成 · 待合入工作区</span>
+                  <span>
+                    {topic.gameTheoreticState?.executionUiMeta?.statusSummary ||
+                      (executionDiffs.length > 0 ? '工作区变更已就绪 · 待合入' : '决议已执行交付')}
+                  </span>
                 </span>
               )}
               {executionStatus === 'applied' && (
@@ -656,7 +671,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
           {isRunning && (
             <div className="p-2.5 rounded-lg bg-surface border border-amber-500/30 space-y-1.5 animate-in fade-in">
               <div className="flex items-center justify-between text-[10px] text-amber-600 dark:text-amber-400 font-mono">
-                <span>{activeExec?.currentActionDetail || '正在根据仲裁裁决书与爆炸半径生成 Unified Diff 补丁...'}</span>
+                <span>{activeExec?.currentActionDetail || '正在根据定案决议推进落地交付与结果输出...'}</span>
                 <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
               </div>
               {pendingExecMessage?.content && (
@@ -667,12 +682,13 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
             </div>
           )}
 
-          {/* Generated Diffs & One-Click Apply */}
+          {/* Generated Deliverables & One-Click Apply */}
           {executionDiffs.length > 0 ? (
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
                 <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
-                  已产出工程代码补丁 ({executionDiffs.length} 个文件):
+                  {topic.gameTheoreticState?.executionUiMeta?.statusSummary ||
+                    `已产出工作区交付文件 (${executionDiffs.length} 个文件)`}:
                 </span>
                 <div className="flex items-center gap-1.5">
                   {onOpenCodexDiff && (
@@ -691,7 +707,9 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                       className="px-2 py-1 rounded-lg bg-surface border border-border hover:border-emerald-500/40 text-fg text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
                     >
                       <GitCompare className="w-3 h-3 text-emerald-500" />
-                      <span>Codex 视图审查</span>
+                      <span>
+                        {topic.gameTheoreticState?.executionUiMeta?.reviewActionLabel || 'Codex 视图审查'}
+                      </span>
                     </button>
                   )}
                   {onApplyTopicPatch && executionStatus !== 'applied' && (
@@ -704,12 +722,14 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                       {isApplyingPatch ? (
                         <>
                           <Loader2 className="w-3 h-3 animate-spin" />
-                          <span>合入中...</span>
+                          <span>写入中...</span>
                         </>
                       ) : (
                         <>
                           <Zap className="w-3 h-3" />
-                          <span>一键合入本地工作区</span>
+                          <span>
+                            {topic.gameTheoreticState?.executionUiMeta?.applyActionLabel || '一键合入本地工作区'}
+                          </span>
                         </>
                       )}
                     </button>
@@ -759,12 +779,35 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                 ))}
               </div>
             </div>
+          ) : !isRunning && executionStatus === 'completed' ? (
+            <div className="p-2.5 rounded-lg bg-surface/85 border border-emerald-500/30 space-y-1.5 text-[11px]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-emerald-700 dark:text-emerald-300">
+                  {topic.gameTheoreticState?.executionUiMeta?.statusSummary ||
+                    '已完成决议执行交付（纯报告与结论输出，无工作区文件变更）'}
+                </span>
+                {onExecutePatch && (
+                  <button
+                    type="button"
+                    onClick={onExecutePatch}
+                    className="px-2 py-0.5 rounded-md bg-surface-hover border border-border text-fg-secondary hover:text-fg text-[10px] font-medium cursor-pointer shrink-0"
+                  >
+                    重新指派
+                  </button>
+                )}
+              </div>
+              {topic.gameTheoreticState?.executionSummary && (
+                <p className="text-[11px] text-fg-secondary leading-relaxed line-clamp-3">
+                  {topic.gameTheoreticState.executionSummary}
+                </p>
+              )}
+            </div>
           ) : !isRunning ? (
             <div className="flex items-center justify-between p-2 rounded-lg bg-surface/60 border border-border/60 text-[11px]">
               <span className="text-fg-muted">
                 {isResolved
-                  ? '定案后可随时委派或重新委派专职 Agent 输出可执行代码补丁。'
-                  : '待第四节法槌定案后，自动或手动委派执行 Agent 生成工程代码补丁。'}
+                  ? '定案后可随时委派或重新委派专职 Agent 推进决议落地交付。'
+                  : '待第四节法槌定案后，自动或手动委派执行 Agent 推进决议落地。'}
               </span>
               {onExecutePatch && isResolved && (
                 <button
@@ -773,7 +816,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                   className="px-2.5 py-1 rounded-lg bg-accent hover:opacity-90 text-accent-fg font-semibold text-[10px] flex items-center gap-1 shrink-0 cursor-pointer"
                 >
                   <Wrench className="w-3 h-3" />
-                  <span>指派 Agent 实施补丁</span>
+                  <span>指派 Agent 推进落地</span>
                 </button>
               )}
             </div>
