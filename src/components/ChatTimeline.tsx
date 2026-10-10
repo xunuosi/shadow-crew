@@ -681,7 +681,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           // Render Topic Message Card
           if (message.type === 'topic' && message.topicData) {
             return (
-              <div key={message.id} className="max-w-3xl mx-auto">
+              <div key={message.id} className="max-w-3xl mx-auto w-full min-w-0">
                 <TopicMessageCard
                   topic={message.topicData}
                   agents={agents}

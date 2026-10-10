@@ -52,7 +52,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
   return (
     <div
       onClick={onClick}
-      className={`relative rounded-2xl border transition-all cursor-pointer select-none group shadow-sm hover:shadow-md ${
+      className={`relative rounded-2xl border transition-all cursor-pointer select-none group shadow-sm hover:shadow-md overflow-hidden min-w-0 w-full ${
         isResolved
           ? ruling?.decisionType === 'reject_rebuild'
             ? 'bg-rose-500/5 hover:bg-rose-500/10 border-rose-500/30 hover:border-rose-500/60'
@@ -83,10 +83,10 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
         }`} 
       />
 
-      <div className="p-4 sm:p-5 pl-5 sm:pl-6 space-y-3">
+      <div className="p-3.5 sm:p-4 pl-4 sm:pl-5 space-y-3 min-w-0">
         {/* Top Meta Bar: Status Badge, Author & Timestamp */}
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center justify-between gap-2 flex-wrap min-w-0">
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
             {/* Status Badge */}
             {isResolved ? (
               ruling ? (
@@ -142,18 +142,18 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
               </span>
             )}
 
-            <span className="text-xs text-fg-muted font-mono whitespace-nowrap shrink-0 flex items-center gap-1.5">
-              <span>by</span>
+            <span className="text-xs text-fg-muted font-mono flex items-center gap-1.5 flex-wrap min-w-0">
+              <span className="shrink-0">by</span>
               <UnifiedAvatar
                 isUser={topic.authorId === 'user-norris' || topic.authorName === 'Norris_M5Pro' || topic.authorAvatar === '👨‍💻'}
                 agent={agents.find((a) => a.id === topic.authorId || a.name === topic.authorName)}
                 name={topic.authorName}
                 avatar={topic.authorAvatar}
                 size="xs"
-                className="w-4 h-4"
+                className="w-4 h-4 shrink-0"
               />
-              <span className="text-fg font-medium">{topic.authorName}</span>
-              <span>· {topic.timestamp}</span>
+              <span className="text-fg font-medium truncate max-w-[130px]">{topic.authorName}</span>
+              <span className="shrink-0 whitespace-nowrap">· {topic.timestamp}</span>
             </span>
           </div>
 
@@ -181,18 +181,18 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
         </div>
 
         {/* Topic Title */}
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="text-purple-500 font-mono text-xs font-bold px-1.5 py-0.5 rounded bg-purple-500/10 border border-purple-500/20">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-purple-500 font-mono text-xs font-bold px-1.5 py-0.5 rounded bg-purple-500/10 border border-purple-500/20 shrink-0">
               TOPIC
             </span>
-            <h3 className="text-sm sm:text-base font-bold text-fg group-hover:text-accent transition-colors select-text">
+            <h3 className="text-sm sm:text-base font-bold text-fg group-hover:text-accent transition-colors select-text min-w-0 break-words">
               {topic.title}
             </h3>
           </div>
 
           {topic.description && (
-            <p className="mt-1.5 text-xs text-fg-secondary line-clamp-2 leading-relaxed font-sans select-text">
+            <p className="mt-1.5 text-xs text-fg-secondary line-clamp-2 leading-relaxed font-sans select-text break-words">
               {topic.description}
             </p>
           )}
@@ -331,9 +331,9 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
         )}
 
         {/* Bottom Bar: Participating Agents Stack & Roles / Latest Preview */}
-        <div className="flex items-center justify-between pt-1 border-t border-border-subtle gap-3 flex-wrap sm:flex-nowrap">
+        <div className="flex items-center justify-between pt-2 border-t border-border-subtle gap-x-3 gap-y-2 flex-wrap">
           {/* Agent Avatar Stack & Game Role Breakdown */}
-          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
             <span className="text-[11px] text-fg-muted whitespace-nowrap">协同成员:</span>
             <div className="flex items-center -space-x-1.5 shrink-0">
               {participatingAgents.length > 0 ? (
@@ -361,14 +361,14 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
 
             {/* Role Breakdown Pill for Game Mode */}
             {isGame && topic.gameRoles ? (
-              <div className="flex items-center gap-1 text-[10px] font-mono ml-1">
-                <span className="px-1.5 py-0.2 rounded bg-blue-500/10 text-blue-600 dark:text-blue-300 border border-blue-500/20">
+              <div className="flex items-center gap-1 text-[10px] font-mono ml-1 flex-wrap">
+                <span className="px-1.5 py-0.2 rounded bg-blue-500/10 text-blue-600 dark:text-blue-300 border border-blue-500/20 whitespace-nowrap">
                   主导 {proposers.length}
                 </span>
-                <span className="px-1.5 py-0.2 rounded bg-rose-500/10 text-rose-600 dark:text-rose-300 border border-rose-500/20">
+                <span className="px-1.5 py-0.2 rounded bg-rose-500/10 text-rose-600 dark:text-rose-300 border border-rose-500/20 whitespace-nowrap">
                   挑战 {challengers.length}
                 </span>
-                <span className="px-1.5 py-0.2 rounded bg-purple-500/10 text-purple-600 dark:text-purple-300 border border-purple-500/20">
+                <span className="px-1.5 py-0.2 rounded bg-purple-500/10 text-purple-600 dark:text-purple-300 border border-purple-500/20 whitespace-nowrap">
                   仲裁 {hasHumanArbiter ? '👤' : ''}{arbiters.length > 0 ? (hasHumanArbiter ? '+' : '') + arbiters.length : ''}
                 </span>
               </div>
@@ -380,7 +380,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
           </div>
 
           {/* Latest reply snippet or dive in button */}
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-purple-600 dark:text-purple-400 group-hover:text-accent transition-colors shrink-0 whitespace-nowrap">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-purple-600 dark:text-purple-400 group-hover:text-accent transition-colors shrink-0 whitespace-nowrap ml-auto">
             <span>进入议题讨论</span>
             <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1 shrink-0" />
           </div>
