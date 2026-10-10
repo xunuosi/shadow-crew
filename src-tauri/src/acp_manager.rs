@@ -93,6 +93,7 @@ pub struct RunningAgent {
     pub auth_state: Arc<TokioMutex<String>>,
     pub status_detail: Arc<TokioMutex<Option<String>>>,
     pub session_ids: Arc<TokioMutex<HashMap<String, String>>>,
+    #[allow(dead_code)]
     pub cwd: String,
     pub app_handle: AppHandle,
     pub last_activity: Arc<AtomicU64>,
@@ -187,12 +188,18 @@ impl AcpProcessManager {
         }
 
         let mut actual_cmd = command_line.to_string();
+        let host_cwd = std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string());
 
         // 智能路径探测: 若是 shinobi-agent 命令，优先直接运行编译后的原生二进制
         if command_line.contains("shinobi-agent") {
             let possible_bins = [
                 format!("{}/target/debug/shinobi-agent", cwd),
                 format!("{}/target/release/shinobi-agent", cwd),
+                format!("{}/target/debug/shinobi-agent", host_cwd),
+                format!("{}/target/release/shinobi-agent", host_cwd),
                 "target/debug/shinobi-agent".to_string(),
                 "target/release/shinobi-agent".to_string(),
                 "../target/debug/shinobi-agent".to_string(),
@@ -213,11 +220,33 @@ impl AcpProcessManager {
             }
         }
 
+        // 预先解析 shinobi-dev-mcp 绝对路径，防止切换 current_dir 到 ~/.shinobi 后相对路径失效
+        let mut resolved_dev_mcp: Option<String> = None;
+        let possible_mcp_bins = [
+            format!("{}/target/debug/shinobi-dev-mcp", cwd),
+            format!("{}/target/release/shinobi-dev-mcp", cwd),
+            format!("{}/target/debug/shinobi-dev-mcp", host_cwd),
+            format!("{}/target/release/shinobi-dev-mcp", host_cwd),
+            "target/debug/shinobi-dev-mcp".to_string(),
+            "target/release/shinobi-dev-mcp".to_string(),
+            "../target/debug/shinobi-dev-mcp".to_string(),
+            "../../target/debug/shinobi-dev-mcp".to_string(),
+        ];
+        for mcp_bin in &possible_mcp_bins {
+            if let Ok(canonical) = std::fs::canonicalize(mcp_bin) {
+                if canonical.is_file() {
+                    resolved_dev_mcp = Some(canonical.to_string_lossy().to_string());
+                    break;
+                }
+            }
+        }
+
         // 智能路径探测: codex-acp 适配器命令
         let home = std::env::var("HOME").unwrap_or_default();
         if command_line.contains("codex-acp") {
             let possible_bins = [
                 format!("{}/bin/codex-acp", cwd),
+                format!("{}/bin/codex-acp", host_cwd),
                 "bin/codex-acp".to_string(),
                 "../bin/codex-acp".to_string(),
                 format!("{}/.local/bin/codex-acp", home),
@@ -243,12 +272,14 @@ impl AcpProcessManager {
         let program = parts[0];
         let args = &parts[1..];
 
+        // 统一将所有 Agent 底层进程的默认根工作目录收敛至用户级全局 ~/.shinobi，彻底脱离项目源码仓目录
         let shinobi_home = crate::db_manager::get_shinobi_home_dir();
+        let shinobi_home_str = shinobi_home.to_string_lossy().to_string();
         let default_db = crate::db_manager::get_default_db_path();
 
         let mut cmd = Command::new(program);
         cmd.args(args)
-            .current_dir(cwd)
+            .current_dir(&shinobi_home)
             .env("PATH", &extra_paths)
             .env("SHINOBI_HOME", &shinobi_home)
             .env("SHINOBI_MEMORY_DB", &default_db)
@@ -256,6 +287,10 @@ impl AcpProcessManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+
+        if let Some(ref mcp_path) = resolved_dev_mcp {
+            cmd.env("SHINOBI_DEV_MCP_PATH", mcp_path);
+        }
 
         // 注入用户配置的环境变量 (如 ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL 等)
         if let Some(ref vars) = env_vars {
@@ -579,7 +614,7 @@ impl AcpProcessManager {
                 auth_state: auth_state.clone(),
                 status_detail: status_detail.clone(),
                 session_ids,
-                cwd: cwd.to_string(),
+                cwd: shinobi_home_str,
                 app_handle: app_handle.clone(),
                 last_activity: last_activity.clone(),
             },
@@ -688,6 +723,7 @@ impl AcpProcessManager {
         &self,
         agent_id: &str,
         room_id: &str,
+        channel_id: Option<&str>,
         prompt: &str,
         system_prompt: Option<&str>,
     ) -> Result<serde_json::Value> {
@@ -769,10 +805,19 @@ impl AcpProcessManager {
             }
         }
 
-        // 2. 确保当前房间绑定了有效的 ACP sessionId (通过 session/new 创建)
+        // 2. 解析当前频道的专属独立工作空间路径 ~/.shinobi/channels/<channel_id>
+        let effective_channel_id = channel_id
+            .map(|c| c.trim())
+            .filter(|c| !c.is_empty())
+            .unwrap_or(room_id);
+        let channel_workspace_dir = crate::db_manager::get_channel_dir(effective_channel_id);
+        let channel_cwd = channel_workspace_dir.to_string_lossy().to_string();
+        let session_key = format!("{}:{}", effective_channel_id, room_id);
+
+        // 3. 确保当前频道/房间绑定了有效的 ACP sessionId (通过 session/new 创建，并将 cwd 绑定至频道独立工作区)
         let mut session_id = {
             let map = agent.session_ids.lock().await;
-            map.get(room_id).cloned()
+            map.get(&session_key).cloned()
         };
 
         if session_id.is_none() {
@@ -786,19 +831,25 @@ impl AcpProcessManager {
                 map.insert(new_sess_id, sess_tx);
             }
             let mut params = serde_json::json!({
-                "cwd": &agent.cwd,
+                "cwd": &channel_cwd,
                 "mcpServers": [],
-                "channelId": room_id
+                "channelId": effective_channel_id
             });
-            // 对标 Buzz: 在 session/new 时将系统公约与人设注入底层（支持标准协议与 Claude Code 的 _meta）
-            if let Some(sp) = system_prompt {
-                params["systemPrompt"] = serde_json::Value::String(sp.to_string());
-                params["_meta"] = serde_json::json!({
-                    "systemPrompt": {
-                        "append": sp
-                    }
-                });
-            }
+            // 对标 Buzz: 在 session/new 时将系统公约、人设以及频道专属独立工作空间路径注入底层
+            let workspace_notice = format!(
+                "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}/artifacts\n- 临时调试目录 (Scratch): {}/scratch",
+                effective_channel_id, channel_cwd, channel_cwd, channel_cwd
+            );
+            let enriched_sp = match system_prompt {
+                Some(sp) if !sp.trim().is_empty() => format!("{}{}", sp, workspace_notice),
+                _ => workspace_notice,
+            };
+            params["systemPrompt"] = serde_json::Value::String(enriched_sp.clone());
+            params["_meta"] = serde_json::json!({
+                "systemPrompt": {
+                    "append": enriched_sp
+                }
+            });
             let new_req = serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": new_sess_id,
@@ -812,20 +863,27 @@ impl AcpProcessManager {
                         .and_then(|r| r.get("sessionId"))
                         .and_then(|s| s.as_str())
                         .map(|s| s.to_string());
-                    sid_val.unwrap_or_else(|| format!("session-{}", room_id))
+                    sid_val.unwrap_or_else(|| format!("session-{}", session_key))
                 }
                 _ => {
-                    format!("session-{}", room_id)
+                    format!("session-{}", session_key)
                 }
             };
-            tracing::info!("[Agent {}] Obtained sessionId for room {}: {}", agent_id, room_id, sid);
-            agent.session_ids.lock().await.insert(room_id.to_string(), sid.clone());
+            tracing::info!(
+                "[Agent {}] Obtained sessionId for channel {} (room {}): {} (cwd: {})",
+                agent_id,
+                effective_channel_id,
+                room_id,
+                sid,
+                channel_cwd
+            );
+            agent.session_ids.lock().await.insert(session_key.clone(), sid.clone());
             session_id = Some(sid);
         }
 
-        let current_session_id = session_id.unwrap_or_else(|| format!("session-{}", room_id));
+        let current_session_id = session_id.unwrap_or_else(|| format!("session-{}", session_key));
 
-        // 3. 构造标准 ACP session/prompt 请求 (格式: sessionId + prompt: [ { type: "text", text: ... } ])
+        // 4. 构造标准 ACP session/prompt 请求 (携带频道专属 cwd 与 channelId)
         let req_id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -845,7 +903,8 @@ impl AcpProcessManager {
             "method": "session/prompt",
             "params": {
                 "sessionId": current_session_id,
-                "channelId": room_id,
+                "channelId": effective_channel_id,
+                "cwd": &channel_cwd,
                 "prompt": [
                     {
                         "type": "text",
@@ -962,7 +1021,7 @@ impl AcpProcessManager {
                 // 若出现特定 session 错误，清除缓存触发重新 session/new
                 if let Some(err) = resp.get("error") {
                     let mut map = agent.session_ids.lock().await;
-                    map.remove(room_id);
+                    map.remove(&session_key);
 
                     let err_msg = err.get("message").and_then(|m| m.as_str()).unwrap_or_default();
                     if err_msg.contains("Authentication required") || err_msg.to_lowercase().contains("authentication") {
@@ -1046,5 +1105,21 @@ mod runtime_status_tests {
     fn auth_required_outranks_init_error() {
         assert_eq!(derive_runtime_status(true, "auth_required", false), "auth_required");
         assert_eq!(derive_runtime_status(true, "auth_required", true), "auth_required");
+    }
+
+    #[test]
+    fn channel_workspace_dirs_are_isolated_under_shinobi_home() {
+        let tmp_root = std::env::temp_dir().join("shinobi_channel_workspace_test");
+        std::env::set_var("SHINOBI_HOME", &tmp_root);
+        let home = crate::db_manager::get_shinobi_home_dir();
+        let chan_a = crate::db_manager::get_channel_dir("channel-alpha-test");
+        let chan_b = crate::db_manager::get_channel_dir("channel-beta-test");
+        assert!(chan_a.starts_with(&home));
+        assert!(chan_b.starts_with(&home));
+        assert_ne!(chan_a, chan_b);
+        assert!(chan_a.join("artifacts").exists());
+        assert!(chan_a.join("scratch").exists());
+        let _ = std::fs::remove_dir_all(&tmp_root);
+        std::env::remove_var("SHINOBI_HOME");
     }
 }

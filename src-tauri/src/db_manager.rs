@@ -35,7 +35,12 @@ pub fn get_shinobi_home_dir() -> std::path::PathBuf {
             }
         })
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    base.join(".shinobi")
+
+    if base.ends_with(".shinobi") {
+        base
+    } else {
+        base.join(".shinobi")
+    }
 }
 
 /// 获取指定频道的私有工作区目录 (~/.shinobi/channels/<channel_id>)

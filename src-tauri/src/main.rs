@@ -87,6 +87,7 @@ async fn get_agents_runtime_status(state: State<'_, AppState>) -> Result<Vec<acp
 async fn send_prompt_to_agent(
     agent_id: String,
     room_id: String,
+    channel_id: Option<String>,
     prompt: String,
     _command: Option<String>,
     _cwd: Option<String>,
@@ -106,7 +107,13 @@ async fn send_prompt_to_agent(
     }
 
     let response = manager
-        .send_session_prompt(&agent_id, &room_id, &prompt, system_prompt.as_deref())
+        .send_session_prompt(
+            &agent_id,
+            &room_id,
+            channel_id.as_deref(),
+            &prompt,
+            system_prompt.as_deref(),
+        )
         .await
         .map_err(|e| format!("ACP Prompt Error: {}", e))?;
         
@@ -248,7 +255,19 @@ async fn apply_workspace_patch(
     std::fs::create_dir_all(&topic_artifacts_dir)
         .map_err(|e| format!("Failed to create topic artifacts dir: {}", e))?;
 
-    let canonical_root = std::fs::canonicalize(&workspace_root).ok();
+    let trimmed_root = workspace_root.trim();
+    let canonical_root = if trimmed_root.is_empty()
+        || trimmed_root == "."
+        || trimmed_root.starts_with("~/.shinobi")
+        || trimmed_root.contains("/shadow-crew")
+    {
+        std::fs::canonicalize(&channel_dir).ok().or(Some(channel_dir.clone()))
+    } else {
+        std::fs::canonicalize(trimmed_root)
+            .ok()
+            .or_else(|| std::fs::canonicalize(&channel_dir).ok())
+            .or(Some(channel_dir.clone()))
+    };
     let mut applied_files = Vec::new();
 
     for (idx, item) in patches.iter().enumerate() {

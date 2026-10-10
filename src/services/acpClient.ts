@@ -656,13 +656,16 @@ export async function sendPromptToAcpAgent(
 
       const launchCommand = agent.acpCommandOrUrl || './target/debug/shinobi-agent';
       const launchEnvVars = buildAgentLaunchEnv(agent);
+      const effectiveChannelId = options.channelId || roomId;
+      const channelCwd = `~/.shinobi/channels/${effectiveChannelId}`;
 
       const response = await tauriInvoke('send_prompt_to_agent', {
         agentId: agent.id,
         roomId,
+        channelId: effectiveChannelId,
         prompt: enhancedPrompt,
         command: launchCommand,
-        cwd: agent.workspace?.rootPath || '.',
+        cwd: channelCwd,
         envVars: launchEnvVars,
         systemPrompt: options.systemPrompt,
       });

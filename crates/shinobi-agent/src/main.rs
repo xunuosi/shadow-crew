@@ -71,6 +71,10 @@ async fn main() -> Result<()> {
         );
     }
 
+    let shinobi_home = get_shinobi_home_dir();
+    let _ = std::fs::create_dir_all(&shinobi_home);
+    let _ = std::env::set_current_dir(&shinobi_home);
+
     let stdin = io::stdin();
     let stdout_shared = Arc::new(std::sync::Mutex::new(io::stdout()));
     let reader = stdin.lock();
@@ -79,7 +83,7 @@ async fn main() -> Result<()> {
     let llm_config = llm::LlmConfig::from_env();
     let mut session_system_prompt: Option<String> = None;
     let mut mcp_client: Option<mcp_client::SharedMcpClient> = None;
-    let mut session_cwd: Option<String> = None;
+    let mut mcp_client_channel: Option<String> = None;
     let mut session_channel_id = "chan-default".to_string();
 
     // 持续监听来自 Tauri 宿主或父进程的 stdio JSON-RPC 2.0 请求
@@ -121,6 +125,9 @@ async fn main() -> Result<()> {
                 }
 
                 let channel_dir = get_channel_dir(&session_channel_id);
+                let channel_cwd_str = channel_dir.to_string_lossy().to_string();
+                let _ = std::env::set_current_dir(&channel_dir);
+
                 let meta_file = channel_dir.join("meta.json");
                 let now_secs = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -130,6 +137,7 @@ async fn main() -> Result<()> {
                     "channelId": session_channel_id,
                     "createdAt": now_secs,
                     "lastActive": now_secs,
+                    "workspaceDir": channel_cwd_str,
                     "artifactsDir": channel_dir.join("artifacts").to_string_lossy(),
                     "scratchDir": channel_dir.join("scratch").to_string_lossy(),
                 });
@@ -140,13 +148,9 @@ async fn main() -> Result<()> {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                if let Some(cwd_str) = params.get("cwd").and_then(|v| v.as_str()) {
-                    session_cwd = Some(cwd_str.to_string());
-                }
-
-                // 连接 Shinobi 原生内置 MCP 工具服务 (shinobi-dev-mcp)
-                if mcp_client.is_none() {
-                    match mcp_client::NativeMcpClient::spawn_and_connect(session_cwd.as_deref(), Some(&session_channel_id)).await {
+                // 连接或切换 Shinobi 原生内置 MCP 工具服务 (shinobi-dev-mcp)，将其工作目录严格锚定在当前频道独立工作空间
+                if mcp_client.is_none() || mcp_client_channel.as_deref() != Some(session_channel_id.as_str()) {
+                    match mcp_client::NativeMcpClient::spawn_and_connect(Some(&channel_cwd_str), Some(&session_channel_id)).await {
                         Ok(client) => {
                             let tool_names: Vec<String> = client
                                 .get_tools()
@@ -154,10 +158,13 @@ async fn main() -> Result<()> {
                                 .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
                                 .collect();
                             eprintln!(
-                                "[Shinobi Agent] 原生内置 MCP (shinobi-dev-mcp) 挂载成功，可用工具: {:?}",
+                                "[Shinobi Agent] 原生内置 MCP (shinobi-dev-mcp) 挂载成功 (channel={}, cwd={})，可用工具: {:?}",
+                                session_channel_id,
+                                channel_cwd_str,
                                 tool_names
                             );
                             mcp_client = Some(Arc::new(tokio::sync::Mutex::new(client)));
+                            mcp_client_channel = Some(session_channel_id.clone());
                         }
                         Err(e) => {
                             eprintln!(
@@ -172,7 +179,7 @@ async fn main() -> Result<()> {
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": {
-                        "sessionId": "shinobi-session-default"
+                        "sessionId": format!("shinobi-session-{}", session_channel_id)
                     }
                 });
                 if let Ok(mut out) = stdout_shared.lock() {
@@ -207,9 +214,13 @@ async fn main() -> Result<()> {
                 let prompt_channel_id = params
                     .get("channelId")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.trim().to_string())
                     .unwrap_or_else(|| session_channel_id.clone());
+                session_channel_id = prompt_channel_id.clone();
                 let current_channel_dir = get_channel_dir(&prompt_channel_id);
+                let current_channel_cwd = current_channel_dir.to_string_lossy().to_string();
+                let _ = std::env::set_current_dir(&current_channel_dir);
 
                 // 更新 channel 活跃状态
                 let meta_file = current_channel_dir.join("meta.json");
@@ -221,15 +232,17 @@ async fn main() -> Result<()> {
                                 .unwrap_or_default()
                                 .as_secs();
                             val["lastActive"] = serde_json::json!(now_secs);
+                            val["workspaceDir"] = serde_json::json!(current_channel_cwd);
                             let _ = std::fs::write(&meta_file, val.to_string());
                         }
                     }
                 }
 
-                // 若此前未能启动 MCP，在 prompt 接收时尝试二次懒加载挂载
-                if mcp_client.is_none() {
-                    if let Ok(client) = mcp_client::NativeMcpClient::spawn_and_connect(session_cwd.as_deref(), Some(&prompt_channel_id)).await {
+                // 若此前未能启动 MCP 或切换了活跃频道，重新绑定当前频道专属工作空间
+                if mcp_client.is_none() || mcp_client_channel.as_deref() != Some(prompt_channel_id.as_str()) {
+                    if let Ok(client) = mcp_client::NativeMcpClient::spawn_and_connect(Some(&current_channel_cwd), Some(&prompt_channel_id)).await {
                         mcp_client = Some(Arc::new(tokio::sync::Mutex::new(client)));
+                        mcp_client_channel = Some(prompt_channel_id.clone());
                     }
                 }
                 
@@ -264,12 +277,15 @@ async fn main() -> Result<()> {
 
                 let artifacts_dir = current_channel_dir.join("artifacts").to_string_lossy().to_string();
                 let scratch_dir = current_channel_dir.join("scratch").to_string_lossy().to_string();
-                system_prompt.push_str(&format!(
-                    "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 落地产物目录 (Artifacts): {}\n- 临时调试目录 (Scratch): {}\n提示: 如需沉淀正式技术推演文档、ADR 架构决策或代码 Patch，请优先调用 `write_channel_artifact` 工具安全保存至频道专属产物目录。\n",
-                    prompt_channel_id,
-                    artifacts_dir,
-                    scratch_dir
-                ));
+                if !system_prompt.contains("[当前频道专属工作空间环境]") {
+                    system_prompt.push_str(&format!(
+                        "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}\n- 临时调试目录 (Scratch): {}\n提示: 如需沉淀正式技术推演文档、ADR 架构决策或代码 Patch，请优先调用 `write_channel_artifact` 工具安全保存至频道专属产物目录。\n",
+                        prompt_channel_id,
+                        current_channel_cwd,
+                        artifacts_dir,
+                        scratch_dir
+                    ));
+                }
 
                 let session_id = params.get("sessionId").and_then(|v| v.as_str()).unwrap_or("shinobi-session-default");
                 let session_id_owned = session_id.to_string();

@@ -16,7 +16,7 @@ export const INITIAL_PROJECTS: Project[] = [
     name: 'shadow-crew',
     description: '基于 ACP 的多 Agent 替身协作工作台 (Rust + Tauri + Nostr)',
     repoUrl: 'https://github.com/shinobi-workspace/shadow-crew',
-    localWorkspaceRoot: '/Users/xunuosi/Code/Lx/AI/shadow-crew',
+    localWorkspaceRoot: '~/.shinobi',
     assignedAgentIds: ['agent-1789029918725', 'agent-shinobi-core'],
     createdAt: Date.now() - 86400000 * 7,
   },
@@ -54,15 +54,15 @@ export const INITIAL_AGENTS: Agent[] = [
       supportsStreaming: true,
     },
     workspace: {
-      rootPath: '/Users/xunuosi/Code/Lx/AI/shadow-crew',
-      repoName: 'shadow-crew',
+      rootPath: '~/.shinobi',
+      repoName: 'shinobi-workspace',
       gitBranch: 'main',
       permissionMode: 'full_read_write',
-      activeFiles: ['crates/shinobi-agent/src/main.rs'],
+      activeFiles: ['~/.shinobi/global_memory.sqlite'],
     },
     skills: [],
     memory: {
-      internalMemoryPath: '~/.local/share/shinobi/shinobi_agent_memory.sqlite',
+      internalMemoryPath: '~/.shinobi/global_memory.sqlite',
       persistentType: 'sqlite',
       persistentItems: [],
       sessionCacheCount: 0,
@@ -98,11 +98,11 @@ export const INITIAL_AGENTS: Agent[] = [
       supportsStreaming: true,
     },
     workspace: {
-      rootPath: '/Users/xunuosi/Code/Lx/AI/shadow-crew',
-      repoName: 'shadow-crew',
+      rootPath: '~/.shinobi',
+      repoName: 'shinobi-workspace',
       gitBranch: 'main',
       permissionMode: 'full_read_write',
-      activeFiles: ['src/App.tsx', 'Cargo.toml', 'README.md'],
+      activeFiles: ['~/.shinobi/channels'],
     },
     skills: [
       {
@@ -119,7 +119,7 @@ export const INITIAL_AGENTS: Agent[] = [
       },
     ],
     memory: {
-      internalMemoryPath: '~/.local/share/shinobi/openclaw_mantis_memory.sqlite',
+      internalMemoryPath: '~/.shinobi/global_memory.sqlite',
       persistentType: 'sqlite',
       persistentItems: [
         {
