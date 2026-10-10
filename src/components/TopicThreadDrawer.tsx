@@ -1870,251 +1870,404 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           );
         })()}
 
-        {/* Bottom anchor for scrolling */}
-        <div ref={messagesEndRef} />
-      </div>
+        {/* In-Stream Final Ruling / Consensus Archive Card (随历史讨论消息流一起上下滚动) */}
+        {isResolved && (
+          <div ref={rulingCardRef} className="space-y-2.5 pt-2">
+            <div className="flex items-center gap-2 py-1 select-none">
+              <div className="h-px flex-1 bg-border" />
+              <span className="text-[10px] font-mono text-fg-muted px-2.5 py-0.5 rounded-full bg-surface-subtle border border-border flex items-center gap-1.5">
+                <Scale className="w-3 h-3 text-amber-500" />
+                <span>终局裁决与共识归档卡 · 向上滚动可自由翻阅全部 {messages.length} 条历史讨论</span>
+              </span>
+              <div className="h-px flex-1 bg-border" />
+            </div>
 
-      {/* 4. Consensus Rollup Banner / Arbiter Gavel Console */}
-      <div className="p-3 border-t border-border bg-surface-subtle space-y-2.5">
-        {isResolved ? (
-          topic.rulingRecord ? (
-            <div className={`p-3 rounded-xl border text-xs font-sans space-y-2.5 ${
-              topic.rulingRecord.decisionType === 'adopt_proposer'
-                ? 'bg-emerald-500/10 border-emerald-500/30'
-                : topic.rulingRecord.decisionType === 'reject_rebuild'
-                ? 'bg-rose-500/10 border-rose-500/30'
-                : 'bg-purple-500/10 border-purple-500/30'
-            }`}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5 font-bold">
-                  <Scale className="w-4 h-4 text-amber-500" />
-                  <span>
-                    {topic.rulingRecord.decisionType === 'adopt_proposer'
-                      ? '⚖️ 仲裁裁决：采纳主导方案'
-                      : topic.rulingRecord.decisionType === 'reject_rebuild'
-                      ? '🔄 仲裁裁决：采纳挑战驳回重构'
-                      : '📊 仲裁裁决：达成架构权衡矩阵'}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-mono opacity-80">{topic.rulingRecord.decidedAt}</span>
-                  {onReopenTopic && (
-                    <button
-                      onClick={() => onReopenTopic(topic.id)}
-                      className="px-2 py-0.5 rounded-md bg-surface border border-border hover:bg-surface-hover text-fg text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
-                      title="重开博弈推演"
-                    >
-                      <RotateCcw className="w-2.5 h-2.5" />
-                      <span>重开</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <div className="text-[11px] leading-relaxed font-medium text-fg select-text">
-                {topic.rulingRecord.summary}
-              </div>
-
-              {topic.rulingRecord.solution && (
-                <div className="text-[10px] select-text p-2 rounded-lg bg-surface/60 border border-border/60">
-                  <span className="font-semibold text-fg">落地推进方案：</span>
-                  <span className="text-fg-secondary">{topic.rulingRecord.solution}</span>
-                </div>
-              )}
-
-              {topic.rulingRecord.tradeOffPoints && topic.rulingRecord.tradeOffPoints.length > 0 && (
-                <div className="space-y-1">
-                  <div className="text-[10px] font-semibold text-fg">关键权衡折中要点：</div>
-                  <ul className="list-disc list-inside text-[10px] text-fg-secondary space-y-0.5">
-                    {topic.rulingRecord.tradeOffPoints.map((pt, i) => (
-                      <li key={i}>{pt}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* CognoNexus 神经符号 MCDA 确定性决策分析矩阵 */}
-              {(topic.rulingRecord.mcdaPayload || topic.gameTheoreticState?.mcdaPayload) && (() => {
-                const mcda = topic.rulingRecord.mcdaPayload || topic.gameTheoreticState?.mcdaPayload;
-                if (!mcda) return null;
-                return (
-                  <div className="space-y-1.5 p-2 rounded-lg bg-surface/80 border border-border/80 shadow-2xs">
-                    <div className="flex items-center justify-between text-[10px]">
-                      <div className="flex items-center gap-1.5 font-bold text-fg">
-                        <Scale className="w-3.5 h-3.5 text-amber-500" />
-                        <span>MCDA 运筹决策矩阵 (BWM 最优最劣法)</span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        {mcda.confidenceMatrix && (
-                          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-blue-500/15 text-blue-600 dark:text-blue-400 font-medium">
-                            ReConcile 置信度加权
-                          </span>
-                        )}
-                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-medium ${
-                          mcda.consistencyPassed 
-                            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' 
-                            : 'bg-amber-500/15 text-amber-600'
-                        }`}>
-                          ξ* = {mcda.consistencyIndex} ({mcda.consistencyPassed ? '✓ 逻辑严密一致' : '⚠️ 需关注'})
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Criteria Weights */}
-                    <div className="grid grid-cols-4 gap-1 text-[9px] font-mono">
-                      {mcda.criteria.map((c) => (
-                        <div key={c.id} className="p-1 rounded bg-surface-subtle border border-border/40 text-center">
-                          <div className="text-fg-muted truncate">{c.name.split('与')[0]}</div>
-                          <div className="font-bold text-fg">{((mcda.computedWeights[c.id] || 0) * 100).toFixed(1)}%</div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* Mathematical Ranking */}
-                    <div className="space-y-1 pt-1 border-t border-border/40">
-                      <div className="text-[9px] font-semibold text-fg-muted">运筹效用综合评分排名:</div>
-                      {mcda.ranking.map((r) => (
-                        <div key={r.rank} className="flex items-center justify-between text-[9px] px-1.5 py-0.5 rounded bg-surface-subtle/80">
-                          <span className="font-medium text-fg truncate">#{r.rank} {r.alternative.split(' (')[0]}</span>
-                          <span className="font-mono text-fg-secondary">效用: {(r.totalUtility * 10).toFixed(2)} / 10</span>
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* CognoNexus 实证打分溯源链 (Audit Provenance) */}
-                    {mcda.scoreProvenance && Object.keys(mcda.scoreProvenance).length > 0 && (
-                      <div className="space-y-1 pt-1.5 border-t border-border/40">
-                        <div className="text-[9px] font-semibold text-fg-muted flex items-center justify-between">
-                          <span>实证打分溯源链 (Audit Provenance):</span>
-                          <span className="text-[8px] text-primary/80 font-mono">神经符号绑定</span>
-                        </div>
-                        <div className="space-y-1 text-[8px] text-fg-secondary">
-                          {Object.entries(mcda.scoreProvenance).map(([altName, critMap]) => (
-                            <div key={altName} className="p-1 rounded bg-surface-subtle/50 border border-border/30">
-                              <span className="font-semibold text-fg block truncate">{altName.split(' (')[0]}</span>
-                              <div className="space-y-0.5 mt-0.5">
-                                {Object.entries(critMap).map(([critId, reason]) => {
-                                  const cName = mcda.criteria.find((c) => c.id === critId)?.name.split('与')[0] || critId;
-                                  return (
-                                    <div key={critId} className="flex items-start gap-1">
-                                      <span className="text-fg-muted shrink-0">[{cName}]:</span>
-                                      <span className="truncate">{reason}</span>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-
-              {/* CognoNexus 伴生少数派异议报告 */}
-              {(topic.rulingRecord.minorityReport || topic.gameTheoreticState?.minorityReport) && (() => {
-                const mr = topic.rulingRecord.minorityReport || topic.gameTheoreticState?.minorityReport;
-                if (!mr) return null;
-                return (
-                  <div className="space-y-1.5 p-2 rounded-lg bg-surface/80 border border-border/80 shadow-2xs">
-                    <div className="flex items-center justify-between text-[10px]">
-                      <div className="flex items-center gap-1.5 font-bold text-rose-600 dark:text-rose-400">
-                        <AlertTriangle className="w-3.5 h-3.5" />
-                        <span>伴生少数派异议报告 (Minority Report)</span>
-                      </div>
-                      <span className="text-[9px] text-fg-muted font-mono">{mr.dissentingAgentName}</span>
-                    </div>
-                    <div className="text-[9px] text-fg-secondary leading-relaxed">
-                      <span className="font-semibold text-fg">保留立场：</span>{mr.coreDissentThesis}
-                    </div>
-                    <div className="text-[9px] text-fg-muted">
-                      <span className="font-semibold text-fg">自洽依据：</span>{mr.rationalityBasis}
-                    </div>
-                    {mr.reopeningTriggers && mr.reopeningTriggers.length > 0 && (
-                      <div className="pt-1 border-t border-border/40">
-                        <span className="text-[9px] font-semibold text-amber-600 dark:text-amber-400">🚨 黑天鹅重启判定条件：</span>
-                        <ul className="list-disc list-inside text-[9px] text-fg-secondary space-y-0.5 mt-0.5">
-                          {mr.reopeningTriggers.map((t, idx) => (
-                            <li key={idx}>{t}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-
-              <div className="text-[9px] text-fg-muted font-mono flex items-center justify-between pt-1 border-t border-border/50">
-                <span>裁决官: {topic.rulingRecord.arbiterName}</span>
-                {topic.rulingRecord.impactedFiles && topic.rulingRecord.impactedFiles.length > 0 && (
-                  <span className="truncate max-w-[200px]" title={topic.rulingRecord.impactedFiles.join(', ')}>
-                    涉及: {topic.rulingRecord.impactedFiles.join(', ')}
-                  </span>
-                )}
-              </div>
-
-              {/* Post-Arbitration Execution Status Row */}
-              <div className="pt-2 border-t border-border/50 flex flex-col gap-2">
-                {overlappingFiles.length > 0 && (
-                  <div className="px-2 py-1 rounded-md bg-amber-500/15 border border-amber-500/30 text-[10px] text-amber-800 dark:text-amber-200 flex items-center gap-1.5">
-                    <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
-                    <span className="truncate">
-                      ⚠️ 与其他并行落地议题重叠文件: <code className="font-mono">{overlappingFiles.join(', ')}</code>
+            {topic.rulingRecord ? (
+              <div className={`p-3.5 rounded-2xl border text-xs font-sans space-y-2.5 shadow-sm ${
+                topic.rulingRecord.decisionType === 'adopt_proposer'
+                  ? 'bg-emerald-500/10 border-emerald-500/30'
+                  : topic.rulingRecord.decisionType === 'reject_rebuild'
+                  ? 'bg-rose-500/10 border-rose-500/30'
+                  : 'bg-purple-500/10 border-purple-500/30'
+              }`}>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-1.5 font-bold text-fg">
+                    <Scale className="w-4 h-4 text-amber-500 shrink-0" />
+                    <span>
+                      {topic.rulingRecord.decisionType === 'adopt_proposer'
+                        ? '⚖️ 仲裁裁决：采纳主导方案'
+                        : topic.rulingRecord.decisionType === 'reject_rebuild'
+                        ? '🔄 仲裁裁决：采纳挑战驳回重构'
+                        : '📊 仲裁裁决：达成架构权衡矩阵'}
                     </span>
                   </div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] font-mono opacity-80">{topic.rulingRecord.decidedAt}</span>
+                    {messages.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => scrollToTop('smooth')}
+                        className="px-2 py-0.5 rounded-md bg-surface border border-border hover:bg-surface-hover text-fg-secondary hover:text-fg text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
+                        title="滚动回到第一条历史讨论记录"
+                      >
+                        <span>↑ 回到顶部翻阅</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setActiveDrawerView('adr')}
+                      className="px-2 py-0.5 rounded-md bg-purple-500/15 border border-purple-500/30 hover:bg-purple-500/25 text-purple-600 dark:text-purple-300 text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
+                      title="切换至活体 ADR 画布查看完整结构化架构决策文档"
+                    >
+                      <FileText className="w-2.5 h-2.5" />
+                      <span>ADR 画布</span>
+                    </button>
+                    {onReopenTopic && (
+                      <button
+                        type="button"
+                        onClick={() => onReopenTopic(topic.id)}
+                        className="px-2 py-0.5 rounded-md bg-surface border border-border hover:bg-surface-hover text-fg text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
+                        title="重开博弈推演"
+                      >
+                        <RotateCcw className="w-2.5 h-2.5" />
+                        <span>重开</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="text-[11px] leading-relaxed font-medium text-fg select-text">
+                  {topic.rulingRecord.summary}
+                </div>
+
+                {topic.rulingRecord.solution && (
+                  <div className="text-[10px] select-text p-2.5 rounded-xl bg-surface/70 border border-border/60 leading-relaxed">
+                    <span className="font-semibold text-fg">落地推进方案：</span>
+                    <span className="text-fg-secondary">{topic.rulingRecord.solution}</span>
+                  </div>
                 )}
 
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div className="flex items-center gap-1.5 text-[10px] min-w-0">
-                    <Wrench className="w-3 h-3 text-fg-muted shrink-0" />
-                    <span className="text-fg-muted shrink-0">落地执行:</span>
-                    {(() => {
-                      const executorId = topic.rulingRecord.executorId || topic.gameTheoreticState?.assignedExecutorId || topic.decisionRecord?.executorId;
-                      const executorAgent = agents.find((a) => a.id === executorId);
-                      const status = topic.gameTheoreticState?.executionStatus || (executorId ? 'completed' : 'idle');
-                      if (!executorId) {
-                        return <span className="text-fg-muted font-sans">未指派 (仅架构推演)</span>;
-                      }
-                      return (
-                        <span className="flex items-center gap-1 font-mono font-medium flex-wrap">
-                          <span className="text-fg">{executorAgent ? executorAgent.name : executorId}</span>
-                          {status === 'queued' && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-sans">
-                              <Clock className="w-2.5 h-2.5" />
-                              排队等待中...
-                            </span>
-                          )}
-                          {status === 'running' && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-sans">
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
-                              正在执行决议...
-                            </span>
-                          )}
-                          {status === 'completed' && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-sans">
-                              <CheckCircle2 className="w-2.5 h-2.5" />
-                              {topic.gameTheoreticState?.executionUiMeta?.statusSummary ||
-                                (topicExecutionDiffs.length > 0 ? '工作区变更就绪' : '决议已交付')}
-                            </span>
-                          )}
-                          {status === 'applied' && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-600 text-white font-sans font-semibold">
-                              <CheckCircle2 className="w-2.5 h-2.5" />
-                              已合入工作区
-                            </span>
-                          )}
-                          {status === 'failed' && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-rose-500/15 text-rose-600 dark:text-rose-400 font-sans">
-                              执行异常
-                            </span>
-                          )}
+                {topic.rulingRecord.tradeOffPoints && topic.rulingRecord.tradeOffPoints.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-[10px] font-semibold text-fg">关键权衡折中要点：</div>
+                    <ul className="list-disc list-inside text-[10px] text-fg-secondary space-y-0.5">
+                      {topic.rulingRecord.tradeOffPoints.map((pt, i) => (
+                        <li key={i}>{pt}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* 可折叠的深度运筹矩阵与少数派异议报告（默认折叠以保持流内卡片紧凑，不遮挡上文历史消息） */}
+                {Boolean(
+                  topic.rulingRecord.mcdaPayload ||
+                    topic.gameTheoreticState?.mcdaPayload ||
+                    topic.rulingRecord.minorityReport ||
+                    topic.gameTheoreticState?.minorityReport
+                ) && (
+                  <div className="space-y-2 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setIsRulingDetailExpanded((prev) => !prev)}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-surface/80 hover:bg-surface border border-border/80 flex items-center justify-between text-[10px] text-fg-secondary hover:text-fg transition-colors cursor-pointer select-none"
+                    >
+                      <div className="flex items-center gap-1.5 font-medium">
+                        <Scale className="w-3 h-3 text-amber-500 shrink-0" />
+                        <span>
+                          {isRulingDetailExpanded ? '收起' : '展开'} MCDA 运筹决策矩阵
+                          {(topic.rulingRecord.minorityReport || topic.gameTheoreticState?.minorityReport)
+                            ? ' & 伴生少数派异议报告'
+                            : ''}
                         </span>
-                      );
-                    })()}
+                      </div>
+                      <div className="flex items-center gap-1 text-purple-600 dark:text-purple-400 font-mono">
+                        <span>{isRulingDetailExpanded ? '收起详情' : '查看详情'}</span>
+                        {isRulingDetailExpanded ? (
+                          <ChevronUp className="w-3 h-3" />
+                        ) : (
+                          <ChevronDown className="w-3 h-3" />
+                        )}
+                      </div>
+                    </button>
+
+                    {isRulingDetailExpanded && (
+                      <div className="space-y-2 animate-in fade-in duration-150">
+                        {/* CognoNexus 神经符号 MCDA 确定性决策分析矩阵 */}
+                        {(topic.rulingRecord.mcdaPayload || topic.gameTheoreticState?.mcdaPayload) && (() => {
+                          const mcda = topic.rulingRecord.mcdaPayload || topic.gameTheoreticState?.mcdaPayload;
+                          if (!mcda) return null;
+                          return (
+                            <div className="space-y-1.5 p-2 rounded-lg bg-surface/80 border border-border/80 shadow-2xs">
+                              <div className="flex items-center justify-between text-[10px]">
+                                <div className="flex items-center gap-1.5 font-bold text-fg">
+                                  <Scale className="w-3.5 h-3.5 text-amber-500" />
+                                  <span>MCDA 运筹决策矩阵 (BWM 最优最劣法)</span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  {mcda.confidenceMatrix && (
+                                    <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-blue-500/15 text-blue-600 dark:text-blue-400 font-medium">
+                                      ReConcile 置信度加权
+                                    </span>
+                                  )}
+                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-medium ${
+                                    mcda.consistencyPassed 
+                                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' 
+                                      : 'bg-amber-500/15 text-amber-600'
+                                  }`}>
+                                    ξ* = {mcda.consistencyIndex} ({mcda.consistencyPassed ? '✓ 逻辑严密一致' : '⚠️ 需关注'})
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Criteria Weights */}
+                              <div className="grid grid-cols-4 gap-1 text-[9px] font-mono">
+                                {mcda.criteria.map((c) => (
+                                  <div key={c.id} className="p-1 rounded bg-surface-subtle border border-border/40 text-center">
+                                    <div className="text-fg-muted truncate">{c.name.split('与')[0]}</div>
+                                    <div className="font-bold text-fg">{((mcda.computedWeights[c.id] || 0) * 100).toFixed(1)}%</div>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {/* Mathematical Ranking */}
+                              <div className="space-y-1 pt-1 border-t border-border/40">
+                                <div className="text-[9px] font-semibold text-fg-muted">运筹效用综合评分排名:</div>
+                                {mcda.ranking.map((r) => (
+                                  <div key={r.rank} className="flex items-center justify-between text-[9px] px-1.5 py-0.5 rounded bg-surface-subtle/80">
+                                    <span className="font-medium text-fg truncate">#{r.rank} {r.alternative.split(' (')[0]}</span>
+                                    <span className="font-mono text-fg-secondary">效用: {(r.totalUtility * 10).toFixed(2)} / 10</span>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {/* CognoNexus 实证打分溯源链 (Audit Provenance) */}
+                              {mcda.scoreProvenance && Object.keys(mcda.scoreProvenance).length > 0 && (
+                                <div className="space-y-1 pt-1.5 border-t border-border/40">
+                                  <div className="text-[9px] font-semibold text-fg-muted flex items-center justify-between">
+                                    <span>实证打分溯源链 (Audit Provenance):</span>
+                                    <span className="text-[8px] text-primary/80 font-mono">神经符号绑定</span>
+                                  </div>
+                                  <div className="space-y-1 text-[8px] text-fg-secondary">
+                                    {Object.entries(mcda.scoreProvenance).map(([altName, critMap]) => (
+                                      <div key={altName} className="p-1 rounded bg-surface-subtle/50 border border-border/30">
+                                        <span className="font-semibold text-fg block truncate">{altName.split(' (')[0]}</span>
+                                        <div className="space-y-0.5 mt-0.5">
+                                          {Object.entries(critMap).map(([critId, reason]) => {
+                                            const cName = mcda.criteria.find((c) => c.id === critId)?.name.split('与')[0] || critId;
+                                            return (
+                                              <div key={critId} className="flex items-start gap-1">
+                                                <span className="text-fg-muted shrink-0">[{cName}]:</span>
+                                                <span className="truncate">{reason}</span>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+
+                        {/* CognoNexus 伴生少数派异议报告 */}
+                        {(topic.rulingRecord.minorityReport || topic.gameTheoreticState?.minorityReport) && (() => {
+                          const mr = topic.rulingRecord.minorityReport || topic.gameTheoreticState?.minorityReport;
+                          if (!mr) return null;
+                          return (
+                            <div className="space-y-1.5 p-2 rounded-lg bg-surface/80 border border-border/80 shadow-2xs">
+                              <div className="flex items-center justify-between text-[10px]">
+                                <div className="flex items-center gap-1.5 font-bold text-rose-600 dark:text-rose-400">
+                                  <AlertTriangle className="w-3.5 h-3.5" />
+                                  <span>伴生少数派异议报告 (Minority Report)</span>
+                                </div>
+                                <span className="text-[9px] text-fg-muted font-mono">{mr.dissentingAgentName}</span>
+                              </div>
+                              <div className="text-[9px] text-fg-secondary leading-relaxed">
+                                <span className="font-semibold text-fg">保留立场：</span>{mr.coreDissentThesis}
+                              </div>
+                              <div className="text-[9px] text-fg-muted">
+                                <span className="font-semibold text-fg">自洽依据：</span>{mr.rationalityBasis}
+                              </div>
+                              {mr.reopeningTriggers && mr.reopeningTriggers.length > 0 && (
+                                <div className="pt-1 border-t border-border/40">
+                                  <span className="text-[9px] font-semibold text-amber-600 dark:text-amber-400">🚨 黑天鹅重启判定条件：</span>
+                                  <ul className="list-disc list-inside text-[9px] text-fg-secondary space-y-0.5 mt-0.5">
+                                    {mr.reopeningTriggers.map((t, idx) => (
+                                      <li key={idx}>{t}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="text-[9px] text-fg-muted font-mono flex items-center justify-between pt-1 border-t border-border/50">
+                  <span>裁决官: {topic.rulingRecord.arbiterName}</span>
+                  {topic.rulingRecord.impactedFiles && topic.rulingRecord.impactedFiles.length > 0 && (
+                    <span className="truncate max-w-[200px]" title={topic.rulingRecord.impactedFiles.join(', ')}>
+                      涉及: {topic.rulingRecord.impactedFiles.join(', ')}
+                    </span>
+                  )}
+                </div>
+
+                {/* Post-Arbitration Execution Status Row */}
+                <div className="pt-2 border-t border-border/50 flex flex-col gap-2">
+                  {overlappingFiles.length > 0 && (
+                    <div className="px-2 py-1 rounded-md bg-amber-500/15 border border-amber-500/30 text-[10px] text-amber-800 dark:text-amber-200 flex items-center gap-1.5">
+                      <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                      <span className="truncate">
+                        ⚠️ 与其他并行落地议题重叠文件: <code className="font-mono">{overlappingFiles.join(', ')}</code>
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5 text-[10px] min-w-0">
+                      <Wrench className="w-3 h-3 text-fg-muted shrink-0" />
+                      <span className="text-fg-muted shrink-0">落地执行:</span>
+                      {(() => {
+                        const executorId = topic.rulingRecord.executorId || topic.gameTheoreticState?.assignedExecutorId || topic.decisionRecord?.executorId;
+                        const executorAgent = agents.find((a) => a.id === executorId);
+                        const status = topic.gameTheoreticState?.executionStatus || (executorId ? 'completed' : 'idle');
+                        if (!executorId) {
+                          return <span className="text-fg-muted font-sans">未指派 (仅架构推演)</span>;
+                        }
+                        return (
+                          <span className="flex items-center gap-1 font-mono font-medium flex-wrap">
+                            <span className="text-fg">{executorAgent ? executorAgent.name : executorId}</span>
+                            {status === 'queued' && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-sans">
+                                <Clock className="w-2.5 h-2.5" />
+                                排队等待中...
+                              </span>
+                            )}
+                            {status === 'running' && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-sans">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+                                正在执行决议...
+                              </span>
+                            )}
+                            {status === 'completed' && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-sans">
+                                <CheckCircle2 className="w-2.5 h-2.5" />
+                                {topic.gameTheoreticState?.executionUiMeta?.statusSummary ||
+                                  (topicExecutionDiffs.length > 0 ? '工作区变更就绪' : '决议已交付')}
+                              </span>
+                            )}
+                            {status === 'applied' && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-600 text-white font-sans font-semibold">
+                                <CheckCircle2 className="w-2.5 h-2.5" />
+                                已合入工作区
+                              </span>
+                            )}
+                            {status === 'failed' && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-rose-500/15 text-rose-600 dark:text-rose-400 font-sans">
+                                执行异常
+                              </span>
+                            )}
+                          </span>
+                        );
+                      })()}
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                      {topicExecutionDiffs.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onOpenCodexDiff({
+                              ...topicExecutionDiffs[0],
+                              topicId: topic.id,
+                              topicTitle: topic.title,
+                              allDiffs: topicExecutionDiffs,
+                              executionStatus: topic.gameTheoreticState?.executionStatus,
+                              artifactsDir: topic.gameTheoreticState?.executionArtifactsDir,
+                            })
+                          }
+                          className="px-2 py-1 rounded-lg bg-surface border border-emerald-500/40 hover:bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                          title="在 Codex Diff 视图中审查生成的变更"
+                        >
+                          <GitCompare className="w-3 h-3 text-emerald-500" />
+                          <span>
+                            {topic.gameTheoreticState?.executionUiMeta?.reviewActionLabel || '审查变更'} ({topicExecutionDiffs.length})
+                          </span>
+                        </button>
+                      )}
+
+                      {topicExecutionDiffs.length > 0 && onApplyTopicPatch && topic.gameTheoreticState?.executionStatus !== 'applied' && (
+                        <button
+                          type="button"
+                          disabled={isApplyingPatch}
+                          onClick={handleApplyPatchClick}
+                          className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-[10px] font-semibold flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
+                          title="将生成的变更物理合入本地工作区并归档产物"
+                        >
+                          {isApplyingPatch ? (
+                            <>
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                              <span>写入中...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Zap className="w-3 h-3" />
+                              <span>
+                                {topic.gameTheoreticState?.executionUiMeta?.applyActionLabel || '一键合入工作区'}
+                              </span>
+                            </>
+                          )}
+                        </button>
+                      )}
+
+                      {onExecuteTopicPatch && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const initialExec = topic.rulingRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId || candidateAgentsWithGameRoles[0]?.id || '';
+                            setSelectedExecutorId(initialExec);
+                            setShowAssignExecutorModal(true);
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-surface border border-border hover:border-accent/50 hover:bg-surface-hover text-fg text-[10px] font-semibold flex items-center gap-1 shadow-2xs transition-colors cursor-pointer shrink-0"
+                          title="指派落地 Agent 推进定案决议"
+                        >
+                          <Wrench className="w-3 h-3 text-accent" />
+                          <span>{topic.rulingRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId ? '重新指派' : '指派落地 Agent'}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex flex-col gap-2.5 shadow-sm">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <div className="text-[11px] font-semibold">
+                      本议题已达成共识并归档
+                      <div className="text-[9px] text-emerald-600/80 dark:text-emerald-400/80 font-normal">
+                        决策结论已合流至主频道时间轴
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {messages.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => scrollToTop('smooth')}
+                        className="px-2 py-1 rounded-lg bg-surface border border-border hover:bg-surface-hover text-fg-secondary hover:text-fg text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
+                        title="滚动回到第一条历史讨论记录"
+                      >
+                        <span>↑ 回到顶部翻阅</span>
+                      </button>
+                    )}
                     {topicExecutionDiffs.length > 0 && (
                       <button
                         type="button"
@@ -2129,7 +2282,6 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                           })
                         }
                         className="px-2 py-1 rounded-lg bg-surface border border-emerald-500/40 hover:bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
-                        title="在 Codex Diff 视图中审查生成的变更"
                       >
                         <GitCompare className="w-3 h-3 text-emerald-500" />
                         <span>
@@ -2137,36 +2289,24 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                         </span>
                       </button>
                     )}
-
                     {topicExecutionDiffs.length > 0 && onApplyTopicPatch && topic.gameTheoreticState?.executionStatus !== 'applied' && (
                       <button
                         type="button"
                         disabled={isApplyingPatch}
                         onClick={handleApplyPatchClick}
                         className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-[10px] font-semibold flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
-                        title="将生成的变更物理合入本地工作区并归档产物"
                       >
-                        {isApplyingPatch ? (
-                          <>
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                            <span>写入中...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Zap className="w-3 h-3" />
-                            <span>
-                              {topic.gameTheoreticState?.executionUiMeta?.applyActionLabel || '一键合入工作区'}
-                            </span>
-                          </>
-                        )}
+                        {isApplyingPatch ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                        <span>
+                          {topic.gameTheoreticState?.executionUiMeta?.applyActionLabel || '一键合入工作区'}
+                        </span>
                       </button>
                     )}
-
                     {onExecuteTopicPatch && (
                       <button
                         type="button"
                         onClick={() => {
-                          const initialExec = topic.rulingRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId || candidateAgentsWithGameRoles[0]?.id || '';
+                          const initialExec = topic.decisionRecord?.executorId || candidateAgentsWithGameRoles[0]?.id || '';
                           setSelectedExecutorId(initialExec);
                           setShowAssignExecutorModal(true);
                         }}
@@ -2174,125 +2314,171 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                         title="指派落地 Agent 推进定案决议"
                       >
                         <Wrench className="w-3 h-3 text-accent" />
-                        <span>{topic.rulingRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId ? '重新指派' : '指派落地 Agent'}</span>
+                        <span>{topic.decisionRecord?.executorId ? '重新指派' : '指派落地 Agent'}</span>
+                      </button>
+                    )}
+                    {onReopenTopic && (
+                      <button
+                        type="button"
+                        onClick={() => onReopenTopic(topic.id)}
+                        className="px-2 py-1 rounded-lg bg-surface border border-border hover:bg-surface-hover text-fg text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
+                        title="重新激活此议题讨论"
+                      >
+                        <RotateCcw className="w-3 h-3 text-fg-muted" />
+                        <span>重开</span>
                       </button>
                     )}
                   </div>
                 </div>
-              </div>
-            </div>
-          ) : (
-            <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex flex-col gap-2">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
-                  <div className="text-[11px] font-semibold">
-                    本议题已达成共识并归档
-                    <div className="text-[9px] text-emerald-600/80 dark:text-emerald-400/80 font-normal">
-                      决策结论已合流至主频道时间轴
-                    </div>
+
+                {topic.decisionRecord?.solution && (
+                  <div className="text-[11px] select-text p-2.5 rounded-xl bg-surface/70 border border-emerald-500/20 leading-relaxed text-fg">
+                    <span className="font-semibold text-emerald-700 dark:text-emerald-300">最终选定方案：</span>
+                    <span>{topic.decisionRecord.solution}</span>
                   </div>
-                </div>
+                )}
 
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {topicExecutionDiffs.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onOpenCodexDiff({
-                          ...topicExecutionDiffs[0],
-                          topicId: topic.id,
-                          topicTitle: topic.title,
-                          allDiffs: topicExecutionDiffs,
-                          executionStatus: topic.gameTheoreticState?.executionStatus,
-                          artifactsDir: topic.gameTheoreticState?.executionArtifactsDir,
-                        })
-                      }
-                      className="px-2 py-1 rounded-lg bg-surface border border-emerald-500/40 hover:bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
-                    >
-                      <GitCompare className="w-3 h-3 text-emerald-500" />
-                      <span>
-                        {topic.gameTheoreticState?.executionUiMeta?.reviewActionLabel || '审查变更'} ({topicExecutionDiffs.length})
+                {(topic.decisionRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId) && (
+                  <div className="pt-1.5 border-t border-emerald-500/20 flex items-center gap-2 text-[10px] text-emerald-800 dark:text-emerald-300 flex-wrap">
+                    <Wrench className="w-3 h-3 opacity-75" />
+                    <span>落地执行 Agent:</span>
+                    <span className="font-mono font-medium">
+                      {agents.find((a) => a.id === (topic.decisionRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId))?.name ||
+                        topic.decisionRecord?.executorId ||
+                        topic.gameTheoreticState?.assignedExecutorId}
+                    </span>
+                    {topic.gameTheoreticState?.executionStatus === 'queued' && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-700 dark:text-amber-300 font-sans">
+                        <Clock className="w-2.5 h-2.5" />
+                        排队等待中...
                       </span>
-                    </button>
-                  )}
-                  {topicExecutionDiffs.length > 0 && onApplyTopicPatch && topic.gameTheoreticState?.executionStatus !== 'applied' && (
-                    <button
-                      type="button"
-                      disabled={isApplyingPatch}
-                      onClick={handleApplyPatchClick}
-                      className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-[10px] font-semibold flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
-                    >
-                      {isApplyingPatch ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-                      <span>
-                        {topic.gameTheoreticState?.executionUiMeta?.applyActionLabel || '一键合入工作区'}
+                    )}
+                    {topic.gameTheoreticState?.executionStatus === 'running' && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-700 dark:text-amber-300 font-sans">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+                        正在执行决议...
                       </span>
-                    </button>
-                  )}
-                  {onExecuteTopicPatch && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const initialExec = topic.decisionRecord?.executorId || candidateAgentsWithGameRoles[0]?.id || '';
-                        setSelectedExecutorId(initialExec);
-                        setShowAssignExecutorModal(true);
-                      }}
-                      className="px-2.5 py-1 rounded-lg bg-surface border border-border hover:border-accent/50 hover:bg-surface-hover text-fg text-[10px] font-semibold flex items-center gap-1 shadow-2xs transition-colors cursor-pointer shrink-0"
-                      title="指派落地 Agent 推进定案决议"
-                    >
-                      <Wrench className="w-3 h-3 text-accent" />
-                      <span>{topic.decisionRecord?.executorId ? '重新指派' : '指派落地 Agent'}</span>
-                    </button>
-                  )}
-                  {onReopenTopic && (
-                    <button
-                      onClick={() => onReopenTopic(topic.id)}
-                      className="px-2 py-1 rounded-lg bg-surface border border-border hover:bg-surface-hover text-fg text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
-                      title="重新激活此议题讨论"
-                    >
-                      <RotateCcw className="w-3 h-3 text-fg-muted" />
-                      <span>重开</span>
-                    </button>
-                  )}
-                </div>
+                    )}
+                    {topic.gameTheoreticState?.executionStatus === 'completed' && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-sans font-medium">
+                        {topic.gameTheoreticState?.executionUiMeta?.statusSummary ||
+                          (topicExecutionDiffs.length > 0 ? '工作区变更就绪' : '决议已交付')}
+                      </span>
+                    )}
+                    {topic.gameTheoreticState?.executionStatus === 'applied' && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-600 text-white font-sans font-semibold">
+                        ✓ 已合入本地工作区
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
+            )}
+          </div>
+        )}
 
-              {(topic.decisionRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId) && (
-                <div className="pt-1.5 border-t border-emerald-500/20 flex items-center gap-2 text-[10px] text-emerald-800 dark:text-emerald-300 flex-wrap">
-                  <Wrench className="w-3 h-3 opacity-75" />
-                  <span>落地执行 Agent:</span>
-                  <span className="font-mono font-medium">
-                    {agents.find((a) => a.id === (topic.decisionRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId))?.name ||
-                      topic.decisionRecord?.executorId ||
-                      topic.gameTheoreticState?.assignedExecutorId}
-                  </span>
-                  {topic.gameTheoreticState?.executionStatus === 'queued' && (
-                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-700 dark:text-amber-300 font-sans">
-                      <Clock className="w-2.5 h-2.5" />
-                      排队等待中...
-                    </span>
-                  )}
-                  {topic.gameTheoreticState?.executionStatus === 'running' && (
-                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-700 dark:text-amber-300 font-sans">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
-                      正在执行决议...
-                    </span>
-                  )}
-                  {topic.gameTheoreticState?.executionStatus === 'completed' && (
-                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-sans font-medium">
-                      {topic.gameTheoreticState?.executionUiMeta?.statusSummary ||
-                        (topicExecutionDiffs.length > 0 ? '工作区变更就绪' : '决议已交付')}
-                    </span>
-                  )}
-                  {topic.gameTheoreticState?.executionStatus === 'applied' && (
-                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-600 text-white font-sans font-semibold">
-                      ✓ 已合入本地工作区
-                    </span>
-                  )}
-                </div>
+        {/* Bottom anchor for scrolling */}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* 4. Consensus Rollup Banner / Arbiter Gavel Console */}
+      <div className="p-3 border-t border-border bg-surface-subtle space-y-2 shrink-0">
+        {isResolved ? (
+          <div className={`px-2.5 py-1.5 rounded-xl border text-[11px] flex items-center justify-between gap-2 flex-wrap ${
+            topic.rulingRecord
+              ? topic.rulingRecord.decisionType === 'adopt_proposer'
+                ? 'bg-emerald-500/10 border-emerald-500/30'
+                : topic.rulingRecord.decisionType === 'reject_rebuild'
+                ? 'bg-rose-500/10 border-rose-500/30'
+                : 'bg-purple-500/10 border-purple-500/30'
+              : 'bg-emerald-500/10 border-emerald-500/30'
+          }`}>
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              {topic.rulingRecord ? (
+                <Scale className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              ) : (
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+              )}
+              <span className="font-semibold text-fg truncate">
+                {topic.rulingRecord
+                  ? topic.rulingRecord.decisionType === 'adopt_proposer'
+                    ? '已仲裁：采纳主导方案'
+                    : topic.rulingRecord.decisionType === 'reject_rebuild'
+                    ? '已仲裁：采纳挑战驳回重构'
+                    : '已仲裁：达成架构权衡矩阵'
+                  : '本议题已达成共识归档'}
+              </span>
+              <button
+                type="button"
+                onClick={() => scrollToRulingCard('smooth')}
+                className="text-[10px] text-accent hover:underline font-mono shrink-0 cursor-pointer ml-1"
+                title="定位至讨论流底部的终局裁决书归档卡片"
+              >
+                [定位裁决卡]
+              </button>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+              {topicExecutionDiffs.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onOpenCodexDiff({
+                      ...topicExecutionDiffs[0],
+                      topicId: topic.id,
+                      topicTitle: topic.title,
+                      allDiffs: topicExecutionDiffs,
+                      executionStatus: topic.gameTheoreticState?.executionStatus,
+                      artifactsDir: topic.gameTheoreticState?.executionArtifactsDir,
+                    })
+                  }
+                  className="px-2 py-0.5 rounded-md bg-surface border border-emerald-500/40 hover:bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                  title="在 Codex Diff 视图中审查生成的变更"
+                >
+                  <GitCompare className="w-3 h-3 text-emerald-500" />
+                  <span>审查变更 ({topicExecutionDiffs.length})</span>
+                </button>
+              )}
+              {topicExecutionDiffs.length > 0 && onApplyTopicPatch && topic.gameTheoreticState?.executionStatus !== 'applied' && (
+                <button
+                  type="button"
+                  disabled={isApplyingPatch}
+                  onClick={handleApplyPatchClick}
+                  className="px-2 py-0.5 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-[10px] font-semibold flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
+                  title="将生成的变更物理合入本地工作区"
+                >
+                  {isApplyingPatch ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Zap className="w-2.5 h-2.5" />}
+                  <span>一键合入</span>
+                </button>
+              )}
+              {onExecuteTopicPatch && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const initialExec = topic.rulingRecord?.executorId || topic.decisionRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId || candidateAgentsWithGameRoles[0]?.id || '';
+                    setSelectedExecutorId(initialExec);
+                    setShowAssignExecutorModal(true);
+                  }}
+                  className="px-2 py-0.5 rounded-md bg-surface border border-border hover:border-accent/50 hover:bg-surface-hover text-fg text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                  title="指派落地 Agent 推进定案决议"
+                >
+                  <Wrench className="w-2.5 h-2.5 text-accent" />
+                  <span>{topic.rulingRecord?.executorId || topic.decisionRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId ? '重新指派' : '指派落地'}</span>
+                </button>
+              )}
+              {onReopenTopic && (
+                <button
+                  type="button"
+                  onClick={() => onReopenTopic(topic.id)}
+                  className="px-2 py-0.5 rounded-md bg-surface border border-border hover:bg-surface-hover text-fg text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
+                  title="重新开启此议题推演"
+                >
+                  <RotateCcw className="w-2.5 h-2.5 text-fg-muted" />
+                  <span>重开</span>
+                </button>
               )}
             </div>
-          )
+          </div>
         ) : topic.discussionMode === 'game_theoretic' ? (
           (topic.gameRoles?.humanIsArbiter ?? true) ? (
             <div className="space-y-2 p-2.5 rounded-xl bg-amber-50/90 dark:bg-amber-950/25 border border-amber-300/80 dark:border-amber-700/50 shadow-xs">
