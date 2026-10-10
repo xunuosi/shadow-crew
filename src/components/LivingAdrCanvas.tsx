@@ -790,9 +790,10 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                   <button
                     type="button"
                     onClick={onExecutePatch}
-                    className="px-2 py-0.5 rounded-md bg-surface-hover border border-border text-fg-secondary hover:text-fg text-[10px] font-medium cursor-pointer shrink-0"
+                    className="px-2.5 py-1 rounded-lg bg-surface border border-border hover:border-accent/50 hover:bg-surface-hover text-fg text-[10px] font-semibold flex items-center gap-1 shadow-2xs transition-colors cursor-pointer shrink-0"
                   >
-                    重新指派
+                    <Wrench className="w-3 h-3 text-accent" />
+                    <span>重新指派</span>
                   </button>
                 )}
               </div>
