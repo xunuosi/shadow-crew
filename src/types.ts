@@ -265,6 +265,17 @@ export type GameRoleType = 'proposer' | 'challenger' | 'verifier' | 'arbiter';
 
 export type GameTheoreticStage = 'proposal' | 'challenge' | 'verification' | 'defense' | 'arbitration' | 'concluded' | 'stageFailed';
 
+export interface TopicPatchDiffItem {
+  filename: string;
+  additions: number;
+  deletions: number;
+  diff: string;
+  codeContent?: string;
+  applied?: boolean;
+  appliedMode?: 'git_apply' | 'block_replace' | 'created_file' | 'artifact_saved' | 'workspace_memory';
+  targetPath?: string;
+}
+
 export interface GameTheoreticState {
   currentStage: GameTheoreticStage;
   targetProposalMessageId?: string;
@@ -282,7 +293,13 @@ export interface GameTheoreticState {
   exemptionReason?: string;
   quorumAlert?: string;
   assignedExecutorId?: string;
-  executionStatus?: 'idle' | 'running' | 'completed' | 'failed';
+  executionStatus?: 'idle' | 'queued' | 'running' | 'completed' | 'applied' | 'failed';
+  executionStartedAt?: number;
+  executionCompletedAt?: string;
+  executionAppliedAt?: string;
+  executionSummary?: string;
+  executionDiffs?: TopicPatchDiffItem[];
+  executionArtifactsDir?: string;
   mcdaPayload?: McdaDecisionPayload;
   sprtState?: SprtGovernorState;
   minorityReport?: MinorityReport;
@@ -616,12 +633,9 @@ export interface Message {
   };
   
   // Codex Unified Diff
-  diffView?: {
-    filename: string;
-    additions: number;
-    deletions: number;
-    diff: string;
-  };
+  diffView?: TopicPatchDiffItem;
+  diffViews?: TopicPatchDiffItem[];
+  relatedTopicId?: string;
   
   // Sub-Thread anchor
   subThreadId?: string;

@@ -134,6 +134,206 @@ async fn read_workspace_file_sandboxed(
         .map_err(|e| format!("Failed to read file: {}", e))
 }
 
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct WorkspacePatchItem {
+    pub filename: String,
+    pub diff: String,
+    pub code_content: Option<String>,
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+pub struct AppliedFileStatus {
+    pub filename: String,
+    pub mode: String, // "git_apply" | "block_replace" | "created_file" | "artifact_saved"
+    pub target_path: String,
+    pub artifact_path: String,
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+pub struct ApplyWorkspacePatchResult {
+    pub ok: bool,
+    pub artifacts_dir: String,
+    pub applied_files: Vec<AppliedFileStatus>,
+    pub summary: String,
+}
+
+fn sanitize_relative_path(raw: &str) -> Option<std::path::PathBuf> {
+    let trimmed = raw
+        .trim()
+        .trim_start_matches("a/")
+        .trim_start_matches("b/")
+        .trim_start_matches("./")
+        .trim_start_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = std::path::Path::new(trimmed);
+    let mut clean = std::path::PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::Normal(os_str) => clean.push(os_str),
+            std::path::Component::CurDir => {}
+            _ => return None, // Reject ParentDir (..) or RootDir
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        None
+    } else {
+        Some(clean)
+    }
+}
+
+fn reconstruct_content_from_diff(diff: &str, code_content: Option<&str>) -> String {
+    if let Some(code) = code_content {
+        if !code.trim().is_empty() {
+            return code.to_string();
+        }
+    }
+    let mut lines = Vec::new();
+    let mut has_diff_markers = false;
+    for line in diff.lines() {
+        if line.starts_with("+++") || line.starts_with("---") || line.starts_with("@@") || line.starts_with("diff --git") || line.starts_with("index ") {
+            has_diff_markers = true;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('+') {
+            has_diff_markers = true;
+            lines.push(rest);
+        } else if line.starts_with('-') {
+            has_diff_markers = true;
+        } else if let Some(rest) = line.strip_prefix(' ') {
+            lines.push(rest);
+        } else if !has_diff_markers {
+            lines.push(line);
+        }
+    }
+    lines.join("\n") + "\n"
+}
+
+fn try_block_replace_on_existing_file(existing: &str, diff: &str) -> Option<String> {
+    let mut removed_lines: Vec<&str> = Vec::new();
+    let mut added_lines: Vec<&str> = Vec::new();
+    for line in diff.lines() {
+        if line.starts_with("---") || line.starts_with("+++") || line.starts_with("@@") {
+            continue;
+        }
+        if let Some(rem) = line.strip_prefix('-') {
+            removed_lines.push(rem);
+        } else if let Some(add) = line.strip_prefix('+') {
+            added_lines.push(add);
+        }
+    }
+    if removed_lines.is_empty() {
+        return None;
+    }
+    let target_block = removed_lines.join("\n");
+    let replacement_block = added_lines.join("\n");
+    if existing.contains(&target_block) {
+        Some(existing.replacen(&target_block, &replacement_block, 1))
+    } else {
+        None
+    }
+}
+
+/// Tauri Command: 将议题落地 Agent 生成的补丁物理应用到本地工作区与频道归档目录
+#[tauri::command]
+async fn apply_workspace_patch(
+    workspace_root: String,
+    channel_id: String,
+    topic_id: String,
+    patches: Vec<WorkspacePatchItem>,
+) -> Result<ApplyWorkspacePatchResult, String> {
+    let channel_dir = db_manager::get_channel_dir(&channel_id);
+    let topic_artifacts_dir = channel_dir.join("artifacts").join(&topic_id);
+    std::fs::create_dir_all(&topic_artifacts_dir)
+        .map_err(|e| format!("Failed to create topic artifacts dir: {}", e))?;
+
+    let canonical_root = std::fs::canonicalize(&workspace_root).ok();
+    let mut applied_files = Vec::new();
+
+    for (idx, item) in patches.iter().enumerate() {
+        let rel_path = sanitize_relative_path(&item.filename)
+            .unwrap_or_else(|| std::path::PathBuf::from(format!("patch_{}.ts", idx + 1)));
+
+        // 1. 始终写入归档目录保存物理产物快照 (.patch 与重构源码)
+        let artifact_file_path = topic_artifacts_dir.join(&rel_path);
+        if let Some(parent) = artifact_file_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let patch_artifact_path = topic_artifacts_dir.join(format!(
+            "{}.patch",
+            rel_path.to_string_lossy().replace(['/', '\\'], "_")
+        ));
+        let _ = std::fs::write(&patch_artifact_path, &item.diff);
+
+        let reconstructed = reconstruct_content_from_diff(&item.diff, item.code_content.as_deref());
+        let _ = std::fs::write(&artifact_file_path, &reconstructed);
+
+        let mut mode = "artifact_saved".to_string();
+        let mut final_target_path = artifact_file_path.to_string_lossy().to_string();
+
+        // 2. 如果工作区根目录存在且路径合法，尝试物理合入工作区
+        if let Some(ref root) = canonical_root {
+            let candidate_target = root.join(&rel_path);
+            // 确保父目录不会逃逸出 canonical_root
+            if candidate_target.starts_with(root) {
+                if candidate_target.exists() {
+                    // 优先尝试 git apply
+                    let git_apply_ok = std::process::Command::new("git")
+                        .arg("apply")
+                        .arg("--whitespace=nowarn")
+                        .arg("--unidiff-zero")
+                        .arg(&patch_artifact_path)
+                        .current_dir(root)
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
+
+                    if git_apply_ok {
+                        mode = "git_apply".to_string();
+                        final_target_path = candidate_target.to_string_lossy().to_string();
+                    } else if let Ok(existing_content) = std::fs::read_to_string(&candidate_target) {
+                        if let Some(updated_content) = try_block_replace_on_existing_file(&existing_content, &item.diff) {
+                            if std::fs::write(&candidate_target, updated_content).is_ok() {
+                                mode = "block_replace".to_string();
+                                final_target_path = candidate_target.to_string_lossy().to_string();
+                            }
+                        }
+                    }
+                } else {
+                    // 目标文件尚不存在：创建父目录并写入新文件
+                    if let Some(parent) = candidate_target.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if std::fs::write(&candidate_target, &reconstructed).is_ok() {
+                        mode = "created_file".to_string();
+                        final_target_path = candidate_target.to_string_lossy().to_string();
+                    }
+                }
+            }
+        }
+
+        applied_files.push(AppliedFileStatus {
+            filename: rel_path.to_string_lossy().to_string(),
+            mode,
+            target_path: final_target_path,
+            artifact_path: artifact_file_path.to_string_lossy().to_string(),
+        });
+    }
+
+    let summary = format!(
+        "已成功合入并归档 {} 个工程文件补丁",
+        applied_files.len()
+    );
+
+    Ok(ApplyWorkspacePatchResult {
+        ok: true,
+        artifacts_dir: topic_artifacts_dir.to_string_lossy().to_string(),
+        applied_files,
+        summary,
+    })
+}
+
 /// Tauri Command: 获取 ACP 本地持久化日志文件绝对路径
 #[tauri::command]
 fn get_acp_log_path() -> String {
@@ -404,6 +604,7 @@ async fn main() {
             get_agents_runtime_status,
             send_prompt_to_agent,
             read_workspace_file_sandboxed,
+            apply_workspace_patch,
             get_acp_log_path,
             read_recent_acp_logs,
             db_save_message,

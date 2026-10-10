@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Message, Thread, Agent, Channel, ActiveAgentExecution, TopicMessageData } from '../types';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Message, Thread, Agent, Channel, ActiveAgentExecution, TopicMessageData, TopicPatchDiffItem } from '../types';
 import { TopicMessageCard } from './TopicMessageCard';
 import { ChannelComposerActivityBar } from './ChannelComposerActivityBar';
 import { 
@@ -31,7 +31,11 @@ import {
   UserPlus,
   Quote,
   PanelLeft,
-  FolderArchive
+  FolderArchive,
+  Loader2,
+  Clock,
+  AlertTriangle,
+  CheckCircle2
 } from 'lucide-react';
 import { renderFormattedContent } from '../utils/formatMentions';
 import { isAgentOffline } from '../utils/agentRuntime';
@@ -45,6 +49,7 @@ interface ChatTimelineProps {
   channel?: Channel;
   agents: Agent[];
   activeExecutions?: ActiveAgentExecution[];
+  onApplyTopicPatch?: (topicId: string, customDiffs?: TopicPatchDiffItem[]) => Promise<void> | void;
   onAbortAgent?: (agentId: string) => void;
   onAddReaction: (messageId: string, emoji: string) => void;
   onInspectAgent: (agentId: string) => void;
@@ -68,6 +73,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   channel,
   agents,
   activeExecutions = [],
+  onApplyTopicPatch,
   onAbortAgent,
   onAddReaction,
   onInspectAgent,
@@ -256,6 +262,54 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     const interval = setInterval(() => setNow(Date.now()), 200);
     return () => clearInterval(interval);
   }, [currentThreadExecutions.length]);
+
+  // Compute parallel landing topics and blast-radius file overlap map across the channel
+  const { parallelLandingTopics, topicOverlapMap } = useMemo(() => {
+    if (activeThread?.type === 'dm') {
+      return { parallelLandingTopics: [] as TopicMessageData[], topicOverlapMap: {} as Record<string, string[]> };
+    }
+    const topics = messages
+      .filter((m) => m.type === 'topic' && m.topicData)
+      .map((m) => m.topicData!);
+
+    // File -> list of topicIds that are unapplied and touch that file
+    const fileToTopicIds = new Map<string, Set<string>>();
+    for (const t of topics) {
+      const execStatus = t.gameTheoreticState?.executionStatus || 'idle';
+      if (execStatus === 'applied') continue;
+      const files = new Set<string>([
+        ...(t.rulingRecord?.impactedFiles || []),
+        ...(t.decisionRecord?.impactedFiles || []),
+        ...(t.gameTheoreticState?.executionDiffs?.map((d) => d.filename) || []),
+      ]);
+      for (const rawFile of files) {
+        const clean = rawFile.trim().replace(/^\.\//, '');
+        if (!clean) continue;
+        if (!fileToTopicIds.has(clean)) {
+          fileToTopicIds.set(clean, new Set());
+        }
+        fileToTopicIds.get(clean)!.add(t.id);
+      }
+    }
+
+    const overlapMap: Record<string, string[]> = {};
+    for (const [filePath, tIds] of fileToTopicIds.entries()) {
+      if (tIds.size > 1) {
+        for (const tid of tIds) {
+          if (!overlapMap[tid]) overlapMap[tid] = [];
+          overlapMap[tid].push(filePath);
+        }
+      }
+    }
+
+    const landingList = topics.filter((t) => {
+      if (t.status !== 'resolved') return false;
+      const st = t.gameTheoreticState?.executionStatus;
+      return st === 'running' || st === 'queued' || st === 'completed' || st === 'failed';
+    });
+
+    return { parallelLandingTopics: landingList, topicOverlapMap: overlapMap };
+  }, [messages, activeThread?.type]);
 
   const filteredMessages = messages.filter((m) => {
     // 私聊模式防御性过滤：绝对不渲染议题卡片、共识卡片、频道准入拦截提示等频道专属系统消息
@@ -620,6 +674,81 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
         </div>
       </header>
 
+      {/* 1.5 Top Parallel Landings Bar (并行工程落地看板) */}
+      {parallelLandingTopics.length > 0 && (
+        <div className="px-4 py-2 border-b border-border bg-surface-subtle/90 backdrop-blur-xs shrink-0 flex items-center justify-between gap-3 overflow-x-auto text-xs select-none">
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="inline-flex items-center gap-1.5 font-bold text-fg text-[11px] px-2 py-0.5 rounded-md bg-accent/15 text-accent border border-accent/30">
+              <Wrench className="w-3 h-3" />
+              <span>⚡ 并行落地看板 ({parallelLandingTopics.length})</span>
+            </span>
+            {Object.keys(topicOverlapMap).length > 0 && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">
+                <AlertTriangle className="w-3 h-3 text-amber-500" />
+                <span>检测到跨议题文件重叠</span>
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 overflow-x-auto py-0.5">
+            {parallelLandingTopics.map((t) => {
+              const st = t.gameTheoreticState?.executionStatus || 'idle';
+              const exAgentId = t.gameTheoreticState?.assignedExecutorId || t.rulingRecord?.executorId || t.decisionRecord?.executorId;
+              const exAgent = exAgentId ? agents.find((a) => a.id === exAgentId) : undefined;
+              const diffs = t.gameTheoreticState?.executionDiffs || [];
+              const addCount = diffs.reduce((s, d) => s + d.additions, 0);
+              const delCount = diffs.reduce((s, d) => s + d.deletions, 0);
+              const hasOverlap = (topicOverlapMap[t.id] || []).length > 0;
+
+              return (
+                <div
+                  key={t.id}
+                  onClick={() => onOpenTopic?.(t.id)}
+                  className={`flex items-center gap-2 px-2.5 py-1 rounded-xl border text-[11px] cursor-pointer transition-all shrink-0 shadow-2xs ${
+                    st === 'running'
+                      ? 'bg-blue-500/10 hover:bg-blue-500/20 border-blue-500/35 text-blue-700 dark:text-blue-300'
+                      : st === 'queued'
+                      ? 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/35 text-amber-700 dark:text-amber-300'
+                      : st === 'completed'
+                      ? 'bg-cyan-500/10 hover:bg-cyan-500/20 border-cyan-500/35 text-cyan-700 dark:text-cyan-300'
+                      : 'bg-rose-500/10 hover:bg-rose-500/20 border-rose-500/35 text-rose-700 dark:text-rose-300'
+                  }`}
+                >
+                  {st === 'running' ? (
+                    <Loader2 className="w-3 h-3 text-blue-500 animate-spin shrink-0" />
+                  ) : st === 'queued' ? (
+                    <Clock className="w-3 h-3 text-amber-500 animate-pulse shrink-0" />
+                  ) : st === 'completed' ? (
+                    <Sparkles className="w-3 h-3 text-cyan-500 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-3 h-3 text-rose-500 shrink-0" />
+                  )}
+
+                  <span className="font-semibold text-fg truncate max-w-[140px]">{t.title}</span>
+
+                  {exAgent && (
+                    <span className="text-[10px] font-mono opacity-80">@{exAgent.name}</span>
+                  )}
+
+                  {st === 'running' && <span className="text-[10px] font-mono">编码中</span>}
+                  {st === 'queued' && <span className="text-[10px] font-mono">排队中</span>}
+                  {st === 'completed' && diffs.length > 0 && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-surface/80 border border-border/60">
+                      +{addCount}/-{delCount} 待合入
+                    </span>
+                  )}
+                  {hasOverlap && (
+                    <span title={`重叠文件: ${topicOverlapMap[t.id].join(', ')}`} className="text-amber-500 font-bold">
+                      ⚠️
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* 2. Message Conversation Stream */}
       <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
         {/* Parent Quote Anchor (Identical to Screenshot) */}
@@ -687,6 +816,10 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                   agents={agents}
                   onClick={() => onOpenTopic?.(message.topicData!.id)}
                   onEdit={onEditTopic ? () => onEditTopic(message.topicData!) : undefined}
+                  activeExecutions={activeExecutions}
+                  onOpenCodexDiff={onOpenCodexDiff}
+                  onApplyTopicPatch={onApplyTopicPatch}
+                  overlappingFiles={topicOverlapMap[message.topicData.id] || []}
                 />
               </div>
             );
@@ -887,16 +1020,27 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 {/* Codex Style Unified Diff Card */}
                 {message.diffView && (
                   <div className="p-3 rounded-xl bg-surface-subtle border border-border font-mono text-[11px]">
-                    <div className="flex items-center justify-between mb-2 select-none">
+                    <div className="flex items-center justify-between mb-2 select-none flex-wrap gap-2">
                       <div className="flex items-center gap-2">
                         <FileCode2 className="w-3.5 h-3.5 text-emerald-500" />
                         <span className="text-fg font-semibold select-text">{message.diffView.filename}</span>
+                        {message.diffViews && message.diffViews.length > 1 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent font-sans">
+                            共 {message.diffViews.length} 个文件变更
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-1.5">
                         <span className="text-emerald-500 font-bold">+{message.diffView.additions}</span>
                         <span className="text-red-500 font-bold">-{message.diffView.deletions}</span>
                         <button
-                          onClick={() => onOpenCodexDiff(message.diffView)}
+                          onClick={() =>
+                            onOpenCodexDiff({
+                              ...message.diffView,
+                              allDiffs: message.diffViews || [message.diffView!],
+                              topicId: message.relatedTopicId,
+                            })
+                          }
                           className="px-2 py-0.5 rounded bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-600 dark:text-emerald-300 text-[10px] font-sans flex items-center gap-1 ml-2 transition-colors cursor-pointer"
                         >
                           <span>Codex 视图</span>
@@ -904,7 +1048,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                         </button>
                       </div>
                     </div>
-                    <pre className="p-2.5 rounded-lg bg-surface border border-border overflow-x-auto text-[10px] text-fg-secondary leading-relaxed select-text">
+                    <pre className="p-2.5 rounded-lg bg-surface border border-border overflow-x-auto text-[10px] text-fg-secondary leading-relaxed select-text max-h-48 overflow-y-auto">
                       {message.diffView.diff}
                     </pre>
                   </div>

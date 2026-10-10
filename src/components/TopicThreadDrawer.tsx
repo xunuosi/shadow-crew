@@ -8,7 +8,8 @@ import {
   RulingDecisionType, 
   GameRoleType,
   McdaDecisionPayload,
-  MinorityReport
+  MinorityReport,
+  TopicPatchDiffItem
 } from '../types';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { 
@@ -43,7 +44,9 @@ import {
   Wrench,
   Play,
   Zap,
-  FileText
+  FileText,
+  Clock,
+  Loader2
 } from 'lucide-react';
 import { MentionSuggestions } from './MentionSuggestions';
 import { renderFormattedContent } from '../utils/formatMentions';
@@ -53,6 +56,7 @@ import { ResizeHandle } from './ResizeHandle';
 import { getDraft, saveDraft, clearDraft } from '../services/draftService';
 import { logGameTheoreticTelemetry } from '../services/agentCollaboration';
 import { LivingAdrCanvas } from './LivingAdrCanvas';
+import { isAgentOffline } from '../utils/agentRuntime';
 
 interface TopicThreadDrawerProps {
   isOpen: boolean;
@@ -60,6 +64,7 @@ interface TopicThreadDrawerProps {
   messages: Message[];
   agents: Agent[];
   activeExecutions?: ActiveAgentExecution[];
+  allActiveExecutions?: ActiveAgentExecution[];
   onAbortAgent?: (agentId: string) => void;
   onAbortAll?: () => void;
   onClose: () => void;
@@ -75,8 +80,10 @@ interface TopicThreadDrawerProps {
   }) => void;
   onReopenTopic?: (topicId: string) => void;
   onExecuteTopicPatch?: (topicId: string, executorId: string) => void;
+  onApplyTopicPatch?: (topicId: string) => Promise<void> | void;
   onOpenCodexDiff: (diff: any) => void;
   onEditTopic?: () => void;
+  overlappingFiles?: string[];
 }
 
 export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
@@ -85,6 +92,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   messages,
   agents,
   activeExecutions = [],
+  allActiveExecutions = [],
   onAbortAgent,
   onAbortAll,
   onClose,
@@ -92,8 +100,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   onResolveTopic,
   onReopenTopic,
   onExecuteTopicPatch,
+  onApplyTopicPatch,
   onOpenCodexDiff,
   onEditTopic,
+  overlappingFiles = [],
 }) => {
   const [replyContent, setReplyContent] = useState('');
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
@@ -105,6 +115,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   // 落地执行 Agent 指派状态
   const [selectedExecutorId, setSelectedExecutorId] = useState('');
   const [showAssignExecutorModal, setShowAssignExecutorModal] = useState(false);
+  const [isApplyingPatch, setIsApplyingPatch] = useState(false);
 
   // 仲裁裁决法槌控制台相关状态 (Arbiter's Gavel Ruling State)
   const [showRulingModal, setShowRulingModal] = useState(false);
@@ -522,6 +533,49 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   );
   const showSpecialAll = 'all'.includes(mentionQuery.toLowerCase()) || mentionQuery === '';
   const totalCount = filteredCandidates.length + (showSpecialAll ? 1 : 0);
+
+  const getAgentAvailabilityLabel = (ag: Agent) => {
+    const rawAgent = agents.find((a) => a.id === ag.id) || ag;
+    if (isAgentOffline(rawAgent)) {
+      return '🔌 离线 (需先点击 Start)';
+    }
+    const busyExec = allActiveExecutions.find((e) => e.agentId === ag.id);
+    if (busyExec) {
+      return '⏳ 忙碌中 (指派后自动进入队列)';
+    }
+    return '🟢 在线就绪';
+  };
+
+  const topicExecutionDiffs: TopicPatchDiffItem[] = (() => {
+    if (topic.gameTheoreticState?.executionDiffs && topic.gameTheoreticState.executionDiffs.length > 0) {
+      return topic.gameTheoreticState.executionDiffs;
+    }
+    const list: TopicPatchDiffItem[] = [];
+    messages.forEach((m) => {
+      if (m.diffViews && m.diffViews.length > 0) {
+        m.diffViews.forEach((d) => {
+          if (!list.some((x) => x.filename === d.filename && x.diff === d.diff)) {
+            list.push(d);
+          }
+        });
+      } else if (m.diffView) {
+        if (!list.some((x) => x.filename === m.diffView!.filename && x.diff === m.diffView!.diff)) {
+          list.push(m.diffView);
+        }
+      }
+    });
+    return list;
+  })();
+
+  const handleApplyPatchClick = async () => {
+    if (!onApplyTopicPatch || !topic?.id) return;
+    setIsApplyingPatch(true);
+    try {
+      await onApplyTopicPatch(topic.id);
+    } finally {
+      setIsApplyingPatch(false);
+    }
+  };
 
   const getGameRoleBadge = (msg: Message) => {
     if (topic.discussionMode !== 'game_theoretic' || !topic.gameRoles) return null;
@@ -1388,12 +1442,16 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           topic={topic}
           agents={agents}
           messages={messages}
+          activeExecutions={activeExecutions}
           onOpenRuling={(type) => handleOpenRuling(type)}
           onExecutePatch={onExecuteTopicPatch ? () => {
             const initialExec = topic.rulingRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId || candidateAgentsWithGameRoles[0]?.id || '';
             setSelectedExecutorId(initialExec);
             setShowAssignExecutorModal(true);
           } : undefined}
+          onOpenCodexDiff={onOpenCodexDiff}
+          onApplyTopicPatch={onApplyTopicPatch}
+          overlappingFiles={overlappingFiles}
         />
       ) : (
         <>
@@ -1627,24 +1685,59 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     {/* Unified Diff View */}
                     {msg.diffView && (
                       <div className="p-2.5 rounded-lg bg-surface border border-border font-mono text-[10px]">
-                        <div className="flex items-center justify-between mb-1.5">
-                          <div className="flex items-center gap-1.5">
-                            <FileCode2 className="w-3.5 h-3.5 text-emerald-500" />
-                            <span className="text-fg font-semibold">{msg.diffView.filename}</span>
+                        <div className="flex items-center justify-between mb-1.5 gap-2 flex-wrap">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <FileCode2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                            <span className="text-fg font-semibold truncate">{msg.diffView.filename}</span>
+                            {msg.diffViews && msg.diffViews.length > 1 && (
+                              <span className="px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 font-sans text-[9px]">
+                                共 {msg.diffViews.length} 个文件
+                              </span>
+                            )}
                           </div>
-                          <div className="flex items-center gap-1">
+                          <div className="flex items-center gap-1 shrink-0">
                             <span className="text-emerald-500 font-bold">+{msg.diffView.additions}</span>
                             <span className="text-red-500 font-bold">-{msg.diffView.deletions}</span>
                             <button
-                              onClick={() => onOpenCodexDiff(msg.diffView)}
+                              type="button"
+                              onClick={() =>
+                                onOpenCodexDiff({
+                                  ...msg.diffView!,
+                                  topicId: topic.id,
+                                  topicTitle: topic.title,
+                                  allDiffs: msg.diffViews || topicExecutionDiffs,
+                                  executionStatus: topic.gameTheoreticState?.executionStatus,
+                                  artifactsDir: topic.gameTheoreticState?.executionArtifactsDir,
+                                })
+                              }
                               className="px-1.5 py-0.5 rounded bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-600 dark:text-emerald-300 text-[9px] font-sans flex items-center gap-0.5 ml-1 transition-colors cursor-pointer shrink-0"
                             >
                               <span>Codex 视图</span>
                               <ArrowRight className="w-2.5 h-2.5" />
                             </button>
+                            {onApplyTopicPatch && topic.gameTheoreticState?.executionStatus !== 'applied' && (
+                              <button
+                                type="button"
+                                disabled={isApplyingPatch}
+                                onClick={handleApplyPatchClick}
+                                className="px-1.5 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-[9px] font-sans font-semibold flex items-center gap-0.5 transition-colors cursor-pointer shrink-0"
+                              >
+                                {isApplyingPatch ? (
+                                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                                ) : (
+                                  <Zap className="w-2.5 h-2.5" />
+                                )}
+                                <span>合入工作区</span>
+                              </button>
+                            )}
+                            {topic.gameTheoreticState?.executionStatus === 'applied' && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 text-[9px] font-sans font-semibold">
+                                ✓ 已合入
+                              </span>
+                            )}
                           </div>
                         </div>
-                        <pre className="p-2 rounded bg-surface-subtle border border-border overflow-x-auto text-[10px] text-fg-secondary leading-relaxed select-text">
+                        <pre className="p-2 rounded bg-surface-subtle border border-border overflow-x-auto text-[10px] text-fg-secondary leading-relaxed select-text max-h-40">
                           {msg.diffView.diff}
                         </pre>
                       </div>
@@ -1904,62 +1997,130 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               </div>
 
               {/* Post-Arbitration Execution Status Row */}
-              <div className="pt-2 border-t border-border/50 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-[10px]">
-                  <Wrench className="w-3 h-3 text-fg-muted shrink-0" />
-                  <span className="text-fg-muted">落地执行:</span>
-                  {(() => {
-                    const executorId = topic.rulingRecord.executorId || topic.gameTheoreticState?.assignedExecutorId || topic.decisionRecord?.executorId;
-                    const executorAgent = agents.find((a) => a.id === executorId);
-                    const status = topic.gameTheoreticState?.executionStatus || (executorId ? 'completed' : 'idle');
-                    if (!executorId) {
-                      return <span className="text-fg-muted font-sans">未指派 (仅架构推演)</span>;
-                    }
-                    return (
-                      <span className="flex items-center gap-1 font-mono font-medium">
-                        <span className="text-fg">{executorAgent ? executorAgent.name : executorId}</span>
-                        {status === 'running' && (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-sans">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
-                            实施中...
-                          </span>
-                        )}
-                        {status === 'completed' && (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-sans">
-                            <CheckCircle2 className="w-2.5 h-2.5" />
-                            已交付
-                          </span>
-                        )}
-                        {status === 'failed' && (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-rose-500/15 text-rose-600 dark:text-rose-400 font-sans">
-                            异常
-                          </span>
-                        )}
-                      </span>
-                    );
-                  })()}
-                </div>
-
-                {onExecuteTopicPatch && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const initialExec = topic.rulingRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId || candidateAgentsWithGameRoles[0]?.id || '';
-                      setSelectedExecutorId(initialExec);
-                      setShowAssignExecutorModal(true);
-                    }}
-                    className="px-2 py-1 rounded-lg bg-surface border border-border hover:bg-surface-hover text-fg text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer shrink-0"
-                    title="指派落地 Agent 实施代码变更"
-                  >
-                    <Wrench className="w-3 h-3 text-accent" />
-                    <span>{topic.rulingRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId ? '重新指派实施' : '指派 Agent 实施补丁'}</span>
-                  </button>
+              <div className="pt-2 border-t border-border/50 flex flex-col gap-2">
+                {overlappingFiles.length > 0 && (
+                  <div className="px-2 py-1 rounded-md bg-amber-500/15 border border-amber-500/30 text-[10px] text-amber-800 dark:text-amber-200 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                    <span className="truncate">
+                      ⚠️ 与其他并行落地议题重叠文件: <code className="font-mono">{overlappingFiles.join(', ')}</code>
+                    </span>
+                  </div>
                 )}
+
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-1.5 text-[10px] min-w-0">
+                    <Wrench className="w-3 h-3 text-fg-muted shrink-0" />
+                    <span className="text-fg-muted shrink-0">落地执行:</span>
+                    {(() => {
+                      const executorId = topic.rulingRecord.executorId || topic.gameTheoreticState?.assignedExecutorId || topic.decisionRecord?.executorId;
+                      const executorAgent = agents.find((a) => a.id === executorId);
+                      const status = topic.gameTheoreticState?.executionStatus || (executorId ? 'completed' : 'idle');
+                      if (!executorId) {
+                        return <span className="text-fg-muted font-sans">未指派 (仅架构推演)</span>;
+                      }
+                      return (
+                        <span className="flex items-center gap-1 font-mono font-medium flex-wrap">
+                          <span className="text-fg">{executorAgent ? executorAgent.name : executorId}</span>
+                          {status === 'queued' && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-sans">
+                              <Clock className="w-2.5 h-2.5" />
+                              排队等待中...
+                            </span>
+                          )}
+                          {status === 'running' && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-sans">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+                              编写补丁中...
+                            </span>
+                          )}
+                          {status === 'completed' && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-sans">
+                              <CheckCircle2 className="w-2.5 h-2.5" />
+                              补丁就绪
+                            </span>
+                          )}
+                          {status === 'applied' && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-600 text-white font-sans font-semibold">
+                              <CheckCircle2 className="w-2.5 h-2.5" />
+                              已合入工作区
+                            </span>
+                          )}
+                          {status === 'failed' && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-rose-500/15 text-rose-600 dark:text-rose-400 font-sans">
+                              执行异常
+                            </span>
+                          )}
+                        </span>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                    {topicExecutionDiffs.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpenCodexDiff({
+                            ...topicExecutionDiffs[0],
+                            topicId: topic.id,
+                            topicTitle: topic.title,
+                            allDiffs: topicExecutionDiffs,
+                            executionStatus: topic.gameTheoreticState?.executionStatus,
+                            artifactsDir: topic.gameTheoreticState?.executionArtifactsDir,
+                          })
+                        }
+                        className="px-2 py-1 rounded-lg bg-surface border border-emerald-500/40 hover:bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                        title="在 Codex Diff 视图中审查生成的补丁"
+                      >
+                        <GitCompare className="w-3 h-3 text-emerald-500" />
+                        <span>审查 Diff ({topicExecutionDiffs.length})</span>
+                      </button>
+                    )}
+
+                    {topicExecutionDiffs.length > 0 && onApplyTopicPatch && topic.gameTheoreticState?.executionStatus !== 'applied' && (
+                      <button
+                        type="button"
+                        disabled={isApplyingPatch}
+                        onClick={handleApplyPatchClick}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-[10px] font-semibold flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
+                        title="将生成的工程补丁物理合入本地工作区并归档产物"
+                      >
+                        {isApplyingPatch ? (
+                          <>
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            <span>合入中...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Zap className="w-3 h-3" />
+                            <span>一键合入工作区</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+
+                    {onExecuteTopicPatch && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const initialExec = topic.rulingRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId || candidateAgentsWithGameRoles[0]?.id || '';
+                          setSelectedExecutorId(initialExec);
+                          setShowAssignExecutorModal(true);
+                        }}
+                        className="px-2 py-1 rounded-lg bg-surface border border-border hover:bg-surface-hover text-fg text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer shrink-0"
+                        title="指派落地 Agent 实施代码变更"
+                      >
+                        <Wrench className="w-3 h-3 text-accent" />
+                        <span>{topic.rulingRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId ? '重新指派' : '指派实施补丁'}</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           ) : (
             <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex flex-col gap-2">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300">
                   <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
                   <div className="text-[11px] font-semibold">
@@ -1970,7 +2131,37 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {topicExecutionDiffs.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenCodexDiff({
+                          ...topicExecutionDiffs[0],
+                          topicId: topic.id,
+                          topicTitle: topic.title,
+                          allDiffs: topicExecutionDiffs,
+                          executionStatus: topic.gameTheoreticState?.executionStatus,
+                          artifactsDir: topic.gameTheoreticState?.executionArtifactsDir,
+                        })
+                      }
+                      className="px-2 py-1 rounded-lg bg-surface border border-emerald-500/40 hover:bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                    >
+                      <GitCompare className="w-3 h-3 text-emerald-500" />
+                      <span>审查 Diff ({topicExecutionDiffs.length})</span>
+                    </button>
+                  )}
+                  {topicExecutionDiffs.length > 0 && onApplyTopicPatch && topic.gameTheoreticState?.executionStatus !== 'applied' && (
+                    <button
+                      type="button"
+                      disabled={isApplyingPatch}
+                      onClick={handleApplyPatchClick}
+                      className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-[10px] font-semibold flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
+                    >
+                      {isApplyingPatch ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                      <span>一键合入工作区</span>
+                    </button>
+                  )}
                   {onExecuteTopicPatch && (
                     <button
                       type="button"
@@ -1983,7 +2174,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                       title="指派落地 Agent 实施代码变更"
                     >
                       <Wrench className="w-3 h-3 text-accent" />
-                      <span>{topic.decisionRecord?.executorId ? '重新指派实施' : '指派实施补丁'}</span>
+                      <span>{topic.decisionRecord?.executorId ? '重新指派' : '指派实施补丁'}</span>
                     </button>
                   )}
                   {onReopenTopic && (
@@ -1999,22 +2190,35 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 </div>
               </div>
 
-              {topic.decisionRecord?.executorId && (
-                <div className="pt-1.5 border-t border-emerald-500/20 flex items-center gap-2 text-[10px] text-emerald-800 dark:text-emerald-300">
+              {(topic.decisionRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId) && (
+                <div className="pt-1.5 border-t border-emerald-500/20 flex items-center gap-2 text-[10px] text-emerald-800 dark:text-emerald-300 flex-wrap">
                   <Wrench className="w-3 h-3 opacity-75" />
                   <span>落地执行 Agent:</span>
                   <span className="font-mono font-medium">
-                    {agents.find((a) => a.id === topic.decisionRecord?.executorId)?.name || topic.decisionRecord.executorId}
+                    {agents.find((a) => a.id === (topic.decisionRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId))?.name ||
+                      topic.decisionRecord?.executorId ||
+                      topic.gameTheoreticState?.assignedExecutorId}
                   </span>
+                  {topic.gameTheoreticState?.executionStatus === 'queued' && (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-700 dark:text-amber-300 font-sans">
+                      <Clock className="w-2.5 h-2.5" />
+                      排队等待中...
+                    </span>
+                  )}
                   {topic.gameTheoreticState?.executionStatus === 'running' && (
                     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-700 dark:text-amber-300 font-sans">
                       <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
-                      实施中...
+                      编写补丁中...
                     </span>
                   )}
                   {topic.gameTheoreticState?.executionStatus === 'completed' && (
                     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-sans font-medium">
-                      已交付
+                      补丁就绪
+                    </span>
+                  )}
+                  {topic.gameTheoreticState?.executionStatus === 'applied' && (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-600 text-white font-sans font-semibold">
+                      ✓ 已合入本地工作区
                     </span>
                   )}
                 </div>
@@ -2283,10 +2487,16 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   <option value="">暂不指派执行 Agent (仅归档结论)</option>
                   {candidateAgentsWithGameRoles.map((agent) => (
                     <option key={agent.id} value={agent.id}>
-                      {agent.name} ({agent.role || 'Agent'})
+                      {agent.name} ({agent.role || 'Agent'}) {getAgentAvailabilityLabel(agent)}
                     </option>
                   ))}
                 </select>
+                {overlappingFiles.length > 0 && (
+                  <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[10px] text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                    <span>并发文件重叠提示: {overlappingFiles.join(', ')} 正在被其他未合入议题触及，建议排队合入。</span>
+                  </div>
+                )}
               </div>
 
               <div className="p-2.5 rounded-xl bg-surface-subtle border border-border text-[11px] text-fg-muted">
@@ -2516,10 +2726,16 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   <option value="">暂不指派执行 Agent (仅法槌定案归档)</option>
                   {candidateAgentsWithGameRoles.map((agent) => (
                     <option key={agent.id} value={agent.id}>
-                      {agent.name} ({agent.role || 'Agent'})
+                      {agent.name} ({agent.role || 'Agent'}) {getAgentAvailabilityLabel(agent)}
                     </option>
                   ))}
                 </select>
+                {overlappingFiles.length > 0 && (
+                  <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[10px] text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                    <span>并发文件重叠提示: {overlappingFiles.join(', ')} 正在被其他未合入议题触及，建议排队合入。</span>
+                  </div>
+                )}
               </div>
 
               {/* MCDA Decision Matrix Preview in Ruling Modal */}
@@ -2703,10 +2919,16 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   <option value="" disabled>请选择负责落地编码的 Agent</option>
                   {candidateAgentsWithGameRoles.map((agent) => (
                     <option key={agent.id} value={agent.id}>
-                      {agent.name} ({agent.role || 'Agent'})
+                      {agent.name} ({agent.role || 'Agent'}) {getAgentAvailabilityLabel(agent)}
                     </option>
                   ))}
                 </select>
+                {overlappingFiles.length > 0 && (
+                  <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[10px] text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                    <span>并发文件重叠提示: {overlappingFiles.join(', ')} 正在被其他未合入议题触及，建议排队合入。</span>
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">

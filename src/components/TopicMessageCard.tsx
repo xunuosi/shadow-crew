@@ -1,5 +1,5 @@
-import React from 'react';
-import { TopicMessageData, Agent } from '../types';
+import React, { useState, useEffect } from 'react';
+import { TopicMessageData, Agent, TopicPatchDiffItem, ActiveAgentExecution } from '../types';
 import { 
   GitBranch, 
   ArrowRight, 
@@ -15,15 +15,23 @@ import {
   Swords, 
   Scale, 
   RotateCcw, 
-  SlidersHorizontal 
+  SlidersHorizontal,
+  Wrench,
+  Loader2,
+  AlertTriangle
 } from 'lucide-react';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
+import { ActiveCodexDiffPayload } from './CodexDiffViewer';
 
 interface TopicMessageCardProps {
   topic: TopicMessageData;
   agents: Agent[];
   onClick: () => void;
   onEdit?: () => void;
+  activeExecutions?: ActiveAgentExecution[];
+  onOpenCodexDiff?: (payload: ActiveCodexDiffPayload) => void;
+  onApplyTopicPatch?: (topicId: string, customDiffs?: TopicPatchDiffItem[]) => Promise<void> | void;
+  overlappingFiles?: string[];
 }
 
 export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
@@ -31,12 +39,48 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
   agents,
   onClick,
   onEdit,
+  activeExecutions = [],
+  onOpenCodexDiff,
+  onApplyTopicPatch,
+  overlappingFiles = [],
 }) => {
   const isResolved = topic.status === 'resolved';
   const isInvestigating = topic.status === 'investigating';
   const isOpen = topic.status === 'open';
   const isGame = topic.discussionMode === 'game_theoretic';
   const ruling = topic.rulingRecord;
+
+  const execState = topic.gameTheoreticState;
+  const execStatus = execState?.executionStatus || 'idle';
+  const execAgentId = execState?.assignedExecutorId || topic.rulingRecord?.executorId || topic.decisionRecord?.executorId;
+  const execAgent = execAgentId ? agents.find((a) => a.id === execAgentId) : undefined;
+  const execDiffs = execState?.executionDiffs || [];
+  const totalAdditions = execDiffs.reduce((sum, d) => sum + d.additions, 0);
+  const totalDeletions = execDiffs.reduce((sum, d) => sum + d.deletions, 0);
+
+  const liveExecInfo = execAgentId
+    ? activeExecutions.find(
+        (e) => e.agentId === execAgentId && (!e.topicId || e.topicId === topic.id || e.threadId === topic.id)
+      )
+    : undefined;
+  const isCurrentlyRunning = execStatus === 'running' || Boolean(liveExecInfo);
+
+  const [elapsedSec, setElapsedSec] = useState<number>(0);
+  const [isApplyingPatch, setIsApplyingPatch] = useState(false);
+
+  useEffect(() => {
+    if (!isCurrentlyRunning) {
+      setElapsedSec(0);
+      return;
+    }
+    const startTs = liveExecInfo?.startedAt || execState?.executionStartedAt || Date.now();
+    const updateElapsed = () => {
+      setElapsedSec(Math.max(0, Math.floor((Date.now() - startTs) / 1000)));
+    };
+    updateElapsed();
+    const timer = setInterval(updateElapsed, 1000);
+    return () => clearInterval(timer);
+  }, [isCurrentlyRunning, liveExecInfo?.startedAt, execState?.executionStartedAt]);
 
   // Find participating agent objects
   const participatingAgents = (topic.participatingAgentIds || [])
@@ -325,6 +369,150 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                     ✓ {approver}
                   </span>
                 ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 🛠️ 工程落地舱 (Implementation Pod) - In-Place Execution Status & Actions */}
+        {isResolved && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className={`rounded-xl border px-3 py-2.5 text-xs font-sans transition-all space-y-2 ${
+              execStatus === 'applied'
+                ? 'bg-emerald-500/15 border-emerald-500/40'
+                : execStatus === 'completed'
+                ? 'bg-cyan-500/10 border-cyan-500/35'
+                : isCurrentlyRunning
+                ? 'bg-blue-500/10 border-blue-500/35'
+                : execStatus === 'queued'
+                ? 'bg-amber-500/10 border-amber-500/35'
+                : execStatus === 'failed'
+                ? 'bg-rose-500/10 border-rose-500/35'
+                : 'bg-surface/60 border-border/60'
+            }`}
+          >
+            {overlappingFiles.length > 0 && execStatus !== 'applied' && (
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 text-[10px] text-amber-700 dark:text-amber-300 font-medium">
+                <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                <span>⚠️ 文件重叠预警 ({overlappingFiles.join(', ')}) — 存在并行落地议题触及相同文件，建议依次合入</span>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                <span className="inline-flex items-center gap-1 font-bold text-[11px] text-fg shrink-0">
+                  <Wrench className="w-3.5 h-3.5 text-accent" />
+                  <span>🛠️ 工程落地舱</span>
+                </span>
+
+                {execStatus === 'applied' ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                    <span>已物理合入工作区 {execState?.executionAppliedAt ? `(${execState.executionAppliedAt})` : ''}</span>
+                  </span>
+                ) : isCurrentlyRunning ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-500/30">
+                    <Loader2 className="w-3 h-3 text-blue-500 animate-spin" />
+                    <span>
+                      {execAgent ? `${execAgent.name}` : '执行 Agent'} 正在编码落地 · {elapsedSec}s
+                    </span>
+                  </span>
+                ) : execStatus === 'queued' ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30">
+                    <Clock className="w-3 h-3 text-amber-500 animate-pulse" />
+                    <span>
+                      {execAgent ? `${execAgent.name}` : '执行 Agent'} 忙碌排队中 · 前序任务完成后自动启动
+                    </span>
+                  </span>
+                ) : execStatus === 'completed' ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30">
+                    <Sparkles className="w-3 h-3 text-cyan-500" />
+                    <span>
+                      {execAgent ? `${execAgent.name}` : '执行 Agent'} 已生成补丁 ({execDiffs.length} 个文件, +{totalAdditions} / -{totalDeletions})
+                    </span>
+                  </span>
+                ) : execStatus === 'failed' ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-500/30">
+                    <AlertTriangle className="w-3 h-3 text-rose-500" />
+                    <span>落地执行异常: {execState?.executionSummary || '未提取到合规补丁'}</span>
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-fg-muted">
+                    尚未指派执行 Agent 落地代码补丁
+                  </span>
+                )}
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                {execDiffs.length > 0 && onOpenCodexDiff && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const first = execDiffs[0];
+                      onOpenCodexDiff({
+                        filename: first.filename,
+                        additions: first.additions,
+                        deletions: first.deletions,
+                        diff: first.diff,
+                        codeContent: first.codeContent,
+                        allDiffs: execDiffs,
+                        topicId: topic.id,
+                        topicTitle: topic.title,
+                        executionStatus: execStatus,
+                        artifactsDir: execState?.executionArtifactsDir,
+                      });
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-surface hover:bg-surface-hover border border-border text-fg text-[11px] font-semibold flex items-center gap-1 transition-all cursor-pointer shadow-2xs"
+                  >
+                    <FileCode2 className="w-3 h-3 text-accent" />
+                    <span>{execStatus === 'applied' ? '查看合入 Diff' : '审查 Diff'}</span>
+                  </button>
+                )}
+
+                {execDiffs.length > 0 && execStatus !== 'applied' && onApplyTopicPatch && (
+                  <button
+                    type="button"
+                    disabled={isApplyingPatch}
+                    onClick={async () => {
+                      setIsApplyingPatch(true);
+                      try {
+                        await onApplyTopicPatch(topic.id, execDiffs);
+                      } finally {
+                        setIsApplyingPatch(false);
+                      }
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-[11px] font-semibold flex items-center gap-1 transition-all cursor-pointer shadow-xs"
+                  >
+                    {isApplyingPatch ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-3 h-3" />
+                    )}
+                    <span>{isApplyingPatch ? '合入中...' : '一键合入本地仓库'}</span>
+                  </button>
+                )}
+
+                {(execStatus === 'idle' || execStatus === 'failed') && (
+                  <button
+                    type="button"
+                    onClick={onClick}
+                    className="px-2.5 py-1 rounded-lg bg-accent/15 hover:bg-accent/25 border border-accent/30 text-accent text-[11px] font-semibold flex items-center gap-1 transition-all cursor-pointer"
+                  >
+                    <Wrench className="w-3 h-3" />
+                    <span>{execStatus === 'failed' ? '进入抽屉重试' : '指派落地 Agent'}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {isCurrentlyRunning && (
+              <div className="text-[11px] font-mono text-blue-600 dark:text-blue-300 flex items-center gap-2 bg-surface/60 px-2.5 py-1.5 rounded-lg border border-blue-500/20">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping shrink-0" />
+                <span className="truncate">
+                  {liveExecInfo?.currentActionDetail || '正在读取工作区上下文并生成 Unified Diff 代码变更...'}
+                </span>
               </div>
             )}
           </div>
