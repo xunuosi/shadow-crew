@@ -89,6 +89,22 @@ export function generateAdrMarkdown(topic: TopicMessageData, agents: Agent[]): s
     md += `### 拟选方案立论 (Proposal v1)\n\n`;
     md += `${topic.gameTheoreticState.targetProposalContent.trim()}\n\n`;
   }
+  const modularState = topic.gameTheoreticState?.modularState || topic.gameTheoreticState?.cognoNexus?.modularState;
+  if (modularState?.enabled && modularState.modules.length > 0) {
+    md += `### G-Frame 跨模块公共接口契约与原子模块分治 (Bayesian & Team Game)\n\n`;
+    if (modularState.sharedContract) {
+      md += `- **公共接口契约**: ${modularState.sharedContract.summary}\n`;
+      if (modularState.sharedContract.typeSignatures) {
+        md += `\n\`\`\`typescript\n${modularState.sharedContract.typeSignatures}\n\`\`\`\n\n`;
+      }
+    }
+    md += `| 模块 ID | 模块职责 | 贝叶斯风险 ($P_{\\text{prior}} \\to P_{\\text{posterior}}$) | 路由通道 | 状态 | 允许文件白名单 |\n`;
+    md += `| :--- | :--- | :--- | :--- | :--- | :--- |\n`;
+    modularState.modules.forEach((m) => {
+      md += `| \`${m.moduleId}\` | ${m.title}: ${m.responsibility.replace(/[\n\r|]/g, ' ')} | \`${m.belief.priorRisk} -> ${m.belief.posteriorRisk}\` | \`${m.belief.routingMode}\` | **${m.status.toUpperCase()}** | ${m.allowedFiles.map((f) => `\`${f}\``).join(', ')} |\n`;
+    });
+    md += `\n`;
+  }
   if (committedStates.length > 0) {
     md += `### 核心论点因果拓扑 (Claim DAG)\n\n`;
     committedStates.forEach((node, i) => {
@@ -222,6 +238,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
   const committedStates = topic.gameTheoreticState?.cognoNexus?.committedStates || [];
   const dispute = topic.gameTheoreticState?.cognoNexus?.currentDispute;
   const evidences = topic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain || [];
+  const modularState = topic.gameTheoreticState?.modularState || topic.gameTheoreticState?.cognoNexus?.modularState;
 
   const executorId =
     ruling?.executorId ||
@@ -405,6 +422,73 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                 {topic.gameTheoreticState.targetProposalContent.slice(0, 300)}
                 {topic.gameTheoreticState.targetProposalContent.length > 300 ? '...' : ''}
               </p>
+            </div>
+          )}
+
+          {modularState?.enabled && modularState.modules.length > 0 && (
+            <div className="p-2.5 rounded-lg bg-surface border border-border space-y-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 text-[10px] font-semibold text-purple-800 dark:text-purple-300">
+                  <Layers className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
+                  <span>🧩 G-Frame 跨模块公共接口契约与原子模块分治</span>
+                </div>
+                <span className="px-1.5 py-0.5 rounded font-mono text-[9px] text-purple-800 bg-purple-50 border border-purple-300 dark:text-purple-300 dark:bg-purple-500/15 dark:border-purple-500/30">
+                  {modularState.modules.filter((m) => m.status === 'frozen').length}/{modularState.modules.length} 已冻结
+                </span>
+              </div>
+
+              {modularState.sharedContract && (
+                <div className="p-2 rounded-md bg-surface-subtle border border-border text-[10px] space-y-1">
+                  <div className="font-semibold text-fg">📜 只读公共契约: {modularState.sharedContract.summary}</div>
+                  {modularState.sharedContract.typeSignatures && (
+                    <pre className="p-1.5 rounded bg-surface border border-border font-mono text-[9px] text-fg-secondary overflow-x-auto">
+                      {modularState.sharedContract.typeSignatures}
+                    </pre>
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                {modularState.modules.map((mod) => {
+                  const isFrozen = mod.status === 'frozen';
+                  const isDebating = mod.moduleId === modularState.activeModuleId || (mod.status !== 'frozen' && mod.status !== 'pending');
+                  const statusClasses = isFrozen
+                    ? 'text-emerald-800 bg-emerald-50 border-emerald-300 dark:text-emerald-300 dark:bg-emerald-500/15 dark:border-emerald-500/30'
+                    : isDebating
+                    ? 'text-amber-800 bg-amber-50 border-amber-300 dark:text-amber-300 dark:bg-amber-500/15 dark:border-amber-500/30'
+                    : 'text-blue-800 bg-blue-50 border-blue-300 dark:text-blue-300 dark:bg-blue-500/15 dark:border-blue-500/30';
+
+                  return (
+                    <div key={mod.moduleId} className="p-2 rounded-md bg-surface border border-border space-y-1 min-w-0 w-full overflow-hidden">
+                      <div className="flex items-center justify-between gap-1.5 flex-wrap">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-mono font-bold text-[10px] text-fg">{mod.moduleId}</span>
+                          <span className="text-[11px] font-semibold text-fg truncate">{mod.title}</span>
+                        </div>
+                        <div className="flex items-center gap-1 ml-auto shrink-0 flex-wrap">
+                          <span className="px-1.5 py-0.5 rounded font-mono text-[9px] text-purple-800 bg-purple-50 border border-purple-300 dark:text-purple-300 dark:bg-purple-500/15 dark:border-purple-500/30">
+                            P: {mod.belief.priorRisk.toFixed(2)} → {mod.belief.posteriorRisk.toFixed(2)}
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded font-mono text-[9px] border font-semibold ${statusClasses}`}>
+                            {isFrozen ? '🔒 已冻结' : mod.belief.routingMode === 'deep_debate' ? '⚔️ 对抗流' : '⚡ 快速流'}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="text-[10px] text-fg-secondary leading-snug">{mod.responsibility}</div>
+                      {mod.allowedFiles.length > 0 && (
+                        <div className="flex items-center gap-1 flex-wrap pt-0.5">
+                          <span className="text-[9px] text-fg-muted font-mono">作用域白名单:</span>
+                          {mod.allowedFiles.map((f) => (
+                            <code key={f} className="px-1 py-0.2 rounded bg-surface-subtle border border-border font-mono text-[9px] text-fg-secondary">
+                              {f}
+                            </code>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 

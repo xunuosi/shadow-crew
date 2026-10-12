@@ -754,6 +754,7 @@ export interface Message {
   reactions?: MessageReaction[];
   gameRole?: GameRoleType;
   gameStage?: GameTheoreticStage;
+  moduleId?: string; // G-Frame 所属原子模块沙箱 ID
   isPending?: boolean; // 正在推演/流式输出中的临时占位卡
   pendingHint?: string; // 实时推演/心跳动作描述提示
   startedAt?: number; // 任务发起时间戳

@@ -29,8 +29,14 @@ import {
 } from '../agentCollaboration';
 import {
   validateStageContract,
+  validateModuleScopeContract,
   STAGE_CONTRACT_MAX_RETRIES,
 } from './stageContractGate';
+import {
+  initializeModularOrchestrationState,
+  updateModuleBeliefWithFeedback,
+  computeEntropyReductionRatio,
+} from './bayesianModuleGovernor';
 import { calculateColMadContributions } from './colmadGovernor';
 import {
   solveExactBwmOptionB,
@@ -51,7 +57,10 @@ import {
   calculateConfidenceMatrix,
 } from './modelDiversityGovernor';
 import { compileMinorityReport } from './minorityReportCompiler';
-import { extractArbitrationRulingFromAcpResponse } from '../acpClient';
+import {
+  extractArbitrationRulingFromAcpResponse,
+  extractModuleDecompositionFromAcpResponse,
+} from '../acpClient';
 import { generateAdrMarkdown } from '../../components/LivingAdrCanvas';
 import { Agent, TopicMessageData } from '../../types';
 
@@ -329,6 +338,42 @@ async function runAllVerifications() {
     }
   );
 
+  // T8: G-Frame 模块级上下文物理隔离与快速通道节流
+  verify(
+    'T8',
+    'Token 控制 (7项)',
+    'G-Frame 模块级上下文物理隔离与贝叶斯快速通道节流',
+    'G-Frame (Bayesian & Team Game)',
+    () => {
+      const decomp = extractModuleDecompositionFromAcpResponse({
+        mcpToolCalls: [
+          {
+            server_name: 'shinobi-dev-mcp',
+            tool_name: 'submit_module_decomposition',
+            status: 'completed',
+            arguments: {
+              shared_contract: {
+                summary: '定义统一 OrderContext 契约',
+                type_signatures: 'export interface OrderContext { id: string; }',
+                invariants: ['禁止跨模块越界修改'],
+              },
+              modules: [
+                { module_id: 'M1', title: '鉴权锁模块', responsibility: 'Redis 分布式锁防并发死锁', allowed_files: ['src/auth/lock.ts'], depends_on: [], complexity_level: 'high_critical' },
+                { module_id: 'M2', title: '状态展示组件', responsibility: '纯 UI 胶囊渲染', allowed_files: ['src/components/Badge.tsx'], depends_on: ['M1'], complexity_level: 'low_deterministic' },
+              ],
+            },
+          },
+        ],
+      });
+      assert.ok(decomp, 'MCP submit_module_decomposition 载荷直通提取成功');
+      const state = initializeModularOrchestrationState(decomp);
+      assert.equal(state.modules[0].belief.routingMode, 'deep_debate', '高风险模块应路由至 deep_debate');
+      assert.equal(state.modules[1].belief.routingMode, 'fast_track', '低风险模块应路由至 fast_track 节省红队轮次');
+      const ratio = computeEntropyReductionRatio(3600, 700, 200);
+      return `模块拆解=${state.modules.length}项, M2路由=${state.modules[1].belief.routingMode}, 上下文压缩比=${(ratio * 100).toFixed(1)}%`;
+    }
+  );
+
   console.log('\n--- 🎯 第二部分：验证保证讨论结果趋向正确的 9 大代码设计 ---');
 
   // A1: DIANOIA 4+1 职能正交解耦与 FSM
@@ -575,6 +620,43 @@ async function runAllVerifications() {
       assert.ok(md.includes('## 4. 架构权衡矩阵与终局决议'));
       assert.ok(md.includes('src/services/orderService.ts'), '必须包含受影响文件爆炸半径清单');
       return `ADR Markdown 4 大标准章节与爆炸半径文件清单生成完整 (${md.length} bytes)`;
+    }
+  );
+
+  // A10: G-Frame 贝叶斯后验动态升级与跨模块文件越界门禁
+  verify(
+    'A10',
+    '准确性趋真 (9项)',
+    'G-Frame 贝叶斯 Log-Odds 后验升级与跨模块文件越界门禁',
+    'G-Frame (Bayesian & Team Game)',
+    () => {
+      const state = initializeModularOrchestrationState({
+        sharedContract: {
+          summary: '公共契约',
+          typeSignatures: 'export interface Shared { id: string; }',
+          invariants: ['禁止越界修改'],
+        },
+        modules: [
+          { moduleId: 'M1', title: '核心网关', responsibility: '路由', allowedFiles: ['src/gateway/router.ts'], dependsOn: [], complexityLevel: 'medium_standard' },
+          { moduleId: 'M2', title: '视图面板', responsibility: 'UI 渲染', allowedFiles: ['src/components/Panel.tsx'], dependsOn: ['M1'], complexityLevel: 'low_deterministic' },
+        ],
+      });
+      const escalated = updateModuleBeliefWithFeedback(state.modules[1], {
+        refutedClaims: 1,
+        contractViolations: 1,
+        verifiedClaims: 0,
+      });
+      assert.equal(escalated.posteriorAction, 'ESCALATE_TO_RED_TEAM', '证伪或违规必须触发 ESCALATE_TO_RED_TEAM');
+      assert.equal(escalated.updatedModule.belief.routingMode, 'deep_debate');
+
+      const scopeViolation = validateModuleScopeContract(
+        '我们将在 src/gateway/router.ts 中修改底层状态',
+        state.modules[1],
+        state.modules,
+        state.sharedContract
+      );
+      assert.equal(scopeViolation.isScopeValid, false, '跨模块修改其他模块白名单文件必须被拦截');
+      return `M2后验升级=${escalated.updatedModule.belief.priorRisk}->${escalated.updatedModule.belief.posteriorRisk}(${escalated.posteriorAction}), 越界拦截=${scopeViolation.violatedFiles.join(',')}`;
     }
   );
 

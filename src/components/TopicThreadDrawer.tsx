@@ -129,6 +129,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   const [exemptionReason, setExemptionReason] = useState('');
   const [activeDrawerView, setActiveDrawerView] = useState<'stream' | 'adr'>('stream');
   const [isRulingDetailExpanded, setIsRulingDetailExpanded] = useState(false);
+  const [activeModuleFilterId, setActiveModuleFilterId] = useState<string>('ALL');
 
   // 顶部议题上下文与推演看板折叠状态 (已仲裁议题默认自动收起为单行摘要，释放纵向历史讨论视口)
   const [isHeaderCollapsed, setIsHeaderCollapsed] = useState<boolean>(() => {
@@ -144,6 +145,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   useEffect(() => {
     if (!isOpen || !topic?.id) return;
     setIsRulingDetailExpanded(false);
+    setActiveModuleFilterId('ALL');
     if (topic.status === 'resolved') {
       setIsHeaderCollapsed(true);
     } else {
@@ -1206,14 +1208,84 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         </div>
       )}
 
-      {/* CognoNexus 运行态看板 (SPRT 自适应调控、LMAD 局部冲突切片、谄媚度治理与异构模型多样性) */}
+      {/* CognoNexus 运行态看板 (G-Frame 模块沙箱矩阵、SPRT 自适应调控、LMAD 局部冲突切片、谄媚度治理与异构模型多样性) */}
       {topic.discussionMode === 'game_theoretic' && (
+        topic.gameTheoreticState?.modularState?.enabled ||
+        topic.gameTheoreticState?.cognoNexus?.modularState?.enabled ||
         topic.gameTheoreticState?.sprtState ||
         topic.gameTheoreticState?.cognoNexus?.currentDispute ||
         topic.gameTheoreticState?.latestSycophancy ||
         topic.gameTheoreticState?.modelDiversity
       ) && (
         <div className="px-3.5 py-1.5 bg-surface-subtle/40 border-b border-border text-[10px] space-y-1.5">
+          {/* G-Frame 模块沙箱矩阵 (Bayesian & Team Game) */}
+          {(() => {
+            const modularState = topic.gameTheoreticState?.modularState || topic.gameTheoreticState?.cognoNexus?.modularState;
+            if (!modularState?.enabled || modularState.modules.length === 0) return null;
+            const frozenCount = modularState.modules.filter((m) => m.status === 'frozen').length;
+            const entropyReductionPct = ((1 - 1 / modularState.modules.length) * 100).toFixed(0);
+            return (
+              <div className="p-2 rounded-lg bg-surface border border-border/80 space-y-1.5 shadow-2xs min-w-0 w-full overflow-hidden">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-1.5 text-fg font-semibold">
+                    <span>🧩 G-Frame 模块沙箱矩阵 (Bayesian & Team Game)</span>
+                    <span className="px-1.5 py-0.2 rounded font-mono text-[9px] text-purple-800 bg-purple-50 border border-purple-300 dark:text-purple-300 dark:bg-purple-500/15 dark:border-purple-500/30">
+                      信息熵压降 {entropyReductionPct}% · {frozenCount}/{modularState.modules.length} 已冻结
+                    </span>
+                  </div>
+                  {modularState.sharedContract && (
+                    <span
+                      className="text-[9px] font-mono text-fg-muted truncate max-w-[220px]"
+                      title={modularState.sharedContract.summary}
+                    >
+                      📜 公共契约已锁定
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setActiveModuleFilterId('ALL')}
+                    className={`px-2 py-0.5 rounded-md font-mono text-[9px] border transition-colors cursor-pointer shrink-0 ${
+                      activeModuleFilterId === 'ALL'
+                        ? 'text-purple-800 bg-purple-50 border-purple-300 dark:text-purple-300 dark:bg-purple-500/15 dark:border-purple-500/30 font-bold'
+                        : 'bg-surface-subtle border-border text-fg-secondary hover:bg-surface-hover'
+                    }`}
+                  >
+                    全部模块 ({messages.length})
+                  </button>
+                  {modularState.modules.map((mod) => {
+                    const isFrozen = mod.status === 'frozen';
+                    const isActive = mod.moduleId === modularState.activeModuleId || (mod.status !== 'frozen' && mod.status !== 'pending');
+                    const isSelected = activeModuleFilterId === mod.moduleId;
+                    const pillClasses = isFrozen
+                      ? 'text-emerald-800 bg-emerald-50 border-emerald-300 dark:text-emerald-300 dark:bg-emerald-500/15 dark:border-emerald-500/30'
+                      : isActive
+                      ? 'text-amber-800 bg-amber-50 border-amber-300 dark:text-amber-300 dark:bg-amber-500/15 dark:border-amber-500/30'
+                      : 'text-blue-800 bg-blue-50 border-blue-300 dark:text-blue-300 dark:bg-blue-500/15 dark:border-blue-500/30';
+
+                    return (
+                      <button
+                        key={mod.moduleId}
+                        type="button"
+                        onClick={() => setActiveModuleFilterId(isSelected ? 'ALL' : mod.moduleId)}
+                        title={`${mod.title}: ${mod.responsibility} | 允许文件: ${mod.allowedFiles.join(', ')}`}
+                        className={`px-2 py-0.5 rounded-md font-mono text-[9px] border transition-all cursor-pointer flex items-center gap-1 shrink-0 ${pillClasses} ${
+                          isSelected ? 'ring-1 ring-purple-500 font-bold' : 'opacity-90 hover:opacity-100'
+                        }`}
+                      >
+                        <span className="font-bold">[{mod.moduleId}]</span>
+                        <span className="truncate max-w-[110px] font-sans">{mod.title}</span>
+                        <span>({mod.belief.priorRisk.toFixed(2)}→{mod.belief.posteriorRisk.toFixed(2)})</span>
+                        <span>{isFrozen ? '🔒' : mod.belief.routingMode === 'deep_debate' ? '⚔️' : '⚡'}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* SPRT 自适应调控条 */}
           {topic.gameTheoreticState?.sprtState && (
             <div className="flex items-center justify-between gap-2 p-1.5 rounded-lg bg-surface border border-border/80 shadow-2xs">
@@ -1515,6 +1587,18 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         <>
           {/* 3. Topic Message Stream */}
           <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 font-sans select-text">
+            {activeModuleFilterId !== 'ALL' && (
+              <div className="p-2 rounded-xl bg-purple-50 dark:bg-purple-500/15 border border-purple-300 dark:border-purple-500/30 flex items-center justify-between gap-2 text-[11px] text-purple-800 dark:text-purple-300">
+                <span>🧩 当前已开启物理沙箱隔离视图：仅展示模块 <strong className="font-mono">[{activeModuleFilterId}]</strong> 及全局契约记录</span>
+                <button
+                  type="button"
+                  onClick={() => setActiveModuleFilterId('ALL')}
+                  className="px-2 py-0.5 rounded bg-surface border border-border text-fg text-[10px] font-medium hover:bg-surface-hover cursor-pointer shrink-0"
+                >
+                  显示全部
+                </button>
+              </div>
+            )}
         {messages.length === 0 ? (
           <div className="text-center py-10 text-fg-muted">
             <div className="text-2xl mb-2">💬</div>
@@ -1524,7 +1608,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             </div>
           </div>
         ) : (
-          messages.map((msg) => {
+          messages
+            .filter((msg) => activeModuleFilterId === 'ALL' || !msg.moduleId || msg.moduleId === activeModuleFilterId)
+            .map((msg) => {
             const isThinkingOpen = expandedThinking[msg.id] ?? true;
             const isAgent = msg.agentBadge || msg.authorName.includes('Agent') || msg.authorName.includes('Reviewer');
             const gameRoleBadge = getGameRoleBadge(msg);
@@ -1577,6 +1663,11 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                       {gameRoleBadge && (
                         <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono border shrink-0 whitespace-nowrap ${gameRoleBadge.cls}`}>
                           {gameRoleBadge.label}
+                        </span>
+                      )}
+                      {msg.moduleId && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded font-mono border shrink-0 whitespace-nowrap text-purple-800 bg-purple-50 border-purple-300 dark:text-purple-300 dark:bg-purple-500/15 dark:border-purple-500/30 font-semibold">
+                          🧩 {msg.moduleId}
                         </span>
                       )}
                       {msg.gameStage && (

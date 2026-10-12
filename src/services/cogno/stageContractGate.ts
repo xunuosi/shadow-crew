@@ -187,7 +187,7 @@ export function validateModuleScopeContract(
   for (const { file, ownerTitle } of otherModulesFiles) {
     const escapedFile = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const modificationRegex = new RegExp(
-      `(?:修改|重写|新增|编辑|替换|写入|write_file|str_replace|patch)[^\\n]{0,40}${escapedFile}`,
+      `(?:(?:修改|重写|新增|编辑|替换|写入|write_file|str_replace|patch)[^\\n]{0,40}${escapedFile}|${escapedFile}[^\\n]{0,40}(?:修改|重写|新增|编辑|替换|写入|write_file|str_replace|patch))`,
       'i'
     );
     if (modificationRegex.test(text)) {
