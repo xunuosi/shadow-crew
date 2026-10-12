@@ -99,14 +99,14 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
       className={`relative rounded-2xl border transition-all cursor-pointer select-none group shadow-sm hover:shadow-md overflow-hidden min-w-0 w-full ${
         isResolved
           ? ruling?.decisionType === 'reject_rebuild'
-            ? 'bg-rose-500/5 hover:bg-rose-500/10 border-rose-500/30 hover:border-rose-500/60'
+            ? 'bg-surface hover:bg-rose-50/40 dark:bg-rose-500/5 dark:hover:bg-rose-500/10 border-rose-300 hover:border-rose-400 dark:border-rose-500/30 dark:hover:border-rose-500/60'
             : ruling?.decisionType === 'trade_off_matrix'
-            ? 'bg-purple-500/5 hover:bg-purple-500/10 border-purple-500/30 hover:border-purple-500/60'
-            : 'bg-emerald-500/5 hover:bg-emerald-500/10 border-emerald-500/30 hover:border-emerald-500/60'
+            ? 'bg-surface hover:bg-purple-50/40 dark:bg-purple-500/5 dark:hover:bg-purple-500/10 border-purple-300 hover:border-purple-400 dark:border-purple-500/30 dark:hover:border-purple-500/60'
+            : 'bg-surface hover:bg-emerald-50/40 dark:bg-emerald-500/5 dark:hover:bg-emerald-500/10 border-emerald-300 hover:border-emerald-400 dark:border-emerald-500/30 dark:hover:border-emerald-500/60'
           : isGame
-          ? 'bg-amber-500/5 hover:bg-amber-500/10 border-amber-500/30 hover:border-amber-500/60'
+          ? 'bg-surface hover:bg-amber-50/40 dark:bg-amber-500/5 dark:hover:bg-amber-500/10 border-amber-300 hover:border-amber-400 dark:border-amber-500/30 dark:hover:border-amber-500/60'
           : isInvestigating
-          ? 'bg-purple-500/5 hover:bg-purple-500/10 border-purple-500/30 hover:border-purple-500/60'
+          ? 'bg-surface hover:bg-purple-50/40 dark:bg-purple-500/5 dark:hover:bg-purple-500/10 border-purple-300 hover:border-purple-400 dark:border-purple-500/30 dark:hover:border-purple-500/60'
           : 'bg-surface hover:bg-surface-hover border-border hover:border-accent/50'
       }`}
     >
@@ -115,14 +115,14 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
         className={`absolute left-0 top-3 bottom-3 w-1.5 rounded-r-full ${
           isResolved 
             ? ruling?.decisionType === 'reject_rebuild'
-              ? 'bg-rose-500'
+              ? 'bg-rose-600 dark:bg-rose-500'
               : ruling?.decisionType === 'trade_off_matrix'
-              ? 'bg-purple-500'
-              : 'bg-emerald-500' 
+              ? 'bg-purple-600 dark:bg-purple-500'
+              : 'bg-emerald-600 dark:bg-emerald-500' 
             : isGame
             ? 'bg-amber-500'
             : isInvestigating 
-            ? 'bg-purple-500' 
+            ? 'bg-purple-600 dark:bg-purple-500' 
             : 'bg-fg-muted'
         }`} 
       />
@@ -136,17 +136,17 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
               ruling ? (
                 <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border shrink-0 whitespace-nowrap ${
                   ruling.decisionType === 'adopt_proposer'
-                    ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                    ? 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-500/30'
                     : ruling.decisionType === 'reject_rebuild'
-                    ? 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30'
-                    : 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-500/30'
+                    ? 'bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border-rose-300 dark:border-rose-500/30'
+                    : 'bg-purple-50 dark:bg-purple-500/15 text-purple-800 dark:text-purple-300 border-purple-300 dark:border-purple-500/30'
                 }`}>
                   {ruling.decisionType === 'adopt_proposer' ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                   ) : ruling.decisionType === 'reject_rebuild' ? (
-                    <RotateCcw className="w-3.5 h-3.5 text-rose-500" />
+                    <RotateCcw className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
                   ) : (
-                    <SlidersHorizontal className="w-3.5 h-3.5 text-purple-500" />
+                    <SlidersHorizontal className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
                   )}
                   <span>
                     {ruling.decisionType === 'adopt_proposer'
@@ -157,31 +157,31 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                   </span>
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 shrink-0 whitespace-nowrap">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 shrink-0 whitespace-nowrap">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                   <span>已达成共识 · Resolved</span>
                 </span>
               )
             ) : isGame ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 shrink-0 whitespace-nowrap">
-                <Swords className="w-3.5 h-3.5 text-amber-500" />
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 shrink-0 whitespace-nowrap">
+                <Swords className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                 <span>博弈推演中 · Game Mode</span>
               </span>
             ) : isInvestigating ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-purple-500/15 text-purple-600 dark:text-purple-300 border border-purple-500/30 shrink-0 whitespace-nowrap">
-                <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-purple-50 dark:bg-purple-500/15 text-purple-800 dark:text-purple-300 border border-purple-300 dark:border-purple-500/30 shrink-0 whitespace-nowrap">
+                <span className="w-2 h-2 rounded-full bg-purple-600 dark:bg-purple-400 animate-pulse" />
                 <span>进行中 · Investigating</span>
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-surface-subtle text-fg-muted border border-border shrink-0 whitespace-nowrap">
-                <Clock className="w-3.5 h-3.5" />
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-surface-subtle text-fg-secondary border border-border shrink-0 whitespace-nowrap">
+                <Clock className="w-3.5 h-3.5 text-fg-muted" />
                 <span>待响应 · Open</span>
               </span>
             )}
 
             {/* Mode indicator pill */}
             {isGame && !isResolved && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-surface-subtle text-fg-muted border border-border shrink-0">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono font-medium bg-surface-subtle text-fg-secondary border border-border shrink-0">
                 <span>三元博弈</span>
               </span>
             )}
@@ -216,7 +216,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                 <Edit3 className="w-3.5 h-3.5" />
               </button>
             )}
-            <div className="flex items-center gap-1.5 text-xs text-fg-muted group-hover:text-accent transition-colors font-medium whitespace-nowrap">
+            <div className="flex items-center gap-1.5 text-xs text-fg-secondary group-hover:text-accent transition-colors font-medium whitespace-nowrap">
               <MessageSquare className="w-3.5 h-3.5" />
               <span>{topic.repliesCount} 条讨论</span>
               <ChevronRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
@@ -227,7 +227,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
         {/* Topic Title */}
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="text-purple-500 font-mono text-xs font-bold px-1.5 py-0.5 rounded bg-purple-500/10 border border-purple-500/20 shrink-0">
+            <span className="text-purple-700 dark:text-purple-300 font-mono text-xs font-bold px-1.5 py-0.5 rounded bg-purple-50 dark:bg-purple-500/15 border border-purple-200 dark:border-purple-500/30 shrink-0">
               TOPIC
             </span>
             <h3 className="text-sm sm:text-base font-bold text-fg group-hover:text-accent transition-colors select-text min-w-0 break-words">
@@ -246,20 +246,20 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
         {isResolved && ruling && (
           <div className={`rounded-xl border p-3.5 space-y-2.5 text-xs font-sans ${
             ruling.decisionType === 'adopt_proposer'
-              ? 'bg-emerald-500/10 border-emerald-500/30'
+              ? 'bg-emerald-50/70 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/30'
               : ruling.decisionType === 'reject_rebuild'
-              ? 'bg-rose-500/10 border-rose-500/30'
-              : 'bg-purple-500/10 border-purple-500/30'
+              ? 'bg-rose-50/70 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30'
+              : 'bg-purple-50/70 dark:bg-purple-500/10 border-purple-200 dark:border-purple-500/30'
           }`}>
             <div className={`flex items-center justify-between border-b pb-2 ${
               ruling.decisionType === 'adopt_proposer'
-                ? 'border-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                ? 'border-emerald-200/80 dark:border-emerald-500/20 text-emerald-800 dark:text-emerald-300'
                 : ruling.decisionType === 'reject_rebuild'
-                ? 'border-rose-500/20 text-rose-700 dark:text-rose-300'
-                : 'border-purple-500/20 text-purple-700 dark:text-purple-300'
+                ? 'border-rose-200/80 dark:border-rose-500/20 text-rose-800 dark:text-rose-300'
+                : 'border-purple-200/80 dark:border-purple-500/20 text-purple-800 dark:text-purple-300'
             }`}>
               <div className="flex items-center gap-2 font-bold">
-                <Scale className="w-4 h-4" />
+                <Scale className="w-4 h-4 shrink-0" />
                 <span>
                   {ruling.decisionType === 'adopt_proposer'
                     ? '⚖️ 仲裁裁决：采纳主导方案'
@@ -268,13 +268,13 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                     : '📊 仲裁裁决：达成架构权衡矩阵'}
                 </span>
               </div>
-              <span className="text-[10px] font-mono opacity-80">
+              <span className="text-[10px] font-mono font-medium shrink-0">
                 {ruling.decidedAt}
               </span>
             </div>
 
             <p className="text-fg leading-relaxed">
-              <span className="font-semibold opacity-90 mr-1.5">
+              <span className="font-semibold mr-1.5">
                 {ruling.arbiterName} 裁决结论:
               </span>
               {ruling.summary}
@@ -282,15 +282,15 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
 
             {/* Trade-Off Points */}
             {ruling.tradeOffPoints && ruling.tradeOffPoints.length > 0 && (
-              <div className="p-2.5 rounded-lg bg-surface/60 border border-border/50 space-y-1.5">
+              <div className="p-2.5 rounded-lg bg-surface dark:bg-surface/60 border border-border shadow-2xs space-y-1.5">
                 <div className="text-[11px] font-semibold text-fg flex items-center gap-1">
-                  <SlidersHorizontal className="w-3 h-3 text-purple-500" />
+                  <SlidersHorizontal className="w-3 h-3 text-purple-600 dark:text-purple-400" />
                   <span>核心架构权衡点:</span>
                 </div>
                 <div className="space-y-1">
                   {ruling.tradeOffPoints.map((point, idx) => (
                     <div key={idx} className="text-[11px] text-fg-secondary flex items-start gap-1.5 font-sans">
-                      <span className="text-purple-500 shrink-0 font-mono">•</span>
+                      <span className="text-purple-600 dark:text-purple-400 shrink-0 font-mono font-bold">•</span>
                       <span>{point}</span>
                     </div>
                   ))}
@@ -301,7 +301,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
             {/* Impacted Files */}
             {ruling.impactedFiles && ruling.impactedFiles.length > 0 && (
               <div className="flex items-center gap-1.5 flex-wrap pt-1 text-[11px]">
-                <span className="text-fg-muted flex items-center gap-1">
+                <span className="text-fg-secondary font-medium flex items-center gap-1">
                   <FileCode2 className="w-3 h-3 text-accent" />
                   <span>影响文件:</span>
                 </span>
@@ -320,27 +320,27 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
 
         {/* Standard Decision Record Rollup (When Resolved without Ruling) */}
         {isResolved && !ruling && topic.decisionRecord && (
-          <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/30 p-3.5 space-y-2.5 text-xs font-sans">
-            <div className="flex items-center justify-between border-b border-emerald-500/20 pb-2">
-              <div className="flex items-center gap-2 font-bold text-emerald-700 dark:text-emerald-300">
-                <ShieldCheck className="w-4 h-4 text-emerald-500" />
+          <div className="rounded-xl bg-emerald-50/70 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 p-3.5 space-y-2.5 text-xs font-sans">
+            <div className="flex items-center justify-between border-b border-emerald-200/80 dark:border-emerald-500/20 pb-2">
+              <div className="flex items-center gap-2 font-bold text-emerald-800 dark:text-emerald-300">
+                <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                 <span>架构决策卡片 (Decision Record)</span>
               </div>
-              <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono">
+              <span className="text-[10px] text-emerald-800 dark:text-emerald-300 font-mono font-medium">
                 {topic.decisionRecord.resolvedAt}
               </span>
             </div>
 
             <p className="text-fg leading-relaxed">
-              <span className="font-semibold text-emerald-600 dark:text-emerald-400 mr-1.5">最终选定方案:</span>
+              <span className="font-semibold text-emerald-800 dark:text-emerald-300 mr-1.5">最终选定方案:</span>
               {topic.decisionRecord.solution}
             </p>
 
             {/* Impacted Files */}
             {topic.decisionRecord.impactedFiles && topic.decisionRecord.impactedFiles.length > 0 && (
               <div className="flex items-center gap-1.5 flex-wrap pt-1 text-[11px]">
-                <span className="text-fg-muted flex items-center gap-1">
-                  <FileCode2 className="w-3 h-3 text-emerald-500" />
+                <span className="text-fg-secondary font-medium flex items-center gap-1">
+                  <FileCode2 className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
                   <span>影响文件:</span>
                 </span>
                 {topic.decisionRecord.impactedFiles.map((file) => (
@@ -357,14 +357,14 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
             {/* Approvers */}
             {topic.decisionRecord.approvers && topic.decisionRecord.approvers.length > 0 && (
               <div className="flex items-center gap-1.5 flex-wrap pt-0.5 text-[11px]">
-                <span className="text-fg-muted flex items-center gap-1">
-                  <UserCheck className="w-3 h-3 text-emerald-500" />
+                <span className="text-fg-secondary font-medium flex items-center gap-1">
+                  <UserCheck className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
                   <span>审核人:</span>
                 </span>
                 {topic.decisionRecord.approvers.map((approver) => (
                   <span
                     key={approver}
-                    className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30"
+                    className="text-[10px] font-mono font-medium px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30"
                   >
                     ✓ {approver}
                   </span>
@@ -380,21 +380,21 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
             onClick={(e) => e.stopPropagation()}
             className={`rounded-xl border px-3 py-2.5 text-xs font-sans transition-all space-y-2 ${
               execStatus === 'applied'
-                ? 'bg-emerald-500/15 border-emerald-500/40'
+                ? 'bg-emerald-50/80 dark:bg-emerald-500/15 border-emerald-300 dark:border-emerald-500/40'
                 : execStatus === 'completed'
-                ? 'bg-cyan-500/10 border-cyan-500/35'
+                ? 'bg-cyan-50/80 dark:bg-cyan-500/10 border-cyan-300 dark:border-cyan-500/35'
                 : isCurrentlyRunning
-                ? 'bg-blue-500/10 border-blue-500/35'
+                ? 'bg-blue-50/80 dark:bg-blue-500/10 border-blue-300 dark:border-blue-500/35'
                 : execStatus === 'queued'
-                ? 'bg-amber-500/10 border-amber-500/35'
+                ? 'bg-amber-50/80 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/35'
                 : execStatus === 'failed'
-                ? 'bg-rose-500/10 border-rose-500/35'
-                : 'bg-surface/60 border-border/60'
+                ? 'bg-rose-50/80 dark:bg-rose-500/10 border-rose-300 dark:border-rose-500/35'
+                : 'bg-surface-subtle dark:bg-surface/60 border-border'
             }`}
           >
             {overlappingFiles.length > 0 && execStatus !== 'applied' && (
-              <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 text-[10px] text-amber-700 dark:text-amber-300 font-medium">
-                <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-amber-50 dark:bg-amber-500/15 border border-amber-300 dark:border-amber-500/30 text-[10px] text-amber-800 dark:text-amber-300 font-medium">
+                <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
                 <span>⚠️ 文件重叠预警 ({overlappingFiles.join(', ')}) — 存在并行落地议题触及相同文件，建议依次合入</span>
               </div>
             )}
@@ -407,27 +407,27 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                 </span>
 
                 {execStatus === 'applied' ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
-                    <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100/80 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
                     <span>已物理合入工作区 {execState?.executionAppliedAt ? `(${execState.executionAppliedAt})` : ''}</span>
                   </span>
                 ) : isCurrentlyRunning ? (
-                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-500/30">
-                    <Loader2 className="w-3 h-3 text-blue-500 animate-spin" />
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100/80 dark:bg-blue-500/20 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-500/30">
+                    <Loader2 className="w-3 h-3 text-blue-600 dark:text-blue-400 animate-spin" />
                     <span>
                       {execAgent ? `${execAgent.name}` : '执行 Agent'} 正在执行定案决议 · {elapsedSec}s
                     </span>
                   </span>
                 ) : execStatus === 'queued' ? (
-                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30">
-                    <Clock className="w-3 h-3 text-amber-500 animate-pulse" />
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100/80 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30">
+                    <Clock className="w-3 h-3 text-amber-600 dark:text-amber-400 animate-pulse" />
                     <span>
                       {execAgent ? `${execAgent.name}` : '执行 Agent'} 忙碌排队中 · 前序任务完成后自动启动
                     </span>
                   </span>
                 ) : execStatus === 'completed' ? (
-                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30">
-                    <Sparkles className="w-3 h-3 text-cyan-500" />
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-cyan-100/80 dark:bg-cyan-500/20 text-cyan-800 dark:text-cyan-300 border border-cyan-300 dark:border-cyan-500/30">
+                    <Sparkles className="w-3 h-3 text-cyan-600 dark:text-cyan-400" />
                     <span>
                       {execAgent ? `${execAgent.name}` : '执行 Agent'}{' '}
                       {execState?.executionUiMeta?.statusSummary ||
@@ -437,12 +437,12 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                     </span>
                   </span>
                 ) : execStatus === 'failed' ? (
-                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-500/30">
-                    <AlertTriangle className="w-3 h-3 text-rose-500" />
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100/80 dark:bg-rose-500/20 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30">
+                    <AlertTriangle className="w-3 h-3 text-rose-600 dark:text-rose-400" />
                     <span>落地执行异常: {execState?.executionSummary || '执行中断'}</span>
                   </span>
                 ) : (
-                  <span className="text-[11px] text-fg-muted">
+                  <span className="text-[11px] text-fg-secondary">
                     尚未指派执行 Agent 推进决议落地
                   </span>
                 )}
@@ -521,7 +521,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                   <button
                     type="button"
                     onClick={onClick}
-                    className="px-2.5 py-1 rounded-lg bg-accent/15 hover:bg-accent/25 border border-accent/30 text-accent text-[11px] font-semibold flex items-center gap-1 transition-all cursor-pointer"
+                    className="px-2.5 py-1 rounded-lg bg-accent hover:bg-accent-hover text-accent-fg text-[11px] font-semibold flex items-center gap-1 transition-all cursor-pointer shadow-2xs"
                   >
                     <Wrench className="w-3 h-3" />
                     <span>{execStatus === 'failed' ? '进入抽屉重试' : '指派落地 Agent'}</span>
@@ -531,8 +531,8 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
             </div>
 
             {isCurrentlyRunning && (
-              <div className="text-[11px] font-mono text-blue-600 dark:text-blue-300 flex items-center gap-2 bg-surface/60 px-2.5 py-1.5 rounded-lg border border-blue-500/20">
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping shrink-0" />
+              <div className="text-[11px] font-mono text-blue-800 dark:text-blue-300 flex items-center gap-2 bg-surface dark:bg-surface/60 px-2.5 py-1.5 rounded-lg border border-blue-200 dark:border-blue-500/20">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-600 dark:bg-blue-400 animate-ping shrink-0" />
                 <span className="truncate">
                   {liveExecInfo?.currentActionDetail || '正在读取工作区上下文并推进定案决议落地...'}
                 </span>
@@ -545,7 +545,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
         <div className="flex items-center justify-between pt-2 border-t border-border-subtle gap-x-3 gap-y-2 flex-wrap">
           {/* Agent Avatar Stack & Game Role Breakdown */}
           <div className="flex items-center gap-2 flex-wrap min-w-0">
-            <span className="text-[11px] text-fg-muted whitespace-nowrap">协同成员:</span>
+            <span className="text-[11px] text-fg-secondary whitespace-nowrap">协同成员:</span>
             <div className="flex items-center -space-x-1.5 shrink-0">
               {participatingAgents.length > 0 ? (
                 participatingAgents.map((ag) => (
@@ -572,26 +572,26 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
 
             {/* Role Breakdown Pill for Game Mode */}
             {isGame && topic.gameRoles ? (
-              <div className="flex items-center gap-1 text-[10px] font-mono ml-1 flex-wrap">
-                <span className="px-1.5 py-0.2 rounded bg-blue-500/10 text-blue-600 dark:text-blue-300 border border-blue-500/20 whitespace-nowrap">
+              <div className="flex items-center gap-1 text-[10px] font-mono font-medium ml-1 flex-wrap">
+                <span className="px-1.5 py-0.2 rounded bg-blue-50 dark:bg-blue-500/15 text-blue-800 dark:text-blue-300 border border-blue-200 dark:border-blue-500/25 whitespace-nowrap">
                   主导 {proposers.length}
                 </span>
-                <span className="px-1.5 py-0.2 rounded bg-rose-500/10 text-rose-600 dark:text-rose-300 border border-rose-500/20 whitespace-nowrap">
+                <span className="px-1.5 py-0.2 rounded bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-500/25 whitespace-nowrap">
                   挑战 {challengers.length}
                 </span>
-                <span className="px-1.5 py-0.2 rounded bg-purple-500/10 text-purple-600 dark:text-purple-300 border border-purple-500/20 whitespace-nowrap">
+                <span className="px-1.5 py-0.2 rounded bg-purple-50 dark:bg-purple-500/15 text-purple-800 dark:text-purple-300 border border-purple-200 dark:border-purple-500/25 whitespace-nowrap">
                   仲裁 {hasHumanArbiter ? '👤' : ''}{arbiters.length > 0 ? (hasHumanArbiter ? '+' : '') + arbiters.length : ''}
                 </span>
               </div>
             ) : (
-              <span className="text-[10px] text-fg-muted font-mono whitespace-nowrap">
+              <span className="text-[10px] text-fg-secondary font-mono whitespace-nowrap">
                 {participatingAgents.length} 位协作
               </span>
             )}
           </div>
 
           {/* Latest reply snippet or dive in button */}
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-purple-600 dark:text-purple-400 group-hover:text-accent transition-colors shrink-0 whitespace-nowrap ml-auto">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-purple-700 dark:text-purple-400 group-hover:text-accent transition-colors shrink-0 whitespace-nowrap ml-auto">
             <span>进入议题讨论</span>
             <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1 shrink-0" />
           </div>

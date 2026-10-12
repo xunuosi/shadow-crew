@@ -59,6 +59,8 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const root = document.documentElement;
     root.setAttribute('data-theme', resolvedMode);
     root.setAttribute('data-accent', accent);
+    root.classList.toggle('dark', resolvedMode === 'dark');
+    root.style.colorScheme = resolvedMode;
     localStorage.setItem(STORAGE_KEY_MODE, mode);
     localStorage.setItem(STORAGE_KEY_ACCENT, accent);
   }, [resolvedMode, accent, mode]);

@@ -1885,14 +1885,20 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             {topic.rulingRecord ? (
               <div className={`p-3.5 rounded-2xl border text-xs font-sans space-y-2.5 shadow-sm ${
                 topic.rulingRecord.decisionType === 'adopt_proposer'
-                  ? 'bg-emerald-500/10 border-emerald-500/30'
+                  ? 'bg-emerald-50/70 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/30'
                   : topic.rulingRecord.decisionType === 'reject_rebuild'
-                  ? 'bg-rose-500/10 border-rose-500/30'
-                  : 'bg-purple-500/10 border-purple-500/30'
+                  ? 'bg-rose-50/70 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30'
+                  : 'bg-purple-50/70 dark:bg-purple-500/10 border-purple-200 dark:border-purple-500/30'
               }`}>
                 <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div className="flex items-center gap-1.5 font-bold text-fg">
-                    <Scale className="w-4 h-4 text-amber-500 shrink-0" />
+                  <div className={`flex items-center gap-1.5 font-bold ${
+                    topic.rulingRecord.decisionType === 'adopt_proposer'
+                      ? 'text-emerald-800 dark:text-emerald-300'
+                      : topic.rulingRecord.decisionType === 'reject_rebuild'
+                      ? 'text-rose-800 dark:text-rose-300'
+                      : 'text-purple-800 dark:text-purple-300'
+                  }`}>
+                    <Scale className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
                     <span>
                       {topic.rulingRecord.decisionType === 'adopt_proposer'
                         ? '⚖️ 仲裁裁决：采纳主导方案'
@@ -1902,7 +1908,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-[10px] font-mono opacity-80">{topic.rulingRecord.decidedAt}</span>
+                    <span className="text-[10px] font-mono font-medium text-fg-secondary">{topic.rulingRecord.decidedAt}</span>
                     {messages.length > 0 && (
                       <button
                         type="button"
@@ -1916,7 +1922,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     <button
                       type="button"
                       onClick={() => setActiveDrawerView('adr')}
-                      className="px-2 py-0.5 rounded-md bg-purple-500/15 border border-purple-500/30 hover:bg-purple-500/25 text-purple-600 dark:text-purple-300 text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
+                      className="px-2 py-0.5 rounded-md bg-purple-50 dark:bg-purple-500/15 border border-purple-300 dark:border-purple-500/30 hover:bg-purple-100 dark:hover:bg-purple-500/25 text-purple-800 dark:text-purple-300 text-[10px] font-mono font-medium flex items-center gap-1 transition-colors cursor-pointer"
                       title="切换至活体 ADR 画布查看完整结构化架构决策文档"
                     >
                       <FileText className="w-2.5 h-2.5" />
@@ -1941,7 +1947,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 </div>
 
                 {topic.rulingRecord.solution && (
-                  <div className="text-[10px] select-text p-2.5 rounded-xl bg-surface/70 border border-border/60 leading-relaxed">
+                  <div className="text-[10px] select-text p-2.5 rounded-xl bg-surface dark:bg-surface/70 border border-border leading-relaxed">
                     <span className="font-semibold text-fg">落地推进方案：</span>
                     <span className="text-fg-secondary">{topic.rulingRecord.solution}</span>
                   </div>
@@ -1969,10 +1975,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     <button
                       type="button"
                       onClick={() => setIsRulingDetailExpanded((prev) => !prev)}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-surface/80 hover:bg-surface border border-border/80 flex items-center justify-between text-[10px] text-fg-secondary hover:text-fg transition-colors cursor-pointer select-none"
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-surface hover:bg-surface-hover border border-border flex items-center justify-between text-[10px] text-fg-secondary hover:text-fg transition-colors cursor-pointer select-none"
                     >
                       <div className="flex items-center gap-1.5 font-medium">
-                        <Scale className="w-3 h-3 text-amber-500 shrink-0" />
+                        <Scale className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
                         <span>
                           {isRulingDetailExpanded ? '收起' : '展开'} MCDA 运筹决策矩阵
                           {(topic.rulingRecord.minorityReport || topic.gameTheoreticState?.minorityReport)
@@ -1980,7 +1986,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                             : ''}
                         </span>
                       </div>
-                      <div className="flex items-center gap-1 text-purple-600 dark:text-purple-400 font-mono">
+                      <div className="flex items-center gap-1 text-purple-700 dark:text-purple-400 font-mono font-medium">
                         <span>{isRulingDetailExpanded ? '收起详情' : '查看详情'}</span>
                         {isRulingDetailExpanded ? (
                           <ChevronUp className="w-3 h-3" />
@@ -1997,22 +2003,22 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                           const mcda = topic.rulingRecord.mcdaPayload || topic.gameTheoreticState?.mcdaPayload;
                           if (!mcda) return null;
                           return (
-                            <div className="space-y-1.5 p-2 rounded-lg bg-surface/80 border border-border/80 shadow-2xs">
+                            <div className="space-y-1.5 p-2 rounded-lg bg-surface border border-border shadow-2xs">
                               <div className="flex items-center justify-between text-[10px]">
                                 <div className="flex items-center gap-1.5 font-bold text-fg">
-                                  <Scale className="w-3.5 h-3.5 text-amber-500" />
+                                  <Scale className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                                   <span>MCDA 运筹决策矩阵 (BWM 最优最劣法)</span>
                                 </div>
                                 <div className="flex items-center gap-1.5">
                                   {mcda.confidenceMatrix && (
-                                    <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-blue-500/15 text-blue-600 dark:text-blue-400 font-medium">
+                                    <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-blue-50 dark:bg-blue-500/15 text-blue-800 dark:text-blue-300 border border-blue-200 dark:border-blue-500/25 font-medium">
                                       ReConcile 置信度加权
                                     </span>
                                   )}
-                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-medium ${
+                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-medium border ${
                                     mcda.consistencyPassed 
-                                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' 
-                                      : 'bg-amber-500/15 text-amber-600'
+                                      ? 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/25' 
+                                      : 'bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-500/25'
                                   }`}>
                                     ξ* = {mcda.consistencyIndex} ({mcda.consistencyPassed ? '✓ 逻辑严密一致' : '⚠️ 需关注'})
                                   </span>
@@ -2022,18 +2028,18 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                               {/* Criteria Weights */}
                               <div className="grid grid-cols-4 gap-1 text-[9px] font-mono">
                                 {mcda.criteria.map((c) => (
-                                  <div key={c.id} className="p-1 rounded bg-surface-subtle border border-border/40 text-center">
-                                    <div className="text-fg-muted truncate">{c.name.split('与')[0]}</div>
+                                  <div key={c.id} className="p-1 rounded bg-surface-subtle border border-border/60 text-center">
+                                    <div className="text-fg-secondary truncate">{c.name.split('与')[0]}</div>
                                     <div className="font-bold text-fg">{((mcda.computedWeights[c.id] || 0) * 100).toFixed(1)}%</div>
                                   </div>
                                 ))}
                               </div>
 
                               {/* Mathematical Ranking */}
-                              <div className="space-y-1 pt-1 border-t border-border/40">
-                                <div className="text-[9px] font-semibold text-fg-muted">运筹效用综合评分排名:</div>
+                              <div className="space-y-1 pt-1 border-t border-border/60">
+                                <div className="text-[9px] font-semibold text-fg-secondary">运筹效用综合评分排名:</div>
                                 {mcda.ranking.map((r) => (
-                                  <div key={r.rank} className="flex items-center justify-between text-[9px] px-1.5 py-0.5 rounded bg-surface-subtle/80">
+                                  <div key={r.rank} className="flex items-center justify-between text-[9px] px-1.5 py-0.5 rounded bg-surface-subtle">
                                     <span className="font-medium text-fg truncate">#{r.rank} {r.alternative.split(' (')[0]}</span>
                                     <span className="font-mono text-fg-secondary">效用: {(r.totalUtility * 10).toFixed(2)} / 10</span>
                                   </div>
@@ -2042,14 +2048,14 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
                               {/* CognoNexus 实证打分溯源链 (Audit Provenance) */}
                               {mcda.scoreProvenance && Object.keys(mcda.scoreProvenance).length > 0 && (
-                                <div className="space-y-1 pt-1.5 border-t border-border/40">
-                                  <div className="text-[9px] font-semibold text-fg-muted flex items-center justify-between">
+                                <div className="space-y-1 pt-1.5 border-t border-border/60">
+                                  <div className="text-[9px] font-semibold text-fg-secondary flex items-center justify-between">
                                     <span>实证打分溯源链 (Audit Provenance):</span>
-                                    <span className="text-[8px] text-primary/80 font-mono">神经符号绑定</span>
+                                    <span className="text-[8px] text-accent font-mono">神经符号绑定</span>
                                   </div>
                                   <div className="space-y-1 text-[8px] text-fg-secondary">
                                     {Object.entries(mcda.scoreProvenance).map(([altName, critMap]) => (
-                                      <div key={altName} className="p-1 rounded bg-surface-subtle/50 border border-border/30">
+                                      <div key={altName} className="p-1 rounded bg-surface-subtle border border-border/50">
                                         <span className="font-semibold text-fg block truncate">{altName.split(' (')[0]}</span>
                                         <div className="space-y-0.5 mt-0.5">
                                           {Object.entries(critMap).map(([critId, reason]) => {
@@ -2076,23 +2082,23 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                           const mr = topic.rulingRecord.minorityReport || topic.gameTheoreticState?.minorityReport;
                           if (!mr) return null;
                           return (
-                            <div className="space-y-1.5 p-2 rounded-lg bg-surface/80 border border-border/80 shadow-2xs">
+                            <div className="space-y-1.5 p-2 rounded-lg bg-surface border border-border shadow-2xs">
                               <div className="flex items-center justify-between text-[10px]">
-                                <div className="flex items-center gap-1.5 font-bold text-rose-600 dark:text-rose-400">
+                                <div className="flex items-center gap-1.5 font-bold text-rose-700 dark:text-rose-400">
                                   <AlertTriangle className="w-3.5 h-3.5" />
                                   <span>伴生少数派异议报告 (Minority Report)</span>
                                 </div>
-                                <span className="text-[9px] text-fg-muted font-mono">{mr.dissentingAgentName}</span>
+                                <span className="text-[9px] text-fg-secondary font-mono">{mr.dissentingAgentName}</span>
                               </div>
                               <div className="text-[9px] text-fg-secondary leading-relaxed">
                                 <span className="font-semibold text-fg">保留立场：</span>{mr.coreDissentThesis}
                               </div>
-                              <div className="text-[9px] text-fg-muted">
+                              <div className="text-[9px] text-fg-secondary">
                                 <span className="font-semibold text-fg">自洽依据：</span>{mr.rationalityBasis}
                               </div>
                               {mr.reopeningTriggers && mr.reopeningTriggers.length > 0 && (
-                                <div className="pt-1 border-t border-border/40">
-                                  <span className="text-[9px] font-semibold text-amber-600 dark:text-amber-400">🚨 黑天鹅重启判定条件：</span>
+                                <div className="pt-1 border-t border-border/60">
+                                  <span className="text-[9px] font-semibold text-amber-800 dark:text-amber-400">🚨 黑天鹅重启判定条件：</span>
                                   <ul className="list-disc list-inside text-[9px] text-fg-secondary space-y-0.5 mt-0.5">
                                     {mr.reopeningTriggers.map((t, idx) => (
                                       <li key={idx}>{t}</li>
@@ -2108,7 +2114,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   </div>
                 )}
 
-                <div className="text-[9px] text-fg-muted font-mono flex items-center justify-between pt-1 border-t border-border/50">
+                <div className="text-[9px] text-fg-secondary font-mono flex items-center justify-between pt-1 border-t border-border/60">
                   <span>裁决官: {topic.rulingRecord.arbiterName}</span>
                   {topic.rulingRecord.impactedFiles && topic.rulingRecord.impactedFiles.length > 0 && (
                     <span className="truncate max-w-[200px]" title={topic.rulingRecord.impactedFiles.join(', ')}>
@@ -2118,10 +2124,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 </div>
 
                 {/* Post-Arbitration Execution Status Row */}
-                <div className="pt-2 border-t border-border/50 flex flex-col gap-2">
+                <div className="pt-2 border-t border-border/60 flex flex-col gap-2">
                   {overlappingFiles.length > 0 && (
-                    <div className="px-2 py-1 rounded-md bg-amber-500/15 border border-amber-500/30 text-[10px] text-amber-800 dark:text-amber-200 flex items-center gap-1.5">
-                      <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                    <div className="px-2 py-1 rounded-md bg-amber-50 dark:bg-amber-500/15 border border-amber-300 dark:border-amber-500/30 text-[10px] text-amber-800 dark:text-amber-200 flex items-center gap-1.5">
+                      <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
                       <span className="truncate">
                         ⚠️ 与其他并行落地议题重叠文件: <code className="font-mono">{overlappingFiles.join(', ')}</code>
                       </span>
@@ -2130,8 +2136,8 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center gap-1.5 text-[10px] min-w-0">
-                      <Wrench className="w-3 h-3 text-fg-muted shrink-0" />
-                      <span className="text-fg-muted shrink-0">落地执行:</span>
+                      <Wrench className="w-3 h-3 text-fg-secondary shrink-0" />
+                      <span className="text-fg-secondary shrink-0">落地执行:</span>
                       {(() => {
                         const executorId = topic.rulingRecord.executorId || topic.gameTheoreticState?.assignedExecutorId || topic.decisionRecord?.executorId;
                         const executorAgent = agents.find((a) => a.id === executorId);
@@ -2143,19 +2149,19 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                           <span className="flex items-center gap-1 font-mono font-medium flex-wrap">
                             <span className="text-fg">{executorAgent ? executorAgent.name : executorId}</span>
                             {status === 'queued' && (
-                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-sans">
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 font-sans">
                                 <Clock className="w-2.5 h-2.5" />
                                 排队等待中...
                               </span>
                             )}
                             {status === 'running' && (
-                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-600 dark:text-amber-400 font-sans">
-                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 font-sans">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-600 dark:bg-amber-400 animate-ping" />
                                 正在执行决议...
                               </span>
                             )}
                             {status === 'completed' && (
-                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-sans">
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-50 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 font-sans">
                                 <CheckCircle2 className="w-2.5 h-2.5" />
                                 {topic.gameTheoreticState?.executionUiMeta?.statusSummary ||
                                   (topicExecutionDiffs.length > 0 ? '工作区变更就绪' : '决议已交付')}
@@ -2168,7 +2174,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                               </span>
                             )}
                             {status === 'failed' && (
-                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-rose-500/15 text-rose-600 dark:text-rose-400 font-sans">
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30 font-sans">
                                 执行异常
                               </span>
                             )}
@@ -2191,10 +2197,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                               artifactsDir: topic.gameTheoreticState?.executionArtifactsDir,
                             })
                           }
-                          className="px-2 py-1 rounded-lg bg-surface border border-emerald-500/40 hover:bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                          className="px-2 py-1 rounded-lg bg-surface border border-emerald-400 dark:border-emerald-500/40 hover:bg-emerald-50 dark:hover:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 text-[10px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
                           title="在 Codex Diff 视图中审查生成的变更"
                         >
-                          <GitCompare className="w-3 h-3 text-emerald-500" />
+                          <GitCompare className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
                           <span>
                             {topic.gameTheoreticState?.executionUiMeta?.reviewActionLabel || '审查变更'} ({topicExecutionDiffs.length})
                           </span>
@@ -2245,13 +2251,13 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 </div>
               </div>
             ) : (
-              <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex flex-col gap-2.5 shadow-sm">
+              <div className="p-3.5 rounded-2xl bg-emerald-50/70 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 flex flex-col gap-2.5 shadow-sm">
                 <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                  <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
                     <div className="text-[11px] font-semibold">
                       本议题已达成共识并归档
-                      <div className="text-[9px] text-emerald-600/80 dark:text-emerald-400/80 font-normal">
+                      <div className="text-[9px] text-emerald-700 dark:text-emerald-400/90 font-normal">
                         决策结论已合流至主频道时间轴
                       </div>
                     </div>
@@ -2281,9 +2287,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                             artifactsDir: topic.gameTheoreticState?.executionArtifactsDir,
                           })
                         }
-                        className="px-2 py-1 rounded-lg bg-surface border border-emerald-500/40 hover:bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                        className="px-2 py-1 rounded-lg bg-surface border border-emerald-400 dark:border-emerald-500/40 hover:bg-emerald-50 dark:hover:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 text-[10px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
                       >
-                        <GitCompare className="w-3 h-3 text-emerald-500" />
+                        <GitCompare className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
                         <span>
                           {topic.gameTheoreticState?.executionUiMeta?.reviewActionLabel || '审查变更'} ({topicExecutionDiffs.length})
                         </span>
@@ -2332,35 +2338,35 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 </div>
 
                 {topic.decisionRecord?.solution && (
-                  <div className="text-[11px] select-text p-2.5 rounded-xl bg-surface/70 border border-emerald-500/20 leading-relaxed text-fg">
-                    <span className="font-semibold text-emerald-700 dark:text-emerald-300">最终选定方案：</span>
+                  <div className="text-[11px] select-text p-2.5 rounded-xl bg-surface dark:bg-surface/70 border border-emerald-200 dark:border-emerald-500/20 leading-relaxed text-fg">
+                    <span className="font-semibold text-emerald-800 dark:text-emerald-300">最终选定方案：</span>
                     <span>{topic.decisionRecord.solution}</span>
                   </div>
                 )}
 
                 {(topic.decisionRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId) && (
-                  <div className="pt-1.5 border-t border-emerald-500/20 flex items-center gap-2 text-[10px] text-emerald-800 dark:text-emerald-300 flex-wrap">
-                    <Wrench className="w-3 h-3 opacity-75" />
+                  <div className="pt-1.5 border-t border-emerald-200 dark:border-emerald-500/20 flex items-center gap-2 text-[10px] text-emerald-800 dark:text-emerald-300 flex-wrap">
+                    <Wrench className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
                     <span>落地执行 Agent:</span>
-                    <span className="font-mono font-medium">
+                    <span className="font-mono font-semibold">
                       {agents.find((a) => a.id === (topic.decisionRecord?.executorId || topic.gameTheoreticState?.assignedExecutorId))?.name ||
                         topic.decisionRecord?.executorId ||
                         topic.gameTheoreticState?.assignedExecutorId}
                     </span>
                     {topic.gameTheoreticState?.executionStatus === 'queued' && (
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-700 dark:text-amber-300 font-sans">
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 font-sans">
                         <Clock className="w-2.5 h-2.5" />
                         排队等待中...
                       </span>
                     )}
                     {topic.gameTheoreticState?.executionStatus === 'running' && (
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-700 dark:text-amber-300 font-sans">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 font-sans">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-600 dark:bg-amber-400 animate-ping" />
                         正在执行决议...
                       </span>
                     )}
                     {topic.gameTheoreticState?.executionStatus === 'completed' && (
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-sans font-medium">
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-100/80 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 font-sans font-medium">
                         {topic.gameTheoreticState?.executionUiMeta?.statusSummary ||
                           (topicExecutionDiffs.length > 0 ? '工作区变更就绪' : '决议已交付')}
                       </span>

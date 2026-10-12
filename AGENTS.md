@@ -76,3 +76,49 @@ Shadow Crew —— 多 Agent 协同桌面应用（Tauri + React 19 + Vite）。
 - 严格遵循上述数据治理原则，**代码层已将其全部拔除，严禁任何形式的死灰复燃**。
 - 若本地存储中仍残留这些 key，按废弃的测试脏数据对待（由用户或清理工具直接重置），不要在代码层做任何自动适配或迁移读取。
 - **边界说明**：外部独立 ACP 运行时自身强依赖的进程级启动环境变量（例如 Claude Code 官方进程自身运行所必需的 `ANTHROPIC_API_KEY`）属于目标子进程运行配置，非本系统内部模型数据，按正常环境变量对待，不要误删。
+
+---
+
+## UI 视觉与双主题配色准则（白昼 / 暗夜高对比度强制规范）
+
+为彻底杜绝纯白主题（`data-theme="light"`）或暗夜主题（`data-theme="dark"`）下出现「浅色字叠浅色底」「深色字叠深色底」等可读性缺陷，所有 UI 组件开发与样式修改必须严格遵循以下设计系统规范（对标 **GitHub Primer**、**Radix Colors 12 阶色彩体系** 与 **Linear**）：
+
+### 1. Tailwind v4 `dark:` 变体与主题令牌强制绑定规则
+
+1. **严禁跟随系统媒体查询触发 `dark:*`**：
+   - `src/index.css` 必须保留 `@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));`，确保所有 `dark:*` 工具类仅在 `<html data-theme="dark">` 下生效，绝不因用户操作系统处于深色模式而污染应用的纯白主题。
+2. **强调色实心按钮必须显式配对前景色**：
+   - 凡使用 `bg-accent` 的实心主按钮，必须成对声明 `text-accent-fg`（映射自 `--color-accent-fg` / `--color-accent-text`），严禁遗漏文本颜色类名导致回退为浏览器默认黑字。
+
+### 2. 基础表面与三级文本层级规范（Base & Typography Tokens）
+
+| 语义角色 | CSS 变量 / Tailwind 类 | 纯白主题 (`data-theme="light"`) | 暗夜主题 (`data-theme="dark"`) | 使用规范 |
+| :--- | :--- | :--- | :--- | :--- |
+| **应用底层画布** | `--bg-canvas` (`bg-canvas`) | `#F4F6FA`（冷灰白） | `#080B11`（深邃曜石黑） | 承载顶层工作区面板，拉开背景层次 |
+| **卡片/面板主背景** | `--bg-surface` (`bg-surface`) | `#FFFFFF`（纯白） | `#111724`（深蓝灰面板） | 卡片、抽屉、弹窗主基底，保持纯净阅读面 |
+| **次级/内嵌容器** | `--bg-surface-subtle` (`bg-surface-subtle`) | `#F8FAFC`（Slate-50） | `#0D121C`（内凹深底） | 代码块、折叠区、次级信息栏 |
+| **悬浮态背景** | `--bg-surface-hover` (`bg-surface-hover`) | `#F1F5F9`（Slate-100） | `#182233`（Slate-850） | 列表项、次级按钮 Hover 态 |
+| **一级主文本** | `--text-primary` (`text-fg`) | `#0F172A`（Slate-900） | `#F8FAFC`（Slate-50） | 标题、正文、核心结论（对比度 > 16:1） |
+| **二级次要文本** | `--text-secondary` (`text-fg-secondary`) | `#334155`（Slate-700） | `#94A3B8`（Slate-400） | 摘要描述、列表项、元数据说明 |
+| **三级辅助文本** | `--text-muted` (`text-fg-muted`) | `#64748B`（Slate-500） | `#64748B`（Slate-500） | 时间戳、占位符、次要图标（严禁在浅底上叠加低于 `0.8` 的透明度导致隐形） |
+
+### 3. 五大业务状态语义色搭配表（Semantic Status Palette）
+
+所有状态胶囊（Badge）、裁决横幅、执行落地舱、告警提示条，**严禁只写单一色阶（如仅写 `text-emerald-400` 或 `text-emerald-500`）**，必须严格按以下双主题组合编写（确保 WCAG AA/AAA 对比度 $\ge 6.5:1$）：
+
+| 状态语义 | 适用场景 | 维度 | 纯白主题 (`light`) 强制类名 | 暗夜主题 (`dark`) 强制类名 |
+| :--- | :--- | :--- | :--- | :--- |
+| **🟢 成功 / 采纳**<br>(`Success / Adopt`) | 仲裁采纳主导、达成共识、合入完成 | **文字色**<br>**图标色**<br>**背景色**<br>**边框色** | `text-emerald-800` (`#065F46`)<br>`text-emerald-600` (`#059669`)<br>`bg-emerald-50` (`#ECFDF5`)<br>`border-emerald-300` (`#6EE7B7`) | `dark:text-emerald-300` (`#6EE7B7`)<br>`dark:text-emerald-400` (`#34D399`)<br>`dark:bg-emerald-500/15`<br>`dark:border-emerald-500/30` |
+| **🟣 权衡 / 议题**<br>(`Purple / Matrix`) | 权衡矩阵裁决、`TOPIC` 标签、进行中、仲裁官 | **文字色**<br>**图标色**<br>**背景色**<br>**边框色** | `text-purple-800` (`#5B21B6`)<br>`text-purple-600` (`#7C3AED`)<br>`bg-purple-50` (`#F5F3FF`)<br>`border-purple-300` (`#D8B4FE`) | `dark:text-purple-300` (`#D8B4FE`)<br>`dark:text-purple-400` (`#C084FC`)<br>`dark:bg-purple-500/15`<br>`dark:border-purple-500/30` |
+| **🟡 博弈 / 预警**<br>(`Warning / Game`) | 博弈推演中、排队等待、文件冲突预警 | **文字色**<br>**图标色**<br>**背景色**<br>**边框色** | `text-amber-800` (`#92400E`)<br>`text-amber-600` (`#D97706`)<br>`bg-amber-50` (`#FFFBEB`)<br>`border-amber-300` (`#FCD34D`) | `dark:text-amber-300` (`#FCD34D`)<br>`dark:text-amber-400` (`#FBBF24`)<br>`dark:bg-amber-500/15`<br>`dark:border-amber-500/30` |
+| **🔴 挑战 / 驳回**<br>(`Danger / Reject`) | 采纳挑战驳回重构、红队挑战者、执行异常 | **文字色**<br>**图标色**<br>**背景色**<br>**边框色** | `text-rose-800` (`#9F1239`)<br>`text-rose-600` (`#E11D48`)<br>`bg-rose-50` (`#FFF1F2`)<br>`border-rose-300` (`#FDA4AF`) | `dark:text-rose-300` (`#FDA4AF`)<br>`dark:text-rose-400` (`#FB7185`)<br>`dark:bg-rose-500/15`<br>`dark:border-rose-500/30` |
+| **🔵 主导 / 执行**<br>(`Info / Proposer`) | 主导提案方、正在执行补丁、信息提示 | **文字色**<br>**图标色**<br>**背景色**<br>**边框色** | `text-blue-800` (`#1E40AF`)<br>`text-blue-600` (`#2563EB`)<br>`bg-blue-50` (`#EFF6FF`)<br>`border-blue-300` (`#93C5FD`) | `dark:text-blue-300` (`#93C5FD`)<br>`dark:text-blue-400` (`#60A5FA`)<br>`dark:bg-blue-500/15`<br>`dark:border-blue-500/30` |
+
+### 4. 容器背景去过度染色与分栏防溢出原则
+
+1. **禁止纯白主题下多层半透明同色背景叠加**：
+   - 外层大卡片（如 `TopicMessageCard`）在纯白主题下必须保持干净的 `bg-surface`（`#FFFFFF`），通过**左侧高饱和度状态色条 + 边框色 + 顶部语义胶囊**传递状态，禁止整卡大面积涂绿/涂紫。
+   - 有色状态块（如 `bg-emerald-50/70`）内部嵌套的子卡片（如「核心架构权衡点」「落地推进方案」），在纯白主题下必须使用实色 `bg-surface border-border` 隔离底色，确保正文阅读锐利清晰。
+2. **多栏布局卡片自适应防溢出**：
+   - 处于可缩放分栏（Sidebar + Timeline + Drawer）内的组件，**严禁使用基于视口宽度的 `sm:flex-nowrap` 锁死单行**；必须使用 `flex-wrap`、外层 `overflow-hidden min-w-0 w-full` 以及右侧操作项 `ml-auto shrink-0`，确保任意分栏宽度下零横向出界。
+

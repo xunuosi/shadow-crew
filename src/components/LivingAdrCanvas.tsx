@@ -584,29 +584,29 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
         </div>
 
         {/* Section 5: Resolution Execution & Deliverables (Agent-Driven UI Meta) */}
-        <div className="p-3.5 rounded-xl bg-emerald-500/[0.08] border border-emerald-500/30 space-y-2.5">
-          <div className="flex items-center justify-between border-b border-emerald-500/25 pb-1.5">
+        <div className="p-3.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-500/[0.08] border border-emerald-200 dark:border-emerald-500/30 space-y-2.5">
+          <div className="flex items-center justify-between border-b border-emerald-200 dark:border-emerald-500/25 pb-1.5">
             <div className="flex items-center gap-1.5 font-bold text-fg text-xs">
-              <span className="w-1.5 h-3.5 rounded-full bg-emerald-500 shrink-0" />
+              <span className="w-1.5 h-3.5 rounded-full bg-emerald-600 dark:bg-emerald-500 shrink-0" />
               <span>
                 {topic.gameTheoreticState?.executionUiMeta?.sectionTitle ||
                   '5. 决议落地与执行交付 (Resolution Execution & Deliverables)'}
               </span>
             </div>
-            <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono font-medium">
+            <span className="text-[10px] text-emerald-800 dark:text-emerald-400 font-mono font-semibold">
               {topic.gameTheoreticState?.executionUiMeta?.podTitle || '🛠️ Executor'}
             </span>
           </div>
 
           {/* Multi-Topic Blast-Radius Overlap Alert */}
           {overlappingFiles.length > 0 && (
-            <div className="p-2 rounded-lg bg-amber-500/15 border border-amber-500/35 flex items-start gap-2 text-[11px] text-amber-800 dark:text-amber-200">
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+            <div className="p-2 rounded-lg bg-amber-50 dark:bg-amber-500/15 border border-amber-300 dark:border-amber-500/35 flex items-start gap-2 text-[11px] text-amber-800 dark:text-amber-200">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
               <div className="flex-1">
                 <span className="font-bold">⚠️ 多议题爆炸半径重叠预警：</span>
                 <span>
                   当前频道内存在其他并行落地议题同时涉及{' '}
-                  <code className="font-mono px-1 py-0.2 rounded bg-amber-500/20">{overlappingFiles.join(', ')}</code>
+                  <code className="font-mono px-1 py-0.2 rounded bg-amber-100 dark:bg-amber-500/20">{overlappingFiles.join(', ')}</code>
                   ，合入变更前请通过审查视图核对顺序。
                 </span>
               </div>
@@ -614,10 +614,10 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
           )}
 
           {/* Executor Status Header */}
-          <div className="p-2.5 rounded-lg bg-surface/85 border border-border flex items-center justify-between gap-2 flex-wrap">
+          <div className="p-2.5 rounded-lg bg-surface dark:bg-surface/85 border border-border flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-2 min-w-0">
-              <Wrench className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-              <span className="text-[11px] text-fg-muted">执行 Agent:</span>
+              <Wrench className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <span className="text-[11px] text-fg-secondary">执行 Agent:</span>
               {executorId ? (
                 <span className="font-mono font-semibold text-fg text-[11px] flex items-center gap-1.5">
                   <span>{executorAgent?.avatar || '🤖'}</span>
@@ -630,21 +630,21 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
 
             <div className="flex items-center gap-1.5">
               {executionStatus === 'queued' && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-medium">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 font-medium">
                   <Clock className="w-3 h-3" />
                   <span>队列等待中 (Agent 正在执行前序任务)</span>
                 </span>
               )}
               {isRunning && (
-                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-mono">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 font-mono">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-600 dark:bg-amber-400 animate-ping" />
                   <span>
                     正在执行定案决议 ({activeExec ? ((now - activeExec.startedAt) / 1000).toFixed(1) : ((now - (topic.gameTheoreticState?.executionStartedAt || now)) / 1000).toFixed(1)}s)
                   </span>
                 </span>
               )}
               {!isRunning && executionStatus === 'completed' && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-semibold">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-emerald-50 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 font-semibold">
                   <CheckCircle2 className="w-3 h-3" />
                   <span>
                     {topic.gameTheoreticState?.executionUiMeta?.statusSummary ||
@@ -659,7 +659,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                 </span>
               )}
               {executionStatus === 'failed' && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30 font-semibold">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30 font-semibold">
                   <AlertTriangle className="w-3 h-3" />
                   <span>执行中断 / 需重新指派</span>
                 </span>
@@ -669,8 +669,8 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
 
           {/* Live Streaming Progress when Running */}
           {isRunning && (
-            <div className="p-2.5 rounded-lg bg-surface border border-amber-500/30 space-y-1.5 animate-in fade-in">
-              <div className="flex items-center justify-between text-[10px] text-amber-600 dark:text-amber-400 font-mono">
+            <div className="p-2.5 rounded-lg bg-surface border border-amber-300 dark:border-amber-500/30 space-y-1.5 animate-in fade-in">
+              <div className="flex items-center justify-between text-[10px] text-amber-800 dark:text-amber-300 font-mono">
                 <span>{activeExec?.currentActionDetail || '正在根据定案决议推进落地交付与结果输出...'}</span>
                 <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
               </div>
@@ -686,7 +686,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
           {executionDiffs.length > 0 ? (
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2 flex-wrap">
-                <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                <span className="text-[10px] font-semibold text-emerald-800 dark:text-emerald-300">
                   {topic.gameTheoreticState?.executionUiMeta?.statusSummary ||
                     `已产出工作区交付文件 (${executionDiffs.length} 个文件)`}:
                 </span>
