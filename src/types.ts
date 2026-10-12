@@ -263,7 +263,95 @@ export type DiscussionMode = 'standard' | 'game_theoretic';
 
 export type GameRoleType = 'proposer' | 'challenger' | 'verifier' | 'arbiter';
 
-export type GameTheoreticStage = 'proposal' | 'challenge' | 'verification' | 'defense' | 'arbitration' | 'concluded' | 'stageFailed';
+export type GameTheoreticStage = 'decomposition' | 'proposal' | 'challenge' | 'verification' | 'defense' | 'arbitration' | 'concluded' | 'stageFailed';
+
+/**
+ * G-Frame 跨模块只读公共接口契约 (Shared Interface Contract)
+ * 用于在模块上下文物理隔离的同时保证跨模块接口 100% 严丝合缝
+ */
+export interface SharedInterfaceContract {
+  contractVersion: number;
+  summary: string;                  // 核心架构边界简述 (≤ 150 字)
+  typeSignatures: string;           // 跨模块共享的 TypeScript Interface / Rust Struct / API 签名定义
+  invariants: string[];             // 全局不可违背的不变量约束
+  lockedAt: string;
+}
+
+export type ModuleComplexityLevel = 'low_deterministic' | 'medium_standard' | 'high_critical';
+
+export type BayesianPosteriorAction =
+  | 'FREEZE_MODULE'
+  | 'ESCALATE_TO_RED_TEAM'
+  | 'SCOPED_DEFENSE_REFINE'
+  | 'CONTINUE_DEBATE';
+
+/**
+ * G-Frame 贝叶斯模块风险信念与实时反馈状态 (Bayesian Module Belief State)
+ */
+export interface BayesianModuleBelief {
+  priorRisk: number;                // 先验不确定性/风险概率 P_prior ∈ [0.05, 0.95]
+  posteriorRisk: number;            // 后验更新后风险概率 P_posterior ∈ [0.05, 0.95]
+  routingMode: 'fast_track' | 'deep_debate'; // 贝叶斯路由模式：快速验证通道 vs 深度红队对抗
+  latestAction?: BayesianPosteriorAction;
+  feedbackVector: {                 // 实时捕获的反馈信号向量 Γ_k
+    contractViolations: number;     // 违反公共接口契约或越界修改文件次数
+    verifiedClaims: number;         // 已通过物理接地验证的断言数
+    refutedClaims: number;          // 被证伪的断言数
+    edgeCaseCount: number;          // 红队挖掘的极端边界反例数
+    dssScore: number;               // 模块内动态谄媚分
+  };
+  lastUpdatedAt: string;
+}
+
+/**
+ * G-Frame 单一职责原子模块切片 (Task Module Slice)
+ */
+export interface TaskModuleSlice {
+  moduleId: string;                 // 模块唯一标识，如 "mod-1-schema", "mod-2-engine"
+  title: string;                    // 模块名称，如 "模块 1：核心类型与状态契约定义"
+  responsibility: string;           // 单一职责边界说明
+  allowedFiles: string[];           // 本模块允许读写的文件路径白名单 (爆炸半径硬约束)
+  dependsOnModuleIds: string[];     // 依赖的上游模块 ID 列表 (构成 Module DAG)
+  complexityLevel: ModuleComplexityLevel;
+  status: 'pending' | 'proposing' | 'challenging' | 'verifying' | 'defending' | 'frozen' | 'failed';
+  belief: BayesianModuleBelief;     // 贝叶斯先验-反馈-后验状态
+  scopedMessageIds: string[];       // 物理隔离：仅属于本模块沙箱的消息 ID 集合
+  frozenProposalSnippet?: string;   // 模块冻结定案后的最终方案摘要/契约实现
+  assignedExecutorId?: string;      // 落地阶段指派给本模块的专职执行 Agent ID
+  executionVerificationPassed?: boolean; // 执行期本模块静态检查/单测是否通过
+}
+
+/**
+ * 由提案官在阶段 0 通过 MCP 工具 `submit_module_decomposition` 提交的结构化拆解载荷
+ */
+export interface ModuleDecompositionDraft {
+  sharedContract: {
+    summary: string;
+    typeSignatures: string;
+    invariants: string[];
+  };
+  modules: Array<{
+    moduleId: string;
+    title: string;
+    responsibility: string;
+    allowedFiles: string[];
+    dependsOn: string[];
+    complexityLevel: ModuleComplexityLevel;
+  }>;
+  submittedBy?: string;
+  submittedAt?: string;
+}
+
+/**
+ * G-Frame 模块化分治编排总状态
+ */
+export interface ModularOrchestrationState {
+  enabled: boolean;                 // 是否启用 G-Frame 模块化隔离分治
+  sharedContract?: SharedInterfaceContract;
+  modules: TaskModuleSlice[];       // K 个原子模块切片 (2 ≤ K ≤ 4)
+  activeModuleId?: string;          // 当前正在推演或聚焦的模块沙箱 ID
+  overallEntropyReductionRatio?: number; // 相比全量上下文的 Token/信息熵压缩比 (0~1)
+}
 
 export interface TopicPatchDiffItem {
   filename: string;
@@ -326,6 +414,7 @@ export interface GameTheoreticState {
   roundCount?: number;                   // 当前博弈轮次计数 (P2 回边使用)
   isSafetyCharterSigned?: boolean;       // 人类是否已签署 T2 高危工具执行安全宪章
   rulingDraft?: ArbitrationRulingDraft;  // 由综合仲裁官通过 submit_arbitration_ruling MCP 工具提交的结构化裁决书草案
+  modularState?: ModularOrchestrationState; // G-Frame 贝叶斯与团队博弈模块化分治状态
   telemetryLogIds?: string[];
 }
 
@@ -472,6 +561,7 @@ export interface CognoNexusState {
   latestSycophancy?: SycophancyEvaluation; // 谄媚度评估记录 (P0-4)
   modelDiversity?: ModelDiversityEvaluation; // 角色模型异构性评估 (P0-5)
   colMadReport?: ColMadSessionReport;    // ColMAD 增量事实贡献与声誉报表 (P1-3)
+  modularState?: ModularOrchestrationState; // G-Frame 贝叶斯与团队博弈模块化分治状态
 }
 
 export interface GameRolesConfig {
