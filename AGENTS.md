@@ -7,6 +7,22 @@ Shadow Crew —— 多 Agent 协同桌面应用（Tauri + React 19 + Vite）。
 - 类型检查：`npm run lint`（即 `tsc --noEmit`）
 - 前端开发：`npm run dev`
 - 桌面端：`npm run dev:desktop`
+- Rust MCP 工具测试：`cargo test -p shinobi-dev-mcp`
+
+---
+
+## 核心架构与博弈引擎技术文档索引（跨会话切换与维护必读）
+
+在进行多 Agent 博弈编排（CognoNexus 4+1 引擎）、上下文裁剪、算力调控或仲裁决策相关功能的维护与演进前，**必须优先查阅以下技术架构文档**，确保改动符合既定的数学控制模型与论文理论边界：
+
+- **[`docs/TECH_REPORT_GAME_THEORETIC_TOKEN_AND_ACCURACY_GOVERNANCE.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/TECH_REPORT_GAME_THEORETIC_TOKEN_AND_ACCURACY_GOVERNANCE.md)**
+  - **定位**：博弈论多 Agent 系统 **Token 消耗控制（7 大工程机制）** 与 **讨论结果趋真保障（9 大工程机制）** 全景技术报告。
+  - **涵盖内容**：
+    1. **Token 降本设计**：Wald-SPRT 序贯概率比早停与死锁熔断、LMAD 局部冲突切片（Top-5 限制）与三态上下文脱水、阶段靶点按需挂载与 `4 × 300` 滑动窗口截断、“静默即成功”协同公约与 `LoopGuard`、阶段契约有界 `Self-Refine`（`MAX_RETRIES=2`）、ColMAD 车轱辘话惩罚、BWM 0-Token 数学求解卸载与 `submit_arbitration_ruling` MCP 工具契约直通。
+    2. **准确性趋真设计**：DIANOIA 4+1 角色正交解耦与 6 阶段 FSM、Free-MAD 反从众红队四部曲、T1/T2 分级物理接地验证与原子承诺校验链（含未实证早停硬锁）、BSS/DSS 谄媚偏见量化与 $\gamma$ 信任折减、ReConcile 异构模型检测与校准置信度矩阵、LLM+BWM 运筹求解与 $\xi^* \le 0.12$ 一致性硬门禁、ColMAD 非零和协同增量事实奖励、Disagreement-Aware 伴生《少数派异议报告》与黑天鹅重启触发器、法定人数门禁（Quorum Gate）与活体 ADR 决策画布（`LivingAdrCanvas`）。
+    3. **学术支撑映射**：完整梳理 Free-MAD、ColMAD、LMAD、Wald-SPRT、DIANOIA、Sycophancy Propagation、Consistency Illusion/GDP、ReConcile、LLM+BWM、Disagreement-Aware 等 **10 篇核心论文** 与 `src/services/cogno/*` 源码函数的双向映射矩阵。
+- **[`docs/SPEC_GAME_THEORETIC_ORCHESTRATION_PROTOCOL.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/SPEC_GAME_THEORETIC_ORCHESTRATION_PROTOCOL.md)**
+  - **定位**：Shinobi "4+1" 认知决策与确定性博弈编排协议规范（FSM 状态迁移表、阶段 Prompt 靶点载荷规范、后仲裁落地执行闭环）。
 
 ---
 
