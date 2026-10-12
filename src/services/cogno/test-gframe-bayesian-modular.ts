@@ -8,9 +8,12 @@ import {
   initializeModularOrchestrationState,
   updateModuleBeliefWithFeedback,
 } from './bayesianModuleGovernor';
+import { validateModuleScopeContract } from './stageContractGate';
+import { buildScopedModulePrompt } from '../agentCollaboration';
+import { extractModuleDecompositionFromAcpResponse } from '../acpClient';
 import { ModuleDecompositionDraft } from '../../types';
 
-console.log('🧪 [Wave 1 Test] Starting G-Frame Bayesian Modular Governor Verification...\n');
+console.log('🧪 [G-Frame Test] Starting Bayesian Modular Governor & Context Isolation Verification...\n');
 
 // 1. 测试先验风险估计与初始路由分流 (Prior Risk & Routing)
 {
@@ -30,7 +33,7 @@ console.log('🧪 [Wave 1 Test] Starting G-Frame Bayesian Modular Governor Verif
   assert.ok(highModule.priorRisk >= 0.85, `Expected high critical prior >= 0.85, got ${highModule.priorRisk}`);
   assert.equal(highModule.routingMode, 'deep_debate', 'High risk module should route to deep_debate');
 
-  console.log('✅ [1/4] Bayesian Prior Estimation & Fast-Track/Deep-Debate Routing Passed');
+  console.log('✅ [1/6] Bayesian Prior Estimation & Fast-Track/Deep-Debate Routing Passed');
 }
 
 // 2. 测试模块 DAG 初始化与拓扑序激活
@@ -75,7 +78,7 @@ assert.equal(state0.activeModuleId, 'mod-1-schema', 'First root module should be
 assert.equal(state0.modules[0].status, 'proposing');
 assert.equal(state0.modules[0].belief.routingMode, 'fast_track');
 assert.equal(state0.modules[1].belief.routingMode, 'deep_debate');
-console.log('✅ [2/4] Module DAG Initialization & Topological Root Activation Passed');
+console.log('✅ [2/6] Module DAG Initialization & Topological Root Activation Passed');
 
 // 3. 测试贝叶斯后验动态升级：当 fast_track 模块发生契约违规时，动态拉起红队 (ESCALATE_TO_RED_TEAM)
 {
@@ -94,12 +97,11 @@ console.log('✅ [2/4] Module DAG Initialization & Topological Root Activation P
     escalated.updatedModule.belief.posteriorRisk >= 0.55,
     `Posterior risk should jump >= 0.55, got ${escalated.updatedModule.belief.posteriorRisk}`
   );
-  console.log('✅ [3/4] Bayesian Posterior Escalation (Fast-Track -> Red Team on Contract Violation) Passed');
+  console.log('✅ [3/6] Bayesian Posterior Escalation (Fast-Track -> Red Team on Contract Violation) Passed');
 }
 
 // 4. 测试完整拓扑序推进：M1 验证通过冻结 -> 自动激活 M2 -> M2 局部重修后冻结 -> 自动激活 M3 -> 全部冻结
 {
-  // Step A: M1 通过静态契约校验，直接冻结并推进到 M2
   const step1 = advanceModularOrchestration(
     state0,
     'mod-1-schema',
@@ -111,7 +113,6 @@ console.log('✅ [2/4] Module DAG Initialization & Topological Root Activation P
   assert.equal(step1.nextState.modules[0].status, 'frozen');
   assert.equal(step1.nextState.activeModuleId, 'mod-2-engine', 'After M1 freezes, M2 must be scheduled');
 
-  // Step B: M2 在首次验证时发现 1 项被证伪断言 -> 触发模块沙箱内局部重修 (不污染已冻结的 M1)
   const step2a = advanceModularOrchestration(step1.nextState, 'mod-2-engine', {
     refutedClaims: 1,
     edgeCaseCount: 2,
@@ -121,7 +122,6 @@ console.log('✅ [2/4] Module DAG Initialization & Topological Root Activation P
   assert.equal(step2a.nextState.modules[1].status, 'defending');
   assert.equal(step2a.nextState.activeModuleId, 'mod-2-engine');
 
-  // Step C: M2 局部补丁通过物理验证 -> 冻结 M2 并推进到 M3
   const step2b = advanceModularOrchestration(
     step2a.nextState,
     'mod-2-engine',
@@ -132,7 +132,16 @@ console.log('✅ [2/4] Module DAG Initialization & Topological Root Activation P
   assert.equal(step2b.nextState.modules[1].status, 'frozen');
   assert.equal(step2b.nextState.activeModuleId, 'mod-3-ui', 'After M1 & M2 freeze, M3 must be scheduled');
 
-  // Step D: M3 快速验证通过 -> 全部模块冻结完毕
+  // 验证模块 3 的隔离沙箱 Prompt 编译器：注入只读契约 + 上游已冻结模块摘要
+  const mod3Prompt = buildScopedModulePrompt({
+    activeModule: step2b.nextState.modules[2],
+    sharedContract: step2b.nextState.sharedContract,
+    allModules: step2b.nextState.modules,
+  });
+  assert.ok(mod3Prompt.includes('export interface PluginState'), 'Must inject SharedInterfaceContract');
+  assert.ok(mod3Prompt.includes('Mutex lock with bounded timeout 500ms'), 'Must inject frozen M2 dependency snippet');
+  assert.ok(mod3Prompt.includes('src/components/Drawer.tsx'), 'Must specify M3 allowedFiles');
+
   const step3 = advanceModularOrchestration(
     step2b.nextState,
     'mod-3-ui',
@@ -144,7 +153,6 @@ console.log('✅ [2/4] Module DAG Initialization & Topological Root Activation P
   assert.equal(step3.nextState.activeModuleId, undefined);
   assert.equal(getNextSchedulableModule(step3.nextState), undefined);
 
-  // 验证信息熵压缩比计算与默认议题拆解器
   const ratio = computeEntropyReductionRatio(3600, 700, 200);
   assert.equal(ratio, 0.75, 'Entropy reduction ratio for (700+200)/3600 should be 0.75');
 
@@ -152,7 +160,73 @@ console.log('✅ [2/4] Module DAG Initialization & Topological Root Activation P
   assert.equal(fallbackDraft.modules.length, 3);
   assert.equal(fallbackDraft.modules[1].complexityLevel, 'high_critical');
 
-  console.log('✅ [4/4] Full Module DAG Progression, Blast-Radius Freezing & Entropy Ratio Passed\n');
+  console.log('✅ [4/6] Full Module DAG Progression, Blast-Radius Freezing & Scoped Prompt Isolation Passed');
 }
 
-console.log('🎉 [Wave 1 Complete] All G-Frame Bayesian Modular Governor assertions passed!');
+// 5. 测试模块越界守卫 (validateModuleScopeContract)
+{
+  const mod1 = state0.modules[0]; // allowed: src/types.ts
+  const illegalTouchText = '我们在本模块中直接修改 src/services/engine.ts 的并发锁逻辑并重写 src/components/Drawer.tsx';
+  const scopeRes = validateModuleScopeContract(illegalTouchText, mod1, state0.modules, state0.sharedContract);
+  assert.equal(scopeRes.isScopeValid, false, 'Touching other module files must be flagged');
+  assert.equal(scopeRes.contractViolations, 2);
+  assert.ok(scopeRes.violatedFiles.includes('src/services/engine.ts'));
+
+  const legalTouchText = '我们在本模块中仅修改 src/types.ts 定义 PluginState 接口契约';
+  const cleanRes = validateModuleScopeContract(legalTouchText, mod1, state0.modules, state0.sharedContract);
+  assert.equal(cleanRes.isScopeValid, true);
+  assert.equal(cleanRes.contractViolations, 0);
+
+  console.log('✅ [5/6] Out-of-Scope File Touch Detection Gate Passed');
+}
+
+// 6. 测试 MCP submit_module_decomposition 工具载荷提取器
+{
+  const extracted = extractModuleDecompositionFromAcpResponse(
+    {
+      textResponse: '已完成模块拆解',
+      mcpToolCalls: [
+        {
+          server_name: 'shinobi-dev-mcp',
+          tool_name: 'submit_module_decomposition',
+          status: 'completed',
+          arguments: {
+            shared_contract: {
+              summary: '跨模块只读契约',
+              type_signatures: 'export interface TaskContract { id: string; }',
+              invariants: ['禁止跨模块越界修改'],
+            },
+            modules: [
+              {
+                module_id: 'mod-a',
+                title: '模块 A',
+                responsibility: '定义类型',
+                allowed_files: ['src/types.ts'],
+                depends_on: [],
+                complexity_level: 'low_deterministic',
+              },
+              {
+                module_id: 'mod-b',
+                title: '模块 B',
+                responsibility: '核心引擎',
+                allowed_files: ['src/engine.ts'],
+                depends_on: ['mod-a'],
+                complexity_level: 'high_critical',
+              },
+            ],
+          },
+        },
+      ],
+    },
+    'Architect_Proposer'
+  );
+  assert.ok(extracted, 'Must extract ModuleDecompositionDraft from MCP tool call');
+  assert.equal(extracted?.modules.length, 2);
+  assert.equal(extracted?.modules[0].moduleId, 'mod-a');
+  assert.equal(extracted?.modules[1].complexityLevel, 'high_critical');
+
+  console.log('✅ [6/6] MCP submit_module_decomposition Contract Extractor Passed\n');
+}
+
+console.log('🎉 [G-Frame Wave 1 & Wave 2 Complete] All assertions passed 100%!');
+

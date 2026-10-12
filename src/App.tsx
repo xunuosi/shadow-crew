@@ -67,6 +67,7 @@ import {
   buildAgentLaunchEnv,
   buildThinkingProcessFromAcp,
   extractArbitrationRulingFromAcpResponse,
+  extractModuleDecompositionFromAcpResponse,
   extractWorkspaceDiffsFromText,
   applyTopicPatchToWorkspace,
 } from './services/acpClient';
@@ -93,6 +94,7 @@ import {
   TopicPromptContext,
   logGameTheoreticTelemetry,
   validateStageContract,
+  validateModuleScopeContract,
   STAGE_CONTRACT_MAX_RETRIES,
   tieredGroundingGovernor,
   processVerifierEvidenceChain,
@@ -101,6 +103,9 @@ import {
   calculateModelDiversity,
   localizeGraphDiffDispute,
   calculateColMadContributions,
+  initializeModularOrchestrationState,
+  buildDefaultDecompositionFromTopic,
+  advanceModularOrchestration,
 } from './services/agentCollaboration';
 
 export default function App() {
@@ -1567,6 +1572,11 @@ export default function App() {
     const modelDiversity = isGame && topicData.gameRoles
       ? calculateModelDiversity(agents, topicData.gameRoles)
       : undefined;
+    const initialModularState = isGame
+      ? initializeModularOrchestrationState(
+          buildDefaultDecompositionFromTopic(topicData.title, topicData.description)
+        )
+      : undefined;
 
     const newTopic: TopicMessageData = {
       id: topicId,
@@ -1582,9 +1592,11 @@ export default function App() {
             currentStage: 'proposal',
             isChallengerResponded: false,
             modelDiversity,
+            modularState: initialModularState,
             cognoNexus: {
               committedStates: [],
               modelDiversity,
+              modularState: initialModularState,
             },
           }
         : undefined,
@@ -2954,26 +2966,46 @@ export default function App() {
           evidenceCount: evidences.length,
         });
 
-        // 阶段 3 验证完成后，转入【阶段 4: 答辩修正 (defense)】
-        updateTopicDataInState(topicId, (old) => ({
-          ...old,
-          gameStage: 'defense',
-          gameTheoreticState: {
-            ...old.gameTheoreticState,
-            currentStage: 'defense',
-            targetProposalContent: targetProposalText,
-            targetChallengeContent: targetChallengeText,
-            targetVerificationContent: acpResp.textResponse,
-            isVerifierResponded: true,
-            minorityReport: old.gameTheoreticState?.minorityReport,
-            cognoNexus: {
-              ...old.gameTheoreticState?.cognoNexus,
-              currentDispute: updatedDispute || old.gameTheoreticState?.cognoNexus?.currentDispute,
-              committedStates: updatedCommittedStates || old.gameTheoreticState?.cognoNexus?.committedStates || [],
-              minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
+        // 阶段 3 验证完成后，更新 G-Frame 模块贝叶斯后验信念并转入【阶段 4: 答辩修正 (defense)】
+        updateTopicDataInState(topicId, (old) => {
+          const prevModular = old.gameTheoreticState?.modularState;
+          let nextModular = prevModular;
+          if (prevModular?.enabled && prevModular.activeModuleId) {
+            const verifiedCount = evidences.filter((e) => e.truthValue).length;
+            const refutedCount = evidences.filter((e) => !e.truthValue).length;
+            const adv = advanceModularOrchestration(
+              prevModular,
+              prevModular.activeModuleId,
+              {
+                verifiedClaims: verifiedCount,
+                refutedClaims: refutedCount,
+              },
+              targetProposalText
+            );
+            nextModular = adv.nextState;
+          }
+          return {
+            ...old,
+            gameStage: 'defense',
+            gameTheoreticState: {
+              ...old.gameTheoreticState,
+              currentStage: 'defense',
+              targetProposalContent: targetProposalText,
+              targetChallengeContent: targetChallengeText,
+              targetVerificationContent: acpResp.textResponse,
+              isVerifierResponded: true,
+              minorityReport: old.gameTheoreticState?.minorityReport,
+              modularState: nextModular,
+              cognoNexus: {
+                ...old.gameTheoreticState?.cognoNexus,
+                currentDispute: updatedDispute || old.gameTheoreticState?.cognoNexus?.currentDispute,
+                committedStates: updatedCommittedStates || old.gameTheoreticState?.cognoNexus?.committedStates || [],
+                minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
+                modularState: nextModular,
+              },
             },
-          },
-        }));
+          };
+        });
 
         triggerGameTheoreticStageHandover({
           topicId,
@@ -3512,29 +3544,53 @@ export default function App() {
           return;
         }
 
-        // 阶段 3 答辩修正完成后，自动携攻防两造论据与答辩补丁转入【阶段 4: 中立仲裁】
-        updateTopicDataInState(topicId, (old) => ({
-          ...old,
-          gameStage: 'arbitration',
-          gameTheoreticState: {
-            ...old.gameTheoreticState,
-            currentStage: 'arbitration',
-            targetProposalContent: targetProposalText,
-            targetChallengeContent: targetChallengeText,
-            targetDefenseContent: acpResp.textResponse,
-            isDefenseResponded: true,
-            sprtState: sprtStateAfterDefense,
-            minorityReport: old.gameTheoreticState?.minorityReport,
-            latestSycophancy: sycophancyEval,
-            cognoNexus: {
-              ...old.gameTheoreticState?.cognoNexus,
-              committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
+        // 阶段 3 答辩修正完成后，执行模块边界校验与冻结更新，并转入【阶段 4: 中立仲裁】
+        updateTopicDataInState(topicId, (old) => {
+          const prevModular = old.gameTheoreticState?.modularState;
+          let nextModular = prevModular;
+          if (prevModular?.enabled && prevModular.activeModuleId) {
+            const activeMod = prevModular.modules.find((m) => m.moduleId === prevModular.activeModuleId);
+            const scopeCheck = activeMod
+              ? validateModuleScopeContract(acpResp.textResponse, activeMod, prevModular.modules, prevModular.sharedContract)
+              : { contractViolations: 0 };
+            const adv = advanceModularOrchestration(
+              prevModular,
+              prevModular.activeModuleId,
+              {
+                verifiedClaims: 2,
+                refutedClaims: 0,
+                contractViolations: scopeCheck.contractViolations,
+                dssScore: sycophancyEval.dss,
+              },
+              acpResp.textResponse
+            );
+            nextModular = adv.nextState;
+          }
+          return {
+            ...old,
+            gameStage: 'arbitration',
+            gameTheoreticState: {
+              ...old.gameTheoreticState,
+              currentStage: 'arbitration',
+              targetProposalContent: targetProposalText,
+              targetChallengeContent: targetChallengeText,
+              targetDefenseContent: acpResp.textResponse,
+              isDefenseResponded: true,
               sprtState: sprtStateAfterDefense,
-              minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
+              minorityReport: old.gameTheoreticState?.minorityReport,
               latestSycophancy: sycophancyEval,
+              modularState: nextModular,
+              cognoNexus: {
+                ...old.gameTheoreticState?.cognoNexus,
+                committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
+                sprtState: sprtStateAfterDefense,
+                minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
+                latestSycophancy: sycophancyEval,
+                modularState: nextModular,
+              },
             },
-          },
-        }));
+          };
+        });
 
         triggerGameTheoreticStageHandover({
           topicId,
@@ -4203,10 +4259,25 @@ export default function App() {
       prev.map((a) => (onlineAgents.some((oa) => oa.id === a.id) && a.status !== 'running' ? { ...a, status: 'running' } : a))
     );
 
-    // 提取议题前序研讨记录
+    // 提取议题前序研讨记录（若启用 G-Frame 模块化隔离且当前模块已有专属消息，则仅注入本模块沙箱内的历史）
     const existingTopicMsgs = messages[topicId] || [];
+    const activeModState = activeTopicData?.gameTheoreticState?.modularState;
+    const activeModSlice =
+      activeModState?.enabled && activeModState.activeModuleId
+        ? activeModState.modules.find((m) => m.moduleId === activeModState.activeModuleId)
+        : undefined;
+    const scopedMsgIdSet =
+      activeModSlice && activeModSlice.scopedMessageIds.length > 0
+        ? new Set(activeModSlice.scopedMessageIds)
+        : undefined;
+
     const recentHistory = existingTopicMsgs
-      .filter((m) => m.authorId !== 'system' && !m.agentBadge?.includes('Guard'))
+      .filter(
+        (m) =>
+          m.authorId !== 'system' &&
+          !m.agentBadge?.includes('Guard') &&
+          (!scopedMsgIdSet || scopedMsgIdSet.has(m.id))
+      )
       .slice(-4)
       .map((m) => ({
         author: m.authorName || m.authorHandle,
@@ -4235,6 +4306,7 @@ export default function App() {
       targetDefenseText: isGameTheoretic && executionStage === 'arbitration'
         ? activeTopicData?.gameTheoreticState?.targetDefenseContent
         : undefined,
+      modularState: activeModState,
       participatingAgents: candidateAgents,
       recentHistory,
     };
@@ -4437,16 +4509,38 @@ export default function App() {
               if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
                 console.warn('Proposer returned empty/error turn, pausing handover.');
               } else {
-                updateTopicDataInState(topicId, (old) => ({
-                  ...old,
-                  gameStage: 'challenge',
-                  gameTheoreticState: {
-                    ...old.gameTheoreticState,
-                    currentStage: 'challenge',
-                    targetProposalContent: acpResp.textResponse,
-                    isChallengerResponded: false,
-                  },
-                }));
+                const extractedDecomp = extractModuleDecompositionFromAcpResponse(acpResp, agent.name);
+                updateTopicDataInState(topicId, (old) => {
+                  const baseModular = extractedDecomp
+                    ? initializeModularOrchestrationState(extractedDecomp)
+                    : old.gameTheoreticState?.modularState ||
+                      initializeModularOrchestrationState(
+                        buildDefaultDecompositionFromTopic(old.title, old.description)
+                      );
+                  const updatedModular = {
+                    ...baseModular,
+                    modules: baseModular.modules.map((m) =>
+                      m.moduleId === baseModular.activeModuleId
+                        ? { ...m, scopedMessageIds: [...m.scopedMessageIds, agentReply.id] }
+                        : m
+                    ),
+                  };
+                  return {
+                    ...old,
+                    gameStage: 'challenge',
+                    gameTheoreticState: {
+                      ...old.gameTheoreticState,
+                      currentStage: 'challenge',
+                      targetProposalContent: acpResp.textResponse,
+                      isChallengerResponded: false,
+                      modularState: updatedModular,
+                      cognoNexus: {
+                        ...(old.gameTheoreticState?.cognoNexus || { committedStates: [] }),
+                        modularState: updatedModular,
+                      },
+                    },
+                  };
+                });
                 triggerGameTheoreticStageHandover({
                   topicId,
                   nextStage: 'challenge',

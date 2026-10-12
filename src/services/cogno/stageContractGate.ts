@@ -6,7 +6,7 @@
  * 3. 超过重试上限 (maxRetries=2) 状态机进入 stageFailed，熔断交接人类
  */
 
-import { GameTheoreticStage } from '../../types';
+import { GameTheoreticStage, SharedInterfaceContract, TaskModuleSlice } from '../../types';
 import { detectSycophanticSurrender } from './sycophancyGovernor';
 
 export interface StageContractValidationResult {
@@ -14,6 +14,13 @@ export interface StageContractValidationResult {
   stage: GameTheoreticStage;
   missingRequirements: string[];
   refinePrompt?: string;
+}
+
+export interface ModuleScopeValidationResult {
+  isScopeValid: boolean;
+  contractViolations: number;
+  violatedFiles: string[];
+  violationDetails: string[];
 }
 
 export const STAGE_CONTRACT_MAX_RETRIES = 2;
@@ -41,6 +48,14 @@ export function validateStageContract(
   }
 
   switch (stage) {
+    case 'decomposition': {
+      const hasModuleKeywords = /(模块|契约|边界|interface|contract|module|allowed_files|拆解)/i.test(trimmed);
+      if (!hasModuleKeywords) {
+        missingRequirements.push('未包含模块拆解清单或跨模块公共接口契约定义');
+      }
+      break;
+    }
+
     case 'proposal': {
       if (trimmed.length < 60) {
         missingRequirements.push('立论提案篇幅不足 (字符数 < 60)');
@@ -141,3 +156,53 @@ export function validateStageContract(
     refinePrompt,
   };
 }
+
+/**
+ * G-Frame 模块边界与公共接口契约守卫 (Module Scope & Contract Gate)
+ * 检测当前模块沙箱内的输出是否越界修改了属于其他模块的专属文件，或违背了跨模块公共接口契约
+ */
+export function validateModuleScopeContract(
+  text: string,
+  activeModule: TaskModuleSlice,
+  allModules: TaskModuleSlice[],
+  _sharedContract?: SharedInterfaceContract
+): ModuleScopeValidationResult {
+  const violatedFiles: string[] = [];
+  const violationDetails: string[] = [];
+
+  const activeAllowed = new Set(activeModule.allowedFiles.map((f) => f.trim()));
+  const otherModulesFiles: Array<{ file: string; ownerTitle: string }> = [];
+
+  for (const mod of allModules) {
+    if (mod.moduleId === activeModule.moduleId) continue;
+    for (const f of mod.allowedFiles) {
+      const cleanFile = f.trim();
+      if (cleanFile && !activeAllowed.has(cleanFile) && !cleanFile.endsWith('/')) {
+        otherModulesFiles.push({ file: cleanFile, ownerTitle: mod.title });
+      }
+    }
+  }
+
+  // 检测是否在修改动作上下文中越界操作了其他模块的专属文件
+  for (const { file, ownerTitle } of otherModulesFiles) {
+    const escapedFile = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const modificationRegex = new RegExp(
+      `(?:修改|重写|新增|编辑|替换|写入|write_file|str_replace|patch)[^\\n]{0,40}${escapedFile}`,
+      'i'
+    );
+    if (modificationRegex.test(text)) {
+      violatedFiles.push(file);
+      violationDetails.push(
+        `检测到跨模块越界修改文件 [${file}]（该文件归属于「${ownerTitle}」，不在当前模块 [${activeModule.title}] 的白名单 [${activeModule.allowedFiles.join(', ')}] 内）`
+      );
+    }
+  }
+
+  return {
+    isScopeValid: violationDetails.length === 0,
+    contractViolations: violationDetails.length,
+    violatedFiles,
+    violationDetails,
+  };
+}
+

@@ -184,6 +184,64 @@ pub fn get_tools_list() -> Value {
                 },
                 "required": ["decision_type", "summary", "trade_off_points", "impacted_files"]
             }
+        },
+        {
+            "name": "submit_module_decomposition",
+            "description": "在 G-Frame 博弈阶段 0 (decomposition) 提交任务模块化拆解清单与跨模块公共接口契约。将复杂研发任务拆解为 2~4 个职责正交、上下文物理隔离的原子模块。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "shared_contract": {
+                        "type": "object",
+                        "properties": {
+                            "summary": {
+                                "type": "string",
+                                "description": "跨模块架构边界简述"
+                            },
+                            "type_signatures": {
+                                "type": "string",
+                                "description": "跨模块共享的接口/数据结构签名定义"
+                            },
+                            "invariants": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "所有模块必须遵守的全局不变量约束"
+                            }
+                        },
+                        "required": ["summary", "type_signatures", "invariants"]
+                    },
+                    "modules": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 4,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "module_id": { "type": "string", "description": "模块 ID，如 mod-1" },
+                                "title": { "type": "string", "description": "模块标题" },
+                                "responsibility": { "type": "string", "description": "单一模块职责描述" },
+                                "allowed_files": {
+                                    "type": "array",
+                                    "items": { "type": "string" },
+                                    "description": "该模块允许触碰的文件白名单"
+                                },
+                                "depends_on": {
+                                    "type": "array",
+                                    "items": { "type": "string" },
+                                    "description": "依赖的前置 module_id 列表"
+                                },
+                                "complexity_level": {
+                                    "type": "string",
+                                    "enum": ["low_deterministic", "medium_standard", "high_critical"],
+                                    "description": "模块复杂度自评，用于初始化贝叶斯先验风险 P_prior"
+                                }
+                            },
+                            "required": ["module_id", "title", "responsibility", "allowed_files", "depends_on", "complexity_level"]
+                        }
+                    }
+                },
+                "required": ["shared_contract", "modules"]
+            }
         }
     ])
 }
@@ -288,6 +346,38 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
                 if solution.is_empty() { String::new() } else { format!("• 实施路径概要: {}", solution) }
             ))
         }
+        "submit_module_decomposition" => {
+            let shared = arguments
+                .get("shared_contract")
+                .ok_or_else(|| anyhow!("缺少必填参数 shared_contract"))?;
+            let summary = shared["summary"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 shared_contract.summary"))?;
+            let modules = arguments["modules"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 modules 数组"))?;
+            if modules.len() < 2 || modules.len() > 4 {
+                return Err(anyhow!("G-Frame 模块化拆解要求模块数在 2~4 个之间，当前为 {}", modules.len()));
+            }
+
+            let formatted_modules = modules
+                .iter()
+                .map(|m| {
+                    let id = m["module_id"].as_str().unwrap_or("mod");
+                    let title = m["title"].as_str().unwrap_or("未命名模块");
+                    let level = m["complexity_level"].as_str().unwrap_or("medium_standard");
+                    format!("  • [{}] {} ({})", id, title, level)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            Ok(format!(
+                "✓ 【G-Frame 模块拓扑与公共接口契约】已成功锁定：\n• 公共契约摘要: {}\n• 原子模块切片 ({} 个):\n{}",
+                summary,
+                modules.len(),
+                formatted_modules
+            ))
+        }
         unknown => Err(anyhow!("未知的 MCP 工具名称: {}", unknown)),
     }
 }
@@ -300,7 +390,7 @@ mod tests {
     fn test_tools_list_schema() {
         let list = get_tools_list();
         let arr = list.as_array().expect("tools list must be array");
-        assert!(arr.len() >= 7);
+        assert!(arr.len() >= 9);
         let names: Vec<&str> = arr.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(names.contains(&"shell"));
         assert!(names.contains(&"read_file"));
@@ -310,6 +400,7 @@ mod tests {
         assert!(names.contains(&"search_code"));
         assert!(names.contains(&"write_channel_artifact"));
         assert!(names.contains(&"submit_arbitration_ruling"));
+        assert!(names.contains(&"submit_module_decomposition"));
     }
 
     #[tokio::test]
@@ -353,6 +444,39 @@ mod tests {
         assert!(res.contains("✓ 【仲裁定案裁决书】已成功提交"));
         assert!(res.contains("src/services/cache.ts"));
         assert!(res.contains("优先保障强一致性"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_submit_module_decomposition() {
+        let args = json!({
+            "shared_contract": {
+                "summary": "跨模块共享状态同步接口定义",
+                "type_signatures": "export interface SyncPayload { id: string; }",
+                "invariants": ["禁止跨模块越界写文件"]
+            },
+            "modules": [
+                {
+                    "module_id": "mod-1",
+                    "title": "模块 1：契约定义",
+                    "responsibility": "定义数据结构",
+                    "allowed_files": ["src/types.ts"],
+                    "depends_on": [],
+                    "complexity_level": "low_deterministic"
+                },
+                {
+                    "module_id": "mod-2",
+                    "title": "模块 2：核心引擎",
+                    "responsibility": "实现并发同步逻辑",
+                    "allowed_files": ["src/services/sync.ts"],
+                    "depends_on": ["mod-1"],
+                    "complexity_level": "high_critical"
+                }
+            ]
+        });
+        let res = dispatch_tool_call("submit_module_decomposition", &args).await.unwrap();
+        assert!(res.contains("✓ 【G-Frame 模块拓扑与公共接口契约】已成功锁定"));
+        assert!(res.contains("mod-1"));
+        assert!(res.contains("mod-2"));
     }
 }
 

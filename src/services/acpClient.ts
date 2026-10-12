@@ -1,4 +1,4 @@
-import { Agent, CartridgeCitation, MemoryCartridgeItem, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem, TopicExecutionUiMeta } from '../types';
+import { Agent, CartridgeCitation, MemoryCartridgeItem, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem, TopicExecutionUiMeta, ModuleDecompositionDraft, ModuleComplexityLevel } from '../types';
 import { resolveAgentModelConfig, isModelConfigReady, callLlmModel } from './llmService';
 import { isAgentOffline } from '../utils/agentRuntime';
 
@@ -16,6 +16,7 @@ export interface AcpAgentResponse {
   memoryActions?: Array<{ action: string; key: string; detail: string }>;
   mcpToolCalls?: Array<{ server_name: string; tool_name: string; status: string; arguments?: any }>;
   rulingDraft?: ArbitrationRulingDraft;
+  moduleDecompositionDraft?: ModuleDecompositionDraft;
   cartridgeCitation?: CartridgeCitation;
   workspaceDiffs?: TopicPatchDiffItem[];
   executionMeta?: TopicExecutionUiMeta;
@@ -157,6 +158,100 @@ export function extractArbitrationRulingFromAcpResponse(
       };
     } catch (e) {
       console.warn('[acpClient] Failed to parse structured ruling draft block:', e);
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * 从 ACP 响应（原生 MCP 工具 submit_module_decomposition 或结构化块）中提取 G-Frame 模块化拆解载荷
+ */
+export function extractModuleDecompositionFromAcpResponse(
+  acpResp: Partial<AcpAgentResponse>,
+  authorName?: string
+): ModuleDecompositionDraft | undefined {
+  const text = acpResp.textResponse || '';
+  const now = new Date().toISOString();
+
+  const normalizeModules = (rawMods: any[]): ModuleDecompositionDraft['modules'] => {
+    return rawMods.slice(0, 4).map((m: any, idx: number) => {
+      const rawLevel = m.complexity_level || m.complexityLevel || 'medium_standard';
+      const complexityLevel: ModuleComplexityLevel =
+        rawLevel === 'low_deterministic' || rawLevel === 'medium_standard' || rawLevel === 'high_critical'
+          ? rawLevel
+          : 'medium_standard';
+      return {
+        moduleId: String(m.module_id || m.moduleId || `mod-${idx + 1}`).trim(),
+        title: String(m.title || `模块 ${idx + 1}`).trim(),
+        responsibility: String(m.responsibility || '').trim(),
+        allowedFiles: Array.isArray(m.allowed_files || m.allowedFiles)
+          ? (m.allowed_files || m.allowedFiles).map(String).filter(Boolean)
+          : [],
+        dependsOn: Array.isArray(m.depends_on || m.dependsOn)
+          ? (m.depends_on || m.dependsOn).map(String).filter(Boolean)
+          : [],
+        complexityLevel,
+      };
+    });
+  };
+
+  // 1. 优先从原生 MCP Tool 调用记录提取 submit_module_decomposition 参数
+  const rawCalls =
+    acpResp.raw?.mcp_tool_calls ||
+    acpResp.raw?.result?.mcp_tool_calls ||
+    acpResp.mcpToolCalls ||
+    [];
+  if (Array.isArray(rawCalls)) {
+    const decompCall = rawCalls.find(
+      (c: any) =>
+        c.tool_name === 'submit_module_decomposition' ||
+        c.tool === 'submit_module_decomposition' ||
+        c.name === 'submit_module_decomposition'
+    );
+    if (decompCall && (decompCall.arguments || decompCall.args)) {
+      const args = decompCall.arguments || decompCall.args;
+      const sc = args.shared_contract || args.sharedContract || {};
+      const mods = Array.isArray(args.modules) ? normalizeModules(args.modules) : [];
+      if (mods.length >= 2) {
+        return {
+          sharedContract: {
+            summary: String(sc.summary || '跨模块公共接口契约').trim(),
+            typeSignatures: String(sc.type_signatures || sc.typeSignatures || '').trim(),
+            invariants: Array.isArray(sc.invariants) ? sc.invariants.map(String) : [],
+          },
+          modules: mods,
+          submittedBy: authorName,
+          submittedAt: now,
+        };
+      }
+    }
+  }
+
+  // 2. 尝试从结构化契约块 <<<MODULE_DECOMPOSITION>>>...<<<MODULE_DECOMPOSITION_END>>> 解析
+  const blockMatch =
+    text.match(/<<<MODULE_DECOMPOSITION>>>([\s\S]*?)<<<MODULE_DECOMPOSITION_END>>>/i) ||
+    text.match(/```(?:json)?\s*(\{\s*"shared_?contract"[\s\S]*?"modules"[\s\S]*?\})\s*```/i);
+
+  if (blockMatch && blockMatch[1]) {
+    try {
+      const parsed = JSON.parse(blockMatch[1].trim());
+      const sc = parsed.shared_contract || parsed.sharedContract || {};
+      const mods = Array.isArray(parsed.modules) ? normalizeModules(parsed.modules) : [];
+      if (mods.length >= 2) {
+        return {
+          sharedContract: {
+            summary: String(sc.summary || '跨模块公共接口契约').trim(),
+            typeSignatures: String(sc.type_signatures || sc.typeSignatures || '').trim(),
+            invariants: Array.isArray(sc.invariants) ? sc.invariants.map(String) : [],
+          },
+          modules: mods,
+          submittedBy: authorName,
+          submittedAt: now,
+        };
+      }
+    } catch (e) {
+      console.warn('[acpClient] Failed to parse structured module decomposition block:', e);
     }
   }
 

@@ -8,4 +8,5 @@ export * from './tieredGroundingGovernor';
 export * from './sycophancyGovernor';
 export * from './modelDiversityGovernor';
 export * from './colmadGovernor';
+export * from './bayesianModuleGovernor';
 

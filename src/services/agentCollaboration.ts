@@ -13,6 +13,9 @@ import {
   GroundingEvidence,
   SycophancyEvaluation,
   ModelDiversityEvaluation,
+  ModularOrchestrationState,
+  TaskModuleSlice,
+  SharedInterfaceContract,
 } from '../types';
 import {
   solveDeterministicBwm,
@@ -29,6 +32,7 @@ import {
   getMetricBaselineSummary,
   getMetricBaselineReport,
   validateStageContract,
+  validateModuleScopeContract,
   STAGE_CONTRACT_MAX_RETRIES,
   tieredGroundingGovernor,
   parseVerifierOutput,
@@ -44,6 +48,13 @@ import {
   calculateAffectedSubgraph,
   localizeGraphDiffDispute,
   calculateColMadContributions,
+  estimateModulePriorRisk,
+  initializeModularOrchestrationState,
+  updateModuleBeliefWithFeedback,
+  getNextSchedulableModule,
+  advanceModularOrchestration,
+  computeEntropyReductionRatio,
+  buildDefaultDecompositionFromTopic,
 } from './cogno';
 
 export interface CollaborationCascade {
@@ -220,8 +231,64 @@ export interface TopicPromptContext {
   targetChallengeText?: string;
   targetVerificationText?: string;
   targetDefenseText?: string;
+  modularState?: ModularOrchestrationState;
   participatingAgents?: Agent[];
   recentHistory?: Array<{ author: string; content: string; isAgent?: boolean }>;
+}
+
+/**
+ * G-Frame 微观团队博弈 (Team Game) 模块级上下文物理隔离编译器
+ * 仅注入只读《公共接口契约》、上游已冻结模块摘要与当前 activeModule 的单一职责和 allowedFiles 白名单，
+ * 物理屏蔽其他未相关模块的讨论上下文，压制条件信息熵与 KL 散度。
+ */
+export function buildScopedModulePrompt(options: {
+  activeModule: TaskModuleSlice;
+  sharedContract?: SharedInterfaceContract;
+  allModules?: TaskModuleSlice[];
+}): string {
+  const { activeModule, sharedContract, allModules = [] } = options;
+
+  const contractBlock = sharedContract
+    ? `【🧭 跨模块只读公共接口契约 (Shared Interface Contract · 严禁私自篡改)】:
+• 契约摘要: ${sharedContract.summary}
+• 共享类型签名:
+\`\`\`typescript
+${sharedContract.typeSignatures}
+\`\`\`
+• 全局不变量约束:
+${sharedContract.invariants.map((inv, idx) => `  ${idx + 1}. ${inv}`).join('\n')}\n`
+    : '';
+
+  const upstreamFrozenModules = allModules.filter(
+    (m) =>
+      activeModule.dependsOnModuleIds.includes(m.moduleId) &&
+      m.status === 'frozen'
+  );
+
+  const upstreamBlock =
+    upstreamFrozenModules.length > 0
+      ? `\n【🔒 上游已冻结模块接口摘要 (Read-Only Frozen Dependencies)】:\n${upstreamFrozenModules
+          .map(
+            (m) =>
+              `• [${m.title}]: ${(m.frozenProposalSnippet || m.responsibility).slice(0, 160)}`
+          )
+          .join('\n')}\n`
+      : '';
+
+  const otherModulesExcluded = allModules
+    .filter((m) => m.moduleId !== activeModule.moduleId)
+    .map((m) => m.title)
+    .join('、');
+
+  return `\n[🧩 G-Frame 模块化上下文物理隔离沙箱 (Scoped Module Sandbox)]
+${contractBlock}${upstreamBlock}【📦 当前聚焦模块沙箱】: ${activeModule.title} (${activeModule.moduleId})
+• 单一模块职责: ${activeModule.responsibility}
+• 允许操作文件白名单 (allowedFiles): ${activeModule.allowedFiles.join(', ') || '当前模块作用域内文件'}
+• 贝叶斯风险信念: P_prior=${activeModule.belief.priorRisk} → P_posterior=${activeModule.belief.posteriorRisk} (路由模式: ${activeModule.belief.routingMode === 'fast_track' ? '⚡ 快速验证流' : '⚔️ 深度红队对抗流'})
+• 【上下文物理隔离铁律 (Entropy & KL-Divergence Control)】:
+  1. 你当前处于模块「${activeModule.title}」的独立隔离沙箱中，只需专注解决本模块的单一职责；
+  2. 严禁越界展开或修改其他模块（${otherModulesExcluded || '非本模块'}）的实现细节与专属文件；
+  3. 跨模块交互必须 100% 遵循上方《公共接口契约》中的类型签名。`;
 }
 
 /**
@@ -268,6 +335,21 @@ export function buildTopicPrompt(options: {
     ? topic.description.trim()
     : '（创建者未填写额外背景说明，请紧密围绕议题标题进行专业技术方案推演）';
 
+  const activeModule =
+    topic.modularState?.enabled && topic.modularState.activeModuleId
+      ? topic.modularState.modules.find(
+          (m) => m.moduleId === topic.modularState?.activeModuleId
+        )
+      : undefined;
+
+  const scopedModuleDirective = activeModule
+    ? buildScopedModulePrompt({
+        activeModule,
+        sharedContract: topic.modularState?.sharedContract,
+        allModules: topic.modularState?.modules,
+      })
+    : '';
+
   let gameModeDirective = '';
   if (topic.discussionMode === 'game_theoretic' && topic.gameRoles) {
     const role = getAgentGameRole(targetAgent.id, topic.gameRoles);
@@ -278,7 +360,31 @@ export function buildTopicPrompt(options: {
       : '';
 
     if (role === 'proposer') {
-      if (stage === 'defense') {
+      if (stage === 'decomposition') {
+        gameModeDirective = `\n\n【博弈编排 - 🧭 阶段 0: G-Frame 模块拓扑拆解与公共接口契约锚定 (Decomposition)】:
+你是本议题的提案构想者 (Proposer)。为压制长链生成的信息熵与 KL 散度，请首先将本任务拆解为 2~4 个职责单一、正交隔离的原子模块，并锁定跨模块只读《公共接口契约》。
+优先调用宿主 \`submit_module_decomposition\` 工具，或在回复末尾附带结构化拆解块：
+<<<MODULE_DECOMPOSITION>>>
+{
+  "shared_contract": {
+    "summary": "跨模块架构边界简述",
+    "type_signatures": "export interface SharedContract { ... }",
+    "invariants": ["各模块严禁越界修改非白名单文件"]
+  },
+  "modules": [
+    {
+      "module_id": "mod-1",
+      "title": "模块 1：数据结构与接口契约",
+      "responsibility": "单一职责说明",
+      "allowed_files": ["src/types.ts"],
+      "depends_on": [],
+      "complexity_level": "low_deterministic"
+    }
+  ]
+}
+<<<MODULE_DECOMPOSITION_END>>>
+无需在正文 @ 任何人。`;
+      } else if (stage === 'defense') {
         gameModeDirective = `\n\n【博弈编排 - 🏛️ 阶段 4: 提案者答辩与防御修正 (Defense v2)】:
 红队挑战者已对你的初始提案提出针对性反例与边界质询，且接地验证智能体已提供物理实证检验（见下方靶点数据）。
 请针对挑战者指出的失效场景与接地检验结论做出正面答辩：
@@ -396,7 +502,7 @@ ${topic.targetChallengeText || '详见前序脉络'}
 【议题背景与需求目标】:
 ${topicDesc}
 【参与研讨成员】: ${peerList}
-${historySection}
+${scopedModuleDirective}${historySection}
 【用户开题 / 本轮诉求指令】:
 "${userContent}"
 ${gameModeDirective}
@@ -873,6 +979,7 @@ export {
   getMetricBaselineSummary,
   getMetricBaselineReport,
   validateStageContract,
+  validateModuleScopeContract,
   STAGE_CONTRACT_MAX_RETRIES,
   tieredGroundingGovernor,
   parseVerifierOutput,
@@ -888,6 +995,14 @@ export {
   calculateAffectedSubgraph,
   localizeGraphDiffDispute,
   calculateColMadContributions,
+  estimateModulePriorRisk,
+  initializeModularOrchestrationState,
+  updateModuleBeliefWithFeedback,
+  getNextSchedulableModule,
+  advanceModularOrchestration,
+  computeEntropyReductionRatio,
+  buildDefaultDecompositionFromTopic,
 };
+
 
 
