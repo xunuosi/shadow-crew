@@ -286,8 +286,8 @@ flowchart TB
   * [`src/services/cogno/minorityReportCompiler.ts`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/src/services/cogno/minorityReportCompiler.ts)：`compileMinorityReport()`
   * [`src/App.tsx`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/src/App.tsx)：在 Challenge 与 Arbitration 阶段自动编译并写入 `gameTheoreticState.minorityReport`
 * **代码设计细节**：
-  - 自动提取红队挑战者的核心保留立场（`retainedPosition`）与最多 3 条自洽逻辑链（`coherentLogicChain`）；
-  - 根据争点语义（并发/网络/内存/安全）自动编制 **3 条量化的黑天鹅重启判定条件（`reactivationConditions`）**（例如：“当线上 P99 尾延迟突破 500ms 或并发锁冲突率 > 3% 时，立即激活本异议预案重审”），随终局裁决书永久归档，防止激进架构风险被盲目掩盖。
+  - 自动提取红队挑战者的核心保留立场（`coreDissentThesis`）与自洽逻辑依据（`rationalityBasis`）；
+  - 根据争点语义（并发/网络/内存/安全）自动编制 **3 条量化的黑天鹅重启判定条件（`reopeningTriggers`）**（例如：“若生产环境高并发压测中 P99 延迟超过 250ms，须立即重启本议题”），随终局裁决书永久归档，防止激进架构风险被盲目掩盖。
 
 ---
 
@@ -319,4 +319,40 @@ flowchart TB
 | **7** | **Consistency Illusion / GDP**<br>(*arXiv:2606.08457*) | 揭示“结论一致但推理冲突”的一致性幻觉，提出接地辩论协议（GDP）与原子级承诺校验链。 | 🎯 **保准确** | [`tieredGroundingGovernor.ts`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/src/services/cogno/tieredGroundingGovernor.ts) | `processVerifierEvidenceChain()`<br>T1 ($\le 0.3$) / T2 安全宪章门禁、`ArgumentNode.evidenceRefs` 原子绑定与 `refuted` 自动降级 |
 | **8** | **ReConcile**<br>(*ACL / arXiv:2309.13007*) | 证明异构模型家族圆桌讨论显著优于同质模型多实例，提出基于校准置信度的加权决策机制。 | 🎯 **保准确** | [`modelDiversityGovernor.ts`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/src/services/cogno/modelDiversityGovernor.ts)<br>[`llmService.ts`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/src/services/llmService.ts) | `detectModelFamily()`<br>`calculateModelDiversity()` (同质化偏见告警)<br>`calculateConfidenceMatrix()` |
 | **9** | **LLM + BWM**<br>(*Applied Sciences, 2026* & *Rezaei 2015/2016*) | 结合 LLM 定性抽取与运筹学最优最劣法（BWM）线性规划求解，消除主观数值漂移，输出 $\xi^*$ 一致性校验。 | 🎯 **保准确**<br>📉 **省 Token** | [`mcdaDeterministicSolver.ts`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/src/services/cogno/mcdaDeterministicSolver.ts)<br>[`agentCollaboration.ts`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/src/services/agentCollaboration.ts) | `solveExactBwmOptionB()`<br>`solveDeterministicBwm()`<br>`generateDeterministicMcdaPayload()`<br>$\xi^* \le 0.12$ 硬门禁与 `scoreProvenance` |
-| **10** | **Disagreement-Aware Deliberation**<br>(*arXiv:2606.04223*) | 分歧是客观不确定性的体现，不应被强制抹平；提出分歧感知路由，将结构化异议保留为符号资产。 | 🎯 **保准确** | [`minorityReportCompiler.ts`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/src/services/cogno/minorityReportCompiler.ts)<br>[`LivingAdrCanvas.tsx`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/src/components/LivingAdrCanvas.tsx) | `compileMinorityReport()`<br>`MinorityReport`（保留立场、自洽逻辑链、黑天鹅重启触发条件）与活体 ADR 画布归档 |
+| **10** | **Disagreement-Aware Deliberation**<br>(*arXiv:2606.04223*) | 分歧是客观不确定性的体现，不应被强制抹平；提出分歧感知路由，将结构化异议保留为符号资产。 | 🎯 **保准确** | [`minorityReportCompiler.ts`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/src/services/cogno/minorityReportCompiler.ts)<br>[`LivingAdrCanvas.tsx`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/src/components/LivingAdrCanvas.tsx) | `compileMinorityReport()`<br>`MinorityReport`（`coreDissentThesis`, `rationalityBasis`, `reopeningTriggers`）与活体 ADR 画布归档 |
+
+---
+
+## 四、全链路验证与验收指南（CLI 自动化回归 + UI 交互验证）
+
+### 4.1 命令行一键全量自动化验证（推荐首选）
+项目内置了覆盖上述全部 **16 项核心设计（T1~T7 + A1~A9）** 的自动化断言套件与专项黄金测试集，可在终端一键执行：
+
+```bash
+# 1. 一键运行 16 项核心机制断言 + Wave 1/2/3 闭环回归 + Rezaei (2015) BWM 论文黄金基准测试
+npm run test:cogno
+
+# 2. 单独运行 R-5 真实提案库 Top-5 论点抽取（外壳=0）黄金测试
+npx tsx src/services/cogno/test-claim-extraction.ts
+
+# 3. 运行 Rust MCP 宿主工具 submit_arbitration_ruling 单元测试
+cargo test -p shinobi-dev-mcp
+```
+
+### 4.2 桌面端 UI 交互式验收清单
+启动应用（`npm run dev` 或 `npm run dev:desktop`）后，可通过议题右侧抽屉（[`TopicThreadDrawer.tsx`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/src/components/TopicThreadDrawer.tsx)）直观检验各项治理指标：
+
+1. **检验 4+1 阶段状态机与异构模型告警（A1, A5）**：
+   - 新建议题并选择 **「♟️ 博弈讨论模式 (4+1 架构)」**；
+   - 若指派的 Agent 均属于同一模型家族（如全部为 Claude），抽屉顶部看板将展示 **⚠️ 同质化模型共识偏见警示**。
+2. **检验 Wald-SPRT 似然比、LMAD 冲突切片与 BSS/DSS 谄媚治理（T1, T2, A4）**：
+   - 在推演过程中，观察抽屉顶部的 **CognoNexus 运行态看板**：
+     - **Wald-SPRT 序贯调控条**：实时显示当前轮次、对齐分百分比与对数似然比 $\Lambda$；
+     - **LMAD 冲突切片与 Claim DAG**：点击展开可查看根节点 `L0 -> L1` 因果拓扑、受影响下游节点数及三态脱水（`✓已支撑 / ⚡争议 / ✗证伪`）；
+     - **谄媚度治理条**：实时显示发言 Agent 的先验 `BSS`、动态 `DSS` 与信任折减因子 $\gamma$。
+3. **检验 T1/T2 接地实证、安全宪章与 ColMAD 事实贡献榜（T6, A3, A7）**：
+   - 在接地验证卡片中可点击 **「签署安全宪章以解冻 T2」** 切换 T2 沙箱权限，并展开 **审计账本** 查看工具拦截/执行记录；
+   - 在 **ColMAD 协同事实贡献榜** 中查看各 Agent 的 `🏆 先锋 / ✓ 贡献 / ⚠️ 冗余` 徽标与 `ΔFact` 得分。
+4. **检验 BWM 权衡矩阵、少数派异议报告与活体 ADR 画布（T7, A6, A8, A9）**：
+   - 切换抽屉顶部的 **「📄 活体 ADR 画布」** 标签页，查看自动生成的 4 大工程章节、BWM 权重分布（$\xi^*$ 一致性指标）、少数派黑天鹅重启触发条件以及受影响文件爆炸半径，并点击 **「导出 ADR (.md)」** 验证标准文档沉淀。
+

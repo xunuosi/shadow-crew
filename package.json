@@ -11,7 +11,8 @@
     "desktop": "cargo run -p shinobi-desktop",
     "dev:desktop": "tauri dev",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:cogno": "tsx src/services/cogno/verify-all-governance.ts && tsx src/services/cogno/test-wave1-closed-loop.ts && tsx src/services/cogno/test-wave2-sycophancy-diversity.ts && tsx src/services/cogno/test-wave3-dag-sprt-colmad.ts && tsx src/services/cogno/test-exact-bwm.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
