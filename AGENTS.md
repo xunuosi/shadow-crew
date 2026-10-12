@@ -23,6 +23,8 @@ Shadow Crew —— 多 Agent 协同桌面应用（Tauri + React 19 + Vite）。
     3. **学术支撑映射**：完整梳理 Free-MAD、ColMAD、LMAD、Wald-SPRT、DIANOIA、Sycophancy Propagation、Consistency Illusion/GDP、ReConcile、LLM+BWM、Disagreement-Aware 等 **10 篇核心论文** 与 `src/services/cogno/*` 源码函数的双向映射矩阵。
 - **[`docs/SPEC_GAME_THEORETIC_ORCHESTRATION_PROTOCOL.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/SPEC_GAME_THEORETIC_ORCHESTRATION_PROTOCOL.md)**
   - **定位**：Shinobi "4+1" 认知决策与确定性博弈编排协议规范（FSM 状态迁移表、阶段 Prompt 靶点载荷规范、后仲裁落地执行闭环）。
+- **[`docs/SPEC_GFRAME_BAYESIAN_MODULAR_ORCHESTRATION.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/SPEC_GFRAME_BAYESIAN_MODULAR_ORCHESTRATION.md)**
+  - **定位**：CognoNexus × G-Frame 贝叶斯与团队博弈驱动的模块化分治编排规范与落地方案（阶段 0 拓扑拆解与跨模块只读《公共接口契约》、模块级上下文物理隔离沙箱、贝叶斯先验分流与后验动态升降级、模块爆炸半径硬冻结与 Wave 1~3 实施路线图）。
 
 ---
 
