@@ -4515,7 +4515,7 @@ export default function App() {
                     ? initializeModularOrchestrationState(extractedDecomp)
                     : old.gameTheoreticState?.modularState ||
                       initializeModularOrchestrationState(
-                        buildDefaultDecompositionFromTopic(old.title, old.description)
+                        buildDefaultDecompositionFromTopic(old.title, old.description, acpResp.textResponse)
                       );
                   const updatedModular = {
                     ...baseModular,

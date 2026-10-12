@@ -248,13 +248,14 @@ export function buildScopedModulePrompt(options: {
 }): string {
   const { activeModule, sharedContract, allModules = [] } = options;
 
+  const signatureSection =
+    sharedContract?.typeSignatures && sharedContract.typeSignatures.trim().length > 0
+      ? `\n• 共享契约签名/协议定义:\n\`\`\`\n${sharedContract.typeSignatures}\n\`\`\``
+      : '';
+
   const contractBlock = sharedContract
-    ? `【🧭 跨模块只读公共接口契约 (Shared Interface Contract · 严禁私自篡改)】:
-• 契约摘要: ${sharedContract.summary}
-• 共享类型签名:
-\`\`\`typescript
-${sharedContract.typeSignatures}
-\`\`\`
+    ? `【🧭 跨模块只读公共契约 (Shared Contract · 严禁私自篡改)】:
+• 契约摘要: ${sharedContract.summary}${signatureSection}
 • 全局不变量约束:
 ${sharedContract.invariants.map((inv, idx) => `  ${idx + 1}. ${inv}`).join('\n')}\n`
     : '';
@@ -267,7 +268,7 @@ ${sharedContract.invariants.map((inv, idx) => `  ${idx + 1}. ${inv}`).join('\n')
 
   const upstreamBlock =
     upstreamFrozenModules.length > 0
-      ? `\n【🔒 上游已冻结模块接口摘要 (Read-Only Frozen Dependencies)】:\n${upstreamFrozenModules
+      ? `\n【🔒 上游已冻结模块结论摘要 (Read-Only Frozen Dependencies)】:\n${upstreamFrozenModules
           .map(
             (m) =>
               `• [${m.title}]: ${(m.frozenProposalSnippet || m.responsibility).slice(0, 160)}`
@@ -280,15 +281,19 @@ ${sharedContract.invariants.map((inv, idx) => `  ${idx + 1}. ${inv}`).join('\n')
     .map((m) => m.title)
     .join('、');
 
+  const scopeFilesLine =
+    activeModule.allowedFiles && activeModule.allowedFiles.length > 0
+      ? `• 关联文件/产物白名单 (allowedFiles): ${activeModule.allowedFiles.join(', ')}\n`
+      : '';
+
   return `\n[🧩 G-Frame 模块化上下文物理隔离沙箱 (Scoped Module Sandbox)]
 ${contractBlock}${upstreamBlock}【📦 当前聚焦模块沙箱】: ${activeModule.title} (${activeModule.moduleId})
 • 单一模块职责: ${activeModule.responsibility}
-• 允许操作文件白名单 (allowedFiles): ${activeModule.allowedFiles.join(', ') || '当前模块作用域内文件'}
-• 贝叶斯风险信念: P_prior=${activeModule.belief.priorRisk} → P_posterior=${activeModule.belief.posteriorRisk} (路由模式: ${activeModule.belief.routingMode === 'fast_track' ? '⚡ 快速验证流' : '⚔️ 深度红队对抗流'})
+${scopeFilesLine}• 贝叶斯风险信念: P_prior=${activeModule.belief.priorRisk} → P_posterior=${activeModule.belief.posteriorRisk} (路由模式: ${activeModule.belief.routingMode === 'fast_track' ? '⚡ 快速验证流' : '⚔️ 深度红队对抗流'})
 • 【上下文物理隔离铁律 (Entropy & KL-Divergence Control)】:
   1. 你当前处于模块「${activeModule.title}」的独立隔离沙箱中，只需专注解决本模块的单一职责；
-  2. 严禁越界展开或修改其他模块（${otherModulesExcluded || '非本模块'}）的实现细节与专属文件；
-  3. 跨模块交互必须 100% 遵循上方《公共接口契约》中的类型签名。`;
+  2. 严禁越界展开或篡改其他模块（${otherModulesExcluded || '非本模块'}）的专属职责与受保护范畴；
+  3. 跨模块协同必须 100% 遵循上方《公共契约》中的共识与不变量。`;
 }
 
 /**
@@ -333,7 +338,7 @@ export function buildTopicPrompt(options: {
 
   const topicDesc = topic.description?.trim()
     ? topic.description.trim()
-    : '（创建者未填写额外背景说明，请紧密围绕议题标题进行专业技术方案推演）';
+    : '（创建者未填写额外背景说明，请紧密围绕议题标题进行深度方案推演）';
 
   const activeModule =
     topic.modularState?.enabled && topic.modularState.activeModuleId
@@ -361,22 +366,22 @@ export function buildTopicPrompt(options: {
 
     if (role === 'proposer') {
       if (stage === 'decomposition') {
-        gameModeDirective = `\n\n【博弈编排 - 🧭 阶段 0: G-Frame 模块拓扑拆解与公共接口契约锚定 (Decomposition)】:
-你是本议题的提案构想者 (Proposer)。为压制长链生成的信息熵与 KL 散度，请首先将本任务拆解为 2~4 个职责单一、正交隔离的原子模块，并锁定跨模块只读《公共接口契约》。
-优先调用宿主 \`submit_module_decomposition\` 工具，或在回复末尾附带结构化拆解块：
+        gameModeDirective = `\n\n【博弈编排 - 🧭 阶段 0: G-Frame 模块拓扑拆解与公共契约锚定 (Decomposition)】:
+你是本议题的提案构想者 (Proposer)。为压制长链生成的信息熵与 KL 散度，请根据本议题的实际领域属性（无论是业务战略、产品规划、流程风控还是软件研发），将任务拆解为 2~4 个职责单一、正交隔离的原子模块，并锁定跨模块只读《公共契约》。
+优先调用宿主 \`submit_module_decomposition\` 工具，或在回复末尾附带结构化拆解块（若为非代码类业务讨论，\`type_signatures\` 可留空 \`""\`，\`allowed_files\` 可留空 \`[]\`）：
 <<<MODULE_DECOMPOSITION>>>
 {
   "shared_contract": {
-    "summary": "跨模块架构边界简述",
-    "type_signatures": "export interface SharedContract { ... }",
-    "invariants": ["各模块严禁越界修改非白名单文件"]
+    "summary": "跨模块目标边界与核心假设简述",
+    "type_signatures": "",
+    "invariants": ["各模块严禁越界偏离单一职责或违背全局前置约束"]
   },
   "modules": [
     {
       "module_id": "mod-1",
-      "title": "模块 1：数据结构与接口契约",
-      "responsibility": "单一职责说明",
-      "allowed_files": ["src/types.ts"],
+      "title": "模块 1：核心子模块标题",
+      "responsibility": "单一职责与边界说明",
+      "allowed_files": [],
       "depends_on": [],
       "complexity_level": "low_deterministic"
     }

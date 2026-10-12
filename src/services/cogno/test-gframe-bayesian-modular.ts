@@ -225,8 +225,23 @@ console.log('✅ [2/6] Module DAG Initialization & Topological Root Activation P
   assert.equal(extracted?.modules[0].moduleId, 'mod-a');
   assert.equal(extracted?.modules[1].complexityLevel, 'high_critical');
 
-  console.log('✅ [6/6] MCP submit_module_decomposition Contract Extractor Passed\n');
+  console.log('✅ [6/7] MCP submit_module_decomposition Contract Extractor Passed');
 }
 
-console.log('🎉 [G-Frame Wave 1 & Wave 2 Complete] All assertions passed 100%!');
+// 7. 测试非研发类通用业务议题的动态模块拆解与无代码路径硬编码保障 (Domain-Agnostic Business Discussion)
+{
+  const bizDraft = buildDefaultDecompositionFromTopic(
+    '2026 Q4 SaaS 会员分级定价与存量老客迁移商业化方案',
+    '围绕客单价提升与续费留存率平衡展开业务推演',
+    `## 一、阶梯定价与毛利测算模型\n明确基础版与企业版权益差异。\n## 二、存量老客平滑迁移与赔付合规风控\n防范老客流失与违约争议。\n## 三、渠道宣发与转化漏斗追踪\n建立首月转化率指标。`
+  );
+  assert.equal(bizDraft.modules.length, 3);
+  assert.equal(bizDraft.sharedContract.typeSignatures, '', 'Pure business topic must not inject fake TypeScript interfaces');
+  assert.deepEqual(bizDraft.modules[0].allowedFiles, [], 'Pure business topic must not hardcode src/types.ts');
+  assert.ok(bizDraft.modules[0].title.includes('阶梯定价与毛利测算模型'));
+  assert.equal(bizDraft.modules[1].complexityLevel, 'high_critical', 'Compliance/compensation module must be recognized as high_critical');
+  console.log('✅ [7/7] Domain-Agnostic Business Discussion Decomposition (Zero R&D Hardcoding) Passed\n');
+}
+
+console.log('🎉 [G-Frame Complete] All 7 test suites passed 100%!');
 

@@ -187,7 +187,7 @@ pub fn get_tools_list() -> Value {
         },
         {
             "name": "submit_module_decomposition",
-            "description": "在 G-Frame 博弈阶段 0 (decomposition) 提交任务模块化拆解清单与跨模块公共接口契约。将复杂研发任务拆解为 2~4 个职责正交、上下文物理隔离的原子模块。",
+            "description": "在 G-Frame 博弈阶段 0 (decomposition) 提交任务模块化拆解清单与跨模块公共契约。将复杂任务（支持通用业务战略、产品规划或软件研发任务）拆解为 2~4 个职责正交、上下文物理隔离的原子模块。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -196,19 +196,19 @@ pub fn get_tools_list() -> Value {
                         "properties": {
                             "summary": {
                                 "type": "string",
-                                "description": "跨模块架构边界简述"
+                                "description": "跨模块目标边界与核心假设简述"
                             },
                             "type_signatures": {
                                 "type": "string",
-                                "description": "跨模块共享的接口/数据结构签名定义"
+                                "description": "跨模块共享的协议/接口签名定义（非代码类业务讨论可留空字符串）"
                             },
                             "invariants": {
                                 "type": "array",
                                 "items": { "type": "string" },
-                                "description": "所有模块必须遵守的全局不变量约束"
+                                "description": "所有模块必须遵守的全局不变量约束或核心业务指标底线"
                             }
                         },
-                        "required": ["summary", "type_signatures", "invariants"]
+                        "required": ["summary", "invariants"]
                     },
                     "modules": {
                         "type": "array",
@@ -219,11 +219,11 @@ pub fn get_tools_list() -> Value {
                             "properties": {
                                 "module_id": { "type": "string", "description": "模块 ID，如 mod-1" },
                                 "title": { "type": "string", "description": "模块标题" },
-                                "responsibility": { "type": "string", "description": "单一模块职责描述" },
+                                "responsibility": { "type": "string", "description": "单一模块职责与边界描述" },
                                 "allowed_files": {
                                     "type": "array",
                                     "items": { "type": "string" },
-                                    "description": "该模块允许触碰的文件白名单"
+                                    "description": "该模块允许触碰的文件或文档白名单（纯业务讨论可传空数组 []）"
                                 },
                                 "depends_on": {
                                     "type": "array",
@@ -233,10 +233,10 @@ pub fn get_tools_list() -> Value {
                                 "complexity_level": {
                                     "type": "string",
                                     "enum": ["low_deterministic", "medium_standard", "high_critical"],
-                                    "description": "模块复杂度自评，用于初始化贝叶斯先验风险 P_prior"
+                                    "description": "模块复杂度/风险自评，用于初始化贝叶斯先验风险 P_prior"
                                 }
                             },
-                            "required": ["module_id", "title", "responsibility", "allowed_files", "depends_on", "complexity_level"]
+                            "required": ["module_id", "title", "responsibility", "depends_on", "complexity_level"]
                         }
                     }
                 },

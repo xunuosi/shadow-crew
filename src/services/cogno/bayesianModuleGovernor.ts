@@ -9,10 +9,10 @@ import {
 } from '../../types';
 
 /**
- * 高风险核心技术域正则：触及并发、锁、事务、安全鉴权、数据库迁移、底层存储或沙箱执行时，先验不确定性上调
+ * 高风险核心域正则：同时覆盖软件工程高危域（并发、锁、事务、鉴权、迁移）与通用业务高危域（资损、合规、法务、隐私、现金流、赔付、违约、不可逆决策）
  */
 const CRITICAL_DOMAIN_REGEX =
-  /并发|互斥锁|死锁|事务|一致性|幂等|安全|鉴权|权限|迁移|内存泄漏|持久化|沙箱|状态机|concurrency|mutex|deadlock|transaction|idempoten|security|auth|migration|sqlite|sandbox|fsm/i;
+  /并发|互斥锁|死锁|事务|一致性|幂等|安全|鉴权|权限|迁移|内存泄漏|持久化|沙箱|状态机|资损|合规|法律|法务|隐私|资金|账务|现金流|赔付|违约|垄断|不可逆|concurrency|mutex|deadlock|transaction|idempoten|security|auth|migration|sqlite|sandbox|fsm|compliance|financial|privacy|liability/i;
 
 function clamp(val: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, val));
@@ -323,51 +323,88 @@ export function computeEntropyReductionRatio(
 }
 
 /**
- * 7. 当提案官未显式调用 MCP 拆解工具时，基于议题语义生成确定性的 3 模块正交分治契约
- * 保证任何复杂研发议题均可无缝进入 G-Frame 模块化隔离沙箱
+ * 7. 当提案官未显式调用 MCP 拆解工具时，基于议题与提案语义动态生成领域无关（Domain-Agnostic）的正交分治契约
+ * - 严禁硬编码任何特定代码文件路径（如 src/types.ts 等），确保非研发类（商业策略、产品规划、运营风控等）与研发类任务均可自适应分治
+ * - 若提案文本或议题描述中已包含结构化小节标题，则优先提取真实业务子模块；否则按「目标与边界共识 -> 核心机制与路径 -> 风险防控与落地」三元正交维度拆解
  */
 export function buildDefaultDecompositionFromTopic(
   topicTitle: string,
-  topicDescription: string = ''
+  topicDescription: string = '',
+  proposalText: string = ''
 ): ModuleDecompositionDraft {
-  const combined = `${topicTitle} ${topicDescription}`;
+  const combined = `${topicTitle}\n${topicDescription}\n${proposalText}`;
   const isCriticalCore = CRITICAL_DOMAIN_REGEX.test(combined);
+
+  // 仅当议题或提案正文中真实出现了明确的文件路径时，才提取为关联文件，绝不凭空硬编码项目源码路径
+  const mentionedFiles = Array.from(
+    new Set(
+      (combined.match(/(?:[a-zA-Z0-9_-]+\/)+[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+/g) || []).slice(0, 6)
+    )
+  );
+
+  // 尝试从提案或描述的 Markdown 标题 / 编号段落中提取真实业务子模块 (2~4 个)
+  const headingMatches = Array.from(
+    combined.matchAll(/(?:^|\n)\s*(?:#{2,3}\s+|(?:[一二三四1-4][、.)）])\s*)([^\n:：]{4,36})/g)
+  )
+    .map((m) => m[1].trim().replace(/\*+/g, ''))
+    .filter((t) => t.length >= 4 && !/^(背景|总结|综述|结论|附录)/.test(t));
+
+  const uniqueHeadings = Array.from(new Set(headingMatches)).slice(0, 4);
+
+  const dynamicModules =
+    uniqueHeadings.length >= 2
+      ? uniqueHeadings.map((heading, idx) => {
+          const isHighRisk = CRITICAL_DOMAIN_REGEX.test(heading) || (idx === 1 && isCriticalCore);
+          return {
+            moduleId: `mod-${idx + 1}`,
+            title: `模块 ${idx + 1}：${heading}`,
+            responsibility: `聚焦「${heading}」维度的方案推演、边界校验与可行性论证`,
+            allowedFiles: idx === 0 ? mentionedFiles.slice(0, 2) : idx === 1 ? mentionedFiles.slice(2, 4) : mentionedFiles.slice(4, 6),
+            dependsOn: idx === 0 ? [] : [`mod-${idx}`],
+            complexityLevel: (isHighRisk
+              ? 'high_critical'
+              : idx === 0
+              ? 'low_deterministic'
+              : 'medium_standard') as ModuleComplexityLevel,
+          };
+        })
+      : [
+          {
+            moduleId: 'mod-1-boundary',
+            title: '模块 1：核心目标定义与前提边界共识',
+            responsibility: `明确「${topicTitle.slice(0, 36)}」的业务/系统边界、核心衡量指标与前置假设约束`,
+            allowedFiles: mentionedFiles.slice(0, 2),
+            dependsOn: [],
+            complexityLevel: 'low_deterministic' as ModuleComplexityLevel,
+          },
+          {
+            moduleId: 'mod-2-mechanism',
+            title: '模块 2：核心方案机制与关键执行路径',
+            responsibility: `推演「${topicTitle.slice(0, 36)}」的主体方案设计、资源分配或关键流转机制`,
+            allowedFiles: mentionedFiles.slice(2, 4),
+            dependsOn: ['mod-1-boundary'],
+            complexityLevel: (isCriticalCore ? 'high_critical' : 'medium_standard') as ModuleComplexityLevel,
+          },
+          {
+            moduleId: 'mod-3-governance',
+            title: '模块 3：边界风险防控与落地验收标准',
+            responsibility: `针对极端异常场景制定容错降级、合规风控兜底方案与量化验收标准`,
+            allowedFiles: mentionedFiles.slice(4, 6),
+            dependsOn: ['mod-1-boundary', 'mod-2-mechanism'],
+            complexityLevel: 'low_deterministic' as ModuleComplexityLevel,
+          },
+        ];
 
   return {
     sharedContract: {
-      summary: `围绕「${topicTitle.slice(0, 60)}」建立跨模块强类型边界契约，确保数据模型、核心服务与视图层解耦。`,
-      typeSignatures: `// Shared Interface Contract (Read-Only across all Module Sandboxes)\nexport interface ModuleContractContext {\n  readonly topicScope: string;\n  readonly version: number;\n}`,
+      summary: `围绕「${topicTitle.slice(0, 60)}」建立跨模块统一目标边界与核心假设契约，确保各子模块推演互不越界、逻辑自洽。`,
+      typeSignatures: '',
       invariants: [
-        '各模块仅允许读写自身 allowedFiles 白名单内的文件，禁止跨模块越界修改',
-        '下游模块必须严格消费《公共接口契约》中的类型签名，禁止私自重命名跨模块字段',
+        '各模块沙箱仅聚焦自身单一职责边界，禁止偏离议题核心目标或越界推翻上游已冻结共识',
+        '所有模块的方案推演必须满足全局前置假设与核心指标约束，保持跨模块输入输出口径一致',
       ],
     },
-    modules: [
-      {
-        moduleId: 'mod-1-contract-schema',
-        title: '模块 1：数据结构与接口契约层',
-        responsibility: `定义「${topicTitle.slice(0, 30)}」所需的核心数据结构、类型接口与常量边界`,
-        allowedFiles: ['src/types.ts'],
-        dependsOn: [],
-        complexityLevel: 'low_deterministic',
-      },
-      {
-        moduleId: 'mod-2-core-engine',
-        title: '模块 2：核心业务与状态控制引擎',
-        responsibility: `实现「${topicTitle.slice(0, 30)}」的核心状态流转、并发控制与纯函数逻辑`,
-        allowedFiles: ['src/services/cogno/', 'src/services/agentCollaboration.ts'],
-        dependsOn: ['mod-1-contract-schema'],
-        complexityLevel: isCriticalCore ? 'high_critical' : 'medium_standard',
-      },
-      {
-        moduleId: 'mod-3-ui-integration',
-        title: '模块 3：视图组件接入与交互闭环',
-        responsibility: `绑定状态看板与用户交互入口，确保双主题高对比度渲染与零横向溢出`,
-        allowedFiles: ['src/components/TopicThreadDrawer.tsx', 'src/components/LivingAdrCanvas.tsx'],
-        dependsOn: ['mod-1-contract-schema', 'mod-2-core-engine'],
-        complexityLevel: 'low_deterministic',
-      },
-    ],
+    modules: dynamicModules,
     submittedBy: 'system-gframe-initializer',
     submittedAt: new Date().toISOString(),
   };
