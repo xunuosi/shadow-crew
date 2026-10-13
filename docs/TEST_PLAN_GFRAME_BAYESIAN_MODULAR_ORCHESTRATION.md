@@ -54,6 +54,9 @@ cargo test -p shinobi-dev-mcp
 
 # L1 全部博弈论 + G-Frame 自动化断言（16 项治理 + 4 个 Wave + BWM 金标准 + G-Frame 7 项）
 npm run test:cogno
+
+# L1 边界与集成风险探测（GF-03/05/09/16 + EDGE-01~06 + E2E-03 仿真）
+npm run test:cogno:edge
 ```
 
 **当前基线实测结果（2026-10-13 复跑）**：
@@ -61,8 +64,11 @@ npm run test:cogno
 | 命令 | 结果 |
 | :--- | :--- |
 | `npm run lint` | ✅ 通过，零类型报错 |
-| `npm run test:cogno` | ✅ 全绿：`verify-all-governance` T1~T8 / A1~A10 + Wave1/2/3 + Rezaei 2015 BWM 金标准 + G-Frame 7/7 |
+| `npm run test:cogno` | ✅ 全绿：`verify-all-governance` **18/18**（T1~T8 + A1~A10）+ Wave1/2/3 + Rezaei 2015 BWM 金标准 + G-Frame 7/7 |
 | `cargo test -p shinobi-dev-mcp` | ✅ `9 passed; 0 failed`（含 `test_dispatch_tool_call_submit_module_decomposition`、`test_tools_list_schema`） |
+| `npm run test:cogno:edge` | 🔴 `DEFECT 3 项 / WARN 3 项`（详见 §10 本轮执行记录） |
+
+> 注：治理套件对外常称「16 项」，指 `TECH_REPORT` 中的 7（Token）+ 9（准确性）基线机制；加入 G-Frame 的 `T8` 与 `A10` 后，实际断言总数为 **18 项**。
 
 > ⚠️ **沙箱提示**：`tsx` 需要建立本地 IPC 管道，在受限沙箱下会抛 `EPERM ... .pipe`。若遇此报错属环境限制而非用例失败，需在非沙箱终端重跑。
 
@@ -119,28 +125,28 @@ logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedCl
 | :--- | :--- | :--- | :--- | :--- |
 | **GF-01** | 先验风险基础值 | `low_deterministic` / 1 个文件 / 纯类型定义 | `priorRisk === 0.20` 且 `routingMode === 'fast_track'` | ✅ |
 | **GF-02** | 先验风险高危加成 | `high_critical` / 4 个文件 / 「高并发互斥锁 + SQLite 事务幂等迁移」 | `priorRisk ≥ 0.85`（0.70 + 0.05×2 + 0.15）且路由 `deep_debate` | ✅ |
-| **GF-03** | 先验分流阈值边界 | 构造 `P_prior` 恰好 0.44 / 0.45（如 `medium_standard` + 文件数微调） | `< 0.45` 走 `fast_track`；`≥ 0.45` 走 `deep_debate`（**严格小于**为界） | ⚠️ 建议补强 |
+| **GF-03** | 先验分流阈值边界 | 构造 `P_prior` 恰好 0.40 / 0.45（`low_deterministic` + 文件数/高危加成微调） | `< 0.45` 走 `fast_track`；`≥ 0.45` 走 `deep_debate`（**严格小于**为界） | ✅ `test:cogno:edge` |
 | **GF-04** | 模块 DAG 初始化与根节点激活 | 提交 3 模块草案（M1 无依赖、M2 依赖 M1、M3 依赖 M1+M2） | `modules.length === 3`；`activeModuleId === 'mod-1-schema'`；M1 `status === 'proposing'` | ✅ |
-| **GF-05** | 模块数量硬上限 | 提交 5 个模块 | 仅保留前 4 个（`slice(0, 4)`），`enabled === true` | ⚠️ 建议补强 |
+| **GF-05** | 模块数量硬上限 | 提交 5 个模块 | 仅保留前 4 个（`slice(0, 4)`），`enabled === true` | ✅ `test:cogno:edge` |
 | **GF-06** | 后验升级：契约违规拉起红队 | `fast_track` 模块传入 `contractViolations: 2` | `posteriorAction === 'ESCALATE_TO_RED_TEAM'`；`routingMode` 变 `deep_debate`；`posteriorRisk ≥ 0.55` | ✅ |
 | **GF-07** | 后验冻结：零冲突 + 实证通过 | 传入 `verifiedClaims: 2, contractViolations: 0, refutedClaims: 0` | `posteriorAction === 'FREEZE_MODULE'`；`status === 'frozen'` | ✅ |
 | **GF-08** | 后验局部重修：存在证伪项 | 传入 `refutedClaims: 1, edgeCaseCount: 2` | `posteriorAction === 'SCOPED_DEFENSE_REFINE'`；`status === 'defending'` | ✅ |
-| **GF-09** | 谄媚分 DSS 对后验的抑制（γ 折减联动） | 相同反馈下把 `dssScore` 由 0 提升到 0.95 | `posteriorRisk` 单调上升（惩罚项 `max(0, DSS−0.45)×0.40` 生效） | ⚠️ 建议补强 |
+| **GF-09** | 谄媚分 DSS 对后验的抑制（γ 折减联动） | 相同反馈下把 `dssScore` 由 0 提升到 0.95 | `posteriorRisk` 单调上升（惩罚项 `max(0, DSS−0.45)×0.40` 生效） | ✅ `test:cogno:edge` |
 | **GF-10** | 拓扑调度门禁 | M1 未冻结时请求调度 | `getNextSchedulableModule` 不返回 M2；M1 冻结后立即返回 M2 | ✅ |
 | **GF-11** | 全冻结收敛 | 依次冻结 M1/M2/M3 | `allModulesFrozen === true`；`activeModuleId === undefined`；`getNextSchedulableModule` 返回 `undefined` | ✅ |
 | **GF-12** | 冻结模块硬锁定 | M1 冻结后在 M2 沙箱内触发局部重修 | M1 `status` 仍为 `frozen`，`frozenProposalSnippet` 不被改写 | ✅ |
 | **GF-13** | 跨模块文件越界拦截 | M1（白名单 `src/types.ts`）输出「修改 `src/services/engine.ts` 并重写 `src/components/Drawer.tsx`」 | `isScopeValid === false`；`contractViolations === 2`；`violatedFiles` 命中两个文件 | ✅ |
 | **GF-14** | 白名单内修改不误报 | M1 输出「仅修改 `src/types.ts` 定义 PluginState」 | `isScopeValid === true`；`contractViolations === 0` | ✅ |
 | **GF-15** | 沙箱 Prompt 隔离注入 | 为 M3 构造 `buildScopedModulePrompt` | 必含：`sharedContract.typeSignatures`、上游 M2 的 `frozenProposalSnippet`（≤160 字）、本模块 `allowedFiles`、隔离铁律三条 | ✅ |
-| **GF-16** | 沙箱 Prompt 不泄露他模块 | 同上，检查 Prompt 全文 | 不包含其他模块的业务实现细节与长篇历史（仅出现模块标题名） | ⚠️ 建议补强（弱断言） |
+| **GF-16** | 沙箱 Prompt 不泄露他模块 | 给 M3 注入非依赖模块 M1 的 `frozenProposalSnippet` 哨兵串，检查 Prompt 全文 | 不包含非依赖模块的实现细节（哨兵串零命中），仅注入直接上游摘要 | ✅ `test:cogno:edge` |
 | **GF-17** | MCP 拆解载荷直通提取 | 构造含 `submit_module_decomposition` 的 `mcpToolCalls` | `extractModuleDecompositionFromAcpResponse` 返回草案，`modules.length` 正确、`complexityLevel` 正确映射 | ✅ |
 | **GF-18** | 通用业务议题动态拆解（反研发硬编码） | 输入 Q4 SaaS 会员分级定价议题 + 三节 Markdown 标题 | `modules.length === 3`；`sharedContract.typeSignatures === ''`；`allowedFiles === []`；合规模块判为 `high_critical` | ✅ |
 | **GF-19** | 信息熵 / Token 压缩比 | `computeEntropyReductionRatio(3600, 700, 200)` | 返回值 `0.75`；`totalTopicChars ≤ 0` 时返回 0；`activePayload ≥ total` 时返回 0 | ✅ |
 | **GF-20** | 文件路径提取不凭空捏造 | 输入无任何 `a/b/c.ts` 形态路径的纯业务文本 | `allowedFiles` 全为空数组，不出现 `src/…` 硬编码 | ✅ |
 
-### 4.3 L1：博弈论 16 项治理基线（回归防退化）
+### 4.3 L1：博弈论 18 项治理基线（T1~T8 + A1~A10，回归防退化）
 
-> 由 `src/services/cogno/verify-all-governance.ts` 全自动覆盖，`npm run test:cogno` 首条即执行。任何 G-Frame 改动都必须保证这 16 项不回退。
+> 由 `src/services/cogno/verify-all-governance.ts` 全自动覆盖，`npm run test:cogno` 首条即执行，实测 **18/18 通过**。任何 G-Frame 改动都必须保证这 18 项不回退。
 
 | 用例 ID | 机制名称 | 对应用户价值 |
 | :--- | :--- | :--- |
@@ -212,23 +218,29 @@ logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedCl
 
 ---
 
-## 6. 高风险待验证点（附代码定位，建议优先确认）
+## 6. 高风险待验证点（第一轮已实测确认，详见 §10）
 
-> 以下三点是在梳理实现时发现的**规格与实现可能不一致**之处，建议作为本次验证的第一优先项，先确认「是缺陷」还是「有意的阶段性简化」。
+> 以下三点已由 `npm run test:cogno:edge` 实测确认，全部为**实现与 SPEC 描述的偏差（DEFECT）**，建议作为修复优先级排序依据。
 
-1. **多模块循环推演疑似未闭环**
+1. 🔴 **多模块循环推演未闭环（DEFECT / P0）**
+   - 实测证据（E2E-03 仿真，使用真实 governor 函数复刻 App 调用序列）：
+     `init -> active=M1(proposing) || verification(M1) -> FREEZE_MODULE ; next active=M2 || defense(M2) -> FREEZE_MODULE ; next active=M3`
+     终态 `M1=frozen, M2=frozen, M3=proposing`，**已冻结 2/3**。
    - 现象：`advanceModularOrchestration` 在冻结当前模块后会返回下一个 `activeModuleId`，但 `src/App.tsx` 中**没有消费 `allModulesFrozen` 的回流逻辑**：答辩结束后无条件 `gameStage: 'arbitration'`（见 `src/App.tsx` 约 3549~3600 行与 2971~3010 行）。
-   - 影响：3 模块议题可能只对第一个模块完成了红队/验证/定案，M2/M3 停在 `proposing`，`x/y 已冻结` 停在 `1/3`。
-   - 验证方法：见 **E2E-03**。若确认为缺陷，属 P0。
+   - 影响：滞留模块（本例 M3）未经历红队/验证即被仲裁流程遗弃；且 M2 的冻结来自答辩阶段的硬编码实证计数，而非其自身沙箱的对抗验证。
 
-2. **答辩阶段的实证计数被硬编码**
-   - 现象：`src/App.tsx` 约 3560 行传入 `{ verifiedClaims: 2, refutedClaims: 0 }`。
+2. 🔴 **答辩阶段的实证计数被硬编码（DEFECT / P1）**
+   - 实测证据（EDGE-06 静态契约扫描）：命中 `src/App.tsx:3560` 的 `verifiedClaims: 2,` + `refutedClaims: 0,`（位于 `advanceModularOrchestration` 调用块内）。
    - 影响：规则 C（`SCOPED_DEFENSE_REFINE`）在真实运行期几乎不可达，后验 `P_posterior` 也不反映真实证伪数，与 SPEC 中「实时反馈捕获 Γ_k」的设计存在偏差。
-   - 验证方法：见 **EDGE-06**。
 
-3. **「信息熵压降」是启发式展示值**
+3. 🔴 **依赖成环无守卫（DEFECT / P1）**
+   - 实测证据（EDGE-03）：构造 M1⇄M2 互相依赖后，`getNextSchedulableModule` 返回 `undefined`，`activeModuleId=undefined`，全部模块永久停留 `pending`；集成层因 `activeModuleId` 为空将跳过全部推进调用，形成静默死锁。
+
+4. ⚠️ **「信息熵压降」是启发式展示值（WARN / 仅影响观感）**
    - 现象：UI 中 `((1 - 1/modules.length) * 100)`（3 模块固定显示 67%），与真实测得的 `computeEntropyReductionRatio`（基于字符数）不同源。
    - 影响：仅影响观感可信度，不影响调度逻辑；但若用于对外汇报需标注口径。
+
+5. ⚠️ 另有 3 项语义待确认（详见 §10）：`EDGE-02` 前端不校验模块数下限；`EDGE-04` 白名单重叠时越界门禁放行；`EDGE-05` 反馈参数实为「累计绝对值覆盖」而非增量。
 
 ---
 
@@ -255,7 +267,7 @@ logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedCl
 
 | 轮次 | 日期 | 基线提交 | `npm run lint` | `npm run test:cogno` | `cargo test -p shinobi-dev-mcp` | E2E 通过项 | 遗留缺陷 | 验证人 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| R1 | 2026-10-13 | `a6f2647` | ✅ | ✅ 16/16 + G-Frame 7/7 | ✅ 9/9 | 未执行 | 见 §6 三项待确认 | — |
+| R1 | 2026-10-13 | `a6f2647` | ✅ | ✅ 18/18 + G-Frame 7/7 | ✅ 9/9 | 未执行（见 §10.3 阻塞说明） | DEFECT 3 项 + WARN 3 项（见 §10.2） | Codex |
 | R2 | | | | | | | | |
 
 ---
@@ -265,7 +277,49 @@ logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedCl
 若要将上述人工用例尽量自动化为「持续回归」，建议按序补齐：
 
 1. 在 `test-gframe-bayesian-modular.ts` 增补：分流阈值边界（GF-03）、模块数上限截断（GF-05）、DSS 惩罚单调性（GF-09）、沙箱 Prompt 负向断言（GF-16）。
-2. 新增 `test-gframe-fsm-loop.ts`：用纯函数模拟 App 层 FSM 接力，断言「N 个模块全部冻结后才会进入 arbitration」（对应 E2E-03，可先行红灯暴露问题）。
+2. ~~新增 `test-gframe-fsm-loop.ts`~~ → 已由 `src/services/cogno/test-gframe-edge-cases.ts` 的 E2E-03 集成仿真覆盖（`npm run test:cogno:edge`），当前为红灯暴露状态。
 3. 为 `getNextSchedulableModule` 增加依赖成环检测与「无可行模块」的显式告警（对应 EDGE-03）。
-4. 将 `EDGE-02 / EDGE-04` 的语义在 SPEC 中补明，或在 `initializeModularOrchestrationState` 中加硬校验。
+4. 将 `EDGE-02 / EDGE-04 / EDGE-05` 的语义在 SPEC 中补明，或在 `initializeModularOrchestrationState` 中加硬校验。
+
+---
+
+## 10. 第一轮执行记录（2026-10-13，基线 `a6f2647`）
+
+### 10.1 L0 / L1 基线执行结果
+
+| 用例 ID | 命令 | 实测结果 | 结论 |
+| :--- | :--- | :--- | :--- |
+| BL-01 | `npm run lint` | `tsc --noEmit` 退出码 0，零报错 | ✅ PASS |
+| BL-02 | `npm run build` | `vite build` 成功：2009 modules transformed，`dist/assets/index-*.js` 1294.49 kB（gzip 354.49 kB），仅 chunk 体积告警 | ✅ PASS |
+| BL-03 | `cargo test -p shinobi-dev-mcp` | `9 passed; 0 failed`（含 `submit_module_decomposition` 调度与 Schema 用例） | ✅ PASS |
+| GOV-01~18 | `npm run test:cogno` | `verify-all-governance` **18/18**；T1~T8 + A1~A10 全部 ✅ | ✅ PASS |
+| GF-01~20（已自动化部分） | `npm run test:cogno` | G-Frame 7/7 套件全绿；关键实测值：`P_prior=0.20 -> fast_track`、`P_prior≥0.85 -> deep_debate`、`M2 后验 0.2 -> 0.6822 ESCALATE_TO_RED_TEAM`、越界拦截 `src/gateway/router.ts`、上下文压缩比 75.0% | ✅ PASS |
+| WG-01~03 | `npm run test:cogno` | Wave 1（4/4）、Wave 2（6/6）、Wave 3（5/5）全部 100% 通过 | ✅ PASS |
+| BWM-GOLD | `npm run test:cogno` | Rezaei (2015) 5 准则算例最大绝对权重偏差 0.0256 < 0.035；FLAT 退化输入被拒识 | ✅ PASS |
+
+### 10.2 L1 边界与集成风险探测结果（`npm run test:cogno:edge`）
+
+新增探测脚本 `src/services/cogno/test-gframe-edge-cases.ts`，实测汇总 **DEFECT 3 项 / WARN 3 项**。
+
+| 用例 ID | 实测结论 | 等级 | 关键证据 |
+| :--- | :--- | :--- | :--- |
+| GF-03 | `P_prior=0.40 -> fast_track`；`P_prior=0.45 -> deep_debate`（严格小于为界，符合 SPEC） | ✅ PASS | 边界值精确命中 |
+| GF-05 / EDGE-01 | 提交 5 个模块被截断为 4 个，无异常 | ✅ PASS | `modules.length === 4` |
+| GF-09 | `penalty(DSS=0.95)=max(0,0.95−0.45)×0.40=0.20` 生效，`P_posterior` 由 0.2688 升至 0.3099 | ✅ PASS | 谄媚分惩罚单调性成立 |
+| GF-16 | 仅注入直接上游 M2 摘要，非依赖模块 M1 的 `M1-SECRET-IMPL` 内部实现细节零泄露 | ✅ PASS | 负向断言通过 |
+| EDGE-02 | 前端初始化层不校验模块数下限：提交 1 个模块被原样接受（`modules=1, enabled=true`） | ⚠️ WARN | MCP Schema `minItems=2` 仅拦截工具调用路径 |
+| EDGE-04 | 白名单重叠时越界门禁放行：`src/shared.ts` 同时在 M1/M2 白名单内，`contractViolations=0` | ⚠️ WARN | 双写冲突风险 |
+| EDGE-05 | `feedbackDelta` 实为「累计绝对值覆盖」：重复传入相同反馈，`P_posterior` 恒为 0.5497（未叠加） | ⚠️ WARN | 命名与语义易误读 |
+| EDGE-03 | 依赖成环无守卫：M1⇄M2 时无拓扑根节点，`activeModuleId=undefined`，全部永久 `pending` | 🔴 DEFECT | 静默死锁 |
+| EDGE-06 | `src/App.tsx:3560` 答辩阶段硬编码 `verifiedClaims: 2 / refutedClaims: 0` | 🔴 DEFECT | 规则 C 真实运行期不可达 |
+| E2E-03 | 集成仿真终态 `M1=frozen, M2=frozen, M3=proposing`，仅 **2/3** 冻结 | 🔴 DEFECT | 多模块循环未闭环 |
+
+### 10.3 L2 / L3 执行状态：阻塞
+
+| 用例组 | 状态 | 阻塞原因与后续动作 |
+| :--- | :--- | :--- |
+| E2E-01~09 | ⏸ 未执行 | 需真实 ACP Agent 在线（含提案/红队/验证角色）+ 桌面端运行，本会话未启动任何 ACP 运行时；执行步骤见 §4.4 |
+| UI-01~05 | ⏸ 未执行 | 前端 dev server 已可正常启动（`http://localhost:3033` 返回 HTTP 200，页面标题 `Shinobi - ACP Multi-Agent Workspace`）；但本会话浏览器自动化运行时不可用，无法完成点击/截图级走查。项目内亦未安装 `jsdom / @testing-library / vitest`，无法退化为 DOM 级单测 |
+
+> 建议：UI 用例改由人工按 §4.5 走查；如希望自动化，可先安装 `vitest + @testing-library/react + jsdom`（需另行批准安装依赖），再把「模块沙箱矩阵渲染 / 胶囊过滤」抽为可测组件。
 ```
