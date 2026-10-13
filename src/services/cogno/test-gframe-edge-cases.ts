@@ -530,6 +530,197 @@ console.log('\n--- N1 App 层状态更新器副作用 (决策变量在 setState 
   }
 }
 
+// ---------------------------------------------------------------- N5
+console.log('\n--- N5 拓扑去重会静默剥夺模块白名单 (静默过滤反模式) ---');
+{
+  const state = initializeModularOrchestrationState(
+    makeDraft([
+      { id: 'M1', title: 'M1 下游消费方', responsibility: '下游消费', files: ['src/shared.ts', 'src/a.ts'], dependsOn: ['M2'], level: 'low_deterministic' },
+      { id: 'M2', title: 'M2 上游定义方', responsibility: '接口定义', files: ['src/shared.ts', 'src/b.ts'], dependsOn: [], level: 'low_deterministic' },
+    ])
+  );
+  const m1 = state.modules.find((m) => m.moduleId === 'M1')!;
+  const m2 = state.modules.find((m) => m.moduleId === 'M2')!;
+  const dropped = ['src/shared.ts', 'src/a.ts'].filter((f) => !m1.allowedFiles.includes(f));
+  console.log(`    M1 声明文件 [src/shared.ts,src/a.ts] -> 实际获得 [${m1.allowedFiles.join(',') || '空'}]；M2 获得 [${m2.allowedFiles.join(',')}]`);
+  if (dropped.length > 0) {
+    warn(
+      'N5',
+      `拓扑去重会「静默剥夺」下游模块的白名单文件（M1 丢失 ${dropped.join(',')}），且不产生任何用户可见提示、不写入 ADR/时间线。` +
+        `后续该模块一旦提及修改该文件会被判越界并被迫重修。若分解方案本身违规（F_i ∩ F_j ≠ ∅），按 AGENTS.md 反静默过滤原则应显式告警或驳回，而非无痕裁剪。`
+    );
+  } else {
+    pass('N5', '拓扑去重未造成白名单丢失');
+  }
+}
+
+// ---------------------------------------------------------------- N6
+console.log('\n--- N6 updateTopicDataInState 更新器纯度扫描 (双重求值放大副作用) ---');
+{
+  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  const callName = 'updateTopicDataInState(';
+  const callSites: Array<{ index: number; line: number; text: string }> = [];
+
+  let searchFrom = 0;
+  for (;;) {
+    const idx = appSource.indexOf(callName, searchFrom);
+    if (idx < 0) break;
+    // 提取括号平衡的整段调用
+    let depth = 0;
+    let end = idx;
+    for (let i = appSource.indexOf('(', idx); i < appSource.length; i += 1) {
+      const ch = appSource[i];
+      if (ch === '(') depth += 1;
+      else if (ch === ')') {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    const text = appSource.slice(idx, end + 1);
+    const line = appSource.slice(0, idx).split('\n').length;
+    callSites.push({ index: idx, line, text });
+    searchFrom = end + 1;
+  }
+
+  const impureHits: string[] = [];
+  for (const site of callSites) {
+    const t = site.text;
+    if (/\.current\s*=/.test(t)) impureHits.push(`L${site.line}: 更新器内直接改写 ref.current`);
+    if (/delete\s+\w+\.current\[/.test(t)) impureHits.push(`L${site.line}: 更新器内 delete ref.current[...]`);
+    if (/\bDate\.now\(\)/.test(t)) impureHits.push(`L${site.line}: 更新器内调用 Date.now()（双重求值将产生不同时间戳/ID）`);
+    if (/\bMath\.random\(\)|randomUUID\(\)/.test(t)) impureHits.push(`L${site.line}: 更新器内使用随机数，双重求值将产生不同结果`);
+    if (/\bset[A-Z]\w*\(/.test(t)) impureHits.push(`L${site.line}: 更新器内嵌套调用其它 setState`);
+  }
+
+  console.log(`    扫描到 ${callSites.length} 处 updateTopicDataInState 调用`);
+  if (impureHits.length > 0) {
+    impureHits.slice(0, 8).forEach((h) => console.log(`      · ${h}`));
+    warn(
+      'N6',
+      `检测到 ${impureHits.length} 处更新器副作用：updateTopicDataInState 现在会「先对 messagesRef 求值一次、再在 setState reducer 中求值一次」` +
+        `（StrictMode 开发态还会叠加双调用），任何非纯更新器都会让 ref 副本与 React State 出现分叉。明细见上。`
+    );
+  } else {
+    pass('N6', `${callSites.length} 处更新器均为纯函数（无 ref 改写 / 无时间戳与随机数 / 无嵌套 setState）`);
+  }
+}
+
+// ---------------------------------------------------------------- N7
+console.log('\n--- N7 初始化去重不覆盖「目录-子文件」前缀重叠 ---');
+{
+  const state = initializeModularOrchestrationState(
+    makeDraft([
+      { id: 'M1', title: 'M1 目录所有者', responsibility: '组件目录', files: ['src/components/'], dependsOn: [], level: 'low_deterministic' },
+      { id: 'M2', title: 'M2 嵌套文件所有者', responsibility: '单文件', files: ['src/components/Panel.tsx'], dependsOn: ['M1'], level: 'low_deterministic' },
+    ])
+  );
+  const m1 = state.modules.find((m) => m.moduleId === 'M1')!;
+  const m2 = state.modules.find((m) => m.moduleId === 'M2')!;
+  const prefixOverlapSurvives = m1.allowedFiles.includes('src/components/') && m2.allowedFiles.includes('src/components/Panel.tsx');
+
+  // 目录所有者 M1 修改自身目录内的文件，是否会被嵌套声明方 M2 反判越界？
+  const res = validateModuleScopeContract(
+    '本模块修改 src/components/Panel.tsx 以完成目录内组件改造',
+    m1,
+    state.modules,
+    state.sharedContract
+  );
+  console.log(
+    `    M1=[${m1.allowedFiles.join(',')}] ; M2=[${m2.allowedFiles.join(',')}] ; M1 修改子文件的判定 violations=${res.contractViolations}`
+  );
+  if (prefixOverlapSurvives && res.contractViolations > 0) {
+    warn(
+      'N7',
+      `前缀级重叠未被初始化去重消解（去重仅比对完全相同的字符串），且门禁判定偏向嵌套的具体文件：` +
+        `目录所有者 M1 修改自身目录内的 src/components/Panel.tsx 被反判越界（violations=${res.contractViolations}）。` +
+        `即 F_i ∩ F_j = ∅ 仅在「字面量相同」时成立，目录级授权与嵌套文件授权会共存并冲突。`
+    );
+  } else if (prefixOverlapSurvives) {
+    pass('N7', '前缀重叠虽共存，但门禁未对目录所有者误判');
+  } else {
+    pass('N7', '初始化已消解前缀级重叠');
+  }
+}
+
+// ---------------------------------------------------------------- N8
+console.log('\n--- N8 贝叶斯 fast_track 快速通道是否真正省掉红队轮次 ---');
+{
+  const draft = makeDraft([
+    { id: 'M1', title: 'M1 纯类型定义', responsibility: '定义数据结构与常量', files: ['src/a.ts'], dependsOn: [], level: 'low_deterministic' },
+    { id: 'M2', title: 'M2 并发事务核心', responsibility: '并发互斥锁与事务迁移', files: ['src/b.ts'], dependsOn: ['M1'], level: 'high_critical' },
+    { id: 'M3', title: 'M3 视图映射', responsibility: 'UI 状态绑定渲染', files: ['src/c.tsx'], dependsOn: ['M2'], level: 'low_deterministic' },
+  ]);
+  const run = runModularLifecycle(draft);
+  const perModule = run.state.modules.map((m) => ({
+    id: m.moduleId,
+    routingMode: m.belief.routingMode,
+    rounds: run.visits[m.moduleId] || 0,
+  }));
+  console.log(`    各模块路由模式与沙箱轮次: ${perModule.map((m) => `${m.id}[${m.routingMode}]=${m.rounds}轮`).join(' , ')}`);
+
+  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  const routingModeRefs = (appSource.match(/routingMode/g) || []).length;
+  const fastTrackRefs = (appSource.match(/fast_track/g) || []).length;
+  const fastRounds = perModule.filter((m) => m.routingMode === 'fast_track').map((m) => m.rounds);
+  const deepRounds = perModule.filter((m) => m.routingMode === 'deep_debate').map((m) => m.rounds);
+  const identicalCost =
+    fastRounds.length > 0 && deepRounds.length > 0 && fastRounds.every((r) => r === deepRounds[0]);
+
+  if (routingModeRefs === 0 && fastTrackRefs === 0 && identicalCost) {
+    defect(
+      'N8',
+      `贝叶斯快速通道未接入编排层：src/App.tsx 中 routingMode / fast_track 出现次数均为 0，` +
+        `fast_track 模块与 deep_debate 模块消耗的沙箱轮次完全相同（各 ${deepRounds[0]} 轮 challenge→verification→defense）。` +
+        `SPEC 宣称「低风险模块免红队直通，节省 60% Token / 综合节省 35%~50%」在当前实现中未落地，routingMode 仅影响 Prompt 文案，不改变状态机调度。`
+    );
+  } else {
+    pass('N8', `fast_track 编排分支存在（App 引用 routingMode=${routingModeRefs} 次），低风险模块轮次=${fastRounds.join(',')} vs 高风险=${deepRounds.join(',')}`);
+  }
+}
+
+// ---------------------------------------------------------------- N9
+console.log('\n--- N9 模块 2..N 是否有独立提案轮次与专属攻击靶点 ---');
+{
+  const draft = makeDraft([
+    { id: 'M1', title: 'M1 根模块', responsibility: '边界共识', files: ['src/a.ts'], dependsOn: [], level: 'low_deterministic' },
+    { id: 'M2', title: 'M2 核心模块', responsibility: '核心机制', files: ['src/b.ts'], dependsOn: ['M1'], level: 'high_critical' },
+    { id: 'M3', title: 'M3 落地模块', responsibility: '验收标准', files: ['src/c.ts'], dependsOn: ['M2'], level: 'low_deterministic' },
+  ]);
+  const run = runModularLifecycle(draft);
+  const firstStageByModule: Record<string, string> = {};
+  for (const step of run.trace) {
+    const m = step.match(/^(\w+)\(([^)]+)\)/);
+    if (m && !firstStageByModule[m[2]]) firstStageByModule[m[2]] = m[1];
+  }
+  // 真实流程中，初始被激活的模块（根模块）在进入本仿真循环前已由阶段 1 完成提案立论，
+  // 因此将根模块视为已完成 proposal，仅统计其后被拓扑切换激活的模块。
+  const rootModuleId = run.state.modules.find((m) => m.dependsOnModuleIds.length === 0)?.moduleId;
+  const modulesWithoutProposal = Object.entries(firstStageByModule).filter(
+    ([id, s]) => id !== rootModuleId && s !== 'proposal'
+  );
+  console.log(
+    `    各模块首个（本仿真内）阶段: ${Object.entries(firstStageByModule).map(([k, v]) => `${k}=${v}`).join(' , ')}（根模块 ${rootModuleId} 此前已由阶段 1 完成提案）`
+  );
+
+  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  const loopBackReusesGlobalProposal = /nextStage:\s*resolvedNextStage,[\s\S]{0,200}?targetProposalText,\s*\n\s*targetChallengeText,/.test(appSource);
+
+  if (modulesWithoutProposal.length > 0 && loopBackReusesGlobalProposal) {
+    defect(
+      'N9',
+      `模块 2..N 无独立提案轮次：仿真中首个阶段非 proposal 的模块 = [${modulesWithoutProposal
+        .map(([k, v]) => `${k}:${v}`)
+        .join(', ')}]；模块切换时直接把全局 targetProposalText 复用为下一个模块的红队攻击靶点。` +
+        `结果：只有 M1 真正产出过模块级提案，M2/M3 的红队质询对象仍是全局提案，模块级「提案→红队→验证→冻结」闭环并未完整成立。`
+    );
+  } else {
+    pass('N9', '每个模块均具备独立提案轮次与专属攻击靶点');
+  }
+}
+
 // ---------------------------------------------------------------- 汇总
 console.log('\n================================================================================');
 const defects = findings.filter((f) => f.level === 'DEFECT');

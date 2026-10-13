@@ -66,7 +66,7 @@ npm run test:cogno:edge
 | `npm run lint` | ✅ 通过，零类型报错 |
 | `npm run test:cogno` | ✅ 全绿：`verify-all-governance` **18/18**（T1~T8 + A1~A10）+ Wave1/2/3 + Rezaei 2015 BWM 金标准 + G-Frame 7/7 |
 | `cargo test -p shinobi-dev-mcp` | ✅ `9 passed; 0 failed`（含 `test_dispatch_tool_call_submit_module_decomposition`、`test_tools_list_schema`） |
-| `npm run test:cogno:edge` | 🔴 `DEFECT 2 项 / WARN 1 项`（基线 `32b0900` 复测值，详见 §11） |
+| `npm run test:cogno:edge` | 🔴 `DEFECT 2 项 / WARN 2 项`（基线 `a053091` 复测值，详见 §12） |
 
 > 注：治理套件对外常称「16 项」，指 `TECH_REPORT` 中的 7（Token）+ 9（准确性）基线机制；加入 G-Frame 的 `T8` 与 `A10` 后，实际断言总数为 **18 项**。
 
@@ -269,7 +269,8 @@ logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedCl
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | R1 | 2026-10-13 | `a6f2647` | ✅ | ✅ 18/18 + G-Frame 7/7 | ✅ 9/9 | 未执行（见 §10.3 阻塞说明） | DEFECT 3 项 + WARN 3 项（见 §10.2） | Codex |
 | R2 | 2026-10-13 | `32b0900` | ✅ | ✅ 18/18 + G-Frame **10/10** | ✅ 9/9 | 未执行（见 §10.5） | 上轮 6 项全部修复；新增 DEFECT 2 项（N1/N3）+ WARN 1 项（N2） | Codex |
-| R3 | | | | | | | | |
+| R3 | 2026-10-13 | `a053091` | ✅ | ✅ 18/18 + G-Frame **13/13** | ✅ 9/9 | 未执行（见 §12.4） | 上轮 3 项全部修复；新增 DEFECT 2 项（N8/N9）+ WARN 2 项（N5/N7） | Codex |
+| R4 | | | | | | | | |
 
 ---
 
@@ -398,4 +399,45 @@ triggerGameTheoreticStageHandover({ topicId, nextStage, ... });
 ### 11.5 L2 / L3 执行状态
 
 与 §10.3 相同：仍需真实 ACP Agent 在线 + 桌面端运行；本会话浏览器自动化运行时不可用，UI-01~05 未能自动化走查。**N1 的运行期确认恰好依赖一次真实的 G-Frame 端到端议题**，建议优先安排。
+
+> **第三轮状态（基线 `a053091`）**：§11.3 的 N1 / N2 / N3 **均已修复并通过独立复验**（探测汇总回到 `DEFECT 0 / WARN 0`）；本轮进一步扫描编排层，新发现 N8 / N9 两项规格落地缺口与 N5 / N7 两项语义风险，详见 §12。
+
+---
+
+## 12. 第三轮执行记录（2026-10-13，基线 `a053091`）
+
+> 触发原因：维护者提交 `a053091 fix(cogno): resolve synchronous stage handover, topological whitelist dedup, and dir-prefix scope gate (N1, N2, N3)`。
+
+### 12.1 基线回归（全部通过）
+
+| 用例 ID | 命令 | 实测结果 | 结论 |
+| :--- | :--- | :--- | :--- |
+| BL-01 | `npm run lint` | 退出码 0，零类型报错 | ✅ PASS |
+| BL-02 | `npm run build` | `vite build` 成功 | ✅ PASS |
+| BL-03 | `cargo test -p shinobi-dev-mcp` | `9 passed; 0 failed` | ✅ PASS |
+| GOV-01~18 | `npm run test:cogno` | 18/18（T1~T8 + A1~A10） | ✅ PASS |
+| G-Frame 套件 | `npm run test:cogno` | **13/13**（新增 N1/N2/N3 三项单项测试） | ✅ PASS |
+
+### 12.2 第二轮 3 项缺陷的独立复验结果（全部修复）
+
+| 用例 ID | 第二轮结论 | 第三轮实测证据 | 结论 |
+| :--- | :--- | :--- | :--- |
+| N1 | 决策变量在 setState 更新器内赋值（P0） | 决策已外置：`resolvedNextStage` 在第 3677/3694 行（`updateTopicDataInState` 调用之前）完成判定；`updateTopicDataInState` 亦改为先用纯函数 `applyUpdate` 同步更新 `messagesRef.current`，再入队渲染 | ✅ 已修复 |
+| N2 | 白名单独占权按声明顺序分配 | 改为按 DAG 拓扑序分配：下游 M1 声明 `[src/shared.ts, src/a.ts]`、上游 M2 声明 `[src/shared.ts, src/b.ts]` 时，`src/shared.ts` 归上游 M2，M1 仅保留 `src/a.ts` | ✅ 已修复 |
+| N3 | 目录前缀重叠零修改误报 | 零修改文本不再判违规（violations=0）；同时保留真实越界拦截能力 | ✅ 已修复 |
+
+### 12.3 本轮新增探测（N5~N9）
+
+| 用例 ID | 探测内容 | 实测结论 | 等级 |
+| :--- | :--- | :--- | :--- |
+| N6 | `updateTopicDataInState` 更新器纯度扫描 | 27 处调用全部为纯函数（无 ref 改写 / 无 `Date.now()`、随机数 / 无嵌套 setState），「双重求值」暂未放大副作用 | ✅ PASS |
+| N4 | 局部重修有界收敛 | 持续证伪场景 12 次迭代内收敛，单模块重修上限 1 轮 | ✅ PASS（上轮起持续通过） |
+| N8 | 贝叶斯 `fast_track` 快速通道是否真正省轮次 | `src/App.tsx` 中 `routingMode` / `fast_track` 出现次数**均为 0**；fast_track 模块与 deep_debate 模块消耗轮次完全相同（各 3 轮） | 🔴 DEFECT (P1) |
+| N9 | 模块 2..N 是否有独立提案轮次 | 拓扑切换后 M2/M3 首个阶段即 `challenge`，且直接复用全局 `targetProposalText` 作为红队靶点 | 🔴 DEFECT (P1) |
+| N5 | 拓扑去重静默剥夺白名单 | M1 声明 `[src/shared.ts, src/a.ts]`，实际只获得 `[src/a.ts]`，无任何用户可见提示或 ADR 记录 | ⚠️ WARN |
+| N7 | 初始化去重不覆盖「目录-子文件」前缀重叠 | 去重仅比对完全相同字符串：`src/components/` 与 `src/components/Panel.tsx` 共存，且目录所有者 M1 修改自身目录内文件被反判越界（violations=1） | ⚠️ WARN |
+
+### 12.4 L2 / L3 执行状态
+
+与 §10.3 一致：仍需真实 ACP Agent 在线 + 桌面端运行，本会话浏览器自动化运行时不可用。N8 / N9 的最终确认同样建议放在一次真实 G-Frame 议题中（可直接观测红队被调用的次数与质询对象）。
 ```
