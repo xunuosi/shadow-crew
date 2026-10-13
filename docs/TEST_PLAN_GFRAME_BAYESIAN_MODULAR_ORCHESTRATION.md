@@ -66,7 +66,7 @@ npm run test:cogno:edge
 | `npm run lint` | ✅ 通过，零类型报错 |
 | `npm run test:cogno` | ✅ 全绿：`verify-all-governance` **18/18**（T1~T8 + A1~A10）+ Wave1/2/3 + Rezaei 2015 BWM 金标准 + G-Frame 7/7 |
 | `cargo test -p shinobi-dev-mcp` | ✅ `9 passed; 0 failed`（含 `test_dispatch_tool_call_submit_module_decomposition`、`test_tools_list_schema`） |
-| `npm run test:cogno:edge` | 🔴 `DEFECT 2 项 / WARN 2 项`（基线 `a053091` 复测值，详见 §12） |
+| `npm run test:cogno:edge` | 🔴 `DEFECT 1 项 / WARN 1 项`（基线 `b7f21ea` 复测值，详见 §13） |
 
 > 注：治理套件对外常称「16 项」，指 `TECH_REPORT` 中的 7（Token）+ 9（准确性）基线机制；加入 G-Frame 的 `T8` 与 `A10` 后，实际断言总数为 **18 项**。
 
@@ -270,7 +270,8 @@ logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedCl
 | R1 | 2026-10-13 | `a6f2647` | ✅ | ✅ 18/18 + G-Frame 7/7 | ✅ 9/9 | 未执行（见 §10.3 阻塞说明） | DEFECT 3 项 + WARN 3 项（见 §10.2） | Codex |
 | R2 | 2026-10-13 | `32b0900` | ✅ | ✅ 18/18 + G-Frame **10/10** | ✅ 9/9 | 未执行（见 §10.5） | 上轮 6 项全部修复；新增 DEFECT 2 项（N1/N3）+ WARN 1 项（N2） | Codex |
 | R3 | 2026-10-13 | `a053091` | ✅ | ✅ 18/18 + G-Frame **13/13** | ✅ 9/9 | 未执行（见 §12.4） | 上轮 3 项全部修复；新增 DEFECT 2 项（N8/N9）+ WARN 2 项（N5/N7） | Codex |
-| R4 | | | | | | | | |
+| R4 | 2026-10-13 | `b7f21ea` | ✅ | ✅ 18/18 + G-Frame **14/14** | ✅ 9/9 | 未执行（见 §13.4） | 上轮 4 项全部修复；新增 DEFECT 1 项（N11）+ WARN 1 项（N10） | Codex |
+| R5 | | | | | | | | |
 
 ---
 
@@ -440,4 +441,50 @@ triggerGameTheoreticStageHandover({ topicId, nextStage, ... });
 ### 12.4 L2 / L3 执行状态
 
 与 §10.3 一致：仍需真实 ACP Agent 在线 + 桌面端运行，本会话浏览器自动化运行时不可用。N8 / N9 的最终确认同样建议放在一次真实 G-Frame 议题中（可直接观测红队被调用的次数与质询对象）。
+
+---
+
+## 13. 第四轮执行记录（2026-10-13，基线 `b7f21ea`）
+
+> 触发原因：维护者提交 `b7f21ea fix(cogno): wire fast_track bypass, module proposal loop, non-silent dedup audit, and dir owner scope (N8, N9, N5, N7)`。
+
+### 13.1 基线回归（全部通过）
+
+| 用例 ID | 命令 | 实测结果 | 结论 |
+| :--- | :--- | :--- | :--- |
+| BL-01 | `npm run lint` | 退出码 0，零类型报错 | ✅ PASS |
+| BL-02 | `npm run build` | `vite build` 成功 | ✅ PASS |
+| BL-03 | `cargo test -p shinobi-dev-mcp` | `9 passed; 0 failed` | ✅ PASS |
+| GOV-01~18 | `npm run test:cogno` | 18/18（T1~T8 + A1~A10） | ✅ PASS |
+| G-Frame 套件 | `npm run test:cogno` | **14/14**（新增 N8 双轨、N5 非静默审计、N7 层级收敛三项） | ✅ PASS |
+
+### 13.2 第三轮 4 项问题的独立复验结果（全部修复）
+
+| 用例 ID | 第三轮结论 | 第四轮实测证据 | 结论 |
+| :--- | :--- | :--- | :--- |
+| N8 | fast_track 未接入编排层（P1） | 双轨已落地：低风险模块序列 `proposal→verification`（2 轮），高风险模块 `proposal→challenge→verification→defense`（4 轮），**单模块轮次降幅 50%**；`src/App.tsx` 已含 routingMode/fast_track 分支 | ✅ 已修复 |
+| N9 | 模块 2..N 无独立提案轮次（P1） | 每个模块序列均以 `proposal` 开头（M1/M2/M3 各自独立提案），App 层新增 `nextStage: 'proposal'` 触发与 `'proposal'` 阶段类型 | ✅ 已修复 |
+| N5 | 拓扑去重静默剥夺白名单 | 非静默闭环：`whitelistDeduplications` 审计记录 + 写入《公共接口契约》`invariants` + 时间线系统通知（`App.tsx:4989~5010`「白名单正交归属收敛」） | ✅ 已修复 |
+| N7 | 前缀重叠未消解且目录所有者被反判 | 层级收敛 + 目录所有者优先：`src/components/` 与 `src/components/Panel.tsx` 不再共存，目录所有者修改自身目录内文件 violations=0 | ✅ 已修复 |
+
+> 附：第三轮 N4（局部重修有界收敛）与 N6（更新器纯度，28 处）在本轮持续通过。
+
+### 13.3 本轮新增探测（N10 / N11）
+
+| 用例 ID | 探测内容 | 实测结论 | 等级 |
+| :--- | :--- | :--- | :--- |
+| N11 | 全 fast_track 议题的制衡方门禁 | 模块全程不进入 `challenge`（红队按设计旁路），但「阶段 3 验证完成后」的更新块未回填 `isChallengerResponded`，也无任何 fast_track 旁路标记；`TopicThreadDrawer` 的 `isChallengerQuorumMet = isChallengerResponded !== false` 因此恒为 false | 🔴 DEFECT (P1) |
+| N10 | fast_track 分流是否校验验证官可用性 | 提案完成后的分流块未检查 verifier（红队完成分支有检查）：无验证官时快速通道会静默改跳 `defense`，多消耗一轮答辩且无降级提示 | ⚠️ WARN |
+
+#### N11 影响面（建议优先修复）
+
+1. **门禁误判**：全 fast_track（低风险）议题在终局仲裁时会显示「⚔️ 压测缺席 / 制衡方未响应」，被判定为法定推演缺席。
+2. **审计留痕失真**：人类仲裁官被迫签署「制衡方缺席具名豁免」，`rulingRecord.exemptionReason` 会写入「制衡方缺席」——而真实情况是红队被贝叶斯快速通道**设计性旁路**，并非缺席。
+3. **指标缺位（同源影响）**：`sprtState` 仅在 challenge / defense 完成时写入，全 fast_track 议题因此**从不产生 SPRT 序贯调控数据**，抽屉的 SPRT 调控条不会出现，ADR / 少数派报告也缺少序贯收敛证据。
+
+**修复建议**：在 fast_track 旁路点显式区分「设计性旁路」与「制衡方缺席」。例如新增 `challengerBypassedByFastTrack?: true` 标记并让 `isChallengerQuorumMet` 将其视为已满足（或在旁路时直接 `isChallengerResponded = true` 并附带 `fastTrackBypassReason`）；同时为 fast_track 路径补一条轻量「静态验证即收敛」的 SPRT 等价证据字段，避免 ADR 缺失序贯收敛记录。
+
+### 13.4 L2 / L3 执行状态
+
+与 §10.3 一致：仍需真实 ACP Agent 在线 + 桌面端运行，本会话浏览器自动化运行时不可用。N10 / N11 均建议在一次真实 G-Frame 议题中做最终确认（全低风险议题最易复现 N11）。
 ```

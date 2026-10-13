@@ -315,9 +315,12 @@ console.log('\n--- EDGE-06 答辩阶段实证计数硬编码 (静态契约扫描
 console.log('\n--- E2E-03 集成仿真：完整模块生命周期与多模块循环闭环 ---');
 
 /**
- * 按 src/App.tsx 的调用序列复刻完整 FSM：
- * challenge -> verification -> defense；defense 判定 SCOPED_DEFENSE_REFINE 时回环 challenge（上限 1 轮），
- * 当前模块冻结且仍有未冻结模块时切换到下一拓扑模块，全部冻结后才进入 arbitration。
+ * 按 src/App.tsx 的调用序列复刻完整 FSM（含 fast_track 双轨）：
+ * proposal -> (fast_track ? verification : challenge -> verification) -> [defense] -> FREEZE
+ * - defense 判定 SCOPED_DEFENSE_REFINE 时回环 challenge（上限 1 轮）；
+ * - fast_track 在 verification 零违规零证伪时直接 FREEZE（跳过红队与答辩）；
+ * - 当前模块冻结且仍有未冻结模块时切换到下一拓扑模块并重新走该模块的 proposal，
+ *   全部模块冻结后才进入 arbitration。
  */
 function runModularLifecycle(
   draft: ModuleDecompositionDraft,
@@ -335,10 +338,11 @@ function runModularLifecycle(
 ) {
   const refineCounts: Record<string, number> = {};
   const visits: Record<string, number> = {};
+  const stagesByModule: Record<string, string[]> = {};
   const trace: string[] = [];
   const maxIterations = options.maxIterations ?? 60;
   let state = initializeModularOrchestrationState(draft);
-  let stage: 'challenge' | 'verification' | 'defense' | 'arbitration' = 'challenge';
+  let stage: 'proposal' | 'challenge' | 'verification' | 'defense' | 'arbitration' = 'proposal';
   let iterations = 0;
 
   while (stage !== 'arbitration' && iterations < maxIterations) {
@@ -349,10 +353,18 @@ function runModularLifecycle(
       break;
     }
     visits[activeId] = (visits[activeId] || 0) + 1;
+    stagesByModule[activeId] = [...(stagesByModule[activeId] || []), stage];
     const refineCount = refineCounts[activeId] || 0;
 
     const result =
-      stage === 'challenge'
+      stage === 'proposal'
+        ? stepModularStageTransition({
+            state,
+            currentStage: 'proposal',
+            feedbackDelta: {},
+            proposalOrDefenseSnippet: `${activeId} 模块级提案立论`,
+          })
+        : stage === 'challenge'
         ? stepModularStageTransition({
             state,
             currentStage: 'challenge',
@@ -390,7 +402,7 @@ function runModularLifecycle(
     stage = result.nextGameStage;
   }
 
-  return { state, trace, iterations, visits, refineCounts, finalStage: stage };
+  return { state, trace, iterations, visits, refineCounts, stagesByModule, finalStage: stage };
 }
 
 {
@@ -664,32 +676,48 @@ console.log('\n--- N8 贝叶斯 fast_track 快速通道是否真正省掉红队�
   const perModule = run.state.modules.map((m) => ({
     id: m.moduleId,
     routingMode: m.belief.routingMode,
-    rounds: run.visits[m.moduleId] || 0,
+    sequence: run.stagesByModule[m.moduleId] || [],
   }));
-  console.log(`    各模块路由模式与沙箱轮次: ${perModule.map((m) => `${m.id}[${m.routingMode}]=${m.rounds}轮`).join(' , ')}`);
+  console.log(
+    `    各模块路由模式与阶段序列: ${perModule
+      .map((m) => `${m.id}[${m.routingMode}] = ${m.sequence.join('→')}`)
+      .join('  ,  ')}`
+  );
+
+  const fastModules = perModule.filter((m) => m.routingMode === 'fast_track');
+  const deepModules = perModule.filter((m) => m.routingMode === 'deep_debate');
+  const fastSkippedRedTeam = fastModules.every((m) => !m.sequence.includes('challenge'));
+  const deepUsedRedTeam = deepModules.every((m) => m.sequence.includes('challenge'));
+  const costReduced =
+    fastModules.length > 0 &&
+    deepModules.length > 0 &&
+    fastModules.every((f) => f.sequence.length < deepModules[0].sequence.length);
 
   const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
-  const routingModeRefs = (appSource.match(/routingMode/g) || []).length;
-  const fastTrackRefs = (appSource.match(/fast_track/g) || []).length;
-  const fastRounds = perModule.filter((m) => m.routingMode === 'fast_track').map((m) => m.rounds);
-  const deepRounds = perModule.filter((m) => m.routingMode === 'deep_debate').map((m) => m.rounds);
-  const identicalCost =
-    fastRounds.length > 0 && deepRounds.length > 0 && fastRounds.every((r) => r === deepRounds[0]);
+  const appWired = /fast_track|routingMode/.test(appSource);
+  const proposalStageWired = /nextStage:\s*'proposal'/.test(appSource) || /'proposal'\s*\|/.test(appSource);
 
-  if (routingModeRefs === 0 && fastTrackRefs === 0 && identicalCost) {
-    defect(
+  if (appWired && proposalStageWired && fastSkippedRedTeam && deepUsedRedTeam && costReduced) {
+    pass(
       'N8',
-      `贝叶斯快速通道未接入编排层：src/App.tsx 中 routingMode / fast_track 出现次数均为 0，` +
-        `fast_track 模块与 deep_debate 模块消耗的沙箱轮次完全相同（各 ${deepRounds[0]} 轮 challenge→verification→defense）。` +
-        `SPEC 宣称「低风险模块免红队直通，节省 60% Token / 综合节省 35%~50%」在当前实现中未落地，routingMode 仅影响 Prompt 文案，不改变状态机调度。`
+      `fast_track 双轨已落地：低风险模块跳过红队（${fastModules
+        .map((m) => `${m.id}:${m.sequence.join('→')}`)
+        .join(' , ')}），高风险模块保留完整对抗（${deepModules
+        .map((m) => `${m.id}:${m.sequence.join('→')}`)
+        .join(' , ')}），单模块轮次由 ${deepModules[0].sequence.length} 降至 ${fastModules[0].sequence.length}（${(((deepModules[0].sequence.length - fastModules[0].sequence.length) / deepModules[0].sequence.length) * 100).toFixed(0)}% 降幅）`
     );
   } else {
-    pass('N8', `fast_track 编排分支存在（App 引用 routingMode=${routingModeRefs} 次），低风险模块轮次=${fastRounds.join(',')} vs 高风险=${deepRounds.join(',')}`);
+    defect(
+      'N8',
+      `fast_track 快速通道未真正生效：appWired=${appWired}, proposalStageWired=${proposalStageWired}, ` +
+        `低风险跳过红队=${fastSkippedRedTeam}, 高风险走红队=${deepUsedRedTeam}, 轮次下降=${costReduced}；` +
+        `实际阶段序列 ${perModule.map((m) => `${m.id}[${m.routingMode}]:${m.sequence.join('→')}`).join(' , ')}`
+    );
   }
 }
 
 // ---------------------------------------------------------------- N9
-console.log('\n--- N9 模块 2..N 是否有独立提案轮次与专属攻击靶点 ---');
+console.log('\n--- N9 每个模块是否都有独立提案轮次与专属靶点 ---');
 {
   const draft = makeDraft([
     { id: 'M1', title: 'M1 根模块', responsibility: '边界共识', files: ['src/a.ts'], dependsOn: [], level: 'low_deterministic' },
@@ -697,34 +725,104 @@ console.log('\n--- N9 模块 2..N 是否有独立提案轮次与专属攻击靶�
     { id: 'M3', title: 'M3 落地模块', responsibility: '验收标准', files: ['src/c.ts'], dependsOn: ['M2'], level: 'low_deterministic' },
   ]);
   const run = runModularLifecycle(draft);
-  const firstStageByModule: Record<string, string> = {};
-  for (const step of run.trace) {
-    const m = step.match(/^(\w+)\(([^)]+)\)/);
-    if (m && !firstStageByModule[m[2]]) firstStageByModule[m[2]] = m[1];
-  }
-  // 真实流程中，初始被激活的模块（根模块）在进入本仿真循环前已由阶段 1 完成提案立论，
-  // 因此将根模块视为已完成 proposal，仅统计其后被拓扑切换激活的模块。
-  const rootModuleId = run.state.modules.find((m) => m.dependsOnModuleIds.length === 0)?.moduleId;
-  const modulesWithoutProposal = Object.entries(firstStageByModule).filter(
-    ([id, s]) => id !== rootModuleId && s !== 'proposal'
-  );
+  const perModule = run.state.modules.map((m) => ({
+    id: m.moduleId,
+    sequence: run.stagesByModule[m.moduleId] || [],
+    frozenSnippet: m.frozenProposalSnippet,
+  }));
+  const modulesWithoutProposal = perModule.filter((m) => m.sequence[0] !== 'proposal');
   console.log(
-    `    各模块首个（本仿真内）阶段: ${Object.entries(firstStageByModule).map(([k, v]) => `${k}=${v}`).join(' , ')}（根模块 ${rootModuleId} 此前已由阶段 1 完成提案）`
+    `    各模块完整阶段序列: ${perModule.map((m) => `${m.id}=${m.sequence.join('→')}`).join('  ,  ')}`
   );
 
   const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
-  const loopBackReusesGlobalProposal = /nextStage:\s*resolvedNextStage,[\s\S]{0,200}?targetProposalText,\s*\n\s*targetChallengeText,/.test(appSource);
+  const moduleProposalTriggerWired = /nextStage:\s*'proposal'/.test(appSource);
 
-  if (modulesWithoutProposal.length > 0 && loopBackReusesGlobalProposal) {
-    defect(
+  if (modulesWithoutProposal.length === 0 && moduleProposalTriggerWired) {
+    pass(
       'N9',
-      `模块 2..N 无独立提案轮次：仿真中首个阶段非 proposal 的模块 = [${modulesWithoutProposal
-        .map(([k, v]) => `${k}:${v}`)
-        .join(', ')}]；模块切换时直接把全局 targetProposalText 复用为下一个模块的红队攻击靶点。` +
-        `结果：只有 M1 真正产出过模块级提案，M2/M3 的红队质询对象仍是全局提案，模块级「提案→红队→验证→冻结」闭环并未完整成立。`
+      `每个模块均具备独立提案轮次：${perModule.map((m) => `${m.id}:${m.sequence.join('→')}`).join(' , ')}；模块切换经 App 层 'proposal' 阶段触发`
     );
   } else {
-    pass('N9', '每个模块均具备独立提案轮次与专属攻击靶点');
+    defect(
+      'N9',
+      `模块提案轮次缺失：App 层 proposal 触发=${moduleProposalTriggerWired}；首个阶段非 proposal 的模块 = [${modulesWithoutProposal
+        .map((m) => `${m.id}:${m.sequence.join('→')}`)
+        .join(', ')}]`
+    );
+  }
+}
+
+// ---------------------------------------------------------------- N11
+console.log('\n--- N11 全 fast_track 议题的制衡方门禁是否被误判 ---');
+{
+  const allFastDraft = makeDraft([
+    { id: 'M1', title: 'M1 纯类型定义', responsibility: '数据结构与常量', files: ['src/a.ts'], dependsOn: [], level: 'low_deterministic' },
+    { id: 'M2', title: 'M2 视图映射', responsibility: 'UI 状态绑定渲染', files: ['src/b.tsx'], dependsOn: ['M1'], level: 'low_deterministic' },
+  ]);
+  const run = runModularLifecycle(allFastDraft);
+  const challengeNeverRuns = Object.values(run.stagesByModule).every((seq) => !seq.includes('challenge'));
+  console.log(
+    `    全 fast_track 议题阶段序列: ${Object.entries(run.stagesByModule).map(([k, v]) => `${k}=${v.join('→')}`).join('  ,  ')}（红队轮次出现: ${!challengeNeverRuns}）`
+  );
+
+  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  // 截取「阶段 3 验证完成」到 trigger 之间的更新块，检查是否回填制衡方响应标记
+  const verStart = appSource.indexOf('阶段 3 验证完成后');
+  const verEnd = appSource.indexOf("nextStage: resolvedVerNextStage", verStart);
+  const verBlock = verStart >= 0 && verEnd > verStart ? appSource.slice(verStart, verEnd) : '';
+  const verBlockSetsChallenger = /isChallengerResponded/.test(verBlock);
+  const fastTrackBypassMarker = /challengerBypassed|fastTrackBypassed|challengerSkippedByFastTrack/.test(appSource);
+
+  const drawerSource = readFileSync(resolve(process.cwd(), 'src/components/TopicThreadDrawer.tsx'), 'utf8');
+  const quorumGateUsesFlag = /isChallengerQuorumMet[\s\S]{0,160}?isChallengerResponded !== false/.test(drawerSource);
+
+  if (challengeNeverRuns && quorumGateUsesFlag && !verBlockSetsChallenger && !fastTrackBypassMarker) {
+    defect(
+      'N11',
+      `全 fast_track 议题的制衡方门禁被误判：模块全程不进入 challenge（红队被贝叶斯快速通道按设计跳过），` +
+        `而「阶段 3 验证完成后」的状态更新块并未回填 isChallengerResponded，也没有任何 fast_track 旁路标记。` +
+        `因 TopicThreadDrawer 的 isChallengerQuorumMet 判定为 isChallengerResponded !== false，` +
+        `此类议题会显示「⚔️ 压测缺席 / 制衡方未响应」，强制人类首席仲裁官签署制衡方缺席具名豁免，` +
+        `并把「制衡方缺席」写入 rulingRecord.exemptionReason —— 实际红队是被设计性旁路，而非缺席，审计留痕失真。`
+    );
+  } else if (!challengeNeverRuns) {
+    warn('N11', '全 fast_track 场景下仍出现红队轮次，快速通道未生效，需复核 N8');
+  } else {
+    pass('N11', 'fast_track 旁路已正确回填制衡方响应语义（门禁不误判）');
+  }
+}
+
+// ---------------------------------------------------------------- N10
+console.log('\n--- N10 fast_track 分流是否校验验证官可用性 ---');
+{
+  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+
+  // 提案完成后的模块分流块：定位 stepModularStageTransition(currentStage: 'proposal') 调用附近的窗口
+  const proposalCallIdx = appSource.indexOf("currentStage: 'proposal'");
+  const proposalBlock = proposalCallIdx > 0 ? appSource.slice(proposalCallIdx - 200, proposalCallIdx + 900) : '';
+  // 红队完成后的阶段分流块：定位 nextStageTarget 计算附近的窗口
+  const challengeAnchorIdx = appSource.indexOf('const nextStageTarget');
+  const challengeBlock = challengeAnchorIdx > 0 ? appSource.slice(challengeAnchorIdx - 700, challengeAnchorIdx + 700) : '';
+
+  const proposalChecksVerifier = /hasVerifiers|verifiers/.test(proposalBlock);
+  const challengeChecksVerifier = /hasVerifiers|verifiers/.test(challengeBlock);
+
+  console.log(
+    `    提案完成分流块校验验证官: ${proposalChecksVerifier}（窗口 ${proposalBlock.length} 字符）; 红队完成分流块校验验证官: ${challengeChecksVerifier}（窗口 ${challengeBlock.length} 字符）`
+  );
+
+  if (proposalBlock && challengeBlock && !proposalChecksVerifier && challengeChecksVerifier) {
+    warn(
+      'N10',
+      `fast_track 分流未校验验证官可用性：提案完成后直接把 fast_track 模块推进到 verification，` +
+        `未像红队完成分支那样检查 verifier 是否指派/在线。若议题未指派验证官，验证接力将命中「接地验证者缺席」分支并改跳 defense，` +
+        `使 fast_track 模块多消耗一轮答辩，且不给用户任何「快速通道因缺少验证官而降级」的提示。`
+    );
+  } else if (proposalChecksVerifier && challengeChecksVerifier) {
+    pass('N10', 'fast_track 分流与红队分流均校验验证官可用性');
+  } else {
+    warn('N10', `静态窗口判定不确定（提案块=${proposalBlock.length} 字符 / 红队块=${challengeBlock.length} 字符），建议运行期复核`);
   }
 }
 
