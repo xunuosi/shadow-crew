@@ -897,21 +897,34 @@ impl AcpProcessManager {
             active_reqs.insert(current_session_id.clone(), req_id);
         }
 
+        let mut prompt_params = serde_json::json!({
+            "sessionId": current_session_id,
+            "channelId": effective_channel_id,
+            "cwd": &channel_cwd,
+            "prompt": [
+                {
+                    "type": "text",
+                    "text": prompt
+                }
+            ]
+        });
+
+        if let Some(sp) = system_prompt {
+            if !sp.trim().is_empty() {
+                prompt_params["systemPrompt"] = serde_json::Value::String(sp.to_string());
+                prompt_params["_meta"] = serde_json::json!({
+                    "systemPrompt": {
+                        "append": sp
+                    }
+                });
+            }
+        }
+
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "id": req_id,
             "method": "session/prompt",
-            "params": {
-                "sessionId": current_session_id,
-                "channelId": effective_channel_id,
-                "cwd": &channel_cwd,
-                "prompt": [
-                    {
-                        "type": "text",
-                        "text": prompt
-                    }
-                ]
-            }
+            "params": prompt_params
         });
 
         if let Err(e) = agent.stdin_tx.send(request.to_string()).await {

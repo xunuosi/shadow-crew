@@ -218,6 +218,13 @@ async fn main() -> Result<()> {
                     .map(|s| s.trim().to_string())
                     .unwrap_or_else(|| session_channel_id.clone());
                 session_channel_id = prompt_channel_id.clone();
+
+                if let Some(prompt_sp) = params.get("systemPrompt").and_then(|v| v.as_str()) {
+                    if !prompt_sp.trim().is_empty() {
+                        session_system_prompt = Some(prompt_sp.to_string());
+                    }
+                }
+
                 let current_channel_dir = get_channel_dir(&prompt_channel_id);
                 let current_channel_cwd = current_channel_dir.to_string_lossy().to_string();
                 let _ = std::env::set_current_dir(&current_channel_dir);

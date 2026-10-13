@@ -210,6 +210,47 @@ export function buildCrewRosterGuidance(
   );
 }
 
+/**
+ * 构造 Agent 自身第一人称专属专精人设 (Agent Persona & System Instruction)
+ * 深度绑定 agent.name, agent.role, agent.description
+ * 确保在私聊、群聊、议题推演与级联接力全场景下产生强倾向性行为
+ */
+export function buildAgentPersonaPrompt(agent: Agent): string {
+  const roleTitle = agent.role?.trim() || '技术专家 / 架构师';
+  const descText = agent.description?.trim()
+    ? agent.description.trim()
+    : '协助团队与开发者进行深度技术推演、方案论证与工程实现。';
+
+  return (
+    `[🤖 智能体专属专精人设与认知规范 (Agent Identity & System Instruction)]:\n` +
+    `• 你的代号与称呼：${agent.name} (${agent.handle})\n` +
+    `• 核心专业角色：${roleTitle}\n` +
+    `• 专属人设背景、业务专长与工程知识库：\n` +
+    `${descText}\n\n` +
+    `【行为准则与回答风格硬性约束】:\n` +
+    `1. 【绝对代入角色】：你必须以「${agent.name} (${roleTitle})」的第一人称身份进行思考与回答，全面贯彻上述专业角色与知识背景的技术偏好、架构哲学与专业严谨度；\n` +
+    `2. 【领域深度与专长偏向】：结合你的专精背景（如技术栈、架构设计、工程规范），对用户提问或研讨方案给出具有深度洞察、权衡考量和可落地性的解答；\n` +
+    `3. 【拒绝空泛，严谨求实】：杜绝套话与宽泛敷衍，直接给出符合该专业架构师水准的高质量推演、实现或审查意见。`
+  );
+}
+
+/**
+ * 构造全会话场景统一的复合系统提示词 (Composite System Prompt)
+ * 组合：Agent 自身人设 (Self Persona) + 可选的团队协同公约花名册 (Roster Guidance)
+ */
+export function buildCompositeSystemPrompt(options: {
+  agent: Agent;
+  availableAgents?: Agent[];
+  includeRoster?: boolean;
+}): string {
+  const persona = buildAgentPersonaPrompt(options.agent);
+  if (options.includeRoster && options.availableAgents && options.availableAgents.length > 0) {
+    const roster = buildCrewRosterGuidance(options.availableAgents, options.agent.id);
+    return `${persona}\n\n${roster}`;
+  }
+  return persona;
+}
+
 // 对标 Buzz: 别名导出为立足上下文 (Standing Context)
 export const buildStandingContext = buildCrewRosterGuidance;
 
@@ -501,6 +542,10 @@ ${topic.targetChallengeText || '详见前序脉络'}
     }
   }
 
+  const roleDescriptionAddon = targetAgent.description?.trim()
+    ? `\n【个人专精定位与知识设定】：\n${targetAgent.description.trim()}\n`
+    : '';
+
   return `[📌 议题研讨推演任务 (Topic Discussion Context)]
 【所属频道】: #${topic.channelName || '频道'}
 【议题编号】: ${topic.topicId}
@@ -514,7 +559,7 @@ ${scopedModuleDirective}${historySection}
 "${userContent}"
 ${gameModeDirective}
 
-请以你的专业角色定位【${targetAgent.name} (${targetAgent.handle}) · ${targetAgent.role}】针对上述议题目标与用户诉求展开技术推演与方案陈述。`;
+请以你的专业角色定位【${targetAgent.name} (${targetAgent.handle}) · ${targetAgent.role}】${roleDescriptionAddon}针对上述议题目标与用户诉求展开技术推演与方案陈述。`;
 }
 
 export interface BuildCascadePromptOptions {
@@ -632,8 +677,12 @@ export function buildExecutionPrompt(options: BuildExecutionPromptOptions): stri
     ? `\n【关键权衡折中约束 (Trade-off Constraints)】:\n${decision.tradeOffPoints.map((p) => `• ${p}`).join('\n')}\n`
     : '';
 
+  const roleDescriptionAddon = executorAgent.description?.trim()
+    ? `\n【执行人专精定位与知识设定】：\n${executorAgent.description.trim()}\n`
+    : '';
+
   return `[🛠️ 议题定案决议落地执行任务 (Post-Resolution Execution & Deliverable)]
-【执行负责人】: ${executorAgent.name} (${executorAgent.handle} · ${executorAgent.role})
+【执行负责人】: ${executorAgent.name} (${executorAgent.handle} · ${executorAgent.role})${roleDescriptionAddon}
 【所属议题】: 【${topic.title}】 (ID: ${topic.topicId})
 【议题背景与需求】:
 ${topic.description?.trim() || topic.title}

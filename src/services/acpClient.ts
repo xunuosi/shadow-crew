@@ -1,6 +1,7 @@
 import { Agent, CartridgeCitation, MemoryCartridgeItem, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem, TopicExecutionUiMeta, ModuleDecompositionDraft, ModuleComplexityLevel } from '../types';
 import { resolveAgentModelConfig, isModelConfigReady, callLlmModel } from './llmService';
 import { isAgentOffline } from '../utils/agentRuntime';
+import { buildAgentPersonaPrompt } from './agentCollaboration';
 
 export interface AcpSendPromptOptions {
   agent: Agent;
@@ -499,7 +500,8 @@ export async function sendPromptToRemoteAcpWebSocket(
   prompt: string,
   roomId: string,
   authToken?: string,
-  readOnlyGuard = true
+  readOnlyGuard = true,
+  systemPrompt?: string
 ): Promise<AcpAgentResponse> {
   const startTime = Date.now();
 
@@ -580,6 +582,16 @@ export async function sendPromptToRemoteAcpWebSocket(
             roomId,
             prompt: [{ type: 'text', text: prompt }],
             readOnlyGuard,
+            ...(systemPrompt
+              ? {
+                  systemPrompt,
+                  _meta: {
+                    systemPrompt: {
+                      append: systemPrompt,
+                    },
+                  },
+                }
+              : {}),
           },
         };
         ws?.send(JSON.stringify(rpcPayload));
@@ -697,6 +709,14 @@ export async function sendPromptToAcpAgent(
   const startTime = Date.now();
   const { agent, roomId, prompt } = options;
 
+  // 0. 统一解析并注入 Agent 自身专属专精人设与行为硬性约束
+  const personaPrompt = buildAgentPersonaPrompt(agent);
+  const resolvedSystemPrompt = options.systemPrompt
+    ? (options.systemPrompt.includes(agent.name) && options.systemPrompt.includes('智能体专属专精人设')
+        ? options.systemPrompt
+        : `${personaPrompt}\n\n${options.systemPrompt}`)
+    : personaPrompt;
+
   // 1. JIT 动态外挂记忆召回 (有限上下文防塞爆)
   const { enhancedPrompt, citation } = recallRelevantCartridgeMemories(agent, prompt);
 
@@ -730,7 +750,8 @@ export async function sendPromptToAcpAgent(
       enhancedPrompt,
       roomId,
       agent.authToken,
-      agent.readOnlyGuard ?? true
+      agent.readOnlyGuard ?? true,
+      resolvedSystemPrompt
     );
     return {
       ...remoteRes,
@@ -762,7 +783,7 @@ export async function sendPromptToAcpAgent(
         command: launchCommand,
         cwd: channelCwd,
         envVars: launchEnvVars,
-        systemPrompt: options.systemPrompt,
+        systemPrompt: resolvedSystemPrompt,
       });
 
       const durationMs = Date.now() - startTime;
@@ -855,12 +876,7 @@ export async function sendPromptToAcpAgent(
   if (isModelConfigReady(modelConfig)) {
     try {
       console.log(`[ACP Client] Invoking direct LLM runtime for ${agent.name} with model: ${modelConfig.modelName || modelConfig.modelId}`);
-      const llmSystemPrompt = options.systemPrompt ||
-        `你是 ${agent.name}，角色为「${agent.role || '高级全栈架构师'}」。\n` +
-        `设定描述：${agent.description || '协助开发者进行深度技术推演、方案论证与代码审查。'}\n` +
-        `请遵循专业、严谨、高可操作性的工程规范，代表用户或团队进行深入回答。`;
-
-      const llmResult = await callLlmModel(modelConfig, enhancedPrompt, llmSystemPrompt);
+      const llmResult = await callLlmModel(modelConfig, enhancedPrompt, resolvedSystemPrompt);
       const durationMs = Date.now() - startTime;
       const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(llmResult.textResponse);
       const extractedDiffs = extractWorkspaceDiffsFromText(cleanedText);

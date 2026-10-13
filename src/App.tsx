@@ -82,6 +82,8 @@ import {
   CollaborationCascade,
   parseAgentMentions,
   checkLoopGuard,
+  buildAgentPersonaPrompt,
+  buildCompositeSystemPrompt,
   buildCrewRosterGuidance,
   buildCascadePrompt,
   buildTopicPrompt,
@@ -1990,9 +1992,11 @@ export default function App() {
 
     const sessionKey = `${roomId}:${targetAgent.id}`;
     const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
-    const standingContext = !isStandingContextDelivered
-      ? buildCrewRosterGuidance(candidateAgents, targetAgent.id)
-      : undefined;
+    const systemPrompt = buildCompositeSystemPrompt({
+      agent: targetAgent,
+      availableAgents: candidateAgents,
+      includeRoster: !isStandingContextDelivered,
+    });
     deliveredStandingContextRef.current.add(sessionKey);
 
     try {
@@ -2002,7 +2006,7 @@ export default function App() {
         prompt: cascadePrompt,
         projectId: activeProjectId,
         channelId: targetChannelId,
-        systemPrompt: standingContext,
+        systemPrompt,
       });
 
       setActiveExecutions((prev) => {
@@ -2281,6 +2285,11 @@ export default function App() {
           prompt: proposalPrompt,
           projectId: activeProjectId,
           channelId: topicChannel?.id,
+          systemPrompt: buildCompositeSystemPrompt({
+            agent: proposerAgent,
+            availableAgents: candidateAgents,
+            includeRoster: true,
+          }),
         });
 
         setActiveExecutions((prev) => {
@@ -2596,6 +2605,11 @@ export default function App() {
           prompt: challengePrompt,
           projectId: activeProjectId,
           channelId: topicChannel?.id,
+          systemPrompt: buildCompositeSystemPrompt({
+            agent: challengerAgent,
+            availableAgents: candidateAgents,
+            includeRoster: true,
+          }),
         });
 
         setActiveExecutions((prev) => {
@@ -3112,6 +3126,11 @@ export default function App() {
           prompt: verifierPrompt,
           projectId: activeProjectId,
           channelId: topicChannel?.id,
+          systemPrompt: buildCompositeSystemPrompt({
+            agent: verifierAgent,
+            availableAgents: candidateAgents,
+            includeRoster: true,
+          }),
         });
 
         setActiveExecutions((prev) => {
@@ -3650,6 +3669,11 @@ export default function App() {
           prompt: defensePrompt,
           projectId: activeProjectId,
           channelId: topicChannel?.id,
+          systemPrompt: buildCompositeSystemPrompt({
+            agent: proposerAgent,
+            availableAgents: candidateAgents,
+            includeRoster: true,
+          }),
         });
 
         setActiveExecutions((prev) => {
@@ -4290,6 +4314,11 @@ export default function App() {
             prompt: arbiterPrompt,
             projectId: activeProjectId,
             channelId: topicChannel?.id,
+            systemPrompt: buildCompositeSystemPrompt({
+              agent: arbiterAgent,
+              availableAgents: candidateAgents,
+              includeRoster: true,
+            }),
           });
 
           setActiveExecutions((prev) => {
@@ -4860,9 +4889,11 @@ export default function App() {
       const execKey = `${topicId}:${agent.id}`;
       const sessionKey = `${topicId}:${agent.id}`;
       const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
-      const standingContext = !isStandingContextDelivered
-        ? buildCrewRosterGuidance(candidateAgents, agent.id)
-        : undefined;
+      const systemPrompt = buildCompositeSystemPrompt({
+        agent,
+        availableAgents: candidateAgents,
+        includeRoster: !isStandingContextDelivered,
+      });
 
       const structuredTopicPrompt = buildTopicPrompt({
         topic: topicContext,
@@ -4871,9 +4902,7 @@ export default function App() {
         availableAgents: candidateAgents,
       });
 
-      const finalPrompt = !isStandingContextDelivered && standingContext
-        ? `${structuredTopicPrompt}${standingContext}`
-        : structuredTopicPrompt;
+      const finalPrompt = structuredTopicPrompt;
 
       deliveredStandingContextRef.current.add(sessionKey);
 
@@ -4952,7 +4981,7 @@ export default function App() {
         prompt: finalPrompt,
         projectId: activeProjectId,
         channelId: topicChannel?.id,
-        systemPrompt: standingContext,
+        systemPrompt,
       })
         .then((acpResp) => {
           setActiveExecutions((prev) => {
@@ -5537,6 +5566,7 @@ export default function App() {
         prompt: execPrompt,
         projectId: activeProjectId,
         channelId: topicChannel?.id,
+        systemPrompt: buildAgentPersonaPrompt(executorAgent),
       });
 
       setActiveExecutions((prev) => {
@@ -6211,15 +6241,15 @@ export default function App() {
     const sessionKey = `${activeThread.id}:${primaryResponder.id}`;
     const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
 
-    // 对标 Buzz: 仅当该 Session 尚未交付过立足上下文时构造公约 (首轮通过 systemPrompt + 前置引导)
-    // 注意：私聊 (DM) 模式下不需要多智能体协同公约/花名册，避免注入 "@ 级联调度公约" 等频道协同指令
-    const standingContext = activeThread.type !== 'dm' && !isStandingContextDelivered
-      ? buildCrewRosterGuidance(candidateAgents, primaryResponder.id)
-      : undefined;
+    // 对标 Buzz: 组合 Agent 自身专精人设与频道级花名册公约
+    // 私聊 (DM) 模式下 includeRoster: false，只注入自身专精人设；频道模式下首轮同时注入花名册公约
+    const compositeSystemPrompt = buildCompositeSystemPrompt({
+      agent: primaryResponder,
+      availableAgents: candidateAgents,
+      includeRoster: activeThread.type !== 'dm' && !isStandingContextDelivered,
+    });
 
-    const finalPrompt = !isStandingContextDelivered && standingContext
-      ? `${content}${standingContext}`
-      : content;
+    const finalPrompt = content;
 
     deliveredStandingContextRef.current.add(sessionKey);
 
@@ -6277,7 +6307,7 @@ export default function App() {
       prompt: finalPrompt,
       projectId: activeProjectId,
       channelId: targetChannelId,
-      systemPrompt: standingContext,
+      systemPrompt: compositeSystemPrompt,
     })
       .then((acpResp) => {
         setActiveExecutions((prev) => {
