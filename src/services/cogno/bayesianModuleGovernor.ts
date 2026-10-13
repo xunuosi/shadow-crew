@@ -194,23 +194,15 @@ export function initializeModularOrchestrationState(
   }
   const boundedRawModules = rawList.slice(0, 4);
 
-  // 跨模块白名单去重（保障 F_i ∩ F_j = ∅，上游声明模块独占其白名单文件，EDGE-04）
-  const claimedFiles = new Set<string>();
-
-  const rawModules: TaskModuleSlice[] = boundedRawModules.map((raw, idx) => {
-    const rawFiles = Array.isArray(raw.allowedFiles) ? raw.allowedFiles : [];
-    const exclusiveFiles: string[] = [];
-    for (const f of rawFiles) {
-      const clean = f.trim();
-      if (clean && !claimedFiles.has(clean)) {
-        claimedFiles.add(clean);
-        exclusiveFiles.push(clean);
-      }
-    }
+  // 1. 先构建初始模块切片并执行 DAG 拓扑破环消毒 (EDGE-03)
+  const initialRawModules: TaskModuleSlice[] = boundedRawModules.map((raw, idx) => {
+    const rawFiles = Array.isArray(raw.allowedFiles)
+      ? Array.from(new Set(raw.allowedFiles.map((f) => f.trim()).filter(Boolean)))
+      : [];
 
     const { priorRisk, routingMode } = estimateModulePriorRisk({
       complexityLevel: raw.complexityLevel,
-      allowedFilesCount: exclusiveFiles.length,
+      allowedFilesCount: rawFiles.length,
       responsibilityText: `${raw.title} ${raw.responsibility}`,
     });
 
@@ -232,7 +224,7 @@ export function initializeModularOrchestrationState(
       moduleId: raw.moduleId || `mod-${idx + 1}`,
       title: raw.title,
       responsibility: raw.responsibility,
-      allowedFiles: exclusiveFiles,
+      allowedFiles: rawFiles,
       dependsOnModuleIds: raw.dependsOn || [],
       complexityLevel: raw.complexityLevel,
       status: 'pending',
@@ -241,8 +233,73 @@ export function initializeModularOrchestrationState(
     };
   });
 
-  // 执行 DAG 拓扑破环消毒 (EDGE-03)
-  const modules = sanitizeModuleDependencyDAG(rawModules);
+  const dagModules = sanitizeModuleDependencyDAG(initialRawModules);
+
+  // 2. 按依赖拓扑序（上游被依赖模块优先于下游依赖模块，同层保持声明序）执行跨模块白名单去重 (N2 & EDGE-04)
+  // 确保当下游 M1 依赖上游 M2 时，上游定义方 M2 独占共享文件，而非被数组靠前的下游 M1 抢占
+  const idToDeclIdx = new Map(dagModules.map((m, idx) => [m.moduleId, idx]));
+  const inDegree = new Map<string, number>();
+  const dependentsMap = new Map<string, string[]>();
+
+  for (const m of dagModules) {
+    inDegree.set(m.moduleId, m.dependsOnModuleIds.length);
+    for (const depId of m.dependsOnModuleIds) {
+      const list = dependentsMap.get(depId) || [];
+      list.push(m.moduleId);
+      dependentsMap.set(depId, list);
+    }
+  }
+
+  const topoOrderIds: string[] = [];
+  const visitedTopo = new Set<string>();
+  while (topoOrderIds.length < dagModules.length) {
+    const readyCandidates = dagModules
+      .filter((m) => !visitedTopo.has(m.moduleId) && (inDegree.get(m.moduleId) ?? 0) <= 0)
+      .sort((a, b) => (idToDeclIdx.get(a.moduleId) ?? 0) - (idToDeclIdx.get(b.moduleId) ?? 0));
+
+    const picked =
+      readyCandidates[0] || dagModules.find((m) => !visitedTopo.has(m.moduleId))!;
+    visitedTopo.add(picked.moduleId);
+    topoOrderIds.push(picked.moduleId);
+
+    for (const childId of dependentsMap.get(picked.moduleId) || []) {
+      inDegree.set(childId, (inDegree.get(childId) ?? 1) - 1);
+    }
+  }
+
+  const claimedFiles = new Set<string>();
+  const exclusiveFilesByModuleId = new Map<string, string[]>();
+
+  for (const modId of topoOrderIds) {
+    const mod = dagModules.find((m) => m.moduleId === modId)!;
+    const exclusiveFiles: string[] = [];
+    for (const clean of mod.allowedFiles) {
+      if (clean && !claimedFiles.has(clean)) {
+        claimedFiles.add(clean);
+        exclusiveFiles.push(clean);
+      }
+    }
+    exclusiveFilesByModuleId.set(modId, exclusiveFiles);
+  }
+
+  const modules: TaskModuleSlice[] = dagModules.map((mod) => {
+    const exclusiveFiles = exclusiveFilesByModuleId.get(mod.moduleId) || [];
+    const { priorRisk, routingMode } = estimateModulePriorRisk({
+      complexityLevel: mod.complexityLevel,
+      allowedFilesCount: exclusiveFiles.length,
+      responsibilityText: `${mod.title} ${mod.responsibility}`,
+    });
+    return {
+      ...mod,
+      allowedFiles: exclusiveFiles,
+      belief: {
+        ...mod.belief,
+        priorRisk,
+        posteriorRisk: priorRisk,
+        routingMode,
+      },
+    };
+  });
 
   const initialState: ModularOrchestrationState = {
     enabled: true,

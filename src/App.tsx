@@ -2129,18 +2129,18 @@ export default function App() {
   };
 
   const updateTopicDataInState = (topicId: string, updater: (oldTopic: TopicMessageData) => TopicMessageData) => {
-    setMessages((prev) => {
+    const applyUpdate = (source: Record<string, Message[]>): Record<string, Message[]> => {
       let parentThreadId: string | null = null;
-      for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+      for (const [tId, msgList] of (Object.entries(source) as [string, Message[]][])) {
         if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
           parentThreadId = tId;
           break;
         }
       }
-      if (!parentThreadId) return prev;
-      const next = {
-        ...prev,
-        [parentThreadId]: (prev[parentThreadId] || []).map((m) => {
+      if (!parentThreadId) return source;
+      return {
+        ...source,
+        [parentThreadId]: (source[parentThreadId] || []).map((m) => {
           if (m.type === 'topic' && m.topicData?.id === topicId) {
             return {
               ...m,
@@ -2150,6 +2150,12 @@ export default function App() {
           return m;
         }),
       };
+    };
+
+    // 同步立即更新 messagesRef.current，确保紧随其后的 triggerGameTheoreticStageHandover 立即读取到最新状态 (N1)
+    messagesRef.current = applyUpdate(messagesRef.current);
+    setMessages((prev) => {
+      const next = applyUpdate(prev);
       messagesRef.current = next;
       return next;
     });
@@ -3607,135 +3613,135 @@ export default function App() {
         // - 若触发 SCOPED_DEFENSE_REFINE，回环至当前模块 challenge 阶段进行有界局部重修；
         // - 若当前模块 FREEZE_MODULE 但尚有后续模块未冻结 (!allModulesFrozen)，激活下一拓扑模块并回环至 challenge；
         // - 仅当全部模块 (N/N) 均已 Frozen 时，才流转至终局仲裁 (arbitration)。
+        // 关键修复 (N1)：在调用 setState / updateTopicDataInState 前同步完成模块状态机演算与 resolvedNextStage 判定，
+        // 严禁在异步批处理的 setState 更新器闭包内才对外部流转变量赋值。
+        const latestTopicBeforeDefenseUpdate = getTopicData(topicId) || currentTopic;
+        const prevModular = latestTopicBeforeDefenseUpdate.gameTheoreticState?.modularState;
+        let nextModular = prevModular;
         let resolvedNextStage: 'challenge' | 'arbitration' = 'arbitration';
         let transitionNoticeMsg: Message | null = null;
 
-        updateTopicDataInState(topicId, (old) => {
-          const prevModular = old.gameTheoreticState?.modularState;
-          let nextModular = prevModular;
+        if (prevModular?.enabled && prevModular.activeModuleId) {
+          const activeMod = prevModular.modules.find(
+            (m) => m.moduleId === prevModular.activeModuleId
+          );
+          const scopeCheck = activeMod
+            ? validateModuleScopeContract(
+                acpResp.textResponse,
+                activeMod,
+                prevModular.modules,
+                prevModular.sharedContract
+              )
+            : { isScopeValid: true, contractViolations: 0, violatedFiles: [], violationDetails: [] };
 
-          if (prevModular?.enabled && prevModular.activeModuleId) {
-            const activeMod = prevModular.modules.find(
-              (m) => m.moduleId === prevModular.activeModuleId
-            );
-            const scopeCheck = activeMod
-              ? validateModuleScopeContract(
-                  acpResp.textResponse,
-                  activeMod,
-                  prevModular.modules,
-                  prevModular.sharedContract
-                )
-              : { isScopeValid: true, contractViolations: 0, violatedFiles: [], violationDetails: [] };
+          const parsedVerEvidences = parseVerifierOutput(verificationText);
+          const refutedInVerCount = parsedVerEvidences.filter((e) => !e.truthValue).length;
+          const refutedDefenseCount =
+            (sycophancyEval.surrenderDetected ? 1 : 0) +
+            defenseClaims.filter((c) => c.status === 'refuted').length;
+          const verifiedDefenseCount =
+            !sycophancyEval.surrenderDetected &&
+            scopeCheck.contractViolations === 0 &&
+            refutedDefenseCount === 0 &&
+            (refutedInVerCount === 0 || groundedTrueRatio >= 0.5)
+              ? Math.max(1, defenseClaims.filter((c) => c.status !== 'refuted').length)
+              : 0;
 
-            const parsedVerEvidences = parseVerifierOutput(verificationText);
-            const refutedInVerCount = parsedVerEvidences.filter((e) => !e.truthValue).length;
-            const refutedDefenseCount =
-              (sycophancyEval.surrenderDetected ? 1 : 0) +
-              defenseClaims.filter((c) => c.status === 'refuted').length;
-            const verifiedDefenseCount =
-              !sycophancyEval.surrenderDetected &&
-              scopeCheck.contractViolations === 0 &&
-              refutedDefenseCount === 0 &&
-              (refutedInVerCount === 0 || groundedTrueRatio >= 0.5)
-                ? Math.max(1, defenseClaims.filter((c) => c.status !== 'refuted').length)
-                : 0;
+          const modRefineKey = `${topicId}:mod-refine:${prevModular.activeModuleId}`;
+          const currentModRefines = stageRefineRetriesRef.current[modRefineKey] || 0;
 
-            const modRefineKey = `${topicId}:mod-refine:${prevModular.activeModuleId}`;
-            const currentModRefines = stageRefineRetriesRef.current[modRefineKey] || 0;
+          const modStep = stepModularStageTransition({
+            state: prevModular,
+            currentStage: 'defense',
+            feedbackDelta: {
+              verifiedClaims: verifiedDefenseCount,
+              refutedClaims: refutedDefenseCount,
+              contractViolations: scopeCheck.contractViolations,
+              dssScore: sycophancyEval.dss,
+            },
+            proposalOrDefenseSnippet: acpResp.textResponse,
+            currentModuleRefineCount: currentModRefines,
+          });
 
-            const modStep = stepModularStageTransition({
-              state: prevModular,
-              currentStage: 'defense',
-              feedbackDelta: {
-                verifiedClaims: verifiedDefenseCount,
-                refutedClaims: refutedDefenseCount,
-                contractViolations: scopeCheck.contractViolations,
-                dssScore: sycophancyEval.dss,
-              },
-              proposalOrDefenseSnippet: acpResp.textResponse,
-              currentModuleRefineCount: currentModRefines,
-            });
+          nextModular = {
+            ...modStep.nextState,
+            modules: modStep.nextState.modules.map((m) =>
+              m.moduleId === prevModular.activeModuleId
+                ? { ...m, scopedMessageIds: [...m.scopedMessageIds, defenseReply.id] }
+                : m
+            ),
+          };
 
-            nextModular = {
-              ...modStep.nextState,
-              modules: modStep.nextState.modules.map((m) =>
-                m.moduleId === prevModular.activeModuleId
-                  ? { ...m, scopedMessageIds: [...m.scopedMessageIds, defenseReply.id] }
-                  : m
-              ),
+          if (modStep.triggeredScopedRefine && activeMod) {
+            stageRefineRetriesRef.current[modRefineKey] = currentModRefines + 1;
+            resolvedNextStage = 'challenge';
+            transitionNoticeMsg = {
+              id: `msg-mod-refine-${Date.now()}`,
+              threadId: topicId,
+              channelId: topicChannel?.id,
+              authorId: 'system',
+              authorName: 'G-Frame 贝叶斯模块总控',
+              authorHandle: '@gframe-governor',
+              authorAvatar: '🧭',
+              isAgent: true,
+              agentBadge: `SCOPED_DEFENSE_REFINE (${currentModRefines + 1}/1)`,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: `🔄 **触发模块沙箱局部重修 (SCOPED_DEFENSE_REFINE)**：${modStep.reason}。已锁定当前模块「${activeMod.title}」发起有界二次核验，已冻结上游模块不受波及。`,
+              gameStage: 'challenge',
             };
-
-            if (modStep.triggeredScopedRefine && activeMod) {
-              stageRefineRetriesRef.current[modRefineKey] = currentModRefines + 1;
-              resolvedNextStage = 'challenge';
-              transitionNoticeMsg = {
-                id: `msg-mod-refine-${Date.now()}`,
-                threadId: topicId,
-                channelId: topicChannel?.id,
-                authorId: 'system',
-                authorName: 'G-Frame 贝叶斯模块总控',
-                authorHandle: '@gframe-governor',
-                authorAvatar: '🧭',
-                isAgent: true,
-                agentBadge: `SCOPED_DEFENSE_REFINE (${currentModRefines + 1}/1)`,
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                content: `🔄 **触发模块沙箱局部重修 (SCOPED_DEFENSE_REFINE)**：${modStep.reason}。已锁定当前模块「${activeMod.title}」发起有界二次核验，已冻结上游模块不受波及。`,
-                gameStage: 'challenge',
-              };
-            } else if (!modStep.allModulesFrozen) {
-              delete stageRefineRetriesRef.current[modRefineKey];
-              resolvedNextStage = 'challenge';
-              const nextActiveMod = nextModular.modules.find(
-                (m) => m.moduleId === nextModular?.activeModuleId
-              );
-              const frozenCount = nextModular.modules.filter((m) => m.status === 'frozen').length;
-              transitionNoticeMsg = {
-                id: `msg-mod-advance-${Date.now()}`,
-                threadId: topicId,
-                channelId: topicChannel?.id,
-                authorId: 'system',
-                authorName: 'G-Frame 贝叶斯模块总控',
-                authorHandle: '@gframe-governor',
-                authorAvatar: '🧊',
-                isAgent: true,
-                agentBadge: `Module Frozen (${frozenCount}/${nextModular.modules.length})`,
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                content: `🧊 **模块收敛硬冻结 & 拓扑切换**：模块「${activeMod?.title || prevModular.activeModuleId}」已完成实证收敛并锁定为 Frozen（当前已冻结 ${frozenCount}/${nextModular.modules.length}）。\n\n正在按 DAG 拓扑序激活下一模块「**${nextActiveMod?.title || nextModular.activeModuleId}**」进入独立沙箱攻防与接地验证...`,
-                gameStage: 'challenge',
-              };
-            } else {
-              delete stageRefineRetriesRef.current[modRefineKey];
-              resolvedNextStage = 'arbitration';
-            }
+          } else if (!modStep.allModulesFrozen) {
+            delete stageRefineRetriesRef.current[modRefineKey];
+            resolvedNextStage = 'challenge';
+            const nextActiveMod = nextModular.modules.find(
+              (m) => m.moduleId === nextModular?.activeModuleId
+            );
+            const frozenCount = nextModular.modules.filter((m) => m.status === 'frozen').length;
+            transitionNoticeMsg = {
+              id: `msg-mod-advance-${Date.now()}`,
+              threadId: topicId,
+              channelId: topicChannel?.id,
+              authorId: 'system',
+              authorName: 'G-Frame 贝叶斯模块总控',
+              authorHandle: '@gframe-governor',
+              authorAvatar: '🧊',
+              isAgent: true,
+              agentBadge: `Module Frozen (${frozenCount}/${nextModular.modules.length})`,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: `🧊 **模块收敛硬冻结 & 拓扑切换**：模块「${activeMod?.title || prevModular.activeModuleId}」已完成实证收敛并锁定为 Frozen（当前已冻结 ${frozenCount}/${nextModular.modules.length}）。\n\n正在按 DAG 拓扑序激活下一模块「**${nextActiveMod?.title || nextModular.activeModuleId}**」进入独立沙箱攻防与接地验证...`,
+              gameStage: 'challenge',
+            };
+          } else {
+            delete stageRefineRetriesRef.current[modRefineKey];
+            resolvedNextStage = 'arbitration';
           }
+        }
 
-          return {
-            ...old,
-            gameStage: resolvedNextStage,
-            gameTheoreticState: {
-              ...old.gameTheoreticState,
-              currentStage: resolvedNextStage,
-              targetProposalContent: targetProposalText,
-              targetChallengeContent: targetChallengeText,
-              targetDefenseContent: acpResp.textResponse,
-              isChallengerResponded: resolvedNextStage === 'arbitration',
-              isVerifierResponded: resolvedNextStage === 'arbitration',
-              isDefenseResponded: resolvedNextStage === 'arbitration',
+        updateTopicDataInState(topicId, (old) => ({
+          ...old,
+          gameStage: resolvedNextStage,
+          gameTheoreticState: {
+            ...old.gameTheoreticState,
+            currentStage: resolvedNextStage,
+            targetProposalContent: targetProposalText,
+            targetChallengeContent: targetChallengeText,
+            targetDefenseContent: acpResp.textResponse,
+            isChallengerResponded: resolvedNextStage === 'arbitration',
+            isVerifierResponded: resolvedNextStage === 'arbitration',
+            isDefenseResponded: resolvedNextStage === 'arbitration',
+            sprtState: sprtStateAfterDefense,
+            minorityReport: old.gameTheoreticState?.minorityReport,
+            latestSycophancy: sycophancyEval,
+            modularState: nextModular,
+            cognoNexus: {
+              ...old.gameTheoreticState?.cognoNexus,
+              committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
               sprtState: sprtStateAfterDefense,
-              minorityReport: old.gameTheoreticState?.minorityReport,
+              minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
               latestSycophancy: sycophancyEval,
               modularState: nextModular,
-              cognoNexus: {
-                ...old.gameTheoreticState?.cognoNexus,
-                committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
-                sprtState: sprtStateAfterDefense,
-                minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
-                latestSycophancy: sycophancyEval,
-                modularState: nextModular,
-              },
             },
-          };
-        });
+          },
+        }));
 
         if (transitionNoticeMsg) {
           const noticeToPost = transitionNoticeMsg;

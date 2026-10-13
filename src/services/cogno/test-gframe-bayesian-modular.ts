@@ -13,7 +13,11 @@ import {
 import { validateModuleScopeContract } from './stageContractGate';
 import { buildScopedModulePrompt } from '../agentCollaboration';
 import { extractModuleDecompositionFromAcpResponse } from '../acpClient';
-import { ModuleDecompositionDraft } from '../../types';
+import {
+  ModularOrchestrationState,
+  ModuleDecompositionDraft,
+  TaskModuleSlice,
+} from '../../types';
 
 console.log('🧪 [G-Frame Test] Starting Bayesian Modular Governor & Context Isolation Verification...\n');
 
@@ -510,5 +514,220 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
   console.log('✅ [10/10] E2E-03 3/3 Multi-Module Loop Closure & EDGE-06 Runtime SCOPED_DEFENSE_REFINE Reachability Passed\n');
 }
 
-console.log('🎉 [G-Frame Complete] All 10 test suites passed 100%!');
+// 11. 测试 N2：白名单去重基于 DAG 拓扑偏序而非原始声明顺序 (Topological Whitelist Dedup)
+{
+  const invertedOrderDraft: ModuleDecompositionDraft = {
+    sharedContract: {
+      summary: 'DAG 拓扑白名单去重测试',
+      typeSignatures: 'export interface SharedState { version: number; }',
+      invariants: ['上游基底模块优先持有共享契约定义文件'],
+    },
+    modules: [
+      {
+        moduleId: 'm-downstream',
+        title: '下游依赖模块 (声明在索引 0)',
+        responsibility: '消费共享状态',
+        allowedFiles: ['src/shared.ts', 'src/consumer.ts'],
+        dependsOn: ['m-upstream'],
+        complexityLevel: 'low_deterministic',
+      },
+      {
+        moduleId: 'm-upstream',
+        title: '上游基底模块 (声明在索引 1)',
+        responsibility: '定义共享状态',
+        allowedFiles: ['src/shared.ts', 'src/producer.ts'],
+        dependsOn: [],
+        complexityLevel: 'medium_standard',
+      },
+    ],
+    submittedBy: 'agent-proposer',
+    submittedAt: new Date().toISOString(),
+  };
+
+  const topoDedupState = initializeModularOrchestrationState(invertedOrderDraft);
+  const upstreamMod = topoDedupState.modules.find((m) => m.moduleId === 'm-upstream');
+  const downstreamMod = topoDedupState.modules.find((m) => m.moduleId === 'm-downstream');
+
+  assert.ok(upstreamMod, 'Upstream module must exist in state');
+  assert.ok(downstreamMod, 'Downstream module must exist in state');
+  assert.ok(
+    upstreamMod.allowedFiles.includes('src/shared.ts'),
+    'N2: Upstream dependency (m-upstream) MUST retain shared file [src/shared.ts] even when declared at index 1'
+  );
+  assert.ok(
+    !downstreamMod.allowedFiles.includes('src/shared.ts'),
+    'N2: Downstream dependent (m-downstream) MUST NOT preempt shared file [src/shared.ts] over its upstream dependency'
+  );
+  assert.deepEqual(downstreamMod.allowedFiles, ['src/consumer.ts']);
+  assert.equal(topoDedupState.activeModuleId, 'm-upstream', 'Topological root (m-upstream) must be initial active module');
+  console.log('✅ [11/13] Topological Whitelist Deduplication Priority (N2) Passed');
+}
+
+// 12. 测试 N3：目录前缀重叠误报防护与具体文件归属权优先原则 (Directory Prefix Scope Gate)
+{
+  const m1Dir: TaskModuleSlice = {
+    moduleId: 'm-components-dir',
+    title: '通用组件目录模块',
+    responsibility: '负责 src/components/ 通用基础组件',
+    allowedFiles: ['src/components/'],
+    dependsOnModuleIds: [],
+    status: 'proposing',
+    scopedMessageIds: [],
+    complexityLevel: 'medium_standard',
+    belief: {
+      priorRisk: 0.25,
+      posteriorRisk: 0.25,
+      routingMode: 'fast_track',
+      feedbackVector: {
+        contractViolations: 0,
+        verifiedClaims: 0,
+        refutedClaims: 0,
+        edgeCaseCount: 0,
+        dssScore: 0,
+      },
+      lastUpdatedAt: new Date().toISOString(),
+    },
+  };
+
+  const m2File: TaskModuleSlice = {
+    moduleId: 'm-panel-file',
+    title: '专用面板组件模块',
+    responsibility: '负责 src/components/Panel.tsx',
+    allowedFiles: ['src/components/Panel.tsx'],
+    dependsOnModuleIds: ['m-components-dir'],
+    status: 'pending',
+    scopedMessageIds: [],
+    complexityLevel: 'low_deterministic',
+    belief: {
+      priorRisk: 0.25,
+      posteriorRisk: 0.25,
+      routingMode: 'fast_track',
+      feedbackVector: {
+        contractViolations: 0,
+        verifiedClaims: 0,
+        refutedClaims: 0,
+        edgeCaseCount: 0,
+        dssScore: 0,
+      },
+      lastUpdatedAt: new Date().toISOString(),
+    },
+  };
+
+  // 12.1 零修改文本绝不误报契约违规
+  const zeroModResult = validateModuleScopeContract(
+    '本阶段仅对系统架构与接口声明进行分析对齐，不涉及任何文件修改与代码重构。',
+    m2File,
+    [m1Dir, m2File]
+  );
+  assert.equal(
+    zeroModResult.contractViolations,
+    0,
+    'N3: Zero-modification text must NEVER be flagged as a scope violation even with directory prefix overlap'
+  );
+  assert.equal(zeroModResult.isScopeValid, true);
+
+  // 12.2 M2 修改自身拥有具体文件 Panel.tsx，不应触发 M1 的目录前缀 src/components/ 误报
+  const m2SelfModResult = validateModuleScopeContract(
+    '修改 src/components/Panel.tsx 实现面板独立渲染逻辑',
+    m2File,
+    [m1Dir, m2File]
+  );
+  assert.equal(
+    m2SelfModResult.contractViolations,
+    0,
+    'N3: Modifying explicitly owned file [src/components/Panel.tsx] must NOT trigger directory prefix violation from other modules'
+  );
+  assert.equal(m2SelfModResult.isScopeValid, true);
+
+  // 12.3 M2 修改未授权文件 Header.tsx，应准确判定为侵犯 M1 专属目录
+  const m2UnauthorizedModResult = validateModuleScopeContract(
+    '修改 src/components/Header.tsx 调整头部导航',
+    m2File,
+    [m1Dir, m2File]
+  );
+  assert.equal(
+    m2UnauthorizedModResult.contractViolations,
+    1,
+    'N3: Modifying file under other module directory not in active allowed list must be caught as violation'
+  );
+  assert.equal(m2UnauthorizedModResult.violatedFiles[0], 'src/components/');
+
+  // 12.4 M1 修改具体归属于 M2 的 Panel.tsx，应准确判定为越界修改其他模块具体文件
+  const m1TrespassModResult = validateModuleScopeContract(
+    '修改 src/components/Panel.tsx 强行侵入面板逻辑',
+    m1Dir,
+    [m1Dir, m2File]
+  );
+  assert.equal(
+    m1TrespassModResult.contractViolations,
+    1,
+    'N3: Modifying specific file owned by another module must be caught as violation'
+  );
+  assert.equal(m1TrespassModResult.violatedFiles[0], 'src/components/Panel.tsx');
+
+  // 12.5 EDGE-04 直接白名单重叠且修改发生时必须拦截
+  const mDirect1: TaskModuleSlice = {
+    ...m1Dir,
+    allowedFiles: ['src/shared.ts'],
+  };
+  const mDirect2: TaskModuleSlice = {
+    ...m2File,
+    allowedFiles: ['src/shared.ts'],
+  };
+  const directOverlapModResult = validateModuleScopeContract(
+    '编辑 src/shared.ts 注入冲突定义',
+    mDirect1,
+    [mDirect1, mDirect2]
+  );
+  assert.equal(
+    directOverlapModResult.contractViolations,
+    1,
+    'EDGE-04: Modifying direct overlap file must be strictly intercepted'
+  );
+  console.log('✅ [12/13] Directory Prefix Scope Gate & Specific File Ownership (N3) Passed');
+}
+
+// 13. 测试 N1：同步阶段流转决断保证 (Deterministic Synchronous Stage Handover Flow)
+{
+  const testModular = initializeModularOrchestrationState(sampleDraft);
+  // 模拟 defense 阶段未冻结全部模块时，同步决断流向必定为 'challenge'，全部冻结时必定为 'arbitration'
+  const stepNotAllFrozen = stepModularStageTransition({
+    state: testModular,
+    currentStage: 'defense',
+    feedbackDelta: { verifiedClaims: 2, refutedClaims: 0, contractViolations: 0 },
+    proposalOrDefenseSnippet: 'M1 Valid Patch',
+  });
+  const resolvedNextStageNotAll = !stepNotAllFrozen.allModulesFrozen ? 'challenge' : 'arbitration';
+  assert.equal(
+    resolvedNextStageNotAll,
+    'challenge',
+    'N1: When intermediate module freezes but subsequent modules exist, synchronous resolvedNextStage MUST be "challenge"'
+  );
+
+  // 模拟最后一模块冻结
+  const lastModState: ModularOrchestrationState = {
+    ...stepNotAllFrozen.nextState,
+    modules: stepNotAllFrozen.nextState.modules.map((m, idx) => ({
+      ...m,
+      status: idx === 2 ? 'proposing' : 'frozen',
+    })),
+    activeModuleId: 'mod-3-ui',
+  };
+  const stepFinal = stepModularStageTransition({
+    state: lastModState,
+    currentStage: 'defense',
+    feedbackDelta: { verifiedClaims: 2, refutedClaims: 0, contractViolations: 0 },
+    proposalOrDefenseSnippet: 'M3 Final Patch',
+  });
+  const resolvedNextStageFinal = !stepFinal.allModulesFrozen ? 'challenge' : 'arbitration';
+  assert.equal(
+    resolvedNextStageFinal,
+    'arbitration',
+    'N1: When all modules are frozen, synchronous resolvedNextStage MUST be "arbitration"'
+  );
+  console.log('✅ [13/13] Deterministic Synchronous Stage Handover Flow (N1) Passed\n');
+}
+
+console.log('🎉 [G-Frame Complete] All 13 test suites passed 100%!');
+
 
