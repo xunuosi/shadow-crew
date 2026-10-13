@@ -826,6 +826,67 @@ console.log('\n--- N10 fast_track 分流是否校验验证官可用性 ---');
   }
 }
 
+// ---------------------------------------------------------------- N12
+console.log('\n--- N12 fast_track 降级是否就地改写 React 状态对象 ---');
+{
+  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  const lines = appSource.split('\n');
+  const mutationHits = lines
+    .map((line, idx) => ({ line, idx }))
+    .filter(({ line }) => /\.belief\.(routingMode|priorRisk|posteriorRisk|status)\s*=(?!=)/.test(line));
+
+  // baseModular 可能直接引用上一轮 React 状态中的 modularState
+  const baseAliasesPrevState =
+    /const baseModular =[\s\S]{0,500}?(old|currentTopicData)\??\.gameTheoreticState\??\.modularState/.test(appSource);
+
+  if (mutationHits.length > 0 && baseAliasesPrevState) {
+    const hit = mutationHits[0];
+    warn(
+      'N12',
+      `fast_track 降级路径就地改写 React 状态中的嵌套对象：src/App.tsx:${hit.idx + 1} 执行 \`${hit.line.trim()}\`。` +
+        `该 activeMod 取自 updatedModular.modules，而 baseModular 可能是上一轮 gameTheoreticState.modularState（第 5013~5018 行），` +
+        `其 belief 与历史状态共享同一引用 —— 原地赋值会连带篡改历史快照，违反不可变契约。` +
+        `同一逻辑在模块提案路径（约 2339 行）已用 { ...m.belief, routingMode } 正确处理，两处实现不一致。`
+    );
+  } else {
+    pass('N12', '模块 belief 更新均采用不可变写法');
+  }
+}
+
+// ---------------------------------------------------------------- N13
+console.log('\n--- N13 全 fast_track 议题是否产生 SPRT 序贯收敛证据 ---');
+{
+  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  const fastFreezeIdx = appSource.indexOf('Fast Track Frozen');
+  const fastBlock = fastFreezeIdx > 0 ? appSource.slice(fastFreezeIdx - 1500, fastFreezeIdx + 2000) : '';
+  const fastPathWritesSprt = /sprtState\s*[:,]/.test(fastBlock);
+
+  const allFastDraft = makeDraft([
+    { id: 'M1', title: 'M1 纯类型定义', responsibility: '数据结构与常量', files: ['src/a.ts'], dependsOn: [], level: 'low_deterministic' },
+    { id: 'M2', title: 'M2 视图映射', responsibility: 'UI 状态绑定渲染', files: ['src/b.tsx'], dependsOn: ['M1'], level: 'low_deterministic' },
+  ]);
+  const run = runModularLifecycle(allFastDraft);
+  const challengeNeverRuns = Object.values(run.stagesByModule).every((seq) => !seq.includes('challenge'));
+  const defenseNeverRuns = Object.values(run.stagesByModule).every((seq) => !seq.includes('defense'));
+
+  console.log(
+    `    全 fast_track 阶段序列: ${Object.entries(run.stagesByModule).map(([k, v]) => `${k}=${v.join('→')}`).join('  ,  ')}；快速通道分支写 sprtState: ${fastPathWritesSprt}`
+  );
+  if (challengeNeverRuns && defenseNeverRuns && !fastPathWritesSprt) {
+    warn(
+      'N13',
+      `全 fast_track 议题不会产生任何 SPRT 序贯收敛证据：模块全程跳过 challenge 与 defense，` +
+        `而 sprtState 仅在红队/答辩完成后写入（全仓 sprtState 写入点均位于 defense 链路）。` +
+        `后果：抽屉的「Wald-SPRT 序贯调控」条不渲染，仲裁卡与 ADR 缺少 Λ 似然比收敛记录，` +
+        `该议题的「收敛可信度」在审计留痕上为空 —— 建议为 fast_track 直通路径补一条轻量的静态验证收敛证据字段。`
+    );
+  } else if (fastPathWritesSprt) {
+    pass('N13', 'fast_track 直通路径已写入 SPSS/SPRT 等价收敛证据');
+  } else {
+    pass('N13', `未出现「无红队且无答辩」的议题形态（challenge=${!challengeNeverRuns}, defense=${!defenseNeverRuns}）`);
+  }
+}
+
 // ---------------------------------------------------------------- 汇总
 console.log('\n================================================================================');
 const defects = findings.filter((f) => f.level === 'DEFECT');

@@ -66,7 +66,7 @@ npm run test:cogno:edge
 | `npm run lint` | ✅ 通过，零类型报错 |
 | `npm run test:cogno` | ✅ 全绿：`verify-all-governance` **18/18**（T1~T8 + A1~A10）+ Wave1/2/3 + Rezaei 2015 BWM 金标准 + G-Frame 7/7 |
 | `cargo test -p shinobi-dev-mcp` | ✅ `9 passed; 0 failed`（含 `test_dispatch_tool_call_submit_module_decomposition`、`test_tools_list_schema`） |
-| `npm run test:cogno:edge` | 🔴 `DEFECT 1 项 / WARN 1 项`（基线 `b7f21ea` 复测值，详见 §13） |
+| `npm run test:cogno:edge` | 🟡 `DEFECT 0 项 / WARN 2 项`（基线 `7c2ce06` 复测值，详见 §14） |
 
 > 注：治理套件对外常称「16 项」，指 `TECH_REPORT` 中的 7（Token）+ 9（准确性）基线机制；加入 G-Frame 的 `T8` 与 `A10` 后，实际断言总数为 **18 项**。
 
@@ -271,7 +271,8 @@ logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedCl
 | R2 | 2026-10-13 | `32b0900` | ✅ | ✅ 18/18 + G-Frame **10/10** | ✅ 9/9 | 未执行（见 §10.5） | 上轮 6 项全部修复；新增 DEFECT 2 项（N1/N3）+ WARN 1 项（N2） | Codex |
 | R3 | 2026-10-13 | `a053091` | ✅ | ✅ 18/18 + G-Frame **13/13** | ✅ 9/9 | 未执行（见 §12.4） | 上轮 3 项全部修复；新增 DEFECT 2 项（N8/N9）+ WARN 2 项（N5/N7） | Codex |
 | R4 | 2026-10-13 | `b7f21ea` | ✅ | ✅ 18/18 + G-Frame **14/14** | ✅ 9/9 | 未执行（见 §13.4） | 上轮 4 项全部修复；新增 DEFECT 1 项（N11）+ WARN 1 项（N10） | Codex |
-| R5 | | | | | | | | |
+| R5 | 2026-10-13 | `7c2ce06` | ✅ | ✅ 18/18 + G-Frame **14/14** | ✅ 9/9 | 未执行（见 §14.4） | 上轮 2 项全部修复；新增 WARN 2 项（N12/N13），无 DEFECT | Codex |
+| R6 | | | | | | | | |
 
 ---
 
@@ -487,4 +488,47 @@ triggerGameTheoreticStageHandover({ topicId, nextStage, ... });
 ### 13.4 L2 / L3 执行状态
 
 与 §10.3 一致：仍需真实 ACP Agent 在线 + 桌面端运行，本会话浏览器自动化运行时不可用。N10 / N11 均建议在一次真实 G-Frame 议题中做最终确认（全低风险议题最易复现 N11）。
+
+---
+
+## 14. 第五轮执行记录（2026-10-13，基线 `7c2ce06`）
+
+> 触发原因：维护者提交 `7c2ce06 fix(cogno): wire verifier availability guard and challenger bypass quorum semantics (N10, N11)`。
+
+### 14.1 基线回归（全部通过）
+
+| 用例 ID | 命令 | 实测结果 | 结论 |
+| :--- | :--- | :--- | :--- |
+| BL-01 | `npm run lint` | 退出码 0，零类型报错 | ✅ PASS |
+| BL-02 | `npm run build` | `vite build` 成功 | ✅ PASS |
+| BL-03 | `cargo test -p shinobi-dev-mcp` | `9 passed; 0 failed` | ✅ PASS |
+| GOV-01~18 | `npm run test:cogno` | 18/18（T1~T8 + A1~A10） | ✅ PASS |
+| G-Frame 套件 | `npm run test:cogno` | **14/14** | ✅ PASS |
+
+### 14.2 第四轮 2 项问题的独立复验结果（全部修复）
+
+| 用例 ID | 第四轮结论 | 第五轮实测证据 | 结论 |
+| :--- | :--- | :--- | :--- |
+| N11 | 全 fast_track 议题制衡方门禁误判（P0/P1） | 新增 `isChallengerBypassed` / `challengerBypassedReason` 语义位；`TopicThreadDrawer` 门禁改为 `isChallengerBypassed === true \|\| isChallengerResponded !== false`；验证完成块在进入仲裁时回填 `isChallengerResponded = true`；UI 第 2 步状态块由「⚔️ 压测缺席」切换为「⚡ 压测旁路」（emerald 语义色） | ✅ 已修复 |
+| N10 | fast_track 分流未校验验证官 | 提案完成分流新增 `hasVerifiers` 守卫：无验证官时 `nextModStage` 回落 `challenge`，同时把该模块 `routingMode` 降级为 `deep_debate` 并在时间线发出「⚡ Fast-Track Downgraded」告警；两条提案路径（模块循环 ~2336 / 初始议题 ~5030）均已接线 | ✅ 已修复 |
+
+> 附：N4 / N5 / N6 / N7 / N8 / N9 在本轮持续通过；探测汇总回到 `DEFECT 0`。
+
+### 14.3 本轮新增探测（N12 / N13）
+
+| 用例 ID | 探测内容 | 实测结论 | 等级 |
+| :--- | :--- | :--- | :--- |
+| N12 | fast_track 降级是否就地改写 React 状态 | `src/App.tsx:5063` 执行 `activeMod.belief.routingMode = 'deep_debate'`。`baseModular` 可能直接引用上一轮 `gameTheoreticState.modularState`（第 5013~5018 行），其 `belief` 与历史状态共享引用，原地赋值会连带篡改历史快照 | ⚠️ WARN |
+| N13 | 全 fast_track 议题是否产生 SPRT 收敛证据 | 全 fast_track 议题阶段序列为 `proposal→verification`（既无红队也无答辩），而 `sprtState` 仅在红队/答辩链路写入（全仓写入点均位于 defense 分支），该议题到仲裁时 `sprtState` 恒为 undefined | ⚠️ WARN |
+
+#### N12 补充说明（同一逻辑两处实现不一致）
+
+提案 → 下一阶段的 fast_track 判定在仓库中存在**两份实现**：模块循环路径（`App.tsx:2336` 附近，使用 `stepModularStageTransition`，`belief` 采用不可变更新 `{ ...m.belief, routingMode }`）与初始议题路径（`App.tsx:5030` 附近，手工重复判定并使用原地赋值）。两份实现当前行为一致，但已出现一致的维护成本：
+
+- 建议把初始议题路径也统一走 `stepModularStageTransition`，或在降级处改写为 `{ ...activeMod, belief: { ...activeMod.belief, routingMode: 'deep_debate' } }` 并回写 `updatedModular.modules`；
+- 否则后续任一侧改动（阈值、通知文案、字段名）都容易造成两条路径行为分叉。
+
+### 14.4 L2 / L3 执行状态
+
+与 §10.3 一致：仍需真实 ACP Agent 在线 + 桌面端运行，本会话浏览器自动化运行时不可用。N11 的 UI 侧改动（「⚡ 压测旁路」胶囊与门禁放行）建议在真实议题中连同白昼/暗夜双主题一起目检。
 ```
