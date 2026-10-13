@@ -66,7 +66,7 @@ npm run test:cogno:edge
 | `npm run lint` | ✅ 通过，零类型报错 |
 | `npm run test:cogno` | ✅ 全绿：`verify-all-governance` **18/18**（T1~T8 + A1~A10）+ Wave1/2/3 + Rezaei 2015 BWM 金标准 + G-Frame 7/7 |
 | `cargo test -p shinobi-dev-mcp` | ✅ `9 passed; 0 failed`（含 `test_dispatch_tool_call_submit_module_decomposition`、`test_tools_list_schema`） |
-| `npm run test:cogno:edge` | 🔴 `DEFECT 3 项 / WARN 3 项`（详见 §10 本轮执行记录） |
+| `npm run test:cogno:edge` | 🔴 `DEFECT 2 项 / WARN 1 项`（基线 `32b0900` 复测值，详见 §11） |
 
 > 注：治理套件对外常称「16 项」，指 `TECH_REPORT` 中的 7（Token）+ 9（准确性）基线机制；加入 G-Frame 的 `T8` 与 `A10` 后，实际断言总数为 **18 项**。
 
@@ -220,7 +220,7 @@ logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedCl
 
 ## 6. 高风险待验证点（第一轮已实测确认，详见 §10）
 
-> 以下三点已由 `npm run test:cogno:edge` 实测确认，全部为**实现与 SPEC 描述的偏差（DEFECT）**，建议作为修复优先级排序依据。
+> **第二轮状态（基线 `32b0900`）**：第 1~3 项（多模块循环、答辩硬编码、依赖成环）与 EDGE-02/04/05 **均已被修复并通过独立复验**；本轮新发现 2 项缺陷（N1 / N3）+ 1 项语义风险（N2），详见 §10.4。
 
 1. 🔴 **多模块循环推演未闭环（DEFECT / P0）**
    - 实测证据（E2E-03 仿真，使用真实 governor 函数复刻 App 调用序列）：
@@ -268,7 +268,8 @@ logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedCl
 | 轮次 | 日期 | 基线提交 | `npm run lint` | `npm run test:cogno` | `cargo test -p shinobi-dev-mcp` | E2E 通过项 | 遗留缺陷 | 验证人 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | R1 | 2026-10-13 | `a6f2647` | ✅ | ✅ 18/18 + G-Frame 7/7 | ✅ 9/9 | 未执行（见 §10.3 阻塞说明） | DEFECT 3 项 + WARN 3 项（见 §10.2） | Codex |
-| R2 | | | | | | | | |
+| R2 | 2026-10-13 | `32b0900` | ✅ | ✅ 18/18 + G-Frame **10/10** | ✅ 9/9 | 未执行（见 §10.5） | 上轮 6 项全部修复；新增 DEFECT 2 项（N1/N3）+ WARN 1 项（N2） | Codex |
+| R3 | | | | | | | | |
 
 ---
 
@@ -322,4 +323,79 @@ logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedCl
 | UI-01~05 | ⏸ 未执行 | 前端 dev server 已可正常启动（`http://localhost:3033` 返回 HTTP 200，页面标题 `Shinobi - ACP Multi-Agent Workspace`）；但本会话浏览器自动化运行时不可用，无法完成点击/截图级走查。项目内亦未安装 `jsdom / @testing-library / vitest`，无法退化为 DOM 级单测 |
 
 > 建议：UI 用例改由人工按 §4.5 走查；如希望自动化，可先安装 `vitest + @testing-library/react + jsdom`（需另行批准安装依赖），再把「模块沙箱矩阵渲染 / 胶囊过滤」抽为可测组件。
+
+---
+
+## 11. 第二轮执行记录（2026-10-13，基线 `32b0900`）
+
+> 触发原因：维护者提交 `32b0900 fix(cogno): resolve G-Frame multi-module loop closure and edge-case guards (E2E-03, EDGE-02~06)`，声明修复第一轮全部缺陷。本轮做**独立复验**并寻找新问题。
+
+### 11.1 基线回归（全部通过）
+
+| 用例 ID | 命令 | 实测结果 | 结论 |
+| :--- | :--- | :--- | :--- |
+| BL-01 | `npm run lint` | 退出码 0，零类型报错 | ✅ PASS |
+| BL-02 | `npm run build` | `vite build` 成功（仅 chunk 体积告警） | ✅ PASS |
+| BL-03 | `cargo test -p shinobi-dev-mcp` | `9 passed; 0 failed` | ✅ PASS |
+| GOV-01~18 | `npm run test:cogno` | 18/18（T1~T8 + A1~A10） | ✅ PASS |
+| G-Frame 套件 | `npm run test:cogno` | **10/10**（原 7 项 + 新增 EDGE-02/05、EDGE-03、E2E-03&EDGE-06 三项） | ✅ PASS |
+
+### 11.2 第一轮 6 项缺陷的独立复验结果（全部修复）
+
+| 用例 ID | 第一轮结论 | 第二轮实测证据 | 结论 |
+| :--- | :--- | :--- | :--- |
+| EDGE-02 | 单模块输入无守卫 | 单模块输入被自动补足为 2 个，新增守卫模块依赖原模块，`activeModuleId=M1` | ✅ 已修复 |
+| EDGE-03 | 依赖成环静默死锁 | 2 节点环破环后根节点 `M1`、`activeModuleId=M1`；3 节点环 A→B→C→A 破环后剩余 2 条依赖边且存在根节点 | ✅ 已修复 |
+| EDGE-04 | 白名单重叠放行 | 初始化按白名单去重（M1=`[src/shared.ts,src/a.ts]` / M2=`[src/b.ts]`，交集 0）；绕过初始化构造重叠时越界被拦截 | ✅ 已修复 |
+| EDGE-05 | 反馈为覆盖语义 | 增量语义生效：`verified 1→2`、`violations 1→2`，`P_posterior 0.5497→0.6455`；`resolve*` 清零后回落 0.1418 | ✅ 已修复 |
+| EDGE-06 | 答辩实证计数硬编码 | 硬编码字面量已消失，改用 `verifiedDefenseCount` / `refutedDefenseCount` | ✅ 已修复 |
+| E2E-03 | 多模块循环未闭环（2/3） | 完整生命周期仿真：`3/3` 模块全部冻结并进入 arbitration，9 次迭代，各模块访问 3 次 | ✅ 已修复 |
+
+### 11.3 新增回归探测（N1~N4）
+
+| 用例 ID | 探测内容 | 实测结论 | 等级 |
+| :--- | :--- | :--- | :--- |
+| N4 | 局部重修有界收敛 | 答辩持续证伪场景下 12 次迭代内收敛，单模块重修上限 1 轮，最终 2/2 冻结（未死循环） | ✅ PASS |
+| N2 | 白名单去重的顺序依赖 | 去重按**数组声明顺序**而非依赖拓扑：下游 M1（依赖 M2）抢占 `src/shared.ts`，上游定义方 M2 白名单被清空 | ⚠️ WARN |
+| N3 | 目录前缀重叠误报 | M1 白名单为目录 `src/components/`、M2 为 `src/components/Panel.tsx` 时，**零修改**文本也被判契约违规（violations=1） | 🔴 DEFECT |
+| N1 | App 层 setState 更新器副作用 | 决策变量在更新器内赋值、外部读取（见 §11.4） | 🔴 DEFECT (P0) |
+
+### 11.4 N1 详析：多模块闭环在真实运行期可能仍不生效（P0）
+
+**现象（静态证据）**：`src/App.tsx:3610` 声明 `let resolvedNextStage: 'challenge' | 'arbitration' = 'arbitration'`，但在第 3613 行的 `updateTopicDataInState(topicId, updater)` **更新器内部**（第 3670 行）才赋值 `'challenge'`，随后在第 3751 行读取该变量决定 `nextStage`。`transitionNoticeMsg` 与 `stageRefineRetriesRef` 的自增同样发生在更新器内部。
+
+**机制**：React 仅在「目标 fiber 无待处理 lane」时才会同步调用函数式更新器（eager state 优化）。实测安装版本 `node_modules/react-dom/cjs/react-dom-client.development.js`：
+
+```js
+// 第 9528~9543 行：仅当 0 === fiber.lanes 时才立即求值 action
+if (0 === fiber.lanes && (null === alternate || 0 === alternate.lanes) && ...) {
+  const eagerState = alternate(currentState, action);   // updater 被同步调用
+  ...
+}
+```
+
+而同一段同步执行流中，第 3267 行 `setActiveExecutions(...)` 与第 3298 行 `setMessages(...)` 已在本组件 fiber 上派发更新；`markUpdateLaneFromFiberToRoot` 会执行 `sourceFiber.lanes |= lane`（第 4886 行），因此到第 3613 行时 `fiber.lanes !== 0`，eager 求值被跳过 —— 更新器要等到后续渲染阶段才执行。
+
+**后果**：第 3751 行读取到的 `resolvedNextStage` 恒为初值 `'arbitration'`，模块冻结后不会回环 `challenge`，即**多模块闭环在真实运行期退化为「只跑第一个模块并直接仲裁」的旧行为**；同时 `transitionNoticeMsg` 恒为 `null`，界面不会出现任何「Module Frozen (x/N)」提示。单元测试直接调用 `stepModularStageTransition`，因此无法暴露该问题。
+
+**运行期可观测症状（建议据此确认）**：
+1. 议题跑完后抽屉矩阵的「x/N 已冻结」未随模块推进增长（停在 1/N）；
+2. 讨论流中不出现 `Module Frozen (x/N)` 与 `SCOPED_DEFENSE_REFINE` 系统提示卡；
+3. `modularState.activeModuleId` 在答辩结束后不再变化。
+
+**修复建议**：把纯函数决策移到 `setState` 之外，先算后写。例如：
+
+```typescript
+const snapshot = getTopicData(topicId) ?? currentTopic;          // 先读
+const modStep = stepModularStageTransition({ state: snapshot.gameTheoreticState!.modularState!, ... }); // 先算
+const nextStage = modStep.triggeredScopedRefine || !modStep.allModulesFrozen ? 'challenge' : 'arbitration';
+updateTopicDataInState(topicId, (old) => applyModStep(old, modStep)); // 再写（更新器保持纯函数）
+triggerGameTheoreticStageHandover({ topicId, nextStage, ... });
+```
+
+同理，`src/App.tsx:2153` 的 `messagesRef.current = next` 也不应在更新器内做副作用（第 575 行的渲染期同步 `messagesRef.current = messages` 已能保证读一致性）。
+
+### 11.5 L2 / L3 执行状态
+
+与 §10.3 相同：仍需真实 ACP Agent 在线 + 桌面端运行；本会话浏览器自动化运行时不可用，UI-01~05 未能自动化走查。**N1 的运行期确认恰好依赖一次真实的 G-Frame 端到端议题**，建议优先安排。
 ```

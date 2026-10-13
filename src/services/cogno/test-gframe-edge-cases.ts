@@ -7,6 +7,8 @@
  * - 边界异常：EDGE-01 模块数超限 / EDGE-02 模块数不足 / EDGE-03 依赖成环 /
  *            EDGE-04 白名单重叠 / EDGE-05 反馈语义 / EDGE-06 答辩阶段实证计数
  * - 集成仿真：E2E-03 App 层 FSM 接力下的多模块循环闭环
+ * - 新增回归：N1 App 层状态更新器副作用 / N2 白名单去重的声明顺序依赖 /
+ *            N3 目录前缀重叠误报 / N4 局部重修有界收敛
  *
  * 输出三态：
  *   ✅ PASS   —— 与 SPEC 预期一致
@@ -24,6 +26,8 @@ import {
   estimateModulePriorRisk,
   getNextSchedulableModule,
   initializeModularOrchestrationState,
+  sanitizeModuleDependencyDAG,
+  stepModularStageTransition,
   updateModuleBeliefWithFeedback,
 } from './bayesianModuleGovernor';
 import { validateModuleScopeContract } from './stageContractGate';
@@ -179,16 +183,14 @@ console.log('\n--- EDGE-02 模块数量不足下限 (K < 2) ---');
       { id: 'M1', title: '唯一模块', responsibility: '全部职责', files: ['src/all.ts'], dependsOn: [], level: 'low_deterministic' },
     ])
   );
-  assert.equal(single.modules.length, 1);
-  warn(
-    'EDGE-02',
-    `前端初始化层不校验下限：提交 1 个模块被原样接受 (modules=${single.modules.length}, enabled=${single.enabled})。` +
-      `MCP Schema 侧 minItems=2 可拦截工具调用路径，但绕过 Schema 直传无守卫。`
-  );
+  assert.equal(single.modules.length, 2, '单模块输入应被自动补足为 2 个模块');
+  assert.deepEqual(single.modules[1].dependsOnModuleIds, ['M1'], '补齐的守卫模块应依赖原模块');
+  assert.ok(single.activeModuleId, '补齐后必须存在可调度的拓扑根模块');
+  pass('EDGE-02', `单模块输入被自动补足为 ${single.modules.length} 个（新增「${single.modules[1].title}」依赖 M1），activeModuleId=${single.activeModuleId}`);
 }
 
 // ---------------------------------------------------------------- EDGE-03
-console.log('\n--- EDGE-03 依赖成环 (无环检测) ---');
+console.log('\n--- EDGE-03 依赖成环 (破环守卫) ---');
 {
   const cyclic = initializeModularOrchestrationState(
     makeDraft([
@@ -196,15 +198,24 @@ console.log('\n--- EDGE-03 依赖成环 (无环检测) ---');
       { id: 'M2', title: '环 M2', responsibility: '环检测', files: ['src/2.ts'], dependsOn: ['M1'], level: 'low_deterministic' },
     ])
   );
-  assert.equal(getNextSchedulableModule(cyclic), undefined);
+  const rootModules = cyclic.modules.filter((m) => m.dependsOnModuleIds.length === 0);
+  assert.ok(rootModules.length >= 1, '破环后必须存在至少一个拓扑根节点');
+  assert.ok(getNextSchedulableModule(cyclic), '破环后必须存在可调度模块');
+  assert.ok(cyclic.activeModuleId, '破环后 activeModuleId 不得为空');
 
-  // 模拟 App 层：activeModuleId 为空时所有 advance 调用被 guard 跳过
-  const frozenCount = cyclic.modules.filter((m) => m.status === 'frozen').length;
-  defect(
-    'EDGE-03',
-    `依赖成环无守卫：无拓扑根节点 -> activeModuleId=${String(cyclic.activeModuleId)}, ` +
-      `可见模块 ${frozenCount}/${cyclic.modules.length} 冻结，全部永久停留 '${cyclic.modules[0].status}' (集成层因 activeModuleId 为空将跳过全部推进调用)`
+  // 3 节点环 A->B->C->A 也应被消毒为 DAG
+  const threeCycle = sanitizeModuleDependencyDAG(
+    initializeModularOrchestrationState(
+      makeDraft([
+        { id: 'A', title: 'A', responsibility: '环', files: [], dependsOn: ['B'], level: 'low_deterministic' },
+        { id: 'B', title: 'B', responsibility: '环', files: [], dependsOn: ['C'], level: 'low_deterministic' },
+        { id: 'C', title: 'C', responsibility: '环', files: [], dependsOn: ['A'], level: 'low_deterministic' },
+      ])
+    ).modules
   );
+  const edges = threeCycle.flatMap((m) => m.dependsOnModuleIds);
+  assert.ok(threeCycle.some((m) => m.dependsOnModuleIds.length === 0), '3 节点环必须被破为含根节点的 DAG');
+  pass('EDGE-03', `2 节点环破环后根节点=${rootModules.map((m) => m.moduleId).join(',')}, activeModuleId=${cyclic.activeModuleId}；3 节点环剩余依赖边=${edges.length} 且存在根节点`);
 }
 
 // ---------------------------------------------------------------- EDGE-04
@@ -216,18 +227,23 @@ console.log('\n--- EDGE-04 跨模块 allowedFiles 重叠 ---');
       { id: 'M2', title: 'M2', responsibility: '共享文件写方 B', files: ['src/shared.ts', 'src/b.ts'], dependsOn: [], level: 'low_deterministic' },
     ])
   );
+  const m1Files = overlapState.modules[0].allowedFiles;
+  const m2Files = overlapState.modules[1].allowedFiles;
+  const intersection = m1Files.filter((f) => m2Files.includes(f));
+  assert.equal(intersection.length, 0, `初始化必须保障 F_i ∩ F_j = ∅，实际交集=${intersection.join(',')}`);
+
+  // 绕过初始化直接构造重叠沙箱时，越界门禁必须拦截（A10 场景）
   const res = validateModuleScopeContract(
     '本模块直接修改 src/shared.ts 的接口定义',
-    overlapState.modules[0],
-    overlapState.modules,
+    { ...overlapState.modules[0], allowedFiles: ['src/shared.ts', 'src/a.ts'] },
+    [
+      { ...overlapState.modules[0], allowedFiles: ['src/shared.ts', 'src/a.ts'] },
+      { ...overlapState.modules[1], allowedFiles: ['src/shared.ts', 'src/b.ts'] },
+    ],
     overlapState.sharedContract
   );
-  assert.equal(res.contractViolations, 0);
-  warn(
-    'EDGE-04',
-    `白名单重叠时越界门禁放行 (contractViolations=${res.contractViolations})：'src/shared.ts' 同时在 M1/M2 白名单内，` +
-      `两模块可同时声明修改同一文件，存在双写冲突风险；当前实现以「本模块白名单优先」判定。`
-  );
+  assert.ok(res.contractViolations >= 1, '白名单重叠并发生修改时必须判定为契约违规');
+  pass('EDGE-04', `初始化白名单去重生效（M1=[${m1Files.join(',')}] / M2=[${m2Files.join(',')}]，交集 0）；绕过初始化时重叠越界被拦截 (violations=${res.contractViolations})`);
 }
 
 // ---------------------------------------------------------------- EDGE-05
@@ -241,16 +257,25 @@ console.log('\n--- EDGE-05 反馈向量语义 (覆盖累计值 vs 增量累加) 
 
   const once = updateModuleBeliefWithFeedback(mod, { contractViolations: 1, verifiedClaims: 1 });
   const twice = updateModuleBeliefWithFeedback(once.updatedModule, { contractViolations: 1, verifiedClaims: 1 });
-  assert.equal(
-    twice.updatedModule.belief.posteriorRisk,
-    once.updatedModule.belief.posteriorRisk,
-    '参数语义为「累计绝对值覆盖」，重复传入相同值不应叠加'
+  assert.equal(once.updatedModule.belief.feedbackVector.verifiedClaims, 1, '首次更新计数应为 1');
+  assert.equal(twice.updatedModule.belief.feedbackVector.verifiedClaims, 2, '增量语义下重复反馈必须累加');
+  assert.equal(twice.updatedModule.belief.feedbackVector.contractViolations, 2, '违规计数同样必须累加');
+  assert.ok(
+    twice.updatedModule.belief.posteriorRisk > once.updatedModule.belief.posteriorRisk,
+    '累计证伪/违规后后验风险必须上升'
   );
-  warn(
-    'EDGE-05',
-    `updateModuleBeliefWithFeedback 的 feedbackDelta 实为「累计绝对值覆盖」而非增量：重复传入相同反馈，` +
-      `P_posterior 恒为 ${twice.updatedModule.belief.posteriorRisk}（未叠加）。集成层需自行累加后传入，命名易误读。`
+
+  // resolveRefutedClaims / resolveContractViolations 可清零已修复的历史项
+  const resolved = updateModuleBeliefWithFeedback(twice.updatedModule, {}, {
+    resolveContractViolations: true,
+    resolveRefutedClaims: true,
+  });
+  assert.equal(resolved.updatedModule.belief.feedbackVector.contractViolations, 0, '已修复项应可清零');
+  assert.ok(
+    resolved.updatedModule.belief.posteriorRisk < twice.updatedModule.belief.posteriorRisk,
+    '清零已修复项后后验风险必须下降'
   );
+  pass('EDGE-05', `增量语义生效：verified 1→2、violations 1→2，P_posterior ${once.updatedModule.belief.posteriorRisk}→${twice.updatedModule.belief.posteriorRisk}；resolve 清零后回落至 ${resolved.updatedModule.belief.posteriorRisk}`);
 }
 
 // ---------------------------------------------------------------- EDGE-06
@@ -262,9 +287,13 @@ console.log('\n--- EDGE-06 答辩阶段实证计数硬编码 (静态契约扫描
   // 避免单行正则漏检（字段常跨行书写）。
   const hardcodedHit = lines.findIndex((line, idx) => {
     if (!/verifiedClaims:\s*2\s*,?/.test(line)) return false;
-    const windowText = lines.slice(Math.max(0, idx - 8), idx + 4).join('\n');
-    return /advanceModularOrchestration/.test(windowText) && /refutedClaims:\s*0\s*,?/.test(windowText);
+    const windowText = lines.slice(Math.max(0, idx - 10), idx + 5).join('\n');
+    return (
+      /(advanceModularOrchestration|stepModularStageTransition)/.test(windowText) &&
+      /refutedClaims:\s*0\s*,?/.test(windowText)
+    );
   });
+  const usesComputedCounter = lines.some((l) => /verifiedClaims:\s*verifiedDefenseCount/.test(l));
   if (hardcodedHit >= 0) {
     defect(
       'EDGE-06',
@@ -272,66 +301,232 @@ console.log('\n--- EDGE-06 答辩阶段实证计数硬编码 (静态契约扫描
         `导致规则 C (SCOPED_DEFENSE_REFINE) 在真实运行期不可达，后验风险 P_posterior 不反映真实证伪数，` +
         `与 SPEC「实时反馈捕获 Γ_k」存在偏差`
     );
+  } else if (!usesComputedCounter) {
+    defect(
+      'EDGE-06',
+      '未发现硬编码字面量，但也未发现基于真实证据链的 verifiedDefenseCount 计数注入，反馈向量来源存疑'
+    );
   } else {
-    pass('EDGE-06', '未检测到答辩阶段实证计数硬编码');
+    pass('EDGE-06', '硬编码已移除，答辩阶段改用真实证据链统计的 verifiedDefenseCount / refutedDefenseCount');
   }
 }
 
 // ---------------------------------------------------------------- E2E-03
-console.log('\n--- E2E-03 集成仿真：App 层 FSM 接力下的多模块循环闭环 ---');
+console.log('\n--- E2E-03 集成仿真：完整模块生命周期与多模块循环闭环 ---');
+
+/**
+ * 按 src/App.tsx 的调用序列复刻完整 FSM：
+ * challenge -> verification -> defense；defense 判定 SCOPED_DEFENSE_REFINE 时回环 challenge（上限 1 轮），
+ * 当前模块冻结且仍有未冻结模块时切换到下一拓扑模块，全部冻结后才进入 arbitration。
+ */
+function runModularLifecycle(
+  draft: ModuleDecompositionDraft,
+  options: {
+    verificationFeedback?: (
+      moduleId: string,
+      pass: number
+    ) => { verifiedClaims?: number; refutedClaims?: number };
+    defenseFeedback?: (
+      moduleId: string,
+      pass: number
+    ) => { verifiedClaims?: number; refutedClaims?: number; contractViolations?: number; dssScore?: number };
+    maxIterations?: number;
+  } = {}
+) {
+  const refineCounts: Record<string, number> = {};
+  const visits: Record<string, number> = {};
+  const trace: string[] = [];
+  const maxIterations = options.maxIterations ?? 60;
+  let state = initializeModularOrchestrationState(draft);
+  let stage: 'challenge' | 'verification' | 'defense' | 'arbitration' = 'challenge';
+  let iterations = 0;
+
+  while (stage !== 'arbitration' && iterations < maxIterations) {
+    iterations += 1;
+    const activeId = state.activeModuleId;
+    if (!activeId) {
+      trace.push(`无 activeModuleId，提前终止 (stage=${stage})`);
+      break;
+    }
+    visits[activeId] = (visits[activeId] || 0) + 1;
+    const refineCount = refineCounts[activeId] || 0;
+
+    const result =
+      stage === 'challenge'
+        ? stepModularStageTransition({
+            state,
+            currentStage: 'challenge',
+            feedbackDelta: { edgeCaseCount: 1 },
+          })
+        : stage === 'verification'
+        ? stepModularStageTransition({
+            state,
+            currentStage: 'verification',
+            feedbackDelta: options.verificationFeedback
+              ? options.verificationFeedback(activeId, visits[activeId])
+              : { verifiedClaims: 2, refutedClaims: 0 },
+            currentModuleRefineCount: refineCount,
+          })
+        : stepModularStageTransition({
+            state,
+            currentStage: 'defense',
+            feedbackDelta: options.defenseFeedback
+              ? options.defenseFeedback(activeId, visits[activeId])
+              : { verifiedClaims: 1, refutedClaims: 0, contractViolations: 0, dssScore: 0.3 },
+            proposalOrDefenseSnippet: `${activeId} 定案摘要`,
+            currentModuleRefineCount: refineCount,
+          });
+
+    trace.push(
+      `${stage}(${activeId}) -> ${result.posteriorAction}${result.triggeredScopedRefine ? ' [REFINE]' : ''} ; next=${result.nextGameStage}`
+    );
+    state = result.nextState;
+
+    if (result.triggeredScopedRefine) {
+      refineCounts[activeId] = refineCount + 1;
+      stage = 'challenge';
+      continue;
+    }
+    stage = result.nextGameStage;
+  }
+
+  return { state, trace, iterations, visits, refineCounts, finalStage: stage };
+}
+
 {
-  // 按 src/App.tsx 的真实调用顺序复刻：阶段3(verification) 与 阶段4(defense) 各推进一次，
-  // 随后无条件转入 arbitration，且未消费 allModulesFrozen 回流。
   const draft = makeDraft([
     { id: 'M1', title: 'M1 低风险根模块', responsibility: '边界共识', files: ['src/a.ts'], dependsOn: [], level: 'low_deterministic' },
     { id: 'M2', title: 'M2 高风险核心', responsibility: '并发事务引擎', files: ['src/b.ts'], dependsOn: ['M1'], level: 'high_critical' },
     { id: 'M3', title: 'M3 视图层', responsibility: 'UI 渲染', files: ['src/c.tsx'], dependsOn: ['M2'], level: 'low_deterministic' },
   ]);
+  const run = runModularLifecycle(draft);
+  const frozenCount = run.state.modules.filter((m) => m.status === 'frozen').length;
+  const stranded = run.state.modules.filter((m) => m.status !== 'frozen');
 
-  let state = initializeModularOrchestrationState(draft);
-  const trace: string[] = [`init -> active=${state.activeModuleId}, status=${state.modules[0].status}`];
-
-  // 阶段 3: verification 完成后 advance（携带真实证据计数）
-  const verification = advanceModularOrchestration(
-    state,
-    state.activeModuleId!,
-    { verifiedClaims: 2, refutedClaims: 0 },
-    'M1 定案摘要'
-  );
-  trace.push(`verification(${state.activeModuleId}) -> ${verification.action} ; next active=${verification.nextState.activeModuleId}`);
-  state = verification.nextState;
-
-  // 阶段 4: defense 完成后 advance（App.tsx 中实证计数被硬编码为 2 / 0）
-  const activeBeforeDefense = state.activeModuleId!;
-  const defense = advanceModularOrchestration(
-    state,
-    activeBeforeDefense,
-    { verifiedClaims: 2, refutedClaims: 0, contractViolations: 0, dssScore: 0.2 },
-    'M2 定案摘要(未经红队/验证)'
-  );
-  trace.push(`defense(${activeBeforeDefense}) -> ${defense.action} ; next active=${defense.nextState.activeModuleId}`);
-  state = defense.nextState;
-
-  // App.tsx 此后固定进入 arbitration，不再有回流推进
-  const frozenCount = state.modules.filter((m) => m.status === 'frozen').length;
-  const stranded = state.modules.filter((m) => m.status !== 'frozen');
-
-  console.log(`    仿真轨迹: ${trace.join('  ||  ')}`);
+  console.log(`    仿真轨迹: ${run.trace.join('  ||  ')}`);
   console.log(
-    `    终态: ${state.modules
-      .map((m) => `${m.moduleId}=${m.status}`)
-      .join(', ')} ; 已冻结 ${frozenCount}/${state.modules.length}`
+    `    终态: ${run.state.modules.map((m) => `${m.moduleId}=${m.status}`).join(', ')} ; 已冻结 ${frozenCount}/${run.state.modules.length} ; 迭代 ${run.iterations} 次 ; 最终阶段 ${run.finalStage}`
   );
 
-  if (frozenCount !== state.modules.length) {
+  if (frozenCount !== run.state.modules.length || stranded.length > 0) {
     defect(
       'E2E-03',
-      `多模块循环未闭环：仅 ${frozenCount}/${state.modules.length} 模块冻结，` +
-        `滞留模块 [${stranded.map((m) => `${m.moduleId}:${m.status}`).join(', ')}] 未经历红队/验证即被仲裁流程遗弃；` +
-        `且 M2 的冻结来自答辩阶段的硬编码实证计数，而非其自身沙箱的对抗验证`
+      `多模块循环未闭环：仅 ${frozenCount}/${run.state.modules.length} 模块冻结，滞留 [${stranded
+        .map((m) => `${m.moduleId}:${m.status}`)
+        .join(', ')}]，迭代 ${run.iterations} 次后停在 ${run.finalStage}`
+    );
+  } else if (run.finalStage !== 'arbitration') {
+    defect('E2E-03', `模块虽全部冻结，但未进入 arbitration（停在 ${run.finalStage}）`);
+  } else {
+    pass(
+      'E2E-03',
+      `${run.state.modules.length}/${run.state.modules.length} 模块全部冻结并进入 arbitration；迭代 ${run.iterations} 次，各模块访问次数 ${JSON.stringify(run.visits)}`
+    );
+  }
+}
+
+// ---------------------------------------------------------------- N4
+console.log('\n--- N4 局部重修有界收敛 (防死循环) ---');
+{
+  const draft = makeDraft([
+    { id: 'M1', title: 'M1 持续证伪模块', responsibility: '并发事务与鉴权迁移', files: ['src/a.ts'], dependsOn: [], level: 'high_critical' },
+    { id: 'M2', title: 'M2 下游模块', responsibility: 'UI 渲染', files: ['src/b.ts'], dependsOn: ['M1'], level: 'low_deterministic' },
+  ]);
+  // 答辩阶段持续产生证伪：应触发 1 轮有界局部重修后强制收敛冻结
+  const run = runModularLifecycle(draft, {
+    defenseFeedback: () => ({ verifiedClaims: 0, refutedClaims: 1, contractViolations: 0, dssScore: 0.8 }),
+  });
+  const frozenCount = run.state.modules.filter((m) => m.status === 'frozen').length;
+  console.log(`    仿真轨迹: ${run.trace.join('  ||  ')}`);
+  console.log(
+    `    终态: ${run.state.modules.map((m) => `${m.moduleId}=${m.status}`).join(', ')} ; 迭代 ${run.iterations} 次 ; 重修次数 ${JSON.stringify(run.refineCounts)}`
+  );
+  assert.ok(run.iterations < 30, `持续证伪场景必须收敛，实际迭代 ${run.iterations} 次`);
+  assert.equal(frozenCount, run.state.modules.length, '达到重修上限后应强制冻结全部模块');
+  assert.ok(
+    Object.values(run.refineCounts).every((c) => c <= 1),
+    `单模块局部重修不得超过 1 轮，实际 ${JSON.stringify(run.refineCounts)}`
+  );
+  pass('N4', `持续证伪下仍有界收敛：${run.iterations} 次迭代、单模块重修 ${JSON.stringify(run.refineCounts)}、最终 ${frozenCount}/${run.state.modules.length} 冻结`);
+}
+
+// ---------------------------------------------------------------- N2
+console.log('\n--- N2 白名单去重的声明顺序依赖 ---');
+{
+  // M1 在数组中声明在前但依赖 M2；两者都声明 src/shared.ts
+  const state = initializeModularOrchestrationState(
+    makeDraft([
+      { id: 'M1', title: 'M1 下游声明者', responsibility: '下游消费者', files: ['src/shared.ts'], dependsOn: ['M2'], level: 'low_deterministic' },
+      { id: 'M2', title: 'M2 上游定义者', responsibility: '接口定义方', files: ['src/shared.ts'], dependsOn: [], level: 'low_deterministic' },
+    ])
+  );
+  const m1Files = state.modules.find((m) => m.moduleId === 'M1')!.allowedFiles;
+  const m2Files = state.modules.find((m) => m.moduleId === 'M2')!.allowedFiles;
+  const upstreamLost = m1Files.includes('src/shared.ts') && !m2Files.includes('src/shared.ts');
+  if (upstreamLost) {
+    warn(
+      'N2',
+      `白名单独占权按「数组声明顺序」而非依赖拓扑分配：下游 M1（依赖 M2）抢占了 src/shared.ts，上游定义方 M2 白名单被清空。` +
+        `若 M2 后续正式提案提到该文件，会被越界门禁误判为契约违规。建议按 DAG 拓扑序（上游优先）分配独占权。`
     );
   } else {
-    pass('E2E-03', `全部 ${state.modules.length} 个模块完成闭环冻结`);
+    pass('N2', `白名单独占权未出现上游丢失（M1=[${m1Files.join(',')}], M2=[${m2Files.join(',')}]）`);
+  }
+}
+
+// ---------------------------------------------------------------- N3
+console.log('\n--- N3 目录前缀重叠误报 ---');
+{
+  const dirState = initializeModularOrchestrationState(
+    makeDraft([
+      { id: 'M1', title: 'M1 目录级白名单', responsibility: '组件目录', files: ['src/components/'], dependsOn: [], level: 'low_deterministic' },
+      { id: 'M2', title: 'M2 文件级白名单', responsibility: '单文件', files: ['src/components/Panel.tsx'], dependsOn: [], level: 'low_deterministic' },
+    ])
+  );
+  const benignText = '本模块仅做逻辑推演，不修改任何文件，也不触碰其他模块的产物。';
+  const res = validateModuleScopeContract(
+    benignText,
+    dirState.modules[0],
+    dirState.modules,
+    dirState.sharedContract
+  );
+  if (res.contractViolations > 0) {
+    defect(
+      'N3',
+      `目录前缀重叠导致「零修改」文本也被判违规 (violations=${res.contractViolations}, 文件=${res.violatedFiles.join(',')})：` +
+        `M1 白名单为目录 'src/components/'，M2 为 'src/components/Panel.tsx'，前缀重叠分支在无修改动作时仍直接计入契约违规，` +
+        `该模块会被反复判违规并被迫局部重修。建议前缀重叠仅在检测到真实修改动作时计数。`
+    );
+  } else {
+    pass('N3', '目录前缀重叠未在零修改文本上误报');
+  }
+}
+
+// ---------------------------------------------------------------- N1
+console.log('\n--- N1 App 层状态更新器副作用 (决策变量在 setState updater 内赋值) ---');
+{
+  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  const lines = appSource.split('\n');
+  const declIdx = lines.findIndex((l) => /let resolvedNextStage\s*:/.test(l));
+  const updaterIdx = lines.findIndex((l, i) => i > declIdx && /updateTopicDataInState\(topicId/.test(l));
+  const assignIdx = lines.findIndex((l, i) => i > updaterIdx && /resolvedNextStage\s*=\s*'challenge'/.test(l));
+  const useIdx = lines.findIndex((l) => /nextStage:\s*resolvedNextStage/.test(l));
+  const refSyncIdx = lines.findIndex((l) => /messagesRef\.current\s*=\s*next/.test(l));
+
+  const assignedInsideUpdater =
+    declIdx >= 0 && updaterIdx > declIdx && assignIdx > updaterIdx && useIdx > assignIdx;
+  if (assignedInsideUpdater) {
+    defect(
+      'N1',
+      `src/App.tsx:${declIdx + 1} 声明 resolvedNextStage，却在第 ${updaterIdx + 1} 行的 setState 更新器内部（第 ${assignIdx + 1} 行）赋值，` +
+        `随后在第 ${useIdx + 1} 行读取并据此决定 nextStage。React 不保证更新器在调用点同步执行（仅命中 eager-state 优化时才会立即求值），` +
+        `一旦走异步渲染路径，resolvedNextStage 将保持初值 'arbitration'，多模块循环会静默退化回「只跑第一个模块」的旧行为。` +
+        (refSyncIdx >= 0
+          ? `同理 src/App.tsx:${refSyncIdx + 1} 的 messagesRef.current = next 也在更新器内部，可能让 getTopicData 读到过期模块状态。`
+          : '')
+    );
+  } else {
+    pass('N1', 'App 层未见「更新器内赋值 + 外部读取」的决策耦合');
   }
 }
 
