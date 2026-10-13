@@ -342,6 +342,15 @@ export interface ModuleDecompositionDraft {
   submittedAt?: string;
 }
 
+export interface WhitelistDeduplicationRecord {
+  file: string;
+  allocatedToModuleId: string;
+  allocatedToModuleTitle: string;
+  strippedFromModuleId: string;
+  strippedFromModuleTitle: string;
+  reason: string;
+}
+
 /**
  * G-Frame 模块化分治编排总状态
  */
@@ -351,6 +360,7 @@ export interface ModularOrchestrationState {
   modules: TaskModuleSlice[];       // K 个原子模块切片 (2 ≤ K ≤ 4)
   activeModuleId?: string;          // 当前正在推演或聚焦的模块沙箱 ID
   overallEntropyReductionRatio?: number; // 相比全量上下文的 Token/信息熵压缩比 (0~1)
+  whitelistDeduplications?: WhitelistDeduplicationRecord[]; // 白名单拓扑偏序收敛与去重审计记录 (N5)
 }
 
 export interface TopicPatchDiffItem {

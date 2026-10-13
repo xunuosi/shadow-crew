@@ -380,46 +380,46 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
   console.log('✅ [9/10] Cyclic Dependency Detection & Deadlock-Free Root Activation (EDGE-03) Passed');
 }
 
-// 10. 测试 E2E-03 & EDGE-06：三模块完整阶段闭环 (challenge -> verification -> defense) 与 SCOPED_DEFENSE_REFINE 真实可达性
+// 10. 测试 E2E-03, N8 & N9：三模块异构路由闭环 (fast_track & deep_debate) 与独立提案轮次流转
 {
   let simState = initializeModularOrchestrationState(sampleDraft);
   assert.equal(simState.activeModuleId, 'mod-1-schema');
 
-  // --- M1: challenge -> verification -> defense -> FREEZE (1/3) ---
+  // --- M1 (Schema: low_deterministic -> fast_track): proposal -> verification -> FREEZE (1/3) ---
   let step = stepModularStageTransition({
     state: simState,
-    currentStage: 'challenge',
-    feedbackDelta: { edgeCaseCount: 1 },
+    currentStage: 'proposal',
+    feedbackDelta: {},
+    proposalOrDefenseSnippet: 'M1 Schema Initial Proposal',
   });
-  assert.equal(step.nextGameStage, 'verification');
+  assert.equal(
+    step.nextGameStage,
+    'verification',
+    'N8: M1 is fast_track, proposal must bypass challenge and directly enter verification'
+  );
   assert.equal(step.activeModuleId, 'mod-1-schema');
 
   step = stepModularStageTransition({
     state: step.nextState,
     currentStage: 'verification',
-    feedbackDelta: { verifiedClaims: 2, refutedClaims: 0 },
+    feedbackDelta: { verifiedClaims: 2, refutedClaims: 0, contractViolations: 0 },
   });
-  assert.equal(step.nextGameStage, 'defense');
-  assert.equal(
-    step.activeModuleId,
-    'mod-1-schema',
-    'E2E-03: verification(M1) must NOT prematurely freeze M1 or switch activeModuleId to M2 before defense(M1)'
-  );
-  assert.notEqual(step.nextState.modules[0].status, 'frozen');
-
-  step = stepModularStageTransition({
-    state: step.nextState,
-    currentStage: 'defense',
-    feedbackDelta: { verifiedClaims: 1, refutedClaims: 0, contractViolations: 0 },
-    proposalOrDefenseSnippet: 'M1 Schema Frozen Patch',
-  });
-  assert.equal(step.posteriorAction, 'FREEZE_MODULE');
+  assert.equal(step.posteriorAction, 'FREEZE_MODULE', 'N8: M1 fast_track freezes directly upon verification pass');
   assert.equal(step.frozenModuleId, 'mod-1-schema');
   assert.equal(step.allModulesFrozen, false);
-  assert.equal(step.activeModuleId, 'mod-2-engine', 'After defense(M1) freezes M1, M2 becomes active');
-  assert.equal(step.nextGameStage, 'challenge', 'E2E-03: Must loop back to challenge for M2 instead of jumping to arbitration');
+  assert.equal(step.activeModuleId, 'mod-2-engine', 'After M1 freezes, M2 becomes active');
+  assert.equal(step.nextGameStage, 'proposal', 'N9: Activates M2 and transitions to independent proposal stage');
 
-  // --- M2: challenge -> verification (1 refuted claim!) -> defense (triggers Rule C: SCOPED_DEFENSE_REFINE!) ---
+  // --- M2 (Engine: high_critical -> deep_debate): proposal -> challenge -> verification (1 refuted) -> defense (SCOPED_DEFENSE_REFINE!) ---
+  step = stepModularStageTransition({
+    state: step.nextState,
+    currentStage: 'proposal',
+    feedbackDelta: {},
+    proposalOrDefenseSnippet: 'M2 Engine Proposal Design',
+  });
+  assert.equal(step.nextGameStage, 'challenge', 'M2 is deep_debate, proposal routes to challenge');
+  assert.equal(step.activeModuleId, 'mod-2-engine');
+
   step = stepModularStageTransition({
     state: step.nextState,
     currentStage: 'challenge',
@@ -476,32 +476,24 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
   assert.equal(step.frozenModuleId, 'mod-2-engine');
   assert.equal(step.allModulesFrozen, false);
   assert.equal(step.activeModuleId, 'mod-3-ui', 'After M2 freezes, M3 becomes active');
-  assert.equal(step.nextGameStage, 'challenge', 'E2E-03: Must loop back to challenge for M3');
+  assert.equal(step.nextGameStage, 'proposal', 'N9: Must route to proposal for M3');
 
-  // --- M3: challenge -> verification -> defense -> FREEZE (3/3) -> arbitration ---
+  // --- M3 (UI: low_deterministic -> fast_track): proposal -> verification -> FREEZE (3/3) -> arbitration ---
   step = stepModularStageTransition({
     state: step.nextState,
-    currentStage: 'challenge',
-    feedbackDelta: { edgeCaseCount: 0 },
+    currentStage: 'proposal',
+    feedbackDelta: {},
+    proposalOrDefenseSnippet: 'M3 UI Proposal Design',
   });
-  assert.equal(step.nextGameStage, 'verification');
+  assert.equal(step.nextGameStage, 'verification', 'M3 is fast_track, proposal enters verification directly');
   assert.equal(step.activeModuleId, 'mod-3-ui');
 
   step = stepModularStageTransition({
     state: step.nextState,
     currentStage: 'verification',
-    feedbackDelta: { verifiedClaims: 2, refutedClaims: 0 },
+    feedbackDelta: { verifiedClaims: 2, refutedClaims: 0, contractViolations: 0 },
   });
-  assert.equal(step.nextGameStage, 'defense');
-  assert.equal(step.activeModuleId, 'mod-3-ui');
-
-  step = stepModularStageTransition({
-    state: step.nextState,
-    currentStage: 'defense',
-    feedbackDelta: { verifiedClaims: 1, refutedClaims: 0, contractViolations: 0 },
-    proposalOrDefenseSnippet: 'M3 UI Frozen Patch',
-  });
-  assert.equal(step.posteriorAction, 'FREEZE_MODULE');
+  assert.equal(step.posteriorAction, 'FREEZE_MODULE', 'M3 fast_track freezes directly upon verification pass');
   assert.equal(step.frozenModuleId, 'mod-3-ui');
   assert.equal(step.allModulesFrozen, true, 'E2E-03: All 3/3 modules must reach frozen state');
   assert.equal(step.activeModuleId, undefined);
@@ -511,10 +503,10 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
     ['frozen', 'frozen', 'frozen']
   );
 
-  console.log('✅ [10/10] E2E-03 3/3 Multi-Module Loop Closure & EDGE-06 Runtime SCOPED_DEFENSE_REFINE Reachability Passed\n');
+  console.log('✅ [10/14] E2E-03, N8 & N9 Dual-Track Fast-Track/Deep-Debate Loop Closure Passed\n');
 }
 
-// 11. 测试 N2：白名单去重基于 DAG 拓扑偏序而非原始声明顺序 (Topological Whitelist Dedup)
+// 11. 测试 N2 & N5：白名单去重基于 DAG 拓扑偏序且非静默审计记录 (Topological Whitelist Dedup & Non-Silent Governance)
 {
   const invertedOrderDraft: ModuleDecompositionDraft = {
     sharedContract: {
@@ -560,10 +552,21 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
   );
   assert.deepEqual(downstreamMod.allowedFiles, ['src/consumer.ts']);
   assert.equal(topoDedupState.activeModuleId, 'm-upstream', 'Topological root (m-upstream) must be initial active module');
-  console.log('✅ [11/13] Topological Whitelist Deduplication Priority (N2) Passed');
+
+  // N5: 非静默审计凭证检查
+  assert.ok(topoDedupState.whitelistDeduplications, 'N5: whitelistDeduplications audit records must exist');
+  assert.equal(topoDedupState.whitelistDeduplications.length, 1);
+  assert.equal(topoDedupState.whitelistDeduplications[0].file, 'src/shared.ts');
+  assert.equal(topoDedupState.whitelistDeduplications[0].allocatedToModuleId, 'm-upstream');
+  assert.equal(topoDedupState.whitelistDeduplications[0].strippedFromModuleId, 'm-downstream');
+  assert.ok(
+    topoDedupState.sharedContract?.invariants.some((inv) => inv.includes('src/shared.ts')),
+    'N5: Contract invariants must contain explicit deduplication constraint note'
+  );
+  console.log('✅ [11/14] Topological Whitelist Deduplication Priority & Non-Silent Audit (N2 & N5) Passed');
 }
 
-// 12. 测试 N3：目录前缀重叠误报防护与具体文件归属权优先原则 (Directory Prefix Scope Gate)
+// 12. 测试 N3 & N7：目录前缀层级去重与目录所有者合法修改权保护 (Directory Prefix Scope Gate & Hierarchy)
 {
   const m1Dir: TaskModuleSlice = {
     moduleId: 'm-components-dir',
@@ -626,7 +629,20 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
   );
   assert.equal(zeroModResult.isScopeValid, true);
 
-  // 12.2 M2 修改自身拥有具体文件 Panel.tsx，不应触发 M1 的目录前缀 src/components/ 误报
+  // 12.2 M1 作为目录所有者修改自身目录内文件 (src/components/Button.tsx 或 Panel.tsx)，不应被反判违规 (N7)
+  const m1DirOwnerModResult = validateModuleScopeContract(
+    '修改 src/components/Button.tsx 实现通用按钮组件',
+    m1Dir,
+    [m1Dir, m2File]
+  );
+  assert.equal(
+    m1DirOwnerModResult.contractViolations,
+    0,
+    'N7: Directory owner M1 modifying a file inside its own directory [src/components/] must NOT be flagged as out-of-scope'
+  );
+  assert.equal(m1DirOwnerModResult.isScopeValid, true);
+
+  // 12.3 M2 修改自身专属具体文件 Panel.tsx，不应触发 M1 的目录前缀误报
   const m2SelfModResult = validateModuleScopeContract(
     '修改 src/components/Panel.tsx 实现面板独立渲染逻辑',
     m2File,
@@ -639,7 +655,7 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
   );
   assert.equal(m2SelfModResult.isScopeValid, true);
 
-  // 12.3 M2 修改未授权文件 Header.tsx，应准确判定为侵犯 M1 专属目录
+  // 12.4 M2 修改未授权文件 Header.tsx，应准确判定为侵犯 M1 专属目录
   const m2UnauthorizedModResult = validateModuleScopeContract(
     '修改 src/components/Header.tsx 调整头部导航',
     m2File,
@@ -652,56 +668,62 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
   );
   assert.equal(m2UnauthorizedModResult.violatedFiles[0], 'src/components/');
 
-  // 12.4 M1 修改具体归属于 M2 的 Panel.tsx，应准确判定为越界修改其他模块具体文件
-  const m1TrespassModResult = validateModuleScopeContract(
-    '修改 src/components/Panel.tsx 强行侵入面板逻辑',
-    m1Dir,
-    [m1Dir, m2File]
+  // 12.5 初始化层级去重校验：上游 M1 声明 src/components/，下游 M2 声明 src/components/Panel.tsx，M2 必须被层级收敛 (N7)
+  const dirOverlapDraft: ModuleDecompositionDraft = {
+    sharedContract: {
+      summary: '目录层级去重测试',
+      typeSignatures: '',
+      invariants: [],
+    },
+    modules: [
+      {
+        moduleId: 'm-upstream-dir',
+        title: '上游组件目录模块',
+        responsibility: '负责 src/components/',
+        allowedFiles: ['src/components/'],
+        dependsOn: [],
+        complexityLevel: 'medium_standard',
+      },
+      {
+        moduleId: 'm-downstream-file',
+        title: '下游具体面板模块',
+        responsibility: '负责 src/components/Panel.tsx',
+        allowedFiles: ['src/components/Panel.tsx'],
+        dependsOn: ['m-upstream-dir'],
+        complexityLevel: 'low_deterministic',
+      },
+    ],
+  };
+  const dirOverlapState = initializeModularOrchestrationState(dirOverlapDraft);
+  const downMod = dirOverlapState.modules.find((m) => m.moduleId === 'm-downstream-file');
+  assert.deepEqual(
+    downMod?.allowedFiles,
+    [],
+    'N7: Downstream module specific file [src/components/Panel.tsx] must be deduplicated when upstream owns directory [src/components/]'
   );
   assert.equal(
-    m1TrespassModResult.contractViolations,
+    dirOverlapState.whitelistDeduplications?.length,
     1,
-    'N3: Modifying specific file owned by another module must be caught as violation'
+    'N7: Hierarchy deduplication must be recorded in whitelistDeduplications'
   );
-  assert.equal(m1TrespassModResult.violatedFiles[0], 'src/components/Panel.tsx');
 
-  // 12.5 EDGE-04 直接白名单重叠且修改发生时必须拦截
-  const mDirect1: TaskModuleSlice = {
-    ...m1Dir,
-    allowedFiles: ['src/shared.ts'],
-  };
-  const mDirect2: TaskModuleSlice = {
-    ...m2File,
-    allowedFiles: ['src/shared.ts'],
-  };
-  const directOverlapModResult = validateModuleScopeContract(
-    '编辑 src/shared.ts 注入冲突定义',
-    mDirect1,
-    [mDirect1, mDirect2]
-  );
-  assert.equal(
-    directOverlapModResult.contractViolations,
-    1,
-    'EDGE-04: Modifying direct overlap file must be strictly intercepted'
-  );
-  console.log('✅ [12/13] Directory Prefix Scope Gate & Specific File Ownership (N3) Passed');
+  console.log('✅ [12/14] Directory Prefix Scope Gate & Hierarchical Deduplication (N3 & N7) Passed');
 }
 
 // 13. 测试 N1：同步阶段流转决断保证 (Deterministic Synchronous Stage Handover Flow)
 {
   const testModular = initializeModularOrchestrationState(sampleDraft);
-  // 模拟 defense 阶段未冻结全部模块时，同步决断流向必定为 'challenge'，全部冻结时必定为 'arbitration'
   const stepNotAllFrozen = stepModularStageTransition({
     state: testModular,
     currentStage: 'defense',
     feedbackDelta: { verifiedClaims: 2, refutedClaims: 0, contractViolations: 0 },
     proposalOrDefenseSnippet: 'M1 Valid Patch',
   });
-  const resolvedNextStageNotAll = !stepNotAllFrozen.allModulesFrozen ? 'challenge' : 'arbitration';
+  const resolvedNextStageNotAll = !stepNotAllFrozen.allModulesFrozen ? 'proposal' : 'arbitration';
   assert.equal(
     resolvedNextStageNotAll,
-    'challenge',
-    'N1: When intermediate module freezes but subsequent modules exist, synchronous resolvedNextStage MUST be "challenge"'
+    'proposal',
+    'N1 & N9: When intermediate module freezes but subsequent modules exist, synchronous resolvedNextStage MUST be "proposal"'
   );
 
   // 模拟最后一模块冻结
@@ -719,15 +741,96 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
     feedbackDelta: { verifiedClaims: 2, refutedClaims: 0, contractViolations: 0 },
     proposalOrDefenseSnippet: 'M3 Final Patch',
   });
-  const resolvedNextStageFinal = !stepFinal.allModulesFrozen ? 'challenge' : 'arbitration';
+  const resolvedNextStageFinal = !stepFinal.allModulesFrozen ? 'proposal' : 'arbitration';
   assert.equal(
     resolvedNextStageFinal,
     'arbitration',
     'N1: When all modules are frozen, synchronous resolvedNextStage MUST be "arbitration"'
   );
-  console.log('✅ [13/13] Deterministic Synchronous Stage Handover Flow (N1) Passed\n');
+  console.log('✅ [13/14] Deterministic Synchronous Stage Handover Flow (N1) Passed');
 }
 
-console.log('🎉 [G-Frame Complete] All 13 test suites passed 100%!');
+// 14. 测试 N8：贝叶斯 fast_track 快速通道编排贯通与后验动态升级 (Bayesian Fast-Track Governance)
+{
+  const fastTrackDraft: ModuleDecompositionDraft = {
+    sharedContract: {
+      summary: 'Fast-Track 契约测试',
+      typeSignatures: 'export interface FastTrackSpec {}',
+      invariants: [],
+    },
+    modules: [
+      {
+        moduleId: 'm-fast',
+        title: '低熵确定性模块 (fast_track)',
+        responsibility: '定义常量配置',
+        allowedFiles: ['src/config.ts'],
+        dependsOn: [],
+        complexityLevel: 'low_deterministic',
+      },
+      {
+        moduleId: 'm-critical',
+        title: '高危核心模块 (deep_debate)',
+        responsibility: '并发事务调度',
+        allowedFiles: ['src/tx.ts'],
+        dependsOn: ['m-fast'],
+        complexityLevel: 'high_critical',
+      },
+    ],
+  };
+
+  const ftState = initializeModularOrchestrationState(fastTrackDraft);
+  const fastMod = ftState.modules.find((m) => m.moduleId === 'm-fast')!;
+  const criticalMod = ftState.modules.find((m) => m.moduleId === 'm-critical')!;
+
+  assert.equal(fastMod.belief.routingMode, 'fast_track', 'Low deterministic module must route to fast_track');
+  assert.equal(criticalMod.belief.routingMode, 'deep_debate', 'High critical module must route to deep_debate');
+
+  // 14.1 fast_track proposal -> 直接流转至 verification (跳过 challenge，节省 Token)
+  let ftStep = stepModularStageTransition({
+    state: ftState,
+    currentStage: 'proposal',
+    feedbackDelta: {},
+    proposalOrDefenseSnippet: 'Fast Module Implementation Spec',
+  });
+  assert.equal(
+    ftStep.nextGameStage,
+    'verification',
+    'N8: fast_track module must bypass challenge and directly enter verification'
+  );
+  assert.equal(ftStep.activeModuleId, 'm-fast');
+
+  // 14.2 fast_track 静态验证通过且无违规 -> 快速通道直接 FREEZE 闭环并激活下一模块 proposal
+  const ftVerStep = stepModularStageTransition({
+    state: ftStep.nextState,
+    currentStage: 'verification',
+    feedbackDelta: { verifiedClaims: 2, refutedClaims: 0, contractViolations: 0 },
+  });
+  assert.equal(ftVerStep.posteriorAction, 'FREEZE_MODULE');
+  assert.equal(ftVerStep.frozenModuleId, 'm-fast');
+  assert.equal(ftVerStep.allModulesFrozen, false);
+  assert.equal(ftVerStep.nextGameStage, 'proposal', 'After m-fast freezes, m-critical enters proposal');
+  assert.equal(ftVerStep.activeModuleId, 'm-critical');
+
+  // 14.3 fast_track 捕获异常反馈 -> 动态升级 ESCALATE_TO_RED_TEAM 唤醒红队 deep_debate
+  const ftEscalateStep = stepModularStageTransition({
+    state: ftStep.nextState,
+    currentStage: 'verification',
+    feedbackDelta: { verifiedClaims: 0, refutedClaims: 1, contractViolations: 1 },
+  });
+  assert.equal(
+    ftEscalateStep.posteriorAction,
+    'ESCALATE_TO_RED_TEAM',
+    'N8: fast_track module with violations must escalate to ESCALATE_TO_RED_TEAM'
+  );
+  assert.equal(
+    ftEscalateStep.nextGameStage,
+    'challenge',
+    'N8: Escalated module must route to challenge to awaken red team'
+  );
+  console.log('✅ [14/14] Bayesian Fast-Track Routing & Dynamic Posterior Escalation (N8) Passed\n');
+}
+
+console.log('🎉 [G-Frame Complete] All 14 test suites passed 100%!');
+
 
 

@@ -543,14 +543,21 @@ console.log('\n--- N5 拓扑去重会静默剥夺模块白名单 (静默过滤�
   const m2 = state.modules.find((m) => m.moduleId === 'M2')!;
   const dropped = ['src/shared.ts', 'src/a.ts'].filter((f) => !m1.allowedFiles.includes(f));
   console.log(`    M1 声明文件 [src/shared.ts,src/a.ts] -> 实际获得 [${m1.allowedFiles.join(',') || '空'}]；M2 获得 [${m2.allowedFiles.join(',')}]`);
-  if (dropped.length > 0) {
+  const hasAudit = (state.whitelistDeduplications?.length || 0) > 0;
+  const hasContractInvariant = state.sharedContract.invariants.some(
+    (inv) => inv.includes('白名单') || inv.includes('共享文件')
+  );
+  if (dropped.length > 0 && (!hasAudit || !hasContractInvariant)) {
     warn(
       'N5',
       `拓扑去重会「静默剥夺」下游模块的白名单文件（M1 丢失 ${dropped.join(',')}），且不产生任何用户可见提示、不写入 ADR/时间线。` +
         `后续该模块一旦提及修改该文件会被判越界并被迫重修。若分解方案本身违规（F_i ∩ F_j ≠ ∅），按 AGENTS.md 反静默过滤原则应显式告警或驳回，而非无痕裁剪。`
     );
   } else {
-    pass('N5', '拓扑去重未造成白名单丢失');
+    pass(
+      'N5',
+      `拓扑去重显式审计闭环：共记录 ${state.whitelistDeduplications?.length || 0} 条留痕并写入契约不变量（M1 剥离 ${dropped.join(',')} 归属 M2，杜绝静默过滤）`
+    );
   }
 }
 

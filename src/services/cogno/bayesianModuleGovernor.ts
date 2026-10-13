@@ -6,6 +6,7 @@ import {
   ModuleDecompositionDraft,
   SharedInterfaceContract,
   TaskModuleSlice,
+  WhitelistDeduplicationRecord,
 } from '../../types';
 
 /**
@@ -267,20 +268,55 @@ export function initializeModularOrchestrationState(
     }
   }
 
-  const claimedFiles = new Set<string>();
+  // 2. 按依赖拓扑序执行跨模块白名单去重与目录前缀层级收敛 (N2, N5, N7 & EDGE-04)
+  // 确保当下游 M1 依赖上游 M2 时，上游定义方 M2 独占共享文件或父级目录；
+  // 任何因拓扑收敛剥离的文件必须完整记录审计凭证并写入公共契约，严禁屏蔽性静默过滤 (N5)
+  const claimedClaims: Array<{ file: string; moduleId: string; title: string }> = [];
   const exclusiveFilesByModuleId = new Map<string, string[]>();
+  const whitelistDeduplications: WhitelistDeduplicationRecord[] = [];
 
   for (const modId of topoOrderIds) {
     const mod = dagModules.find((m) => m.moduleId === modId)!;
     const exclusiveFiles: string[] = [];
+
     for (const clean of mod.allowedFiles) {
-      if (clean && !claimedFiles.has(clean)) {
-        claimedFiles.add(clean);
+      if (!clean) continue;
+      const conflictingClaim = claimedClaims.find((c) => {
+        if (c.file === clean) return true;
+        if (c.file.endsWith('/') && clean.startsWith(c.file)) return true;
+        if (clean.endsWith('/') && c.file.startsWith(clean)) return true;
+        return false;
+      });
+
+      if (conflictingClaim) {
+        const reason =
+          clean === conflictingClaim.file
+            ? `依据 DAG 拓扑偏序，共享文件 [${clean}] 优先分配给上游定义方「${conflictingClaim.title}」。下游模块「${mod.title}」白名单中已显式剔除，须经由《公共接口契约》导入。`
+            : conflictingClaim.file.endsWith('/')
+            ? `依据 DAG 拓扑偏序，上游模块「${conflictingClaim.title}」已独占父级目录 [${conflictingClaim.file}]。下游模块「${mod.title}」所声明子路径 [${clean}] 已由上游纳管，下游白名单中已显式剔除。`
+            : `依据 DAG 拓扑偏序，上游模块「${conflictingClaim.title}」已声明专属文件 [${conflictingClaim.file}]。下游模块「${mod.title}」所声明宽泛目录 [${clean}] 与上游专属权冲突，下游白名单中已显式收敛。`;
+
+        whitelistDeduplications.push({
+          file: clean,
+          allocatedToModuleId: conflictingClaim.moduleId,
+          allocatedToModuleTitle: conflictingClaim.title,
+          strippedFromModuleId: mod.moduleId,
+          strippedFromModuleTitle: mod.title,
+          reason,
+        });
+      } else {
+        claimedClaims.push({ file: clean, moduleId: mod.moduleId, title: mod.title });
         exclusiveFiles.push(clean);
       }
     }
     exclusiveFilesByModuleId.set(modId, exclusiveFiles);
   }
+
+  // 显式将白名单收敛约束写入公共契约 invariants (N5)
+  for (const record of whitelistDeduplications) {
+    sharedContract.invariants.push(record.reason);
+  }
+  sharedContract.invariants = sharedContract.invariants.slice(0, 10);
 
   const modules: TaskModuleSlice[] = dagModules.map((mod) => {
     const exclusiveFiles = exclusiveFilesByModuleId.get(mod.moduleId) || [];
@@ -306,6 +342,7 @@ export function initializeModularOrchestrationState(
     sharedContract,
     modules,
     overallEntropyReductionRatio: Number((1 - 1 / Math.max(2, modules.length)).toFixed(2)),
+    whitelistDeduplications,
   };
 
   const firstModule = getNextSchedulableModule(initialState);
@@ -563,7 +600,7 @@ export function advanceModularOrchestration(
 
 export interface ModularStageTransitionInput {
   state: ModularOrchestrationState;
-  currentStage: 'challenge' | 'verification' | 'defense';
+  currentStage: 'proposal' | 'challenge' | 'verification' | 'defense';
   feedbackDelta: Partial<BayesianModuleBelief['feedbackVector']>;
   proposalOrDefenseSnippet?: string;
   /** 当前模块已执行的局部重修轮次 (默认 0，上限 1) */
@@ -574,7 +611,7 @@ export interface ModularStageTransitionResult {
   nextState: ModularOrchestrationState;
   posteriorAction: BayesianPosteriorAction;
   reason: string;
-  nextGameStage: 'challenge' | 'verification' | 'defense' | 'arbitration';
+  nextGameStage: 'proposal' | 'challenge' | 'verification' | 'defense' | 'arbitration';
   allModulesFrozen: boolean;
   frozenModuleId?: string;
   activeModuleId?: string;
@@ -582,11 +619,13 @@ export interface ModularStageTransitionResult {
 }
 
 /**
- * 5.5 多模块闭环阶段流转控制器 (E2E-03 & EDGE-06)
+ * 5.5 多模块闭环阶段流转控制器 (E2E-03, EDGE-06, N8 & N9)
  * 保障每个模块严格经历完整生命周期：
- * - verification 阶段仅记录当前模块实证计数，严禁越级冻结或切走 activeModuleId；
- * - defense 阶段根据真实实证与越界计数触发 SCOPED_DEFENSE_REFINE（有界回边重修）或 FREEZE_MODULE；
- * - 当前模块冻结后若仍有未冻结模块 (!allModulesFrozen)，自动激活下一拓扑模块并回环至 challenge 阶段，直至 N/N 全部冻结后方进入 arbitration。
+ * - proposal 阶段：模块提案立论完成，fast_track 模块直通 verification (N8)，deep_debate 模块流转至 challenge；
+ * - challenge 阶段：红队反例压测完成，流转至 verification 接地验证；
+ * - verification 阶段：记录实证计数；fast_track 模块若零违规零证伪则直接 FREEZE 闭环，若有异常则动态拉起红队 ESCALATE_TO_RED_TEAM (N8)；
+ * - defense 阶段：根据真实实证与越界计数触发 SCOPED_DEFENSE_REFINE 或 FREEZE_MODULE；
+ * - 当前模块冻结后若仍有未冻结模块 (!allModulesFrozen)，自动激活下一拓扑模块并启动独立 proposal 提案轮次 (N9)，直至 N/N 全部冻结后方进入 arbitration。
  */
 export function stepModularStageTransition(
   input: ModularStageTransitionInput
@@ -614,6 +653,36 @@ export function stepModularStageTransition(
     };
   }
 
+  const currentMod = state.modules.find((m) => m.moduleId === targetModuleId);
+
+  // 1. 阶段 1：模块提案立论 (proposal) 推进 -> fast_track 直通 verification，deep_debate 流转 challenge (N8 & N9)
+  if (currentStage === 'proposal') {
+    const isFastTrack = currentMod?.belief.routingMode === 'fast_track';
+    const nextGameStage = isFastTrack ? 'verification' : 'challenge';
+    const nextModules = state.modules.map((m) => {
+      if (m.moduleId !== targetModuleId) return m;
+      return {
+        ...m,
+        status: isFastTrack ? ('verifying' as const) : ('challenging' as const),
+        frozenProposalSnippet: proposalOrDefenseSnippet
+          ? proposalOrDefenseSnippet.slice(0, 800)
+          : m.frozenProposalSnippet,
+      };
+    });
+    return {
+      nextState: { ...state, modules: nextModules },
+      posteriorAction: 'CONTINUE_DEBATE',
+      reason: isFastTrack
+        ? `模块 [${currentMod?.title || targetModuleId}] 处于 fast_track 快速通道，跳过红队对抗，直通契约与物理接地验证`
+        : `模块 [${currentMod?.title || targetModuleId}] 处于 deep_debate 深度博弈通道，流转至红队反例压测`,
+      nextGameStage,
+      allModulesFrozen: false,
+      activeModuleId: targetModuleId,
+      triggeredScopedRefine: false,
+    };
+  }
+
+  // 2. 阶段 2：红队反例压测 (challenge) 推进
   if (currentStage === 'challenge') {
     const adv = advanceModularOrchestration(
       state,
@@ -633,12 +702,18 @@ export function stepModularStageTransition(
     };
   }
 
+  // 3. 阶段 3：接地验证 (verification) 推进 -> 支持 fast_track 零异常时直接冻结闭环，异常时动态升级至红队 (N8)
   if (currentStage === 'verification') {
-    // 若当前模块处于局部重修轮次且本次验证全数通过 (refutedClaims === 0 && verifiedClaims > 0)，清零上一轮遗留证伪计数
+    const isFastTrack = currentMod?.belief.routingMode === 'fast_track';
     const resolvedInReverify =
       currentModuleRefineCount > 0 &&
       (feedbackDelta.refutedClaims ?? 0) === 0 &&
       (feedbackDelta.verifiedClaims ?? 0) > 0;
+
+    const hasFastTrackViolations =
+      isFastTrack &&
+      ((feedbackDelta.contractViolations ?? 0) > 0 ||
+        (feedbackDelta.refutedClaims ?? 0) > 0);
 
     const adv = advanceModularOrchestration(
       state,
@@ -646,11 +721,52 @@ export function stepModularStageTransition(
       feedbackDelta,
       undefined,
       {
-        allowFreeze: false,
+        allowFreeze: isFastTrack && !hasFastTrackViolations,
         resolveRefutedClaims: resolvedInReverify,
         resolveContractViolations: resolvedInReverify,
       }
     );
+
+    // fast_track 捕获异常反馈 -> 动态升级唤醒红队 deep_debate (规则 B)
+    if (adv.action === 'ESCALATE_TO_RED_TEAM') {
+      return {
+        nextState: adv.nextState,
+        posteriorAction: adv.action,
+        reason: adv.reason,
+        nextGameStage: 'challenge',
+        allModulesFrozen: false,
+        activeModuleId: adv.nextState.activeModuleId,
+        triggeredScopedRefine: false,
+      };
+    }
+
+    // fast_track 验证通过且无违规 -> 快速通道直接冻结并推进至下一拓扑模块提案 (N8 & N9)
+    if (isFastTrack && adv.action === 'FREEZE_MODULE') {
+      if (!adv.allModulesFrozen) {
+        return {
+          nextState: adv.nextState,
+          posteriorAction: 'FREEZE_MODULE',
+          reason: adv.reason,
+          nextGameStage: 'proposal',
+          allModulesFrozen: false,
+          frozenModuleId: targetModuleId,
+          activeModuleId: adv.nextState.activeModuleId,
+          triggeredScopedRefine: false,
+        };
+      }
+      return {
+        nextState: adv.nextState,
+        posteriorAction: 'FREEZE_MODULE',
+        reason: adv.reason,
+        nextGameStage: 'arbitration',
+        allModulesFrozen: true,
+        frozenModuleId: targetModuleId,
+        activeModuleId: undefined,
+        triggeredScopedRefine: false,
+      };
+    }
+
+    // 默认 deep_debate 验证完成，流转至答辩修正
     return {
       nextState: adv.nextState,
       posteriorAction: adv.action,
@@ -662,7 +778,7 @@ export function stepModularStageTransition(
     };
   }
 
-  // currentStage === 'defense'
+  // 4. 阶段 4：答辩修正 (defense) 推进
   const reachedRefineLimit = currentModuleRefineCount >= 1;
   const adv = advanceModularOrchestration(
     state,
@@ -695,13 +811,13 @@ export function stepModularStageTransition(
     };
   }
 
-  // 当前模块已收敛冻结，但仍有后续拓扑模块未冻结 -> 切换至下一模块并从 challenge 阶段启动
+  // 当前模块已收敛冻结，激活下一拓扑模块并启动独立提案轮次 (N9)
   if (!adv.allModulesFrozen) {
     return {
       nextState: adv.nextState,
       posteriorAction: adv.action,
       reason: adv.reason,
-      nextGameStage: 'challenge',
+      nextGameStage: 'proposal',
       allModulesFrozen: false,
       frozenModuleId:
         adv.action === 'FREEZE_MODULE' ? targetModuleId : undefined,

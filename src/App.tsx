@@ -2163,7 +2163,7 @@ export default function App() {
 
   const triggerGameTheoreticStageHandover = async (options: {
     topicId: string;
-    nextStage: 'challenge' | 'verification' | 'defense' | 'arbitration';
+    nextStage: 'proposal' | 'challenge' | 'verification' | 'defense' | 'arbitration';
     targetProposalText?: string;
     targetChallengeText?: string;
     targetVerificationText?: string;
@@ -2188,6 +2188,231 @@ export default function App() {
       .map((id) => agentsRef.current.find((a) => a.id === id))
       .filter((a): a is Agent => Boolean(a));
     const candidateAgents = topicAgents.length > 0 ? topicAgents : channelAgents;
+
+    // 阶段 1：模块沙箱独立提案立论 (Stage: proposal, N9)
+    if (nextStage === 'proposal') {
+      const proposerIds = currentTopic.gameRoles?.proposers || [];
+      const proposerAgent = candidateAgents.find((a) => proposerIds.includes(a.id)) || candidateAgents[0];
+
+      if (!proposerAgent) {
+        inFlightHandoverRef.current.delete(handoverKey);
+        console.warn('[GameTheoretic] No proposer agent available for modular proposal handover.');
+        return;
+      }
+
+      const activeMod = currentTopic.gameTheoreticState?.modularState?.modules.find(
+        (m) => m.moduleId === currentTopic.gameTheoreticState?.modularState?.activeModuleId
+      );
+
+      const execKey = `${topicId}:${proposerAgent.id}`;
+      setIsGenerating(true);
+      setActiveExecutions((prev) => ({
+        ...prev,
+        [execKey]: {
+          agentId: proposerAgent.id,
+          agentName: proposerAgent.name,
+          agentAvatar: proposerAgent.avatar,
+          threadId: topicId,
+          topicId,
+          status: 'thinking',
+          currentActionDetail: `正在针对模块 [${activeMod?.title || '新模块'}] 进行沙箱独立提案立论 (Stage: 🏛️ 模块提案)...`,
+          startedAt: Date.now(),
+          cascadeHop: 1,
+        },
+      }));
+
+      setAgents((prev) =>
+        prev.map((a) => (a.id === proposerAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
+      );
+
+      const proposalPendingId = `topic-pending-${Date.now()}-${proposerAgent.id}`;
+      const proposalPendingMsg: Message = {
+        id: proposalPendingId,
+        threadId: topicId,
+        channelId: topicChannel?.id,
+        authorId: proposerAgent.id,
+        authorName: proposerAgent.name,
+        authorHandle: proposerAgent.handle,
+        authorAvatar: proposerAgent.avatar,
+        isAgent: true,
+        isPending: true,
+        startedAt: Date.now(),
+        pendingHint: `正在针对模块 [${activeMod?.title || '新模块'}] 进行沙箱独立提案立论 (Stage: 🏛️ 模块提案)...`,
+        agentBadge: `${proposerAgent.modelBadge?.split(' ')[0] || 'Local'} · 🏛️ 模块提案 (推演中...)`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: '',
+        gameStage: 'proposal',
+        gameRole: 'proposer',
+      };
+
+      setMessages((prev) => ({
+        ...prev,
+        [topicId]: [...(prev[topicId] || []), proposalPendingMsg],
+      }));
+
+      const latestTopicForProposal = getTopicData(topicId) || currentTopic;
+      const topicContext: TopicPromptContext = {
+        topicId,
+        title: currentTopic.title,
+        description: currentTopic.description,
+        channelName: topicChannel?.name || 'chat',
+        status: currentTopic.status,
+        discussionMode: 'game_theoretic',
+        gameRoles: currentTopic.gameRoles,
+        gameStage: 'proposal',
+        modularState: latestTopicForProposal.gameTheoreticState?.modularState,
+        participatingAgents: candidateAgents,
+      };
+
+      const proposalPrompt = buildTopicPrompt({
+        topic: topicContext,
+        userContent: currentTopic.description || currentTopic.title,
+        targetAgent: proposerAgent,
+        availableAgents: candidateAgents,
+      });
+
+      try {
+        const acpResp = await sendPromptToAcpAgent({
+          agent: proposerAgent,
+          roomId: topicId,
+          prompt: proposalPrompt,
+          projectId: activeProjectId,
+          channelId: topicChannel?.id,
+        });
+
+        setActiveExecutions((prev) => {
+          const next = { ...prev };
+          delete next[execKey];
+          if (Object.keys(next).length === 0) setIsGenerating(false);
+          return next;
+        });
+
+        if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
+          console.warn('Proposer returned empty/error turn in modular proposal, pausing handover.');
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: (prev[topicId] || []).filter((m) => m.id !== proposalPendingId),
+          }));
+          inFlightHandoverRef.current.delete(handoverKey);
+          return;
+        }
+
+        const proposalReply: Message = {
+          id: `msg-prop-${Date.now()}-${proposerAgent.id}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: proposerAgent.id,
+          authorName: proposerAgent.name,
+          authorHandle: proposerAgent.handle,
+          authorAvatar: proposerAgent.avatar,
+          isAgent: true,
+          agentBadge: `${proposerAgent.modelBadge?.split(' ')[0] || 'Local'} · 🏛️ 模块提案`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: acpResp.textResponse,
+          thinkingProcess: buildThinkingProcessFromAcp(acpResp, `已基于《公共接口契约》完成模块 [${activeMod?.title || '新模块'}] 独立设计`),
+          diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
+          cartridgeCitation: acpResp.cartridgeCitation,
+          gameStage: 'proposal',
+          gameRole: 'proposer',
+        };
+
+        setMessages((prev) => ({
+          ...prev,
+          [topicId]: (prev[topicId] || []).map((m) => (m.id === proposalPendingId ? proposalReply : m)),
+        }));
+
+        // 推进模块状态机进入该模块的验证 (fast_track) 或挑战 (deep_debate) (N8 & N9)
+        const latestTopicBeforeNext = getTopicData(topicId) || currentTopic;
+        const curModular = latestTopicBeforeNext.gameTheoreticState?.modularState;
+        let nextModStage: 'challenge' | 'verification' = 'challenge';
+        let updatedModularState = curModular;
+
+        if (curModular?.enabled && curModular.activeModuleId) {
+          const modStep = stepModularStageTransition({
+            state: curModular,
+            currentStage: 'proposal',
+            feedbackDelta: {},
+            proposalOrDefenseSnippet: acpResp.textResponse,
+          });
+          nextModStage = modStep.nextGameStage === 'verification' ? 'verification' : 'challenge';
+          updatedModularState = {
+            ...modStep.nextState,
+            modules: modStep.nextState.modules.map((m) =>
+              m.moduleId === curModular.activeModuleId
+                ? { ...m, scopedMessageIds: [...m.scopedMessageIds, proposalReply.id] }
+                : m
+            ),
+          };
+        }
+
+        const isFastTrack = nextModStage === 'verification';
+        let fastTrackNoticeMsg: Message | null = null;
+        if (isFastTrack && activeMod) {
+          fastTrackNoticeMsg = {
+            id: `msg-fast-track-${Date.now()}`,
+            threadId: topicId,
+            channelId: topicChannel?.id,
+            authorId: 'system',
+            authorName: '贝叶斯快速通道调控器',
+            authorHandle: '@bayesian-fast-track',
+            authorAvatar: '⚡',
+            isAgent: true,
+            agentBadge: 'Fast Track',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `⚡ **贝叶斯快速通道 (fast_track)**：模块「${activeMod.title}」先验风险为 ${(activeMod.belief.priorRisk * 100).toFixed(0)}% (< 45%)，符合低熵确定性模块标准。跳过红队对抗，直接流转至接地验证与契约对齐！`,
+            gameStage: 'verification',
+          };
+        }
+
+        updateTopicDataInState(topicId, (old) => ({
+          ...old,
+          gameStage: nextModStage,
+          gameTheoreticState: {
+            ...old.gameTheoreticState,
+            currentStage: nextModStage,
+            targetProposalContent: acpResp.textResponse,
+            isChallengerResponded: false,
+            isVerifierResponded: false,
+            isDefenseResponded: false,
+            modularState: updatedModularState,
+            cognoNexus: {
+              ...old.gameTheoreticState?.cognoNexus,
+              modularState: updatedModularState,
+            },
+          },
+        }));
+
+        if (fastTrackNoticeMsg) {
+          const notice = fastTrackNoticeMsg;
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: [...(prev[topicId] || []), notice],
+          }));
+        }
+
+        inFlightHandoverRef.current.delete(handoverKey);
+        triggerGameTheoreticStageHandover({
+          topicId,
+          nextStage: nextModStage,
+          targetProposalText: acpResp.textResponse,
+        });
+        return;
+      } catch (err) {
+        setActiveExecutions((prev) => {
+          const next = { ...prev };
+          delete next[execKey];
+          if (Object.keys(next).length === 0) setIsGenerating(false);
+          return next;
+        });
+        console.error('Modular proposal execution failed:', err);
+        setMessages((prev) => ({
+          ...prev,
+          [topicId]: (prev[topicId] || []).filter((m) => m.id !== proposalPendingId),
+        }));
+        inFlightHandoverRef.current.delete(handoverKey);
+        return;
+      }
+    }
 
     if (nextStage === 'challenge') {
       const challengerIds = currentTopic.gameRoles?.challengers || [];
@@ -3019,60 +3244,126 @@ export default function App() {
           evidenceCount: evidences.length,
         });
 
-        // 阶段 3 验证完成后，仅记录当前活跃模块的实证计数（严禁在 verification 阶段提前冻结切换模块，留待 defense 闭环冻结，E2E-03）
-        updateTopicDataInState(topicId, (old) => {
-          const prevModular = old.gameTheoreticState?.modularState;
-          let nextModular = prevModular;
-          if (prevModular?.enabled && prevModular.activeModuleId) {
-            const verifiedCount = evidences.filter((e) => e.truthValue).length;
-            const refutedCount = evidences.filter((e) => !e.truthValue).length;
-            const modRefineKey = `${topicId}:mod-refine:${prevModular.activeModuleId}`;
-            const currentModRefines = stageRefineRetriesRef.current[modRefineKey] || 0;
-            const verStep = stepModularStageTransition({
-              state: prevModular,
-              currentStage: 'verification',
-              feedbackDelta: {
-                verifiedClaims: verifiedCount,
-                refutedClaims: refutedCount,
-              },
-              currentModuleRefineCount: currentModRefines,
-            });
-            nextModular = {
-              ...verStep.nextState,
-              modules: verStep.nextState.modules.map((m) =>
-                m.moduleId === prevModular.activeModuleId
-                  ? { ...m, scopedMessageIds: [...m.scopedMessageIds, verifierReply.id] }
-                  : m
-              ),
+        // 阶段 3 验证完成后，基于实证计数与 fast_track/deep_debate 模式推进模块状态机 (N8 & E2E-03)
+        // - fast_track 模块若验证无违规且有实证支持，直接进入 FREEZE_MODULE 闭环，跳过 defense；
+        // - fast_track 模块若捕获违规或证伪反例，触发 ESCALATE_TO_RED_TEAM 动态拉起红队进入 challenge；
+        // - deep_debate 模块按规约正常推进至 defense 阶段答辩。
+        const latestTopicBeforeVerUpdate = getTopicData(topicId) || currentTopic;
+        const prevModular = latestTopicBeforeVerUpdate.gameTheoreticState?.modularState;
+        let nextModular = prevModular;
+        let resolvedVerNextStage: GameTheoreticStage = 'defense';
+        let verNoticeMsg: Message | null = null;
+
+        if (prevModular?.enabled && prevModular.activeModuleId) {
+          const verifiedCount = evidences.filter((e) => e.truthValue).length;
+          const refutedCount = evidences.filter((e) => !e.truthValue).length;
+          const activeMod = prevModular.modules.find((m) => m.moduleId === prevModular.activeModuleId);
+          const scopeCheck = activeMod
+            ? validateModuleScopeContract(
+                acpResp.textResponse,
+                activeMod,
+                prevModular.modules,
+                prevModular.sharedContract
+              )
+            : { isScopeValid: true, contractViolations: 0, violatedFiles: [], violationDetails: [] };
+
+          const modRefineKey = `${topicId}:mod-refine:${prevModular.activeModuleId}`;
+          const currentModRefines = stageRefineRetriesRef.current[modRefineKey] || 0;
+          const verStep = stepModularStageTransition({
+            state: prevModular,
+            currentStage: 'verification',
+            feedbackDelta: {
+              verifiedClaims: verifiedCount,
+              refutedClaims: refutedCount,
+              contractViolations: scopeCheck.contractViolations,
+            },
+            currentModuleRefineCount: currentModRefines,
+          });
+
+          nextModular = {
+            ...verStep.nextState,
+            modules: verStep.nextState.modules.map((m) =>
+              m.moduleId === prevModular.activeModuleId
+                ? { ...m, scopedMessageIds: [...m.scopedMessageIds, verifierReply.id] }
+                : m
+            ),
+          };
+
+          resolvedVerNextStage = verStep.nextGameStage;
+
+          if (verStep.posteriorAction === 'ESCALATE_TO_RED_TEAM') {
+            verNoticeMsg = {
+              id: `msg-fast-track-escalate-${Date.now()}`,
+              threadId: topicId,
+              channelId: topicChannel?.id,
+              authorId: 'system',
+              authorName: '贝叶斯后验升降级调控器',
+              authorHandle: '@bayesian-governor',
+              authorAvatar: '⚔️',
+              isAgent: true,
+              agentBadge: 'Escalate to Red Team',
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: `⚔️ **贝叶斯后验动态升级 (ESCALATE_TO_RED_TEAM)**：模块「${activeMod?.title || prevModular.activeModuleId}」在接地验证中捕获异常反馈 (${verStep.reason})。快速通道自动熔断，已紧急拉起 ⚔️ **红队对抗官** 进行深度反例压测！`,
+              gameStage: 'challenge',
+            };
+          } else if (verStep.posteriorAction === 'FREEZE_MODULE') {
+            const frozenCount = nextModular.modules.filter((m) => m.status === 'frozen').length;
+            const nextActiveMod = nextModular.modules.find((m) => m.moduleId === nextModular.activeModuleId);
+            verNoticeMsg = {
+              id: `msg-fast-track-freeze-${Date.now()}`,
+              threadId: topicId,
+              channelId: topicChannel?.id,
+              authorId: 'system',
+              authorName: '贝叶斯快速通道调控器',
+              authorHandle: '@bayesian-governor',
+              authorAvatar: '🧊',
+              isAgent: true,
+              agentBadge: `Fast Track Frozen (${frozenCount}/${nextModular.modules.length})`,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: `🧊 **快速通道实证直通硬冻结**：模块「${activeMod?.title || prevModular.activeModuleId}」通过静态契约与接地校验，零反例零违规，已在快速通道直接锁定为 Frozen。\n\n${
+                verStep.allModulesFrozen
+                  ? '全部模块已完成实证收敛，正在转入终局仲裁！'
+                  : `正在按 DAG 拓扑序激活下一模块「**${nextActiveMod?.title || nextModular.activeModuleId}**」进入独立沙箱提案立论...`
+              }`,
+              gameStage: resolvedVerNextStage,
             };
           }
-          return {
-            ...old,
-            gameStage: 'defense',
-            gameTheoreticState: {
-              ...old.gameTheoreticState,
-              currentStage: 'defense',
-              targetProposalContent: targetProposalText,
-              targetChallengeContent: targetChallengeText,
-              targetVerificationContent: acpResp.textResponse,
-              isVerifierResponded: true,
-              minorityReport: old.gameTheoreticState?.minorityReport,
+        }
+
+        updateTopicDataInState(topicId, (old) => ({
+          ...old,
+          gameStage: resolvedVerNextStage,
+          gameTheoreticState: {
+            ...old.gameTheoreticState,
+            currentStage: resolvedVerNextStage,
+            targetProposalContent: targetProposalText,
+            targetChallengeContent: targetChallengeText,
+            targetVerificationContent: acpResp.textResponse,
+            isVerifierResponded: true,
+            minorityReport: old.gameTheoreticState?.minorityReport,
+            modularState: nextModular,
+            cognoNexus: {
+              ...old.gameTheoreticState?.cognoNexus,
+              currentDispute: updatedDispute || old.gameTheoreticState?.cognoNexus?.currentDispute,
+              committedStates: updatedCommittedStates || old.gameTheoreticState?.cognoNexus?.committedStates || [],
+              minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
               modularState: nextModular,
-              cognoNexus: {
-                ...old.gameTheoreticState?.cognoNexus,
-                currentDispute: updatedDispute || old.gameTheoreticState?.cognoNexus?.currentDispute,
-                committedStates: updatedCommittedStates || old.gameTheoreticState?.cognoNexus?.committedStates || [],
-                minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
-                modularState: nextModular,
-              },
             },
-          };
-        });
+          },
+        }));
+
+        if (verNoticeMsg) {
+          const notice = verNoticeMsg;
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: [...(prev[topicId] || []), notice],
+          }));
+        }
 
         inFlightHandoverRef.current.delete(handoverKey);
         triggerGameTheoreticStageHandover({
           topicId,
-          nextStage: 'defense',
+          nextStage: resolvedVerNextStage,
           targetProposalText,
           targetChallengeText,
           targetVerificationText: acpResp.textResponse,
@@ -3618,7 +3909,7 @@ export default function App() {
         const latestTopicBeforeDefenseUpdate = getTopicData(topicId) || currentTopic;
         const prevModular = latestTopicBeforeDefenseUpdate.gameTheoreticState?.modularState;
         let nextModular = prevModular;
-        let resolvedNextStage: 'challenge' | 'arbitration' = 'arbitration';
+        let resolvedNextStage: 'proposal' | 'challenge' | 'arbitration' = 'arbitration';
         let transitionNoticeMsg: Message | null = null;
 
         if (prevModular?.enabled && prevModular.activeModuleId) {
@@ -3691,7 +3982,7 @@ export default function App() {
             };
           } else if (!modStep.allModulesFrozen) {
             delete stageRefineRetriesRef.current[modRefineKey];
-            resolvedNextStage = 'challenge';
+            resolvedNextStage = 'proposal';
             const nextActiveMod = nextModular.modules.find(
               (m) => m.moduleId === nextModular?.activeModuleId
             );
@@ -3707,8 +3998,8 @@ export default function App() {
               isAgent: true,
               agentBadge: `Module Frozen (${frozenCount}/${nextModular.modules.length})`,
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `🧊 **模块收敛硬冻结 & 拓扑切换**：模块「${activeMod?.title || prevModular.activeModuleId}」已完成实证收敛并锁定为 Frozen（当前已冻结 ${frozenCount}/${nextModular.modules.length}）。\n\n正在按 DAG 拓扑序激活下一模块「**${nextActiveMod?.title || nextModular.activeModuleId}**」进入独立沙箱攻防与接地验证...`,
-              gameStage: 'challenge',
+              content: `🧊 **模块收敛硬冻结 & 拓扑切换**：模块「${activeMod?.title || prevModular.activeModuleId}」已完成实证收敛并锁定为 Frozen（当前已冻结 ${frozenCount}/${nextModular.modules.length}）。\n\n正在按 DAG 拓扑序激活下一模块「**${nextActiveMod?.title || nextModular.activeModuleId}**」进入独立沙箱提案立论...`,
+              gameStage: 'proposal',
             };
           } else {
             delete stageRefineRetriesRef.current[modRefineKey];
@@ -4672,40 +4963,95 @@ export default function App() {
                 console.warn('Proposer returned empty/error turn, pausing handover.');
               } else {
                 const extractedDecomp = extractModuleDecompositionFromAcpResponse(acpResp, agent.name);
-                updateTopicDataInState(topicId, (old) => {
-                  const baseModular = extractedDecomp
-                    ? initializeModularOrchestrationState(extractedDecomp)
-                    : old.gameTheoreticState?.modularState ||
-                      initializeModularOrchestrationState(
-                        buildDefaultDecompositionFromTopic(old.title, old.description, acpResp.textResponse)
-                      );
-                  const updatedModular = {
-                    ...baseModular,
-                    modules: baseModular.modules.map((m) =>
-                      m.moduleId === baseModular.activeModuleId
-                        ? { ...m, scopedMessageIds: [...m.scopedMessageIds, agentReply.id] }
-                        : m
-                    ),
+                const currentTopicData = getTopicData(topicId) || activeTopicData;
+                const baseModular = extractedDecomp
+                  ? initializeModularOrchestrationState(extractedDecomp)
+                  : currentTopicData?.gameTheoreticState?.modularState ||
+                    initializeModularOrchestrationState(
+                      buildDefaultDecompositionFromTopic(currentTopicData?.title || '', currentTopicData?.description, acpResp.textResponse)
+                    );
+
+                const updatedModular = {
+                  ...baseModular,
+                  modules: baseModular.modules.map((m) =>
+                    m.moduleId === baseModular.activeModuleId
+                      ? { ...m, scopedMessageIds: [...m.scopedMessageIds, agentReply.id] }
+                      : m
+                  ),
+                };
+
+                const activeMod = updatedModular.modules.find(
+                  (m) => m.moduleId === updatedModular.activeModuleId
+                );
+                const isFastTrack = activeMod?.belief.routingMode === 'fast_track';
+                const nextStageForM1: 'verification' | 'challenge' = isFastTrack ? 'verification' : 'challenge';
+
+                // 白名单正交收敛非静默审计通知 (N5)
+                const dedupRecords = baseModular.whitelistDeduplications || [];
+                if (dedupRecords.length > 0) {
+                  const dedupNoticeMsg: Message = {
+                    id: `msg-whitelist-dedup-${Date.now()}`,
+                    threadId: topicId,
+                    channelId: topicChannel?.id,
+                    authorId: 'system',
+                    authorName: 'G-Frame 白名单正交裁决器',
+                    authorHandle: '@gframe-whitelist-governor',
+                    authorAvatar: '🛡️',
+                    isAgent: true,
+                    agentBadge: `白名单拓扑归属收敛 (${dedupRecords.length} 项)`,
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    content: `🛡️ **G-Frame 白名单正交归属收敛 (Whitelist Disjoint Enforcement)**：\n` +
+                      dedupRecords
+                        .map((d) => `- **${d.file}**：由上游模块「${d.allocatedToModuleTitle}」独占持有，已从下游「${d.strippedFromModuleTitle}」白名单中显式收敛剥离。下游模块须经由《公共接口契约》以只读方式引入。`)
+                        .join('\n'),
                   };
-                  return {
-                    ...old,
-                    gameStage: 'challenge',
-                    gameTheoreticState: {
-                      ...old.gameTheoreticState,
-                      currentStage: 'challenge',
-                      targetProposalContent: acpResp.textResponse,
-                      isChallengerResponded: false,
+                  setMessages((prev) => ({
+                    ...prev,
+                    [topicId]: [...(prev[topicId] || []), dedupNoticeMsg],
+                  }));
+                }
+
+                // fast_track 快速通道通知 (N8)
+                if (isFastTrack && activeMod) {
+                  const fastTrackNotice: Message = {
+                    id: `msg-fast-track-${Date.now()}`,
+                    threadId: topicId,
+                    channelId: topicChannel?.id,
+                    authorId: 'system',
+                    authorName: '贝叶斯快速通道调控器',
+                    authorHandle: '@bayesian-fast-track',
+                    authorAvatar: '⚡',
+                    isAgent: true,
+                    agentBadge: 'Fast Track',
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    content: `⚡ **贝叶斯快速通道 (fast_track)**：模块「${activeMod.title}」先验风险为 ${(activeMod.belief.priorRisk * 100).toFixed(0)}% (< 45%)，符合低熵确定性模块标准。跳过红队对抗，直接流转至接地验证与契约对齐！`,
+                    gameStage: 'verification',
+                  };
+                  setMessages((prev) => ({
+                    ...prev,
+                    [topicId]: [...(prev[topicId] || []), fastTrackNotice],
+                  }));
+                }
+
+                updateTopicDataInState(topicId, (old) => ({
+                  ...old,
+                  gameStage: nextStageForM1,
+                  gameTheoreticState: {
+                    ...old.gameTheoreticState,
+                    currentStage: nextStageForM1,
+                    targetProposalContent: acpResp.textResponse,
+                    isChallengerResponded: false,
+                    modularState: updatedModular,
+                    cognoNexus: {
+                      ...(old.gameTheoreticState?.cognoNexus || { committedStates: [] }),
                       modularState: updatedModular,
-                      cognoNexus: {
-                        ...(old.gameTheoreticState?.cognoNexus || { committedStates: [] }),
-                        modularState: updatedModular,
-                      },
                     },
-                  };
-                });
+                  },
+                }));
+
                 triggerGameTheoreticStageHandover({
                   topicId,
-                  nextStage: 'challenge',
+                  nextStage: nextStageForM1,
                   targetProposalText: acpResp.textResponse,
                 });
               }
