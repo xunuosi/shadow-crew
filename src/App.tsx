@@ -2321,11 +2321,14 @@ export default function App() {
           [topicId]: (prev[topicId] || []).map((m) => (m.id === proposalPendingId ? proposalReply : m)),
         }));
 
-        // 推进模块状态机进入该模块的验证 (fast_track) 或挑战 (deep_debate) (N8 & N9)
+        // 推进模块状态机进入该模块的验证 (fast_track) 或挑战 (deep_debate) (N8 & N9 & N10)
         const latestTopicBeforeNext = getTopicData(topicId) || currentTopic;
         const curModular = latestTopicBeforeNext.gameTheoreticState?.modularState;
         let nextModStage: 'challenge' | 'verification' = 'challenge';
         let updatedModularState = curModular;
+
+        // 校验接地验证官可用性，防止 fast_track 无验证官时静默空转至答辩 (N10)
+        const hasVerifiers = (currentTopic.gameRoles?.verifiers || []).length > 0;
 
         if (curModular?.enabled && curModular.activeModuleId) {
           const modStep = stepModularStageTransition({
@@ -2334,12 +2337,17 @@ export default function App() {
             feedbackDelta: {},
             proposalOrDefenseSnippet: acpResp.textResponse,
           });
-          nextModStage = modStep.nextGameStage === 'verification' ? 'verification' : 'challenge';
+          const wantsFastTrack = modStep.nextGameStage === 'verification';
+          nextModStage = wantsFastTrack && hasVerifiers ? 'verification' : 'challenge';
           updatedModularState = {
             ...modStep.nextState,
             modules: modStep.nextState.modules.map((m) =>
               m.moduleId === curModular.activeModuleId
-                ? { ...m, scopedMessageIds: [...m.scopedMessageIds, proposalReply.id] }
+                ? {
+                    ...m,
+                    belief: wantsFastTrack && !hasVerifiers ? { ...m.belief, routingMode: 'deep_debate' as const } : m.belief,
+                    scopedMessageIds: [...m.scopedMessageIds, proposalReply.id],
+                  }
                 : m
             ),
           };
@@ -2347,21 +2355,40 @@ export default function App() {
 
         const isFastTrack = nextModStage === 'verification';
         let fastTrackNoticeMsg: Message | null = null;
-        if (isFastTrack && activeMod) {
-          fastTrackNoticeMsg = {
-            id: `msg-fast-track-${Date.now()}`,
-            threadId: topicId,
-            channelId: topicChannel?.id,
-            authorId: 'system',
-            authorName: '贝叶斯快速通道调控器',
-            authorHandle: '@bayesian-fast-track',
-            authorAvatar: '⚡',
-            isAgent: true,
-            agentBadge: 'Fast Track',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `⚡ **贝叶斯快速通道 (fast_track)**：模块「${activeMod.title}」先验风险为 ${(activeMod.belief.priorRisk * 100).toFixed(0)}% (< 45%)，符合低熵确定性模块标准。跳过红队对抗，直接流转至接地验证与契约对齐！`,
-            gameStage: 'verification',
-          };
+        if (curModular?.enabled && curModular.activeModuleId && activeMod) {
+          const rawMod = curModular.modules.find((m) => m.moduleId === curModular.activeModuleId);
+          const wasFastTrackCandidate = rawMod?.belief.routingMode === 'fast_track';
+          if (wasFastTrackCandidate && !hasVerifiers) {
+            fastTrackNoticeMsg = {
+              id: `msg-fast-track-downgrade-${Date.now()}`,
+              threadId: topicId,
+              channelId: topicChannel?.id,
+              authorId: 'system',
+              authorName: '贝叶斯快速通道调控器',
+              authorHandle: '@bayesian-fast-track',
+              authorAvatar: '⚠️',
+              isAgent: true,
+              agentBadge: 'Fast Track Downgraded',
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: `⚠️ **快速通道降级告警 (Fast-Track Downgraded)**：模块「${activeMod.title}」先验虽符合快速通道标准，但当前议题未指派接地验证官 (Verifier)，无法执行物理接地与静态契约校验。自动降级为标准深度博弈 (deep_debate)，流转至【阶段 2: ⚔️ 反例压测】！`,
+              gameStage: 'challenge',
+            };
+          } else if (isFastTrack) {
+            fastTrackNoticeMsg = {
+              id: `msg-fast-track-${Date.now()}`,
+              threadId: topicId,
+              channelId: topicChannel?.id,
+              authorId: 'system',
+              authorName: '贝叶斯快速通道调控器',
+              authorHandle: '@bayesian-fast-track',
+              authorAvatar: '⚡',
+              isAgent: true,
+              agentBadge: 'Fast Track',
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: `⚡ **贝叶斯快速通道 (fast_track)**：模块「${activeMod.title}」先验风险为 ${(activeMod.belief.priorRisk * 100).toFixed(0)}% (< 45%)，符合低熵确定性模块标准。跳过红队对抗，直接流转至接地验证与契约对齐！`,
+              gameStage: 'verification',
+            };
+          }
         }
 
         updateTopicDataInState(topicId, (old) => ({
@@ -2372,6 +2399,10 @@ export default function App() {
             currentStage: nextModStage,
             targetProposalContent: acpResp.textResponse,
             isChallengerResponded: false,
+            isChallengerBypassed: isFastTrack,
+            challengerBypassedReason: isFastTrack
+              ? 'Bayesian Fast-Track: 模块先验风险低于阈值，依博弈规约旁路红队对抗直接进入接地验证。'
+              : undefined,
             isVerifierResponded: false,
             isDefenseResponded: false,
             modularState: updatedModularState,
@@ -3330,27 +3361,42 @@ export default function App() {
           }
         }
 
-        updateTopicDataInState(topicId, (old) => ({
-          ...old,
-          gameStage: resolvedVerNextStage,
-          gameTheoreticState: {
-            ...old.gameTheoreticState,
-            currentStage: resolvedVerNextStage,
-            targetProposalContent: targetProposalText,
-            targetChallengeContent: targetChallengeText,
-            targetVerificationContent: acpResp.textResponse,
-            isVerifierResponded: true,
-            minorityReport: old.gameTheoreticState?.minorityReport,
-            modularState: nextModular,
-            cognoNexus: {
-              ...old.gameTheoreticState?.cognoNexus,
-              currentDispute: updatedDispute || old.gameTheoreticState?.cognoNexus?.currentDispute,
-              committedStates: updatedCommittedStates || old.gameTheoreticState?.cognoNexus?.committedStates || [],
-              minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
+        updateTopicDataInState(topicId, (old) => {
+          const isAllFrozenOrArbitration = resolvedVerNextStage === 'arbitration';
+          const isFastTrackBypassed =
+            Boolean(old.gameTheoreticState?.isChallengerBypassed) ||
+            Boolean(nextModular?.enabled && nextModular.modules.every((m) => m.belief.routingMode === 'fast_track'));
+
+          return {
+            ...old,
+            gameStage: resolvedVerNextStage,
+            gameTheoreticState: {
+              ...old.gameTheoreticState,
+              currentStage: resolvedVerNextStage,
+              targetProposalContent: targetProposalText,
+              targetChallengeContent: targetChallengeText,
+              targetVerificationContent: acpResp.textResponse,
+              isVerifierResponded: true,
+              // 回填制衡方响应标记与旁路审计留痕：在全 fast_track 或模块旁路下保障法定门禁不误报 (N11)
+              isChallengerResponded: isAllFrozenOrArbitration
+                ? (isFastTrackBypassed ? true : old.gameTheoreticState?.isChallengerResponded ?? false)
+                : old.gameTheoreticState?.isChallengerResponded,
+              isChallengerBypassed: isFastTrackBypassed || old.gameTheoreticState?.isChallengerBypassed,
+              challengerBypassedReason: isFastTrackBypassed
+                ? 'Bayesian Fast-Track: 模块经贝叶斯先验评定为低风险确定性模块，依博弈规约旁路红队对抗直接进入接地验证。'
+                : old.gameTheoreticState?.challengerBypassedReason,
+              minorityReport: old.gameTheoreticState?.minorityReport,
               modularState: nextModular,
+              cognoNexus: {
+                ...old.gameTheoreticState?.cognoNexus,
+                currentDispute: updatedDispute || old.gameTheoreticState?.cognoNexus?.currentDispute,
+                committedStates: updatedCommittedStates || old.gameTheoreticState?.cognoNexus?.committedStates || [],
+                minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
+                modularState: nextModular,
+              },
             },
-          },
-        }));
+          };
+        });
 
         if (verNoticeMsg) {
           const notice = verNoticeMsg;
@@ -4984,7 +5030,8 @@ export default function App() {
                   (m) => m.moduleId === updatedModular.activeModuleId
                 );
                 const isFastTrack = activeMod?.belief.routingMode === 'fast_track';
-                const nextStageForM1: 'verification' | 'challenge' = isFastTrack ? 'verification' : 'challenge';
+                const hasVerifiers = (currentTopicData?.gameRoles?.verifiers || []).length > 0;
+                let nextStageForM1: 'verification' | 'challenge' = isFastTrack && hasVerifiers ? 'verification' : 'challenge';
 
                 // 白名单正交收敛非静默审计通知 (N5)
                 const dedupRecords = baseModular.whitelistDeduplications || [];
@@ -5011,8 +5058,28 @@ export default function App() {
                   }));
                 }
 
-                // fast_track 快速通道通知 (N8)
-                if (isFastTrack && activeMod) {
+                // fast_track 快速通道校验验证官与通知 (N8 & N10)
+                if (isFastTrack && !hasVerifiers && activeMod) {
+                  activeMod.belief.routingMode = 'deep_debate';
+                  const downgradeNotice: Message = {
+                    id: `msg-fast-track-downgrade-${Date.now()}`,
+                    threadId: topicId,
+                    channelId: topicChannel?.id,
+                    authorId: 'system',
+                    authorName: '贝叶斯快速通道调控器',
+                    authorHandle: '@bayesian-fast-track',
+                    authorAvatar: '⚠️',
+                    isAgent: true,
+                    agentBadge: 'Fast Track Downgraded',
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    content: `⚠️ **快速通道降级告警 (Fast-Track Downgraded)**：模块「${activeMod.title}」先验虽符合快速通道标准，但当前议题未指派接地验证官 (Verifier)，无法执行物理接地与静态契约校验。自动降级为标准深度博弈 (deep_debate)，流转至【阶段 2: ⚔️ 反例压测】！`,
+                    gameStage: 'challenge',
+                  };
+                  setMessages((prev) => ({
+                    ...prev,
+                    [topicId]: [...(prev[topicId] || []), downgradeNotice],
+                  }));
+                } else if (isFastTrack && hasVerifiers && activeMod) {
                   const fastTrackNotice: Message = {
                     id: `msg-fast-track-${Date.now()}`,
                     threadId: topicId,
@@ -5041,6 +5108,10 @@ export default function App() {
                     currentStage: nextStageForM1,
                     targetProposalContent: acpResp.textResponse,
                     isChallengerResponded: false,
+                    isChallengerBypassed: isFastTrack && hasVerifiers,
+                    challengerBypassedReason: isFastTrack && hasVerifiers
+                      ? 'Bayesian Fast-Track: 模块先验风险低于阈值，依博弈规约旁路红队对抗直接进入接地验证。'
+                      : undefined,
                     modularState: updatedModular,
                     cognoNexus: {
                       ...(old.gameTheoreticState?.cognoNexus || { committedStates: [] }),

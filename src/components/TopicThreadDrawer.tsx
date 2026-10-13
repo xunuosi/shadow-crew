@@ -174,6 +174,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
   const isChallengerQuorumMet =
     topic?.discussionMode !== 'game_theoretic' ||
+    topic?.gameTheoreticState?.isChallengerBypassed === true ||
     topic?.gameTheoreticState?.isChallengerResponded !== false;
 
   const resolveRulingDraftForModal = (
@@ -1075,6 +1076,8 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             <div className={`flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
               topic.gameStage === 'challenge'
                 ? 'bg-rose-500/15 border-rose-500/30 text-rose-700 dark:text-rose-300 font-semibold shadow-xs'
+                : topic.gameTheoreticState?.isChallengerBypassed
+                ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-medium'
                 : topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
                 ? 'bg-amber-500/15 border-amber-500/30 text-amber-700 dark:text-amber-300 font-semibold'
                 : (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
@@ -1084,13 +1087,19 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0 ${
                 topic.gameStage === 'challenge'
                   ? 'bg-rose-500 text-white font-bold'
+                  : topic.gameTheoreticState?.isChallengerBypassed
+                  ? 'bg-emerald-500 text-white font-bold'
                   : topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
                   ? 'bg-amber-500 text-white font-bold'
                   : (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
                   ? 'bg-emerald-500/20 text-emerald-600'
                   : 'bg-border text-fg-muted'
               }`}>
-                {topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                {topic.gameStage === 'challenge'
+                  ? '2'
+                  : topic.gameTheoreticState?.isChallengerBypassed
+                  ? '⚡'
+                  : topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
                   ? '!'
                   : (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
                   ? '✓'
@@ -1098,7 +1107,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               </div>
               <div className="truncate min-w-0">
                 <span className="truncate block font-medium">
-                  {topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
+                  {topic.gameTheoreticState?.isChallengerBypassed
+                    ? '⚡ 压测旁路'
+                    : topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
                     ? '⚔️ 压测缺席'
                     : '⚔️ 反例压测'}
                 </span>

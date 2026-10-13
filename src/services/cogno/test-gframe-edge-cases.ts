@@ -799,7 +799,7 @@ console.log('\n--- N10 fast_track 分流是否校验验证官可用性 ---');
   const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
 
   // 提案完成后的模块分流块：定位 stepModularStageTransition(currentStage: 'proposal') 调用附近的窗口
-  const proposalCallIdx = appSource.indexOf("currentStage: 'proposal'");
+  const proposalCallIdx = appSource.lastIndexOf("currentStage: 'proposal'");
   const proposalBlock = proposalCallIdx > 0 ? appSource.slice(proposalCallIdx - 200, proposalCallIdx + 900) : '';
   // 红队完成后的阶段分流块：定位 nextStageTarget 计算附近的窗口
   const challengeAnchorIdx = appSource.indexOf('const nextStageTarget');

@@ -400,6 +400,8 @@ export interface GameTheoreticState {
   targetDefenseMessageId?: string;
   targetDefenseContent?: string;
   isChallengerResponded?: boolean;
+  isChallengerBypassed?: boolean;        // 贝叶斯快速通道按设计旁路红队对抗标记 (N11)
+  challengerBypassedReason?: string;     // 旁路审计原因说明
   isVerifierResponded?: boolean;
   isDefenseResponded?: boolean;
   isArbiterExempted?: boolean;
