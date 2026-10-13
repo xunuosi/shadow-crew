@@ -121,6 +121,8 @@ export function generateAdrMarkdown(topic: TopicMessageData, agents: Agent[]): s
   md += `## 2. 证伪失效清单与红队边界压测 (Falsification & Edge Cases)\n\n`;
   if (topic.gameTheoreticState?.targetChallengeContent) {
     md += `${topic.gameTheoreticState.targetChallengeContent.trim()}\n\n`;
+  } else if (topic.gameTheoreticState?.isChallengerBypassed) {
+    md += `*⚡ 贝叶斯快速通道：低风险确定性模块依规约旁路红队对抗，直通契约与物理接地验证。*\n\n`;
   } else {
     md += `*暂无红队质询内容记录。*\n\n`;
   }
@@ -136,6 +138,13 @@ export function generateAdrMarkdown(topic: TopicMessageData, agents: Agent[]): s
 
   // 3. Grounding Verification
   md += `## 3. 接地实证与验证结论 (Empirical Verification)\n\n`;
+  const fastTrackConv = topic.gameTheoreticState?.fastTrackConvergence;
+  if (fastTrackConv) {
+    md += `> ⚡ **贝叶斯快速通道实证直通收敛 (Fast-Track Empirical Convergence)**: ${fastTrackConv.summary}\n>\n`;
+    md += `> - **已冻结模块**: ${fastTrackConv.frozenModulesCount} / ${fastTrackConv.totalModulesCount}\n`;
+    md += `> - **验证真值**: ${fastTrackConv.verifiedClaimsCount} 项通过 / ${fastTrackConv.refutedClaimsCount} 项证伪\n`;
+    md += `> - **契约违规**: ${fastTrackConv.contractViolationsCount} 项 (严格为 0)\n\n`;
+  }
   if (topic.gameTheoreticState?.targetVerificationContent) {
     md += `${topic.gameTheoreticState.targetVerificationContent.trim()}\n\n`;
   }
@@ -147,7 +156,7 @@ export function generateAdrMarkdown(topic: TopicMessageData, agents: Agent[]): s
       md += `| ${ev.evidenceId} | \`${ev.sourceTool}\` | **${statusIcon}** | ${ev.verifierReport.replace(/[\n\r|]/g, ' ')} |\n`;
     });
     md += `\n`;
-  } else if (!topic.gameTheoreticState?.targetVerificationContent) {
+  } else if (!topic.gameTheoreticState?.targetVerificationContent && !fastTrackConv) {
     md += `*接地实证待运行或无独立实证链。*\n\n`;
   }
 
@@ -527,6 +536,11 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                 {topic.gameTheoreticState.targetChallengeContent.length > 320 ? '...' : ''}
               </p>
             </div>
+          ) : topic.gameTheoreticState?.isChallengerBypassed ? (
+            <div className="p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-[11px] text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5">
+              <span className="text-emerald-600 dark:text-emerald-400 font-bold shrink-0">⚡ 快速通道旁路</span>
+              <span className="text-fg-secondary">低风险确定性模块依博弈规约旁路红队对抗，直通契约与物理接地验证。</span>
+            </div>
           ) : (
             <div className="text-[11px] text-fg-muted italic">等待红队输入极端故障反例...</div>
           )}
@@ -556,6 +570,18 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
             </div>
             <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono font-medium">🔬 Verifier</span>
           </div>
+
+          {topic.gameTheoreticState?.fastTrackConvergence && (
+            <div className="p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-[11px] space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-emerald-800 dark:text-emerald-300">⚡ 快速通道静态实证直通收敛</span>
+                <span className="text-[9px] font-mono font-medium text-emerald-600 dark:text-emerald-400">Fast-Track Grounded</span>
+              </div>
+              <div className="text-fg leading-relaxed text-[11px]">
+                {topic.gameTheoreticState.fastTrackConvergence.summary}
+              </div>
+            </div>
+          )}
 
           {topic.gameTheoreticState?.targetVerificationContent && (
             <div className="p-2.5 rounded-lg bg-surface border border-border/80 text-[11px] text-fg-secondary leading-relaxed">

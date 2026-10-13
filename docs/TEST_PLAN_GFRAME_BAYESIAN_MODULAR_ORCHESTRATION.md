@@ -531,4 +531,29 @@ triggerGameTheoreticStageHandover({ topicId, nextStage, ... });
 ### 14.4 L2 / L3 执行状态
 
 与 §10.3 一致：仍需真实 ACP Agent 在线 + 桌面端运行，本会话浏览器自动化运行时不可用。N11 的 UI 侧改动（「⚡ 压测旁路」胶囊与门禁放行）建议在真实议题中连同白昼/暗夜双主题一起目检。
-```
+
+---
+
+## 15. 第六轮执行记录（2026-10-13，N12 与 N13 闭环修复）
+
+> 触发原因：针对第五轮发现的两项语义风险（N12 状态原地赋值与判定逻辑分叉、N13 全 fast_track 议题缺少 SPRT/实证收敛证据）实施修复。
+
+### 15.1 基线回归（全部通过）
+
+| 用例 ID | 命令 | 实测结果 | 结论 |
+| :--- | :--- | :--- | :--- |
+| BL-01 | `npm run lint` | 退出码 0，零类型报错 (`tsc --noEmit`) | ✅ PASS |
+| BL-02 | `npm run build` | `vite build` 成功 (1.70s) | ✅ PASS |
+| BL-03 | `cargo test -p shinobi-dev-mcp` | 9 passed; 0 failed | ✅ PASS |
+| GOV-01~18 | `npm run test:cogno` | 18/18 核心机制通过 | ✅ PASS |
+| G-Frame 套件 | `npm run test:cogno` | 14/14 全阶段通过 | ✅ PASS |
+| 边界套件 | `npm run test:cogno:edge` | **DEFECT 0 / WARN 0**（全部通过） | ✅ PASS |
+
+### 15.2 第五轮 2 项问题的独立复验结果（全部修复）
+
+| 用例 ID | 第五轮结论 | 第六轮实测证据 | 结论 |
+| :--- | :--- | :--- | :--- |
+| N12 | fast_track 降级原地修改 React 状态 & 实现分叉 (WARN) | 1. 统一收口：将首模块提案分流与模块循环分流全部汇聚至 `bayesianModuleGovernor.ts` 的 `stepModularStageTransition`，传入 `hasVerifiers` 参数统一计算；<br>2. 彻底移除 `activeMod.belief.routingMode = 'deep_debate'` 原地赋值；全仓正则扫描未检出任何原地赋值，`belief` 100% 采用不可变扩展更新。 | ✅ 已修复 |
+| N13 | 全 fast_track 议题无 SPRT 收敛证据 (WARN) | 1. 扩展 `FastTrackConvergenceEvidence` 类型与 `GameTheoreticTopicState` / `CognoNexusState`；<br>2. 验证完成阶段将全快速通道议题状态写入 `sprtState`（高置信 early_exit 等价状态）与 `fastTrackConvergence` 实证留痕；<br>3. `LivingAdrCanvas` 活体决策画布与 `generateAdrMarkdown` 显式渲染快速通道实证直通收敛卡与旁路提示，审计留痕完整闭环。 | ✅ 已修复 |
+
+> 探测汇总：当前所有探测项均达到 `DEFECT 0 / WARN 0` 的零告警净空状态。

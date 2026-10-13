@@ -418,6 +418,7 @@ export interface GameTheoreticState {
   executionUiMeta?: TopicExecutionUiMeta;
   mcdaPayload?: McdaDecisionPayload;
   sprtState?: SprtGovernorState;
+  fastTrackConvergence?: FastTrackConvergenceEvidence; // 快速通道「静态验证即收敛」证据字段 (N13)
   minorityReport?: MinorityReport;
   cognoNexus?: CognoNexusState;
   latestSycophancy?: SycophancyEvaluation; // 最新谄媚度评估记录 (P0-4)
@@ -535,6 +536,21 @@ export interface SprtGovernorState {
   };
 }
 
+/**
+ * 快速通道静态验证直通收敛证据 (Fast-Track Empirical Convergence Evidence, N13)
+ * 当低先验风险模块在静态契约校验与工具接地中 100% 通过且零违规时直接定案，无需经历对抗辩论链路
+ */
+export interface FastTrackConvergenceEvidence {
+  mode: 'static_empirical_fast_track';
+  totalModulesCount: number;
+  frozenModulesCount: number;
+  verifiedClaimsCount: number;
+  contractViolationsCount: number;
+  refutedClaimsCount: number;
+  achievedAt: string;
+  summary: string;
+}
+
 export interface MinorityReport {
   id: string;
   dissentingAgentId: string;
@@ -569,6 +585,7 @@ export interface CognoNexusState {
   currentDispute?: DisputeSpanPacket;     // 当前聚焦攻防的离散冲突切片
   mcdaPayload?: McdaDecisionPayload;      // 确定性运筹数学决策矩阵
   sprtState?: SprtGovernorState;          // SPRT 调控器状态
+  fastTrackConvergence?: FastTrackConvergenceEvidence; // 快速通道实证直通收敛证据 (N13)
   minorityReport?: MinorityReport;        // 少数派异议报告
   latestSycophancy?: SycophancyEvaluation; // 谄媚度评估记录 (P0-4)
   modelDiversity?: ModelDiversityEvaluation; // 角色模型异构性评估 (P0-5)

@@ -605,6 +605,8 @@ export interface ModularStageTransitionInput {
   proposalOrDefenseSnippet?: string;
   /** 当前模块已执行的局部重修轮次 (默认 0，上限 1) */
   currentModuleRefineCount?: number;
+  /** 是否配置可用接地验证官 (Verifier)；若为 false，fast_track 模块将自动安全降级为 deep_debate 并转入 challenge (N10 & N12) */
+  hasVerifiers?: boolean;
 }
 
 export interface ModularStageTransitionResult {
@@ -636,6 +638,7 @@ export function stepModularStageTransition(
     feedbackDelta,
     proposalOrDefenseSnippet,
     currentModuleRefineCount = 0,
+    hasVerifiers,
   } = input;
 
   const targetModuleId =
@@ -655,15 +658,21 @@ export function stepModularStageTransition(
 
   const currentMod = state.modules.find((m) => m.moduleId === targetModuleId);
 
-  // 1. 阶段 1：模块提案立论 (proposal) 推进 -> fast_track 直通 verification，deep_debate 流转 challenge (N8 & N9)
+  // 1. 阶段 1：模块提案立论 (proposal) 推进 -> fast_track 直通 verification，deep_debate 流转 challenge (N8, N9, N10, N12)
   if (currentStage === 'proposal') {
-    const isFastTrack = currentMod?.belief.routingMode === 'fast_track';
+    const rawFastTrack = currentMod?.belief.routingMode === 'fast_track';
+    const hasAvailableVerifier = hasVerifiers ?? true;
+    const isFastTrack = rawFastTrack && hasAvailableVerifier;
+    const wasDowngraded = rawFastTrack && !hasAvailableVerifier;
     const nextGameStage = isFastTrack ? 'verification' : 'challenge';
     const nextModules = state.modules.map((m) => {
       if (m.moduleId !== targetModuleId) return m;
       return {
         ...m,
         status: isFastTrack ? ('verifying' as const) : ('challenging' as const),
+        belief: wasDowngraded
+          ? { ...m.belief, routingMode: 'deep_debate' as const }
+          : m.belief,
         frozenProposalSnippet: proposalOrDefenseSnippet
           ? proposalOrDefenseSnippet.slice(0, 800)
           : m.frozenProposalSnippet,
@@ -671,8 +680,10 @@ export function stepModularStageTransition(
     });
     return {
       nextState: { ...state, modules: nextModules },
-      posteriorAction: 'CONTINUE_DEBATE',
-      reason: isFastTrack
+      posteriorAction: wasDowngraded ? 'ESCALATE_TO_RED_TEAM' : 'CONTINUE_DEBATE',
+      reason: wasDowngraded
+        ? `未配置可用接地验证官 (Verifier)，模块 [${currentMod?.title || targetModuleId}] 快速通道自动安全降级为 deep_debate 深度博弈`
+        : isFastTrack
         ? `模块 [${currentMod?.title || targetModuleId}] 处于 fast_track 快速通道，跳过红队对抗，直通契约与物理接地验证`
         : `模块 [${currentMod?.title || targetModuleId}] 处于 deep_debate 深度博弈通道，流转至红队反例压测`,
       nextGameStage,
