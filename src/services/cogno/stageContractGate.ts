@@ -159,7 +159,7 @@ export function validateStageContract(
 
 /**
  * G-Frame 模块边界与公共接口契约守卫 (Module Scope & Contract Gate)
- * 检测当前模块沙箱内的输出是否越界修改了属于其他模块的专属文件，或违背了跨模块公共接口契约
+ * 检测当前模块沙箱内的输出是否越界修改了属于其他模块的专属文件，或存在白名单重叠越界 (EDGE-04)
  */
 export function validateModuleScopeContract(
   text: string,
@@ -169,31 +169,62 @@ export function validateModuleScopeContract(
 ): ModuleScopeValidationResult {
   const violatedFiles: string[] = [];
   const violationDetails: string[] = [];
+  const recordedFiles = new Set<string>();
 
-  const activeAllowed = new Set(activeModule.allowedFiles.map((f) => f.trim()));
-  const otherModulesFiles: Array<{ file: string; ownerTitle: string }> = [];
+  const activeAllowed = new Set(
+    activeModule.allowedFiles.map((f) => f.trim()).filter(Boolean)
+  );
+  const otherModulesFiles: Array<{
+    file: string;
+    ownerTitle: string;
+    isWhitelistOverlap: boolean;
+  }> = [];
 
   for (const mod of allModules) {
     if (mod.moduleId === activeModule.moduleId) continue;
     for (const f of mod.allowedFiles) {
       const cleanFile = f.trim();
-      if (cleanFile && !activeAllowed.has(cleanFile) && !cleanFile.endsWith('/')) {
-        otherModulesFiles.push({ file: cleanFile, ownerTitle: mod.title });
-      }
+      if (!cleanFile) continue;
+      const isDirectOverlap = activeAllowed.has(cleanFile);
+      const isPrefixOverlap = Array.from(activeAllowed).some(
+        (af) =>
+          (cleanFile.endsWith('/') && af.startsWith(cleanFile)) ||
+          (af.endsWith('/') && cleanFile.startsWith(af))
+      );
+      otherModulesFiles.push({
+        file: cleanFile,
+        ownerTitle: mod.title,
+        isWhitelistOverlap: isDirectOverlap || isPrefixOverlap,
+      });
     }
   }
 
-  // 检测是否在修改动作上下文中越界操作了其他模块的专属文件
-  for (const { file, ownerTitle } of otherModulesFiles) {
+  // 检测是否存在跨模块白名单重叠或修改动作上下文中越界操作了其他模块的专属文件/目录
+  for (const { file, ownerTitle, isWhitelistOverlap } of otherModulesFiles) {
+    if (recordedFiles.has(file)) continue;
+
     const escapedFile = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const targetPattern = file.endsWith('/')
+      ? `${escapedFile}[\\w./-]*`
+      : escapedFile;
     const modificationRegex = new RegExp(
-      `(?:(?:修改|重写|新增|编辑|替换|写入|write_file|str_replace|patch)[^\\n]{0,40}${escapedFile}|${escapedFile}[^\\n]{0,40}(?:修改|重写|新增|编辑|替换|写入|write_file|str_replace|patch))`,
+      `(?:(?:修改|重写|新增|编辑|替换|写入|变更|重构|write_file|str_replace|patch)[^\\n]{0,40}${targetPattern}|${targetPattern}[^\\n]{0,40}(?:修改|重写|新增|编辑|替换|写入|变更|重构|write_file|str_replace|patch))`,
       'i'
     );
+
     if (modificationRegex.test(text)) {
+      recordedFiles.add(file);
       violatedFiles.push(file);
       violationDetails.push(
-        `检测到跨模块越界修改文件 [${file}]（该文件归属于「${ownerTitle}」，不在当前模块 [${activeModule.title}] 的白名单 [${activeModule.allowedFiles.join(', ')}] 内）`
+        isWhitelistOverlap
+          ? `检测到跨模块白名单重叠与越界修改文件 [${file}]（该文件已被「${ownerTitle}」声明占用，违反 G-Frame 模块物理隔离不相交铁律 F_i ∩ F_j = ∅）`
+          : `检测到跨模块越界修改文件 [${file}]（该文件归属于「${ownerTitle}」，不在当前模块 [${activeModule.title}] 的白名单 [${activeModule.allowedFiles.join(', ')}] 内）`
+      );
+    } else if (isWhitelistOverlap) {
+      recordedFiles.add(file);
+      violatedFiles.push(file);
+      violationDetails.push(
+        `检测到跨模块白名单重叠冲突 [${file}]（当前模块 [${activeModule.title}] 与「${ownerTitle}」存在重叠授权路径，违反 G-Frame 沙箱正交隔离契约）`
       );
     }
   }

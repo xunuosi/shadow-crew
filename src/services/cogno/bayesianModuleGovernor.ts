@@ -61,6 +61,88 @@ export function estimateModulePriorRisk(params: {
 }
 
 /**
+ * 1.5 模块依赖有向无环图 (DAG) 成环检测与破环守卫 (EDGE-03)
+ * 采用三色 DFS (0=未访问, 1=递归栈访问中, 2=已完成) 剥离自依赖、无效依赖与成环回边，
+ * 确保至少存在一个无前置依赖的拓扑根节点，杜绝 M1⇄M2 互锁导致的静默死锁。
+ */
+export function sanitizeModuleDependencyDAG(modules: TaskModuleSlice[]): TaskModuleSlice[] {
+  const validIds = new Set(modules.map((m) => m.moduleId));
+  const depMap = new Map<string, string[]>();
+
+  for (const mod of modules) {
+    const cleanDeps = Array.from(
+      new Set(
+        (mod.dependsOnModuleIds || []).filter(
+          (depId) => depId && depId !== mod.moduleId && validIds.has(depId)
+        )
+      )
+    );
+    depMap.set(mod.moduleId, cleanDeps);
+  }
+
+  const color = new Map<string, 0 | 1 | 2>();
+  for (const mod of modules) {
+    color.set(mod.moduleId, 0);
+  }
+
+  function dfs(moduleId: string): void {
+    color.set(moduleId, 1);
+    const deps = depMap.get(moduleId) || [];
+    const acyclicDeps: string[] = [];
+
+    for (const depId of deps) {
+      const depColor = color.get(depId) ?? 0;
+      if (depColor === 1) {
+        // 命中成环回边 (Back-Edge)：剥离该反向依赖边以恢复 DAG 拓扑序
+        continue;
+      }
+      if (depColor === 0) {
+        dfs(depId);
+      }
+      acyclicDeps.push(depId);
+    }
+
+    depMap.set(moduleId, acyclicDeps);
+    color.set(moduleId, 2);
+  }
+
+  // 逆序遍历下游模块优先入栈，确保当 M1⇄M2 成环时优先剥离上游 M1 对下游 M2 的反向依赖，使 M1 成为拓扑根节点
+  for (let i = modules.length - 1; i >= 0; i--) {
+    const modId = modules[i].moduleId;
+    if ((color.get(modId) ?? 0) === 0) {
+      dfs(modId);
+    }
+  }
+
+  const sanitized = modules.map((mod) => ({
+    ...mod,
+    dependsOnModuleIds: depMap.get(mod.moduleId) || [],
+  }));
+
+  if (sanitized.length > 0 && !sanitized.some((m) => m.dependsOnModuleIds.length === 0)) {
+    sanitized[0] = {
+      ...sanitized[0],
+      dependsOnModuleIds: [],
+    };
+  }
+
+  return sanitized;
+}
+
+export interface BeliefUpdateOptions {
+  /** 是否在本次更新中清零已修复的历史证伪项（例如答辩补丁经实证核验通过） */
+  resolveRefutedClaims?: boolean;
+  /** 是否在本次更新中清零已修复的历史契约违规项 */
+  resolveContractViolations?: boolean;
+  /** 是否允许在本次更新中触发 FREEZE_MODULE（例如 verification 阶段仅记账而不提前冻结，留待 defense 阶段闭环冻结） */
+  allowFreeze?: boolean;
+  /** 是否为模块答辩阶段完成点（若零违规且零未决证伪则允许收敛冻结） */
+  isDefenseCompletion?: boolean;
+  /** 是否在达到局部重修上限后强制收敛冻结（防止死循环） */
+  forceFreeze?: boolean;
+}
+
+/**
  * 2. 根据阶段 0 提交的 ModuleDecompositionDraft 初始化 G-Frame 模块化分治总状态
  */
 export function initializeModularOrchestrationState(
@@ -76,13 +158,59 @@ export function initializeModularOrchestrationState(
     lockedAt: draft.submittedAt || now,
   };
 
-  // 硬性控制模块数量在 2 ~ 4 个之间，防止碎片化
-  const boundedRawModules = draft.modules.slice(0, 4);
+  // 硬性控制模块数量在 2 ~ 4 个之间，防止退化为单模块或过度碎片化 (EDGE-02)
+  const rawList = Array.isArray(draft.modules) ? [...draft.modules] : [];
+  if (rawList.length === 0) {
+    rawList.push(
+      {
+        moduleId: 'mod-1-core',
+        title: '模块 1：核心方案与主体逻辑架构',
+        responsibility: '围绕议题核心诉求制定主干执行方案、核心机制与关键状态流转规则',
+        allowedFiles: [],
+        dependsOn: [],
+        complexityLevel: 'medium_standard',
+      },
+      {
+        moduleId: 'mod-2-guard',
+        title: '模块 2：边界风险防控与落地验收闭环',
+        responsibility: '针对主方案开展极端边界反例压测、异常降级回退与可量化验收标准核验',
+        allowedFiles: [],
+        dependsOn: ['mod-1-core'],
+        complexityLevel: 'low_deterministic',
+      }
+    );
+  } else if (rawList.length === 1) {
+    const first = rawList[0];
+    const firstId = first.moduleId || 'mod-1';
+    rawList[0] = { ...first, moduleId: firstId };
+    rawList.push({
+      moduleId: `${firstId}-guard`,
+      title: '模块 2：边界风险防控与落地验收闭环',
+      responsibility: `围绕「${first.title}」开展极端边界反例压测、异常回退机制与落地验收指标核验`,
+      allowedFiles: [],
+      dependsOn: [firstId],
+      complexityLevel: 'low_deterministic',
+    });
+  }
+  const boundedRawModules = rawList.slice(0, 4);
 
-  const modules: TaskModuleSlice[] = boundedRawModules.map((raw, idx) => {
+  // 跨模块白名单去重（保障 F_i ∩ F_j = ∅，上游声明模块独占其白名单文件，EDGE-04）
+  const claimedFiles = new Set<string>();
+
+  const rawModules: TaskModuleSlice[] = boundedRawModules.map((raw, idx) => {
+    const rawFiles = Array.isArray(raw.allowedFiles) ? raw.allowedFiles : [];
+    const exclusiveFiles: string[] = [];
+    for (const f of rawFiles) {
+      const clean = f.trim();
+      if (clean && !claimedFiles.has(clean)) {
+        claimedFiles.add(clean);
+        exclusiveFiles.push(clean);
+      }
+    }
+
     const { priorRisk, routingMode } = estimateModulePriorRisk({
       complexityLevel: raw.complexityLevel,
-      allowedFilesCount: raw.allowedFiles.length,
+      allowedFilesCount: exclusiveFiles.length,
       responsibilityText: `${raw.title} ${raw.responsibility}`,
     });
 
@@ -104,7 +232,7 @@ export function initializeModularOrchestrationState(
       moduleId: raw.moduleId || `mod-${idx + 1}`,
       title: raw.title,
       responsibility: raw.responsibility,
-      allowedFiles: raw.allowedFiles,
+      allowedFiles: exclusiveFiles,
       dependsOnModuleIds: raw.dependsOn || [],
       complexityLevel: raw.complexityLevel,
       status: 'pending',
@@ -112,6 +240,9 @@ export function initializeModularOrchestrationState(
       scopedMessageIds: [],
     };
   });
+
+  // 执行 DAG 拓扑破环消毒 (EDGE-03)
+  const modules = sanitizeModuleDependencyDAG(rawModules);
 
   const initialState: ModularOrchestrationState = {
     enabled: true,
@@ -136,20 +267,44 @@ export function initializeModularOrchestrationState(
  */
 export function updateModuleBeliefWithFeedback(
   module: TaskModuleSlice,
-  feedbackDelta: Partial<BayesianModuleBelief['feedbackVector']>
+  feedbackDelta: Partial<BayesianModuleBelief['feedbackVector']>,
+  options?: BeliefUpdateOptions
 ): {
   updatedModule: TaskModuleSlice;
   posteriorAction: BayesianPosteriorAction;
   reason: string;
 } {
   const prevFeedback = module.belief.feedbackVector;
+  const allowFreeze = options?.allowFreeze ?? true;
+  const baseContractViolations = options?.resolveContractViolations
+    ? 0
+    : prevFeedback.contractViolations;
+  const baseRefutedClaims = options?.resolveRefutedClaims
+    ? 0
+    : prevFeedback.refutedClaims;
+
+  // 严格按增量 (Delta) 累加计数型反馈指标，杜绝绝对值覆盖丢失历史计数 (EDGE-05)
   const mergedFeedback: BayesianModuleBelief['feedbackVector'] = {
-    contractViolations:
-      feedbackDelta.contractViolations ?? prevFeedback.contractViolations,
-    verifiedClaims: feedbackDelta.verifiedClaims ?? prevFeedback.verifiedClaims,
-    refutedClaims: feedbackDelta.refutedClaims ?? prevFeedback.refutedClaims,
-    edgeCaseCount: feedbackDelta.edgeCaseCount ?? prevFeedback.edgeCaseCount,
-    dssScore: feedbackDelta.dssScore ?? prevFeedback.dssScore,
+    contractViolations: Math.max(
+      0,
+      baseContractViolations + (feedbackDelta.contractViolations ?? 0)
+    ),
+    verifiedClaims: Math.max(
+      0,
+      prevFeedback.verifiedClaims + (feedbackDelta.verifiedClaims ?? 0)
+    ),
+    refutedClaims: Math.max(
+      0,
+      baseRefutedClaims + (feedbackDelta.refutedClaims ?? 0)
+    ),
+    edgeCaseCount: Math.max(
+      0,
+      prevFeedback.edgeCaseCount + (feedbackDelta.edgeCaseCount ?? 0)
+    ),
+    dssScore:
+      feedbackDelta.dssScore !== undefined
+        ? clamp(feedbackDelta.dssScore, 0, 1)
+        : prevFeedback.dssScore,
   };
 
   const sycophancyPenalty = Math.max(0, mergedFeedback.dssScore - 0.45) * 0.40;
@@ -169,8 +324,25 @@ export function updateModuleBeliefWithFeedback(
   let posteriorAction: BayesianPosteriorAction = 'CONTINUE_DEBATE';
   let reason = '';
 
+  const canFreezeByEvidence =
+    posteriorRisk <= 0.30 ||
+    (routingMode === 'fast_track' && mergedFeedback.verifiedClaims >= 1) ||
+    (mergedFeedback.verifiedClaims >= 2 &&
+      mergedFeedback.refutedClaims === 0 &&
+      mergedFeedback.contractViolations === 0) ||
+    (Boolean(options?.isDefenseCompletion) &&
+      mergedFeedback.verifiedClaims >= 1 &&
+      mergedFeedback.refutedClaims === 0 &&
+      mergedFeedback.contractViolations === 0) ||
+    Boolean(options?.forceFreeze);
+
+  if (options?.forceFreeze && allowFreeze) {
+    nextStatus = 'frozen';
+    posteriorAction = 'FREEZE_MODULE';
+    reason = `模块 [${module.title}] 已完成有界局部重修闭环 (后验风险=${posteriorRisk})，进入 Frozen 硬冻结状态`;
+  }
   // 规则 B：原本处于 fast_track 的低风险模块若出现契约违规或后验风险跃升 >= 0.55，动态拉起红队
-  if (
+  else if (
     routingMode === 'fast_track' &&
     (mergedFeedback.contractViolations > 0 || posteriorRisk >= 0.55)
   ) {
@@ -186,17 +358,20 @@ export function updateModuleBeliefWithFeedback(
     reason = `模块 [${module.title}] 存在未决证伪项 (证伪=${mergedFeedback.refutedClaims}, 契约违规=${mergedFeedback.contractViolations})，触发模块沙箱内局部重修`;
   }
   // 规则 A：零契约冲突、零证伪，且后验风险 <= 0.30（或已通过实证检验且无未决反例），立即冻结锁定
-  else if (
-    posteriorRisk <= 0.30 ||
-    (routingMode === 'fast_track' && mergedFeedback.verifiedClaims >= 1) ||
-    (mergedFeedback.verifiedClaims >= 2 &&
-      mergedFeedback.refutedClaims === 0 &&
-      mergedFeedback.contractViolations === 0)
-  ) {
-    nextStatus = 'frozen';
-    posteriorAction = 'FREEZE_MODULE';
-    reason = `模块 [${module.title}] 通过实证校验且后验风险收敛 (${posteriorRisk})，已进入 Frozen 硬冻结状态`;
+  else if (canFreezeByEvidence) {
+    if (allowFreeze) {
+      nextStatus = 'frozen';
+      posteriorAction = 'FREEZE_MODULE';
+      reason = `模块 [${module.title}] 通过实证校验且后验风险收敛 (${posteriorRisk})，已进入 Frozen 硬冻结状态`;
+    } else {
+      nextStatus = 'defending';
+      posteriorAction = 'CONTINUE_DEBATE';
+      reason = `模块 [${module.title}] 实证校验通过 (后验风险=${posteriorRisk})，转入当前模块答辩定稿阶段`;
+    }
   } else {
+    if (!allowFreeze && nextStatus === 'proposing') {
+      nextStatus = 'verifying';
+    }
     posteriorAction = 'CONTINUE_DEBATE';
     reason = `模块 [${module.title}] 后验风险为 ${posteriorRisk}，继续当前模块沙箱推演`;
   }
@@ -245,12 +420,32 @@ export function getNextSchedulableModule(
   }
 
   // 查找所有前置依赖均已 frozen 的 pending 模块
-  return state.modules.find((m) => {
+  const readyPending = state.modules.find((m) => {
     if (m.status !== 'pending') return false;
     return m.dependsOnModuleIds.every(
       (depId) => !allModuleIds.has(depId) || frozenIds.has(depId)
     );
   });
+  if (readyPending) {
+    return readyPending;
+  }
+
+  // 破环兜底守卫 (EDGE-03)：若仍存在 pending 模块但因外部环形依赖导致无就绪节点，
+  // 选取未冻结依赖数最少的首个 pending 模块解锁激活，杜绝 activeModuleId=undefined 静默死锁
+  const pendingModules = state.modules.filter((m) => m.status === 'pending');
+  if (pendingModules.length > 0) {
+    return [...pendingModules].sort((a, b) => {
+      const aUnfrozen = a.dependsOnModuleIds.filter(
+        (d) => allModuleIds.has(d) && !frozenIds.has(d)
+      ).length;
+      const bUnfrozen = b.dependsOnModuleIds.filter(
+        (d) => allModuleIds.has(d) && !frozenIds.has(d)
+      ).length;
+      return aUnfrozen - bUnfrozen;
+    })[0];
+  }
+
+  return undefined;
 }
 
 /**
@@ -260,7 +455,8 @@ export function advanceModularOrchestration(
   state: ModularOrchestrationState,
   targetModuleId: string,
   feedbackDelta: Partial<BayesianModuleBelief['feedbackVector']>,
-  frozenSnippet?: string
+  frozenSnippet?: string,
+  options?: BeliefUpdateOptions
 ): {
   nextState: ModularOrchestrationState;
   action: BayesianPosteriorAction;
@@ -272,7 +468,7 @@ export function advanceModularOrchestration(
 
   const updatedModules = state.modules.map((m) => {
     if (m.moduleId !== targetModuleId) return m;
-    const res = updateModuleBeliefWithFeedback(m, feedbackDelta);
+    const res = updateModuleBeliefWithFeedback(m, feedbackDelta, options);
     action = res.posteriorAction;
     reason = res.reason;
     if (res.updatedModule.status === 'frozen' && frozenSnippet) {
@@ -305,6 +501,168 @@ export function advanceModularOrchestration(
     action,
     reason,
     allModulesFrozen,
+  };
+}
+
+export interface ModularStageTransitionInput {
+  state: ModularOrchestrationState;
+  currentStage: 'challenge' | 'verification' | 'defense';
+  feedbackDelta: Partial<BayesianModuleBelief['feedbackVector']>;
+  proposalOrDefenseSnippet?: string;
+  /** 当前模块已执行的局部重修轮次 (默认 0，上限 1) */
+  currentModuleRefineCount?: number;
+}
+
+export interface ModularStageTransitionResult {
+  nextState: ModularOrchestrationState;
+  posteriorAction: BayesianPosteriorAction;
+  reason: string;
+  nextGameStage: 'challenge' | 'verification' | 'defense' | 'arbitration';
+  allModulesFrozen: boolean;
+  frozenModuleId?: string;
+  activeModuleId?: string;
+  triggeredScopedRefine: boolean;
+}
+
+/**
+ * 5.5 多模块闭环阶段流转控制器 (E2E-03 & EDGE-06)
+ * 保障每个模块严格经历完整生命周期：
+ * - verification 阶段仅记录当前模块实证计数，严禁越级冻结或切走 activeModuleId；
+ * - defense 阶段根据真实实证与越界计数触发 SCOPED_DEFENSE_REFINE（有界回边重修）或 FREEZE_MODULE；
+ * - 当前模块冻结后若仍有未冻结模块 (!allModulesFrozen)，自动激活下一拓扑模块并回环至 challenge 阶段，直至 N/N 全部冻结后方进入 arbitration。
+ */
+export function stepModularStageTransition(
+  input: ModularStageTransitionInput
+): ModularStageTransitionResult {
+  const {
+    state,
+    currentStage,
+    feedbackDelta,
+    proposalOrDefenseSnippet,
+    currentModuleRefineCount = 0,
+  } = input;
+
+  const targetModuleId =
+    state.activeModuleId || getNextSchedulableModule(state)?.moduleId;
+
+  if (!targetModuleId) {
+    return {
+      nextState: state,
+      posteriorAction: 'FREEZE_MODULE',
+      reason: '所有模块均已处于冻结终态',
+      nextGameStage: 'arbitration',
+      allModulesFrozen: true,
+      activeModuleId: undefined,
+      triggeredScopedRefine: false,
+    };
+  }
+
+  if (currentStage === 'challenge') {
+    const adv = advanceModularOrchestration(
+      state,
+      targetModuleId,
+      feedbackDelta,
+      undefined,
+      { allowFreeze: false }
+    );
+    return {
+      nextState: adv.nextState,
+      posteriorAction: adv.action,
+      reason: adv.reason,
+      nextGameStage: 'verification',
+      allModulesFrozen: false,
+      activeModuleId: adv.nextState.activeModuleId,
+      triggeredScopedRefine: false,
+    };
+  }
+
+  if (currentStage === 'verification') {
+    // 若当前模块处于局部重修轮次且本次验证全数通过 (refutedClaims === 0 && verifiedClaims > 0)，清零上一轮遗留证伪计数
+    const resolvedInReverify =
+      currentModuleRefineCount > 0 &&
+      (feedbackDelta.refutedClaims ?? 0) === 0 &&
+      (feedbackDelta.verifiedClaims ?? 0) > 0;
+
+    const adv = advanceModularOrchestration(
+      state,
+      targetModuleId,
+      feedbackDelta,
+      undefined,
+      {
+        allowFreeze: false,
+        resolveRefutedClaims: resolvedInReverify,
+        resolveContractViolations: resolvedInReverify,
+      }
+    );
+    return {
+      nextState: adv.nextState,
+      posteriorAction: adv.action,
+      reason: adv.reason,
+      nextGameStage: 'defense',
+      allModulesFrozen: false,
+      activeModuleId: adv.nextState.activeModuleId,
+      triggeredScopedRefine: false,
+    };
+  }
+
+  // currentStage === 'defense'
+  const reachedRefineLimit = currentModuleRefineCount >= 1;
+  const adv = advanceModularOrchestration(
+    state,
+    targetModuleId,
+    feedbackDelta,
+    proposalOrDefenseSnippet,
+    {
+      allowFreeze: true,
+      isDefenseCompletion: true,
+      resolveRefutedClaims: reachedRefineLimit,
+      resolveContractViolations: reachedRefineLimit,
+      forceFreeze: reachedRefineLimit,
+    }
+  );
+
+  // 规则 B / 规则 C：当前模块存在未决证伪或越界违规，且未达单模块重修上限 -> 锁定当前模块回环重修
+  if (
+    (adv.action === 'SCOPED_DEFENSE_REFINE' ||
+      adv.action === 'ESCALATE_TO_RED_TEAM') &&
+    !reachedRefineLimit
+  ) {
+    return {
+      nextState: adv.nextState,
+      posteriorAction: adv.action,
+      reason: adv.reason,
+      nextGameStage: 'challenge',
+      allModulesFrozen: false,
+      activeModuleId: targetModuleId,
+      triggeredScopedRefine: true,
+    };
+  }
+
+  // 当前模块已收敛冻结，但仍有后续拓扑模块未冻结 -> 切换至下一模块并从 challenge 阶段启动
+  if (!adv.allModulesFrozen) {
+    return {
+      nextState: adv.nextState,
+      posteriorAction: adv.action,
+      reason: adv.reason,
+      nextGameStage: 'challenge',
+      allModulesFrozen: false,
+      frozenModuleId:
+        adv.action === 'FREEZE_MODULE' ? targetModuleId : undefined,
+      activeModuleId: adv.nextState.activeModuleId,
+      triggeredScopedRefine: false,
+    };
+  }
+
+  // 所有模块 (N/N) 均已冻结 -> 正式进入终局仲裁 (arbitration)
+  return {
+    nextState: adv.nextState,
+    posteriorAction: adv.action,
+    reason: adv.reason,
+    nextGameStage: 'arbitration',
+    allModulesFrozen: true,
+    frozenModuleId: targetModuleId,
+    activeModuleId: undefined,
+    triggeredScopedRefine: false,
   };
 }
 

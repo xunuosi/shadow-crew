@@ -6,6 +6,8 @@ import {
   estimateModulePriorRisk,
   getNextSchedulableModule,
   initializeModularOrchestrationState,
+  sanitizeModuleDependencyDAG,
+  stepModularStageTransition,
   updateModuleBeliefWithFeedback,
 } from './bayesianModuleGovernor';
 import { validateModuleScopeContract } from './stageContractGate';
@@ -33,7 +35,7 @@ console.log('🧪 [G-Frame Test] Starting Bayesian Modular Governor & Context Is
   assert.ok(highModule.priorRisk >= 0.85, `Expected high critical prior >= 0.85, got ${highModule.priorRisk}`);
   assert.equal(highModule.routingMode, 'deep_debate', 'High risk module should route to deep_debate');
 
-  console.log('✅ [1/6] Bayesian Prior Estimation & Fast-Track/Deep-Debate Routing Passed');
+  console.log('✅ [1/10] Bayesian Prior Estimation & Fast-Track/Deep-Debate Routing Passed');
 }
 
 // 2. 测试模块 DAG 初始化与拓扑序激活
@@ -78,7 +80,7 @@ assert.equal(state0.activeModuleId, 'mod-1-schema', 'First root module should be
 assert.equal(state0.modules[0].status, 'proposing');
 assert.equal(state0.modules[0].belief.routingMode, 'fast_track');
 assert.equal(state0.modules[1].belief.routingMode, 'deep_debate');
-console.log('✅ [2/6] Module DAG Initialization & Topological Root Activation Passed');
+console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation Passed');
 
 // 3. 测试贝叶斯后验动态升级：当 fast_track 模块发生契约违规时，动态拉起红队 (ESCALATE_TO_RED_TEAM)
 {
@@ -97,7 +99,7 @@ console.log('✅ [2/6] Module DAG Initialization & Topological Root Activation P
     escalated.updatedModule.belief.posteriorRisk >= 0.55,
     `Posterior risk should jump >= 0.55, got ${escalated.updatedModule.belief.posteriorRisk}`
   );
-  console.log('✅ [3/6] Bayesian Posterior Escalation (Fast-Track -> Red Team on Contract Violation) Passed');
+  console.log('✅ [3/10] Bayesian Posterior Escalation (Fast-Track -> Red Team on Contract Violation) Passed');
 }
 
 // 4. 测试完整拓扑序推进：M1 验证通过冻结 -> 自动激活 M2 -> M2 局部重修后冻结 -> 自动激活 M3 -> 全部冻结
@@ -125,8 +127,9 @@ console.log('✅ [2/6] Module DAG Initialization & Topological Root Activation P
   const step2b = advanceModularOrchestration(
     step2a.nextState,
     'mod-2-engine',
-    { refutedClaims: 0, contractViolations: 0, verifiedClaims: 3, edgeCaseCount: 0 },
-    'Mutex lock with bounded timeout 500ms'
+    { verifiedClaims: 3 },
+    'Mutex lock with bounded timeout 500ms',
+    { resolveRefutedClaims: true }
   );
   assert.equal(step2b.action, 'FREEZE_MODULE');
   assert.equal(step2b.nextState.modules[1].status, 'frozen');
@@ -160,10 +163,10 @@ console.log('✅ [2/6] Module DAG Initialization & Topological Root Activation P
   assert.equal(fallbackDraft.modules.length, 3);
   assert.equal(fallbackDraft.modules[1].complexityLevel, 'high_critical');
 
-  console.log('✅ [4/6] Full Module DAG Progression, Blast-Radius Freezing & Scoped Prompt Isolation Passed');
+  console.log('✅ [4/10] Full Module DAG Progression, Blast-Radius Freezing & Scoped Prompt Isolation Passed');
 }
 
-// 5. 测试模块越界守卫 (validateModuleScopeContract)
+// 5. 测试模块越界守卫与白名单重叠拦截 (validateModuleScopeContract & EDGE-04)
 {
   const mod1 = state0.modules[0]; // allowed: src/types.ts
   const illegalTouchText = '我们在本模块中直接修改 src/services/engine.ts 的并发锁逻辑并重写 src/components/Drawer.tsx';
@@ -177,7 +180,48 @@ console.log('✅ [2/6] Module DAG Initialization & Topological Root Activation P
   assert.equal(cleanRes.isScopeValid, true);
   assert.equal(cleanRes.contractViolations, 0);
 
-  console.log('✅ [5/6] Out-of-Scope File Touch Detection Gate Passed');
+  // EDGE-04: 当两个模块白名单存在重叠时，validateModuleScopeContract 严禁放行
+  const overlapModA = { ...state0.modules[0], allowedFiles: ['src/types.ts', 'src/services/engine.ts'] };
+  const overlapModB = { ...state0.modules[1], allowedFiles: ['src/services/engine.ts'] };
+  const overlapRes = validateModuleScopeContract(
+    '我们在模块 A 中修改 src/services/engine.ts 实现逻辑',
+    overlapModA,
+    [overlapModA, overlapModB]
+  );
+  assert.equal(overlapRes.isScopeValid, false, 'EDGE-04: Overlapping whitelist file touch must be rejected');
+  assert.ok(overlapRes.violatedFiles.includes('src/services/engine.ts'));
+
+  // 同时验证 initializeModularOrchestrationState 阶段自动剥离下游重复声明的 allowedFiles
+  const overlapDraft: ModuleDecompositionDraft = {
+    sharedContract: { summary: '契约', typeSignatures: '', invariants: [] },
+    modules: [
+      {
+        moduleId: 'm1',
+        title: 'M1',
+        responsibility: '职责1',
+        allowedFiles: ['src/shared.ts', 'src/m1.ts'],
+        dependsOn: [],
+        complexityLevel: 'low_deterministic',
+      },
+      {
+        moduleId: 'm2',
+        title: 'M2',
+        responsibility: '职责2',
+        allowedFiles: ['src/shared.ts', 'src/m2.ts'],
+        dependsOn: ['m1'],
+        complexityLevel: 'low_deterministic',
+      },
+    ],
+  };
+  const dedupedState = initializeModularOrchestrationState(overlapDraft);
+  assert.deepEqual(dedupedState.modules[0].allowedFiles, ['src/shared.ts', 'src/m1.ts']);
+  assert.deepEqual(
+    dedupedState.modules[1].allowedFiles,
+    ['src/m2.ts'],
+    'EDGE-04: Downstream module must not retain duplicate allowedFiles already owned by upstream module'
+  );
+
+  console.log('✅ [5/10] Out-of-Scope File Touch & Whitelist Overlap Gate (EDGE-04) Passed');
 }
 
 // 6. 测试 MCP submit_module_decomposition 工具载荷提取器
@@ -225,7 +269,7 @@ console.log('✅ [2/6] Module DAG Initialization & Topological Root Activation P
   assert.equal(extracted?.modules[0].moduleId, 'mod-a');
   assert.equal(extracted?.modules[1].complexityLevel, 'high_critical');
 
-  console.log('✅ [6/7] MCP submit_module_decomposition Contract Extractor Passed');
+  console.log('✅ [6/10] MCP submit_module_decomposition Contract Extractor Passed');
 }
 
 // 7. 测试非研发类通用业务议题的动态模块拆解与无代码路径硬编码保障 (Domain-Agnostic Business Discussion)
@@ -240,8 +284,231 @@ console.log('✅ [2/6] Module DAG Initialization & Topological Root Activation P
   assert.deepEqual(bizDraft.modules[0].allowedFiles, [], 'Pure business topic must not hardcode src/types.ts');
   assert.ok(bizDraft.modules[0].title.includes('阶梯定价与毛利测算模型'));
   assert.equal(bizDraft.modules[1].complexityLevel, 'high_critical', 'Compliance/compensation module must be recognized as high_critical');
-  console.log('✅ [7/7] Domain-Agnostic Business Discussion Decomposition (Zero R&D Hardcoding) Passed\n');
+  console.log('✅ [7/10] Domain-Agnostic Business Discussion Decomposition (Zero R&D Hardcoding) Passed');
 }
 
-console.log('🎉 [G-Frame Complete] All 7 test suites passed 100%!');
+// 8. 测试 EDGE-02 (模块数下限 >= 2 补齐) 与 EDGE-05 (feedbackDelta 增量累加而非绝对值覆盖)
+{
+  const singleModDraft: ModuleDecompositionDraft = {
+    sharedContract: { summary: '单模块输入测试', typeSignatures: '', invariants: [] },
+    modules: [
+      {
+        moduleId: 'only-one',
+        title: '唯一模块',
+        responsibility: '主干逻辑',
+        allowedFiles: [],
+        dependsOn: [],
+        complexityLevel: 'medium_standard',
+      },
+    ],
+  };
+  const paddedState = initializeModularOrchestrationState(singleModDraft);
+  assert.equal(paddedState.modules.length, 2, 'EDGE-02: Single-module draft must be padded to minimum 2 modules');
+  assert.equal(paddedState.activeModuleId, 'only-one');
+
+  // EDGE-05: 连续两次增量传入 verifiedClaims: 1 或 refutedClaims: 1，应累加为 2，且传入 refutedClaims: 0 不得覆盖历史证伪数
+  const initialMod = paddedState.modules[0];
+  const pass1 = updateModuleBeliefWithFeedback(initialMod, { refutedClaims: 1, verifiedClaims: 1 });
+  assert.equal(pass1.updatedModule.belief.feedbackVector.refutedClaims, 1);
+  assert.equal(pass1.updatedModule.belief.feedbackVector.verifiedClaims, 1);
+
+  const pass2 = updateModuleBeliefWithFeedback(pass1.updatedModule, { refutedClaims: 0, verifiedClaims: 1 });
+  assert.equal(
+    pass2.updatedModule.belief.feedbackVector.refutedClaims,
+    1,
+    'EDGE-05: Passing delta refutedClaims: 0 must not overwrite historical refutedClaims=1'
+  );
+  assert.equal(
+    pass2.updatedModule.belief.feedbackVector.verifiedClaims,
+    2,
+    'EDGE-05: Passing delta verifiedClaims: 1 twice must accumulate to 2'
+  );
+  assert.equal(
+    pass2.posteriorAction,
+    'SCOPED_DEFENSE_REFINE',
+    'EDGE-05/EDGE-06: Historical refutedClaims=1 must keep module in SCOPED_DEFENSE_REFINE until explicitly resolved'
+  );
+  console.log('✅ [8/10] Module Lower-Bound Guard (EDGE-02) & Incremental Feedback Delta (EDGE-05) Passed');
+}
+
+// 9. 测试 EDGE-03：环形依赖 (M1 ⇄ M2 及 M1->M2->M3->M1) 自动破环守卫，杜绝 activeModuleId=undefined 静默死锁
+{
+  const cyclicDraft: ModuleDecompositionDraft = {
+    sharedContract: { summary: '环形依赖测试', typeSignatures: '', invariants: [] },
+    modules: [
+      {
+        moduleId: 'm1',
+        title: '模块 1',
+        responsibility: '依赖 M2 形成互锁',
+        allowedFiles: [],
+        dependsOn: ['m2'],
+        complexityLevel: 'low_deterministic',
+      },
+      {
+        moduleId: 'm2',
+        title: '模块 2',
+        responsibility: '依赖 M1 形成互锁',
+        allowedFiles: [],
+        dependsOn: ['m1'],
+        complexityLevel: 'medium_standard',
+      },
+    ],
+  };
+  const acyclicState = initializeModularOrchestrationState(cyclicDraft);
+  assert.equal(
+    acyclicState.activeModuleId,
+    'm1',
+    'EDGE-03: M1⇄M2 cycle must be broken so m1 becomes active topological root'
+  );
+  assert.equal(acyclicState.modules[0].status, 'proposing');
+  assert.deepEqual(acyclicState.modules[0].dependsOnModuleIds, []);
+  assert.deepEqual(acyclicState.modules[1].dependsOnModuleIds, ['m1']);
+
+  const sanitizedTriCycle = sanitizeModuleDependencyDAG([
+    { ...acyclicState.modules[0], moduleId: 'a', dependsOnModuleIds: ['c'] },
+    { ...acyclicState.modules[1], moduleId: 'b', dependsOnModuleIds: ['a'] },
+    { ...acyclicState.modules[1], moduleId: 'c', dependsOnModuleIds: ['b'] },
+  ]);
+  assert.ok(
+    sanitizedTriCycle.some((m) => m.dependsOnModuleIds.length === 0),
+    'EDGE-03: 3-node cycle A->C->B->A must yield at least one root module with 0 dependencies'
+  );
+  console.log('✅ [9/10] Cyclic Dependency Detection & Deadlock-Free Root Activation (EDGE-03) Passed');
+}
+
+// 10. 测试 E2E-03 & EDGE-06：三模块完整阶段闭环 (challenge -> verification -> defense) 与 SCOPED_DEFENSE_REFINE 真实可达性
+{
+  let simState = initializeModularOrchestrationState(sampleDraft);
+  assert.equal(simState.activeModuleId, 'mod-1-schema');
+
+  // --- M1: challenge -> verification -> defense -> FREEZE (1/3) ---
+  let step = stepModularStageTransition({
+    state: simState,
+    currentStage: 'challenge',
+    feedbackDelta: { edgeCaseCount: 1 },
+  });
+  assert.equal(step.nextGameStage, 'verification');
+  assert.equal(step.activeModuleId, 'mod-1-schema');
+
+  step = stepModularStageTransition({
+    state: step.nextState,
+    currentStage: 'verification',
+    feedbackDelta: { verifiedClaims: 2, refutedClaims: 0 },
+  });
+  assert.equal(step.nextGameStage, 'defense');
+  assert.equal(
+    step.activeModuleId,
+    'mod-1-schema',
+    'E2E-03: verification(M1) must NOT prematurely freeze M1 or switch activeModuleId to M2 before defense(M1)'
+  );
+  assert.notEqual(step.nextState.modules[0].status, 'frozen');
+
+  step = stepModularStageTransition({
+    state: step.nextState,
+    currentStage: 'defense',
+    feedbackDelta: { verifiedClaims: 1, refutedClaims: 0, contractViolations: 0 },
+    proposalOrDefenseSnippet: 'M1 Schema Frozen Patch',
+  });
+  assert.equal(step.posteriorAction, 'FREEZE_MODULE');
+  assert.equal(step.frozenModuleId, 'mod-1-schema');
+  assert.equal(step.allModulesFrozen, false);
+  assert.equal(step.activeModuleId, 'mod-2-engine', 'After defense(M1) freezes M1, M2 becomes active');
+  assert.equal(step.nextGameStage, 'challenge', 'E2E-03: Must loop back to challenge for M2 instead of jumping to arbitration');
+
+  // --- M2: challenge -> verification (1 refuted claim!) -> defense (triggers Rule C: SCOPED_DEFENSE_REFINE!) ---
+  step = stepModularStageTransition({
+    state: step.nextState,
+    currentStage: 'challenge',
+    feedbackDelta: { edgeCaseCount: 1 },
+  });
+  assert.equal(step.nextGameStage, 'verification');
+  assert.equal(step.activeModuleId, 'mod-2-engine');
+
+  step = stepModularStageTransition({
+    state: step.nextState,
+    currentStage: 'verification',
+    feedbackDelta: { verifiedClaims: 1, refutedClaims: 1 },
+  });
+  assert.equal(step.nextGameStage, 'defense');
+  assert.equal(step.activeModuleId, 'mod-2-engine');
+
+  step = stepModularStageTransition({
+    state: step.nextState,
+    currentStage: 'defense',
+    feedbackDelta: { verifiedClaims: 0, refutedClaims: 0, contractViolations: 0 },
+    proposalOrDefenseSnippet: 'M2 First Defense Attempt',
+    currentModuleRefineCount: 0,
+  });
+  assert.equal(
+    step.posteriorAction,
+    'SCOPED_DEFENSE_REFINE',
+    'EDGE-06: Rule C (SCOPED_DEFENSE_REFINE) must be reachable at runtime when verification recorded refutedClaims > 0'
+  );
+  assert.equal(step.triggeredScopedRefine, true);
+  assert.equal(step.activeModuleId, 'mod-2-engine');
+  assert.equal(step.nextGameStage, 'challenge', 'SCOPED_DEFENSE_REFINE must loop back to challenge on M2');
+
+  // --- M2 Refine Pass: challenge -> verification (resolved!) -> defense -> FREEZE (2/3) ---
+  step = stepModularStageTransition({
+    state: step.nextState,
+    currentStage: 'challenge',
+    feedbackDelta: { edgeCaseCount: 0 },
+    currentModuleRefineCount: 1,
+  });
+  step = stepModularStageTransition({
+    state: step.nextState,
+    currentStage: 'verification',
+    feedbackDelta: { verifiedClaims: 2, refutedClaims: 0 },
+    currentModuleRefineCount: 1,
+  });
+  step = stepModularStageTransition({
+    state: step.nextState,
+    currentStage: 'defense',
+    feedbackDelta: { verifiedClaims: 1, refutedClaims: 0, contractViolations: 0 },
+    proposalOrDefenseSnippet: 'M2 Refined & Verified Patch',
+    currentModuleRefineCount: 1,
+  });
+  assert.equal(step.posteriorAction, 'FREEZE_MODULE');
+  assert.equal(step.frozenModuleId, 'mod-2-engine');
+  assert.equal(step.allModulesFrozen, false);
+  assert.equal(step.activeModuleId, 'mod-3-ui', 'After M2 freezes, M3 becomes active');
+  assert.equal(step.nextGameStage, 'challenge', 'E2E-03: Must loop back to challenge for M3');
+
+  // --- M3: challenge -> verification -> defense -> FREEZE (3/3) -> arbitration ---
+  step = stepModularStageTransition({
+    state: step.nextState,
+    currentStage: 'challenge',
+    feedbackDelta: { edgeCaseCount: 0 },
+  });
+  assert.equal(step.nextGameStage, 'verification');
+  assert.equal(step.activeModuleId, 'mod-3-ui');
+
+  step = stepModularStageTransition({
+    state: step.nextState,
+    currentStage: 'verification',
+    feedbackDelta: { verifiedClaims: 2, refutedClaims: 0 },
+  });
+  assert.equal(step.nextGameStage, 'defense');
+  assert.equal(step.activeModuleId, 'mod-3-ui');
+
+  step = stepModularStageTransition({
+    state: step.nextState,
+    currentStage: 'defense',
+    feedbackDelta: { verifiedClaims: 1, refutedClaims: 0, contractViolations: 0 },
+    proposalOrDefenseSnippet: 'M3 UI Frozen Patch',
+  });
+  assert.equal(step.posteriorAction, 'FREEZE_MODULE');
+  assert.equal(step.frozenModuleId, 'mod-3-ui');
+  assert.equal(step.allModulesFrozen, true, 'E2E-03: All 3/3 modules must reach frozen state');
+  assert.equal(step.activeModuleId, undefined);
+  assert.equal(step.nextGameStage, 'arbitration', 'E2E-03: Only transition to arbitration after 3/3 modules are frozen');
+  assert.deepEqual(
+    step.nextState.modules.map((m) => m.status),
+    ['frozen', 'frozen', 'frozen']
+  );
+
+  console.log('✅ [10/10] E2E-03 3/3 Multi-Module Loop Closure & EDGE-06 Runtime SCOPED_DEFENSE_REFINE Reachability Passed\n');
+}
+
+console.log('🎉 [G-Frame Complete] All 10 test suites passed 100%!');
 

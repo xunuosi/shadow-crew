@@ -97,6 +97,7 @@ import {
   validateModuleScopeContract,
   STAGE_CONTRACT_MAX_RETRIES,
   tieredGroundingGovernor,
+  parseVerifierOutput,
   processVerifierEvidenceChain,
   evaluateDynamicSycophancyScore,
   applySycophancyDiscountToSprt,
@@ -106,6 +107,7 @@ import {
   initializeModularOrchestrationState,
   buildDefaultDecompositionFromTopic,
   advanceModularOrchestration,
+  stepModularStageTransition,
 } from './services/agentCollaboration';
 
 export default function App() {
@@ -2136,7 +2138,7 @@ export default function App() {
         }
       }
       if (!parentThreadId) return prev;
-      return {
+      const next = {
         ...prev,
         [parentThreadId]: (prev[parentThreadId] || []).map((m) => {
           if (m.type === 'topic' && m.topicData?.id === topicId) {
@@ -2148,6 +2150,8 @@ export default function App() {
           return m;
         }),
       };
+      messagesRef.current = next;
+      return next;
     });
   };
 
@@ -2299,6 +2303,7 @@ export default function App() {
         [topicId]: [...(prev[topicId] || []), challengerPendingMsg],
       }));
 
+      const latestTopicForChallenge = getTopicData(topicId) || currentTopic;
       const topicContext: TopicPromptContext = {
         topicId,
         title: currentTopic.title,
@@ -2309,6 +2314,7 @@ export default function App() {
         gameRoles: currentTopic.gameRoles,
         gameStage: 'challenge',
         targetProposalText,
+        modularState: latestTopicForChallenge.gameTheoreticState?.modularState,
         participatingAgents: candidateAgents,
       };
 
@@ -2558,13 +2564,23 @@ export default function App() {
           return;
         }
 
-        const hasVerifiers = (currentTopic.gameRoles?.verifiers || []).length > 0;
-        // 若触发 Early Exit 则直接跳过冗余辩论进入仲裁，否则正常推进
-        const nextStageTarget = sprtState.decisionState === 'early_exit'
-          ? 'arbitration'
-          : (hasVerifiers ? 'verification' : 'defense');
+        const latestTopicAfterChallenge = getTopicData(topicId) || currentTopic;
+        const activeModularInChallenge = latestTopicAfterChallenge.gameTheoreticState?.modularState;
+        const hasUnfrozenModules = Boolean(
+          activeModularInChallenge?.enabled &&
+            activeModularInChallenge.modules.some((m) => m.status !== 'frozen')
+        );
 
-        if (sprtState.decisionState === 'early_exit') {
+        const hasVerifiers = (currentTopic.gameRoles?.verifiers || []).length > 0;
+        // 若启用 G-Frame 模块化分治且尚有未冻结模块，必须经由验证/答辩完成各模块冻结，严禁提前跳入仲裁弃置后续模块 (E2E-03)
+        const nextStageTarget =
+          sprtState.decisionState === 'early_exit' && !hasUnfrozenModules
+            ? 'arbitration'
+            : hasVerifiers
+            ? 'verification'
+            : 'defense';
+
+        if (sprtState.decisionState === 'early_exit' && !hasUnfrozenModules) {
           const earlyExitMsg: Message = {
             id: `msg-early-exit-${Date.now()}`,
             threadId: topicId,
@@ -2585,27 +2601,55 @@ export default function App() {
         }
 
         // 阶段 2 反例压测完成后，转入【阶段 3: 接地验证 (Verification)】或【阶段 4: 答辩修正 (Defense)】或【阶段 5: 仲裁】
-        updateTopicDataInState(topicId, (old) => ({
-          ...old,
-          gameStage: nextStageTarget,
-          gameTheoreticState: {
-            ...old.gameTheoreticState,
-            currentStage: nextStageTarget,
-            targetProposalContent: targetProposalText,
-            targetChallengeContent: acpResp.textResponse,
-            isChallengerResponded: true,
-            quorumAlert: undefined,
-            sprtState,
-            minorityReport,
-            cognoNexus: {
-              committedStates,
-              currentDispute: disputePacket,
+        updateTopicDataInState(topicId, (old) => {
+          const prevModular = old.gameTheoreticState?.modularState;
+          let nextModular = prevModular;
+          if (prevModular?.enabled && prevModular.activeModuleId) {
+            const challengeStep = stepModularStageTransition({
+              state: prevModular,
+              currentStage: 'challenge',
+              feedbackDelta: {
+                edgeCaseCount: Math.min(
+                  2,
+                  committedStates.filter((c) => c.status === 'disputed' || c.status === 'refuted').length || (disputePacket ? 1 : 0)
+                ),
+              },
+            });
+            nextModular = {
+              ...challengeStep.nextState,
+              modules: challengeStep.nextState.modules.map((m) =>
+                m.moduleId === prevModular.activeModuleId
+                  ? { ...m, scopedMessageIds: [...m.scopedMessageIds, challengerReply.id] }
+                  : m
+              ),
+            };
+          }
+          return {
+            ...old,
+            gameStage: nextStageTarget,
+            gameTheoreticState: {
+              ...old.gameTheoreticState,
+              currentStage: nextStageTarget,
+              targetProposalContent: targetProposalText,
+              targetChallengeContent: acpResp.textResponse,
+              isChallengerResponded: true,
+              quorumAlert: undefined,
               sprtState,
               minorityReport,
+              modularState: nextModular,
+              cognoNexus: {
+                ...old.gameTheoreticState?.cognoNexus,
+                committedStates,
+                currentDispute: disputePacket,
+                sprtState,
+                minorityReport,
+                modularState: nextModular,
+              },
             },
-          },
-        }));
+          };
+        });
 
+        inFlightHandoverRef.current.delete(handoverKey);
         triggerGameTheoreticStageHandover({
           topicId,
           nextStage: nextStageTarget,
@@ -2774,6 +2818,7 @@ export default function App() {
         [topicId]: [...(prev[topicId] || []), verifierPendingMsg],
       }));
 
+      const latestTopicForVerification = getTopicData(topicId) || currentTopic;
       const topicContext: TopicPromptContext = {
         topicId,
         title: currentTopic.title,
@@ -2785,6 +2830,7 @@ export default function App() {
         gameStage: 'verification',
         targetProposalText,
         targetChallengeText,
+        modularState: latestTopicForVerification.gameTheoreticState?.modularState,
         participatingAgents: candidateAgents,
       };
 
@@ -2903,6 +2949,7 @@ export default function App() {
               ...prev,
               [topicId]: [...(prev[topicId] || []), refineNotice],
             }));
+            inFlightHandoverRef.current.delete(handoverKey);
             triggerGameTheoreticStageHandover({
               topicId,
               nextStage: 'verification',
@@ -2966,23 +3013,32 @@ export default function App() {
           evidenceCount: evidences.length,
         });
 
-        // 阶段 3 验证完成后，更新 G-Frame 模块贝叶斯后验信念并转入【阶段 4: 答辩修正 (defense)】
+        // 阶段 3 验证完成后，仅记录当前活跃模块的实证计数（严禁在 verification 阶段提前冻结切换模块，留待 defense 闭环冻结，E2E-03）
         updateTopicDataInState(topicId, (old) => {
           const prevModular = old.gameTheoreticState?.modularState;
           let nextModular = prevModular;
           if (prevModular?.enabled && prevModular.activeModuleId) {
             const verifiedCount = evidences.filter((e) => e.truthValue).length;
             const refutedCount = evidences.filter((e) => !e.truthValue).length;
-            const adv = advanceModularOrchestration(
-              prevModular,
-              prevModular.activeModuleId,
-              {
+            const modRefineKey = `${topicId}:mod-refine:${prevModular.activeModuleId}`;
+            const currentModRefines = stageRefineRetriesRef.current[modRefineKey] || 0;
+            const verStep = stepModularStageTransition({
+              state: prevModular,
+              currentStage: 'verification',
+              feedbackDelta: {
                 verifiedClaims: verifiedCount,
                 refutedClaims: refutedCount,
               },
-              targetProposalText
-            );
-            nextModular = adv.nextState;
+              currentModuleRefineCount: currentModRefines,
+            });
+            nextModular = {
+              ...verStep.nextState,
+              modules: verStep.nextState.modules.map((m) =>
+                m.moduleId === prevModular.activeModuleId
+                  ? { ...m, scopedMessageIds: [...m.scopedMessageIds, verifierReply.id] }
+                  : m
+              ),
+            };
           }
           return {
             ...old,
@@ -3007,6 +3063,7 @@ export default function App() {
           };
         });
 
+        inFlightHandoverRef.current.delete(handoverKey);
         triggerGameTheoreticStageHandover({
           topicId,
           nextStage: 'defense',
@@ -3170,6 +3227,7 @@ export default function App() {
         [topicId]: [...(prev[topicId] || []), defensePendingMsg],
       }));
 
+      const latestTopicForDefense = getTopicData(topicId) || currentTopic;
       const topicContext: TopicPromptContext = {
         topicId,
         title: currentTopic.title,
@@ -3182,6 +3240,7 @@ export default function App() {
         targetProposalText,
         targetChallengeText,
         targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
+        modularState: latestTopicForDefense.gameTheoreticState?.modularState,
         participatingAgents: candidateAgents,
       };
 
@@ -3544,38 +3603,124 @@ export default function App() {
           return;
         }
 
-        // 阶段 3 答辩修正完成后，执行模块边界校验与冻结更新，并转入【阶段 4: 中立仲裁】
+        // 阶段 4 答辩修正完成后，基于真实实证与越界计数推进 G-Frame 模块状态机 (E2E-03 & EDGE-06)
+        // - 若触发 SCOPED_DEFENSE_REFINE，回环至当前模块 challenge 阶段进行有界局部重修；
+        // - 若当前模块 FREEZE_MODULE 但尚有后续模块未冻结 (!allModulesFrozen)，激活下一拓扑模块并回环至 challenge；
+        // - 仅当全部模块 (N/N) 均已 Frozen 时，才流转至终局仲裁 (arbitration)。
+        let resolvedNextStage: 'challenge' | 'arbitration' = 'arbitration';
+        let transitionNoticeMsg: Message | null = null;
+
         updateTopicDataInState(topicId, (old) => {
           const prevModular = old.gameTheoreticState?.modularState;
           let nextModular = prevModular;
+
           if (prevModular?.enabled && prevModular.activeModuleId) {
-            const activeMod = prevModular.modules.find((m) => m.moduleId === prevModular.activeModuleId);
+            const activeMod = prevModular.modules.find(
+              (m) => m.moduleId === prevModular.activeModuleId
+            );
             const scopeCheck = activeMod
-              ? validateModuleScopeContract(acpResp.textResponse, activeMod, prevModular.modules, prevModular.sharedContract)
-              : { contractViolations: 0 };
-            const adv = advanceModularOrchestration(
-              prevModular,
-              prevModular.activeModuleId,
-              {
-                verifiedClaims: 2,
-                refutedClaims: 0,
+              ? validateModuleScopeContract(
+                  acpResp.textResponse,
+                  activeMod,
+                  prevModular.modules,
+                  prevModular.sharedContract
+                )
+              : { isScopeValid: true, contractViolations: 0, violatedFiles: [], violationDetails: [] };
+
+            const parsedVerEvidences = parseVerifierOutput(verificationText);
+            const refutedInVerCount = parsedVerEvidences.filter((e) => !e.truthValue).length;
+            const refutedDefenseCount =
+              (sycophancyEval.surrenderDetected ? 1 : 0) +
+              defenseClaims.filter((c) => c.status === 'refuted').length;
+            const verifiedDefenseCount =
+              !sycophancyEval.surrenderDetected &&
+              scopeCheck.contractViolations === 0 &&
+              refutedDefenseCount === 0 &&
+              (refutedInVerCount === 0 || groundedTrueRatio >= 0.5)
+                ? Math.max(1, defenseClaims.filter((c) => c.status !== 'refuted').length)
+                : 0;
+
+            const modRefineKey = `${topicId}:mod-refine:${prevModular.activeModuleId}`;
+            const currentModRefines = stageRefineRetriesRef.current[modRefineKey] || 0;
+
+            const modStep = stepModularStageTransition({
+              state: prevModular,
+              currentStage: 'defense',
+              feedbackDelta: {
+                verifiedClaims: verifiedDefenseCount,
+                refutedClaims: refutedDefenseCount,
                 contractViolations: scopeCheck.contractViolations,
                 dssScore: sycophancyEval.dss,
               },
-              acpResp.textResponse
-            );
-            nextModular = adv.nextState;
+              proposalOrDefenseSnippet: acpResp.textResponse,
+              currentModuleRefineCount: currentModRefines,
+            });
+
+            nextModular = {
+              ...modStep.nextState,
+              modules: modStep.nextState.modules.map((m) =>
+                m.moduleId === prevModular.activeModuleId
+                  ? { ...m, scopedMessageIds: [...m.scopedMessageIds, defenseReply.id] }
+                  : m
+              ),
+            };
+
+            if (modStep.triggeredScopedRefine && activeMod) {
+              stageRefineRetriesRef.current[modRefineKey] = currentModRefines + 1;
+              resolvedNextStage = 'challenge';
+              transitionNoticeMsg = {
+                id: `msg-mod-refine-${Date.now()}`,
+                threadId: topicId,
+                channelId: topicChannel?.id,
+                authorId: 'system',
+                authorName: 'G-Frame 贝叶斯模块总控',
+                authorHandle: '@gframe-governor',
+                authorAvatar: '🧭',
+                isAgent: true,
+                agentBadge: `SCOPED_DEFENSE_REFINE (${currentModRefines + 1}/1)`,
+                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                content: `🔄 **触发模块沙箱局部重修 (SCOPED_DEFENSE_REFINE)**：${modStep.reason}。已锁定当前模块「${activeMod.title}」发起有界二次核验，已冻结上游模块不受波及。`,
+                gameStage: 'challenge',
+              };
+            } else if (!modStep.allModulesFrozen) {
+              delete stageRefineRetriesRef.current[modRefineKey];
+              resolvedNextStage = 'challenge';
+              const nextActiveMod = nextModular.modules.find(
+                (m) => m.moduleId === nextModular?.activeModuleId
+              );
+              const frozenCount = nextModular.modules.filter((m) => m.status === 'frozen').length;
+              transitionNoticeMsg = {
+                id: `msg-mod-advance-${Date.now()}`,
+                threadId: topicId,
+                channelId: topicChannel?.id,
+                authorId: 'system',
+                authorName: 'G-Frame 贝叶斯模块总控',
+                authorHandle: '@gframe-governor',
+                authorAvatar: '🧊',
+                isAgent: true,
+                agentBadge: `Module Frozen (${frozenCount}/${nextModular.modules.length})`,
+                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                content: `🧊 **模块收敛硬冻结 & 拓扑切换**：模块「${activeMod?.title || prevModular.activeModuleId}」已完成实证收敛并锁定为 Frozen（当前已冻结 ${frozenCount}/${nextModular.modules.length}）。\n\n正在按 DAG 拓扑序激活下一模块「**${nextActiveMod?.title || nextModular.activeModuleId}**」进入独立沙箱攻防与接地验证...`,
+                gameStage: 'challenge',
+              };
+            } else {
+              delete stageRefineRetriesRef.current[modRefineKey];
+              resolvedNextStage = 'arbitration';
+            }
           }
+
           return {
             ...old,
-            gameStage: 'arbitration',
+            gameStage: resolvedNextStage,
             gameTheoreticState: {
               ...old.gameTheoreticState,
-              currentStage: 'arbitration',
+              currentStage: resolvedNextStage,
               targetProposalContent: targetProposalText,
               targetChallengeContent: targetChallengeText,
               targetDefenseContent: acpResp.textResponse,
-              isDefenseResponded: true,
+              isChallengerResponded: resolvedNextStage === 'arbitration',
+              isVerifierResponded: resolvedNextStage === 'arbitration',
+              isDefenseResponded: resolvedNextStage === 'arbitration',
               sprtState: sprtStateAfterDefense,
               minorityReport: old.gameTheoreticState?.minorityReport,
               latestSycophancy: sycophancyEval,
@@ -3592,9 +3737,18 @@ export default function App() {
           };
         });
 
+        if (transitionNoticeMsg) {
+          const noticeToPost = transitionNoticeMsg;
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: [...(prev[topicId] || []), noticeToPost],
+          }));
+        }
+
+        inFlightHandoverRef.current.delete(handoverKey);
         triggerGameTheoreticStageHandover({
           topicId,
-          nextStage: 'arbitration',
+          nextStage: resolvedNextStage,
           targetProposalText,
           targetChallengeText,
           targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
@@ -3714,6 +3868,7 @@ export default function App() {
           [topicId]: [...(prev[topicId] || []), arbiterPendingMsg],
         }));
 
+        const latestTopicForArbitration = getTopicData(topicId) || currentTopic;
         const topicContext: TopicPromptContext = {
           topicId,
           title: currentTopic.title,
@@ -3727,6 +3882,7 @@ export default function App() {
           targetChallengeText,
           targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
           targetDefenseText,
+          modularState: latestTopicForArbitration.gameTheoreticState?.modularState,
           participatingAgents: candidateAgents,
         };
 
