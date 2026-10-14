@@ -419,6 +419,54 @@ fn db_clear_safe_cache(state: State<'_, AppState>) -> Result<u64, String> {
     state.db_manager.clear_safe_cache(&log_path).map_err(|e| e.to_string())
 }
 
+/// Tauri Command: 获取完整工作区聚合数据 (projects, channels, threads, agents, teams, workspaceState)
+#[tauri::command]
+fn db_get_full_workspace_data(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    state.db_manager.get_full_workspace_data().map_err(|e| e.to_string())
+}
+
+/// Tauri Command: 保存项目列表
+#[tauri::command]
+fn db_save_projects(projects: Vec<serde_json::Value>, state: State<'_, AppState>) -> Result<(), String> {
+    state.db_manager.save_projects(&projects).map_err(|e| e.to_string())
+}
+
+/// Tauri Command: 保存频道列表
+#[tauri::command]
+fn db_save_channels(channels: Vec<serde_json::Value>, state: State<'_, AppState>) -> Result<(), String> {
+    state.db_manager.save_channels(&channels).map_err(|e| e.to_string())
+}
+
+/// Tauri Command: 保存话题/议题列表
+#[tauri::command]
+fn db_save_threads(threads: Vec<serde_json::Value>, state: State<'_, AppState>) -> Result<(), String> {
+    state.db_manager.save_threads(&threads).map_err(|e| e.to_string())
+}
+
+/// Tauri Command: 保存 Agent 列表
+#[tauri::command]
+fn db_save_agents(agents: Vec<serde_json::Value>, state: State<'_, AppState>) -> Result<(), String> {
+    state.db_manager.save_agents(&agents).map_err(|e| e.to_string())
+}
+
+/// Tauri Command: 保存 Team 编队列表
+#[tauri::command]
+fn db_save_teams(teams: Vec<serde_json::Value>, state: State<'_, AppState>) -> Result<(), String> {
+    state.db_manager.save_teams(&teams).map_err(|e| e.to_string())
+}
+
+/// Tauri Command: 保存单个工作区状态项
+#[tauri::command]
+fn db_save_workspace_state(key: String, value: serde_json::Value, state: State<'_, AppState>) -> Result<(), String> {
+    state.db_manager.save_workspace_state(&key, &value).map_err(|e| e.to_string())
+}
+
+/// Tauri Command: 获取单个工作区状态项
+#[tauri::command]
+fn db_get_workspace_state(key: String, state: State<'_, AppState>) -> Result<Option<serde_json::Value>, String> {
+    state.db_manager.get_workspace_state(&key).map_err(|e| e.to_string())
+}
+
 /// Tauri Command: 打开指定频道的落地产物工作区目录 (系统 Finder / 资源管理器)
 #[tauri::command]
 async fn open_channel_artifacts_dir(channel_id: String) -> Result<String, String> {
@@ -633,6 +681,14 @@ async fn main() {
             db_clear_all_messages,
             db_get_storage_stats,
             db_clear_safe_cache,
+            db_get_full_workspace_data,
+            db_save_projects,
+            db_save_channels,
+            db_save_threads,
+            db_save_agents,
+            db_save_teams,
+            db_save_workspace_state,
+            db_get_workspace_state,
             native_http_post,
             open_channel_artifacts_dir,
             get_channel_dir_info,

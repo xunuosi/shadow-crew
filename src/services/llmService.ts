@@ -1,4 +1,5 @@
 import { Agent, AgentModelConfig, ModelProviderType } from '../types';
+import { saveWorkspaceStateToDb } from './dbClient';
 
 export interface ProviderPreset {
   id: string;
@@ -255,6 +256,7 @@ export function getGlobalModelConfig(): AgentModelConfig {
 export function setGlobalModelConfig(config: AgentModelConfig): void {
   if (typeof window === 'undefined') return;
   try {
+    saveWorkspaceStateToDb('global_model_config', config);
     localStorage.setItem(GLOBAL_MODEL_CONFIG_STORAGE_KEY, JSON.stringify(config));
     window.dispatchEvent(new CustomEvent('shinobi_global_model_updated', { detail: config }));
   } catch (e) {

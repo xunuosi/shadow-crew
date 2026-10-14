@@ -135,6 +135,54 @@ impl DatabaseManager {
             CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
             CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id);
             CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
+
+            -- 3. 核心领域实体表 (工作区与实体状态唯一真值来源)
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS channels (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_channels_project ON channels(project_id);
+
+            CREATE TABLE IF NOT EXISTS threads (
+                id TEXT PRIMARY KEY,
+                channel_id TEXT NOT NULL,
+                title TEXT,
+                data_json TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_threads_channel ON threads(channel_id);
+
+            CREATE TABLE IF NOT EXISTS agents (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                handle TEXT,
+                data_json TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS teams (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- 4. 活跃工作区状态与全局模型配置键值表
+            CREATE TABLE IF NOT EXISTS workspace_state (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
         ");
 
         Ok(Self {
@@ -395,5 +443,303 @@ impl DatabaseManager {
         }
 
         Ok(freed_bytes)
+    }
+
+    /// 保存项目列表
+    pub fn save_projects(&self, projects: &[serde_json::Value]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM projects", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO projects (id, name, data_json) VALUES (?1, ?2, ?3)",
+            )?;
+            for val in projects {
+                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if !id.is_empty() {
+                    let json_str = serde_json::to_string(val)?;
+                    let _ = stmt.execute(params![id, name, json_str]);
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 查询项目列表
+    pub fn get_projects(&self) -> Result<Vec<serde_json::Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT data_json FROM projects ORDER BY updated_at ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut list = Vec::new();
+        for r in rows.flatten() {
+            if let Ok(v) = serde_json::from_str(&r) {
+                list.push(v);
+            }
+        }
+        Ok(list)
+    }
+
+    /// 保存频道列表
+    pub fn save_channels(&self, channels: &[serde_json::Value]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM channels", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO channels (id, project_id, name, data_json) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for val in channels {
+                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let project_id = val.get("projectId").and_then(|v| v.as_str()).unwrap_or("");
+                let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if !id.is_empty() {
+                    let json_str = serde_json::to_string(val)?;
+                    let _ = stmt.execute(params![id, project_id, name, json_str]);
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 查询频道列表
+    pub fn get_channels(&self) -> Result<Vec<serde_json::Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT data_json FROM channels ORDER BY updated_at ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut list = Vec::new();
+        for r in rows.flatten() {
+            if let Ok(v) = serde_json::from_str(&r) {
+                list.push(v);
+            }
+        }
+        Ok(list)
+    }
+
+    /// 保存话题/议题列表
+    pub fn save_threads(&self, threads: &[serde_json::Value]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM threads", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO threads (id, channel_id, title, data_json) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for val in threads {
+                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let channel_id = val.get("channelId").and_then(|v| v.as_str()).unwrap_or("");
+                let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                if !id.is_empty() {
+                    let json_str = serde_json::to_string(val)?;
+                    let _ = stmt.execute(params![id, channel_id, title, json_str]);
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 查询话题/议题列表
+    pub fn get_threads(&self) -> Result<Vec<serde_json::Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT data_json FROM threads ORDER BY updated_at ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut list = Vec::new();
+        for r in rows.flatten() {
+            if let Ok(v) = serde_json::from_str(&r) {
+                list.push(v);
+            }
+        }
+        Ok(list)
+    }
+
+    /// 保存 Agent 列表
+    pub fn save_agents(&self, agents: &[serde_json::Value]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM agents", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO agents (id, name, handle, data_json) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for val in agents {
+                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let handle = val.get("handle").and_then(|v| v.as_str()).unwrap_or("");
+                if !id.is_empty() {
+                    let json_str = serde_json::to_string(val)?;
+                    let _ = stmt.execute(params![id, name, handle, json_str]);
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 查询 Agent 列表
+    pub fn get_agents(&self) -> Result<Vec<serde_json::Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT data_json FROM agents ORDER BY updated_at ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut list = Vec::new();
+        for r in rows.flatten() {
+            if let Ok(v) = serde_json::from_str(&r) {
+                list.push(v);
+            }
+        }
+        Ok(list)
+    }
+
+    /// 保存 Team 编队列表
+    pub fn save_teams(&self, teams: &[serde_json::Value]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM teams", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO teams (id, name, data_json) VALUES (?1, ?2, ?3)",
+            )?;
+            for val in teams {
+                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if !id.is_empty() {
+                    let json_str = serde_json::to_string(val)?;
+                    let _ = stmt.execute(params![id, name, json_str]);
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 查询 Team 编队列表
+    pub fn get_teams(&self) -> Result<Vec<serde_json::Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT data_json FROM teams ORDER BY updated_at ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut list = Vec::new();
+        for r in rows.flatten() {
+            if let Ok(v) = serde_json::from_str(&r) {
+                list.push(v);
+            }
+        }
+        Ok(list)
+    }
+
+    /// 保存工作区状态键值对 (activeProjectId, activeChannelId, activeThreadId, globalModelConfig, subThreads)
+    pub fn save_workspace_state(&self, key: &str, value: &serde_json::Value) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let json_str = serde_json::to_string(value)?;
+        conn.execute(
+            "INSERT INTO workspace_state (key, value_json) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP",
+            params![key, json_str],
+        )?;
+        Ok(())
+    }
+
+    /// 获取单个工作区状态
+    pub fn get_workspace_state(&self, key: &str) -> Result<Option<serde_json::Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT value_json FROM workspace_state WHERE key = ?1")?;
+        let mut rows = stmt.query(params![key])?;
+        if let Some(row) = rows.next()? {
+            let json_str: String = row.get(0)?;
+            if let Ok(val) = serde_json::from_str(&json_str) {
+                return Ok(Some(val));
+            }
+        }
+        Ok(None)
+    }
+
+    /// 聚合获取工作区全部核心资产（一次调用毫秒级全量返回）
+    pub fn get_full_workspace_data(&self) -> Result<serde_json::Value> {
+        let projects = self.get_projects()?;
+        let channels = self.get_channels()?;
+        let threads = self.get_threads()?;
+        let agents = self.get_agents()?;
+        let teams = self.get_teams()?;
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT key, value_json FROM workspace_state")?;
+        let state_rows = stmt.query_map([], |row| {
+            let k: String = row.get(0)?;
+            let v: String = row.get(1)?;
+            Ok((k, v))
+        })?;
+
+        let mut state_map = serde_json::Map::new();
+        for r in state_rows.flatten() {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&r.1) {
+                state_map.insert(r.0, parsed);
+            }
+        }
+
+        Ok(serde_json::json!({
+            "projects": projects,
+            "channels": channels,
+            "threads": threads,
+            "agents": agents,
+            "teams": teams,
+            "workspaceState": state_map,
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_workspace_entities_persistence() {
+        let mgr = DatabaseManager::new(":memory:").expect("Failed to create in-memory db");
+
+        // 1. Projects
+        let projects = vec![serde_json::json!({ "id": "p1", "name": "Project Alpha" })];
+        mgr.save_projects(&projects).expect("save_projects failed");
+        let loaded_projects = mgr.get_projects().expect("get_projects failed");
+        assert_eq!(loaded_projects.len(), 1);
+        assert_eq!(loaded_projects[0]["name"], "Project Alpha");
+
+        // 2. Channels
+        let channels = vec![serde_json::json!({ "id": "c1", "projectId": "p1", "name": "general" })];
+        mgr.save_channels(&channels).expect("save_channels failed");
+        let loaded_channels = mgr.get_channels().expect("get_channels failed");
+        assert_eq!(loaded_channels.len(), 1);
+        assert_eq!(loaded_channels[0]["name"], "general");
+
+        // 3. Threads
+        let threads = vec![serde_json::json!({ "id": "t1", "channelId": "c1", "title": "Topic 1" })];
+        mgr.save_threads(&threads).expect("save_threads failed");
+        let loaded_threads = mgr.get_threads().expect("get_threads failed");
+        assert_eq!(loaded_threads.len(), 1);
+
+        // 4. Agents
+        let agents = vec![serde_json::json!({ "id": "a1", "name": "Agent 1", "handle": "@agent1" })];
+        mgr.save_agents(&agents).expect("save_agents failed");
+        let loaded_agents = mgr.get_agents().expect("get_agents failed");
+        assert_eq!(loaded_agents.len(), 1);
+
+        // 5. Teams
+        let teams = vec![serde_json::json!({ "id": "team1", "name": "Core Squad" })];
+        mgr.save_teams(&teams).expect("save_teams failed");
+        let loaded_teams = mgr.get_teams().expect("get_teams failed");
+        assert_eq!(loaded_teams.len(), 1);
+
+        // 6. Workspace State
+        mgr.save_workspace_state("activeProjectId", &serde_json::json!("p1")).expect("save_workspace_state failed");
+        let state_val = mgr.get_workspace_state("activeProjectId").expect("get_workspace_state failed");
+        assert_eq!(state_val, Some(serde_json::json!("p1")));
+
+        // 7. Full Workspace Aggregate
+        let full = mgr.get_full_workspace_data().expect("get_full_workspace_data failed");
+        assert_eq!(full["projects"].as_array().unwrap().len(), 1);
+        assert_eq!(full["channels"].as_array().unwrap().len(), 1);
+        assert_eq!(full["threads"].as_array().unwrap().len(), 1);
+        assert_eq!(full["agents"].as_array().unwrap().len(), 1);
+        assert_eq!(full["teams"].as_array().unwrap().len(), 1);
+        assert_eq!(full["workspaceState"]["activeProjectId"], "p1");
     }
 }

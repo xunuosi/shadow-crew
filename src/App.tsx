@@ -75,9 +75,19 @@ import {
   applyTopicPatchToWorkspace,
 } from './services/acpClient';
 import { isAgentOffline, isAgentOnline } from './utils/agentRuntime';
-import { saveMessagesBatchToDb, loadMessagesFromDb } from './services/dbClient';
+import {
+  saveMessagesBatchToDb,
+  loadMessagesFromDb,
+  loadFullWorkspaceDataFromDb,
+  saveProjectsToDb,
+  saveChannelsToDb,
+  saveThreadsToDb,
+  saveAgentsToDb,
+  saveTeamsToDb,
+  saveWorkspaceStateToDb,
+} from './services/dbClient';
 import { DEFAULT_MODEL_NAME } from './config/models';
-import { resolveAgentModelConfig } from './services/llmService';
+import { resolveAgentModelConfig, setGlobalModelConfig } from './services/llmService';
 import {
   CollaborationCascade,
   parseAgentMentions,
@@ -204,9 +214,7 @@ export default function App() {
   });
 
   useEffect(() => {
-    try {
-      localStorage.setItem('shinobi_agents', JSON.stringify(agents));
-    } catch {}
+    saveAgentsToDb(agents);
   }, [agents]);
 
   const [teams, setTeams] = useState<AgentTeam[]>(() => {
@@ -228,9 +236,7 @@ export default function App() {
   });
 
   useEffect(() => {
-    try {
-      localStorage.setItem('shinobi_teams', JSON.stringify(teams));
-    } catch {}
+    saveTeamsToDb(teams);
   }, [teams]);
 
   // L0 Projects State with Local Storage Persistence
@@ -279,15 +285,11 @@ export default function App() {
   });
 
   useEffect(() => {
-    try {
-      localStorage.setItem('shinobi_projects', JSON.stringify(projects));
-    } catch {}
+    saveProjectsToDb(projects);
   }, [projects]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('shinobi_active_project_id', activeProjectId);
-    } catch {}
+    saveWorkspaceStateToDb('activeProjectId', activeProjectId);
   }, [activeProjectId]);
 
   // Channels State with Local Storage Persistence & Channel-Scoped Workspace Migration
@@ -331,15 +333,11 @@ export default function App() {
   });
 
   useEffect(() => {
-    try {
-      localStorage.setItem('shinobi_channels', JSON.stringify(channels));
-    } catch {}
+    saveChannelsToDb(channels);
   }, [channels]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('shinobi_active_channel_id', activeChannelId);
-    } catch {}
+    saveWorkspaceStateToDb('activeChannelId', activeChannelId);
   }, [activeChannelId]);
 
   // Threads State with Local Storage Persistence
@@ -368,15 +366,11 @@ export default function App() {
   });
 
   useEffect(() => {
-    try {
-      localStorage.setItem('shinobi_threads', JSON.stringify(threads));
-    } catch {}
+    saveThreadsToDb(threads);
   }, [threads]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('shinobi_active_thread_id', activeThreadId);
-    } catch {}
+    saveWorkspaceStateToDb('activeThreadId', activeThreadId);
   }, [activeThreadId]);
 
   // Messages State with Local Storage Persistence
@@ -412,11 +406,38 @@ export default function App() {
     return INITIAL_MESSAGES;
   });
 
-  // 首次启动从 SQLite 原生数据库加载与同步历史消息 (方案 3: 消除 5MB 限制)
+  // 首次启动从 SQLite 原生数据库加载与同步工作区核心资产与历史消息
   useEffect(() => {
     let isMounted = true;
-    async function syncMessagesWithDb() {
+    async function syncWorkspaceWithDb() {
       try {
+        const fullData = await loadFullWorkspaceDataFromDb();
+        if (!isMounted) return;
+
+        if (fullData) {
+          if (Array.isArray(fullData.projects) && fullData.projects.length > 0) {
+            setProjects(fullData.projects);
+          }
+          if (Array.isArray(fullData.channels) && fullData.channels.length > 0) {
+            setChannels(fullData.channels);
+          }
+          if (Array.isArray(fullData.threads) && fullData.threads.length > 0) {
+            setThreads(fullData.threads);
+          }
+          if (Array.isArray(fullData.agents) && fullData.agents.length > 0) {
+            setAgents(fullData.agents);
+          }
+          if (Array.isArray(fullData.teams) && fullData.teams.length > 0) {
+            setTeams(fullData.teams);
+          }
+          const wsState = fullData.workspaceState || {};
+          if (wsState.activeProjectId) setActiveProjectId(wsState.activeProjectId);
+          if (wsState.activeChannelId) setActiveChannelId(wsState.activeChannelId);
+          if (wsState.activeThreadId) setActiveThreadId(wsState.activeThreadId);
+          if (wsState.subThreads) setSubThreads(wsState.subThreads);
+          if (wsState.global_model_config) setGlobalModelConfig(wsState.global_model_config);
+        }
+
         const dbMsgs = await loadMessagesFromDb();
         if (!isMounted) return;
         if (dbMsgs && dbMsgs.length > 0) {
@@ -433,18 +454,12 @@ export default function App() {
             }
             return hasNew ? next : prev;
           });
-        } else {
-          // 若 SQLite 库暂无数据，则批量导入当前本地初始化消息
-          const currentList = Object.values(messages).flat();
-          if (currentList.length > 0) {
-            await saveMessagesBatchToDb(currentList);
-          }
         }
       } catch (err) {
-        console.error('[App] Failed to sync messages with SQLite:', err);
+        console.error('[App] Failed to sync workspace with SQLite:', err);
       }
     }
-    syncMessagesWithDb();
+    syncWorkspaceWithDb();
     return () => {
       isMounted = false;
     };
@@ -478,9 +493,7 @@ export default function App() {
   });
 
   useEffect(() => {
-    try {
-      localStorage.setItem('shinobi_sub_threads', JSON.stringify(subThreads));
-    } catch {}
+    saveWorkspaceStateToDb('subThreads', subThreads);
   }, [subThreads]);
 
   const [rpcLogs, setRpcLogs] = useState<AcpRpcLog[]>(INITIAL_RPC_LOGS);

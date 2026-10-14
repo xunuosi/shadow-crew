@@ -1,4 +1,4 @@
-import { Message } from '../types';
+import { Message, Project, Channel, Thread, Agent, AgentTeam } from '../types';
 
 export interface StorageStats {
   databasePath: string;
@@ -302,4 +302,161 @@ export async function getChannelDirInfo(channelId: string): Promise<ChannelDirIn
   }
   return null;
 }
+
+export interface FullWorkspaceData {
+  projects: Project[];
+  channels: Channel[];
+  threads: Thread[];
+  agents: Agent[];
+  teams: AgentTeam[];
+  workspaceState: Record<string, any>;
+}
+
+/**
+ * 聚合加载 SQLite 中存储的工作区核心资产
+ */
+export async function loadFullWorkspaceDataFromDb(): Promise<FullWorkspaceData | null> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      const data = await invoke('db_get_full_workspace_data');
+      if (data && typeof data === 'object') {
+        return data as FullWorkspaceData;
+      }
+    } catch (e) {
+      console.error('[dbClient] db_get_full_workspace_data failed:', e);
+    }
+  }
+  return null;
+}
+
+/**
+ * 保存项目列表至 SQLite
+ */
+export async function saveProjectsToDb(projects: Project[]): Promise<void> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      await invoke('db_save_projects', { projects });
+      return;
+    } catch (e) {
+      console.error('[dbClient] db_save_projects failed:', e);
+    }
+  }
+  try {
+    localStorage.setItem('shinobi_projects', JSON.stringify(projects));
+  } catch {}
+}
+
+/**
+ * 保存频道列表至 SQLite
+ */
+export async function saveChannelsToDb(channels: Channel[]): Promise<void> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      await invoke('db_save_channels', { channels });
+      return;
+    } catch (e) {
+      console.error('[dbClient] db_save_channels failed:', e);
+    }
+  }
+  try {
+    localStorage.setItem('shinobi_channels', JSON.stringify(channels));
+  } catch {}
+}
+
+/**
+ * 保存话题/议题列表至 SQLite
+ */
+export async function saveThreadsToDb(threads: Thread[]): Promise<void> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      await invoke('db_save_threads', { threads });
+      return;
+    } catch (e) {
+      console.error('[dbClient] db_save_threads failed:', e);
+    }
+  }
+  try {
+    localStorage.setItem('shinobi_threads', JSON.stringify(threads));
+  } catch {}
+}
+
+/**
+ * 保存 Agent 配置列表至 SQLite
+ */
+export async function saveAgentsToDb(agents: Agent[]): Promise<void> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      await invoke('db_save_agents', { agents });
+      return;
+    } catch (e) {
+      console.error('[dbClient] db_save_agents failed:', e);
+    }
+  }
+  try {
+    localStorage.setItem('shinobi_agents', JSON.stringify(agents));
+  } catch {}
+}
+
+/**
+ * 保存团队编队列表至 SQLite
+ */
+export async function saveTeamsToDb(teams: AgentTeam[]): Promise<void> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      await invoke('db_save_teams', { teams });
+      return;
+    } catch (e) {
+      console.error('[dbClient] db_save_teams failed:', e);
+    }
+  }
+  try {
+    localStorage.setItem('shinobi_teams', JSON.stringify(teams));
+  } catch {}
+}
+
+/**
+ * 保存单个工作区状态项至 SQLite (如 activeProjectId, activeChannelId, activeThreadId, subThreads)
+ */
+export async function saveWorkspaceStateToDb(key: string, value: any): Promise<void> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      await invoke('db_save_workspace_state', { key, value });
+      return;
+    } catch (e) {
+      console.error(`[dbClient] db_save_workspace_state (${key}) failed:`, e);
+    }
+  }
+  try {
+    localStorage.setItem(`shinobi_${key}`, JSON.stringify(value));
+  } catch {}
+}
+
+/**
+ * 从 SQLite 获取单个工作区状态项
+ */
+export async function getWorkspaceStateFromDb<T>(key: string): Promise<T | null> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      const res = await invoke('db_get_workspace_state', { key });
+      return (res ?? null) as T | null;
+    } catch (e) {
+      console.error(`[dbClient] db_get_workspace_state (${key}) failed:`, e);
+    }
+  }
+  try {
+    const raw = localStorage.getItem(`shinobi_${key}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
 
