@@ -338,7 +338,6 @@ export async function saveProjectsToDb(projects: Project[]): Promise<void> {
   if (invoke) {
     try {
       await invoke('db_save_projects', { projects });
-      return;
     } catch (e) {
       console.error('[dbClient] db_save_projects failed:', e);
     }
@@ -356,7 +355,6 @@ export async function saveChannelsToDb(channels: Channel[]): Promise<void> {
   if (invoke) {
     try {
       await invoke('db_save_channels', { channels });
-      return;
     } catch (e) {
       console.error('[dbClient] db_save_channels failed:', e);
     }
@@ -374,7 +372,6 @@ export async function saveThreadsToDb(threads: Thread[]): Promise<void> {
   if (invoke) {
     try {
       await invoke('db_save_threads', { threads });
-      return;
     } catch (e) {
       console.error('[dbClient] db_save_threads failed:', e);
     }
@@ -392,7 +389,6 @@ export async function saveAgentsToDb(agents: Agent[]): Promise<void> {
   if (invoke) {
     try {
       await invoke('db_save_agents', { agents });
-      return;
     } catch (e) {
       console.error('[dbClient] db_save_agents failed:', e);
     }
@@ -410,7 +406,6 @@ export async function saveTeamsToDb(teams: AgentTeam[]): Promise<void> {
   if (invoke) {
     try {
       await invoke('db_save_teams', { teams });
-      return;
     } catch (e) {
       console.error('[dbClient] db_save_teams failed:', e);
     }
@@ -428,13 +423,15 @@ export async function saveWorkspaceStateToDb(key: string, value: any): Promise<v
   if (invoke) {
     try {
       await invoke('db_save_workspace_state', { key, value });
-      return;
     } catch (e) {
       console.error(`[dbClient] db_save_workspace_state (${key}) failed:`, e);
     }
   }
   try {
     localStorage.setItem(`shinobi_${key}`, JSON.stringify(value));
+    if (key === 'activeProjectId') localStorage.setItem('shinobi_active_project_id', typeof value === 'string' ? value : JSON.stringify(value));
+    if (key === 'activeChannelId') localStorage.setItem('shinobi_active_channel_id', typeof value === 'string' ? value : JSON.stringify(value));
+    if (key === 'activeThreadId') localStorage.setItem('shinobi_active_thread_id', typeof value === 'string' ? value : JSON.stringify(value));
   } catch {}
 }
 

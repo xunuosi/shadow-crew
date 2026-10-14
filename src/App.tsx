@@ -129,6 +129,9 @@ export default function App() {
   // Main View Navigation ('chat' | 'agents') - Default to chat for PRD Messaging Space
   const [mainView, setMainView] = useState<'chat' | 'agents'>('chat');
 
+  // 关键防回滚锁：首轮从 SQLite 加载完成前，严禁各 entity 的初始挂载触发 useEffect 覆盖底层数据库
+  const isWorkspaceHydratedRef = useRef(false);
+
   // Core Entities State with Local Storage Persistence
   const [agents, setAgents] = useState<Agent[]>(() => {
     try {
@@ -214,6 +217,7 @@ export default function App() {
   });
 
   useEffect(() => {
+    if (!isWorkspaceHydratedRef.current) return;
     saveAgentsToDb(agents);
   }, [agents]);
 
@@ -236,6 +240,7 @@ export default function App() {
   });
 
   useEffect(() => {
+    if (!isWorkspaceHydratedRef.current) return;
     saveTeamsToDb(teams);
   }, [teams]);
 
@@ -285,10 +290,12 @@ export default function App() {
   });
 
   useEffect(() => {
+    if (!isWorkspaceHydratedRef.current) return;
     saveProjectsToDb(projects);
   }, [projects]);
 
   useEffect(() => {
+    if (!isWorkspaceHydratedRef.current) return;
     saveWorkspaceStateToDb('activeProjectId', activeProjectId);
   }, [activeProjectId]);
 
@@ -326,17 +333,19 @@ export default function App() {
 
   const [activeChannelId, setActiveChannelId] = useState<string>(() => {
     try {
-      const saved = localStorage.getItem('shinobi_active_channel_id');
+      const saved = localStorage.getItem('shinobi_active_channel_id') || localStorage.getItem('shinobi_activeChannelId');
       if (saved && !MOCK_CHANNEL_IDS.has(saved)) return saved;
     } catch {}
     return '';
   });
 
   useEffect(() => {
+    if (!isWorkspaceHydratedRef.current) return;
     saveChannelsToDb(channels);
   }, [channels]);
 
   useEffect(() => {
+    if (!isWorkspaceHydratedRef.current) return;
     saveWorkspaceStateToDb('activeChannelId', activeChannelId);
   }, [activeChannelId]);
 
@@ -359,17 +368,19 @@ export default function App() {
 
   const [activeThreadId, setActiveThreadId] = useState<string>(() => {
     try {
-      const saved = localStorage.getItem('shinobi_active_thread_id');
+      const saved = localStorage.getItem('shinobi_active_thread_id') || localStorage.getItem('shinobi_activeThreadId');
       if (saved && !MOCK_THREAD_IDS.has(saved)) return saved;
     } catch {}
     return '';
   });
 
   useEffect(() => {
+    if (!isWorkspaceHydratedRef.current) return;
     saveThreadsToDb(threads);
   }, [threads]);
 
   useEffect(() => {
+    if (!isWorkspaceHydratedRef.current) return;
     saveWorkspaceStateToDb('activeThreadId', activeThreadId);
   }, [activeThreadId]);
 
@@ -417,24 +428,56 @@ export default function App() {
         if (fullData) {
           if (Array.isArray(fullData.projects) && fullData.projects.length > 0) {
             setProjects(fullData.projects);
+            try { localStorage.setItem('shinobi_projects', JSON.stringify(fullData.projects)); } catch {}
+          } else if (projects.length > 0) {
+            await saveProjectsToDb(projects);
           }
+
           if (Array.isArray(fullData.channels) && fullData.channels.length > 0) {
             setChannels(fullData.channels);
+            try { localStorage.setItem('shinobi_channels', JSON.stringify(fullData.channels)); } catch {}
+          } else if (channels.length > 0) {
+            await saveChannelsToDb(channels);
           }
+
           if (Array.isArray(fullData.threads) && fullData.threads.length > 0) {
             setThreads(fullData.threads);
+            try { localStorage.setItem('shinobi_threads', JSON.stringify(fullData.threads)); } catch {}
+          } else if (threads.length > 0) {
+            await saveThreadsToDb(threads);
           }
+
           if (Array.isArray(fullData.agents) && fullData.agents.length > 0) {
             setAgents(fullData.agents);
+            try { localStorage.setItem('shinobi_agents', JSON.stringify(fullData.agents)); } catch {}
+          } else if (agents.length > 0) {
+            await saveAgentsToDb(agents);
           }
+
           if (Array.isArray(fullData.teams) && fullData.teams.length > 0) {
             setTeams(fullData.teams);
+            try { localStorage.setItem('shinobi_teams', JSON.stringify(fullData.teams)); } catch {}
+          } else if (teams.length > 0) {
+            await saveTeamsToDb(teams);
           }
+
           const wsState = fullData.workspaceState || {};
-          if (wsState.activeProjectId) setActiveProjectId(wsState.activeProjectId);
-          if (wsState.activeChannelId) setActiveChannelId(wsState.activeChannelId);
-          if (wsState.activeThreadId) setActiveThreadId(wsState.activeThreadId);
-          if (wsState.subThreads) setSubThreads(wsState.subThreads);
+          if (wsState.activeProjectId) {
+            setActiveProjectId(wsState.activeProjectId);
+            try { localStorage.setItem('shinobi_activeProjectId', JSON.stringify(wsState.activeProjectId)); } catch {}
+          }
+          if (wsState.activeChannelId) {
+            setActiveChannelId(wsState.activeChannelId);
+            try { localStorage.setItem('shinobi_activeChannelId', JSON.stringify(wsState.activeChannelId)); } catch {}
+          }
+          if (wsState.activeThreadId) {
+            setActiveThreadId(wsState.activeThreadId);
+            try { localStorage.setItem('shinobi_activeThreadId', JSON.stringify(wsState.activeThreadId)); } catch {}
+          }
+          if (wsState.subThreads) {
+            setSubThreads(wsState.subThreads);
+            try { localStorage.setItem('shinobi_subThreads', JSON.stringify(wsState.subThreads)); } catch {}
+          }
           if (wsState.global_model_config) setGlobalModelConfig(wsState.global_model_config);
         }
 
@@ -457,6 +500,10 @@ export default function App() {
         }
       } catch (err) {
         console.error('[App] Failed to sync workspace with SQLite:', err);
+      } finally {
+        if (isMounted) {
+          isWorkspaceHydratedRef.current = true;
+        }
       }
     }
     syncWorkspaceWithDb();
@@ -483,7 +530,7 @@ export default function App() {
   // SubThreads State with Local Storage Persistence
   const [subThreads, setSubThreads] = useState<Record<string, SubThread>>(() => {
     try {
-      const saved = localStorage.getItem('shinobi_sub_threads');
+      const saved = localStorage.getItem('shinobi_sub_threads') || localStorage.getItem('shinobi_subThreads');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === 'object') return parsed;
@@ -493,6 +540,7 @@ export default function App() {
   });
 
   useEffect(() => {
+    if (!isWorkspaceHydratedRef.current) return;
     saveWorkspaceStateToDb('subThreads', subThreads);
   }, [subThreads]);
 

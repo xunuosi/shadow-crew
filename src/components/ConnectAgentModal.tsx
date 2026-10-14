@@ -74,6 +74,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
   // Form Fields
   const [name, setName] = useState('Shinobi Native Agent');
+  const [role, setRole] = useState('High-Performance Native Agent');
   const [description, setDescription] = useState(
     'Local ultra-fast native agent runtime with private SQLite memory bank.'
   );
@@ -127,7 +128,8 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       const globalCfg = getGlobalModelConfig();
       if (initialAgent) {
         setName(initialAgent.name || '');
-        setDescription(initialAgent.description || initialAgent.role || '');
+        setRole(initialAgent.role || '');
+        setDescription(initialAgent.description || '');
         setCustomCommand(initialAgent.acpCommandOrUrl || '');
 
         if (initialAgent.modelConfig) {
@@ -296,10 +298,11 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     setSelectedAcpId(option.id);
     setIsAcpDropdownOpen(false);
 
-    // Auto update Name and Description if creating new
+    // Auto update Name, Role and Description if creating new
     if (!initialAgent) {
       const cleanName = option.name.split(' (')[0];
       setName(cleanName);
+      setRole(option.name);
       setDescription(option.description);
 
       // Map icon if available
@@ -414,8 +417,8 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         name: name.trim(),
         handle: initialAgent.handle || `@${name.trim().toLowerCase().replace(/\s+/g, '-')}`,
         avatar: effectiveAvatar,
-        role: isRemoteMode ? 'Remote ACP Agent' : selectedAcp.name,
-        description: description.trim() || (isRemoteMode ? 'Remote WebSocket ACP Endpoint' : selectedAcp.description),
+        role: role.trim() || initialAgent.role || (isRemoteMode ? 'Remote ACP Agent' : selectedAcp.name),
+        description: description.trim() || initialAgent.description || (isRemoteMode ? 'Remote WebSocket ACP Endpoint' : selectedAcp.description),
         localAcpProfile: isRemoteMode ? 'Remote WebSocket' : selectedAcp.name,
         isRemote: isRemoteMode,
         remoteUrl: isRemoteMode ? remoteUrl.trim() : undefined,
@@ -445,7 +448,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         name: name.trim(),
         handle: `@${name.trim().toLowerCase().replace(/\s+/g, '-')}`,
         avatar: effectiveAvatar,
-        role: isRemoteMode ? 'Remote ACP Agent' : selectedAcp.name,
+        role: role.trim() || (isRemoteMode ? 'Remote ACP Agent' : selectedAcp.name),
         description: description.trim() || (isRemoteMode ? 'Remote WebSocket ACP Endpoint' : selectedAcp.description),
         localAcpProfile: isRemoteMode ? 'Remote WebSocket' : selectedAcp.name,
         isRemote: isRemoteMode,
@@ -747,11 +750,11 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
               )}
             </div>
 
-            {/* Right: Name & Description */}
+            {/* Right: Name, Role & Description */}
             <div className="sm:col-span-7 space-y-3.5">
               <div>
                 <label className={`block text-xs font-semibold mb-1.5 ${labelColor}`}>
-                  Agent Name
+                  Agent Name (智能体名称)
                 </label>
                 <input
                   type="text"
@@ -765,7 +768,20 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
               <div>
                 <label className={`block text-xs font-semibold mb-1.5 ${labelColor}`}>
-                  Description
+                  Professional Role (专业角色定位)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. 资深分布式服务端架构师 (Go / 高并发高可用)"
+                  value={role}
+                  onChange={(e) => setRole(e.target.value)}
+                  className={`w-full rounded-xl px-3.5 py-2 text-xs focus:outline-none transition-all ${inputBg}`}
+                />
+              </div>
+
+              <div>
+                <label className={`block text-xs font-semibold mb-1.5 ${labelColor}`}>
+                  Description (设定描述与专精背景)
                 </label>
                 <textarea
                   rows={5}
