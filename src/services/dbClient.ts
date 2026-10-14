@@ -17,10 +17,14 @@ export interface StorageStats {
 /**
  * 获取 Tauri 内部 invoke 调用器 (兼容 Tauri v2 与浏览器开发环境)
  */
-function getTauriInvoke(): ((cmd: string, args?: any) => Promise<any>) | null {
+export function getTauriInvoke(): ((cmd: string, args?: any) => Promise<any>) | null {
   if (typeof window === 'undefined') return null;
   const w = window as any;
   return w.__TAURI_INTERNALS__?.invoke || w.__TAURI__?.core?.invoke || null;
+}
+
+export function isTauriEnvironment(): boolean {
+  return getTauriInvoke() !== null;
 }
 
 /**
@@ -341,6 +345,7 @@ export async function saveProjectsToDb(projects: Project[]): Promise<void> {
     } catch (e) {
       console.error('[dbClient] db_save_projects failed:', e);
     }
+    return;
   }
   try {
     localStorage.setItem('shinobi_projects', JSON.stringify(projects));
@@ -358,6 +363,7 @@ export async function saveChannelsToDb(channels: Channel[]): Promise<void> {
     } catch (e) {
       console.error('[dbClient] db_save_channels failed:', e);
     }
+    return;
   }
   try {
     localStorage.setItem('shinobi_channels', JSON.stringify(channels));
@@ -375,6 +381,7 @@ export async function saveThreadsToDb(threads: Thread[]): Promise<void> {
     } catch (e) {
       console.error('[dbClient] db_save_threads failed:', e);
     }
+    return;
   }
   try {
     localStorage.setItem('shinobi_threads', JSON.stringify(threads));
@@ -392,6 +399,7 @@ export async function saveAgentsToDb(agents: Agent[]): Promise<void> {
     } catch (e) {
       console.error('[dbClient] db_save_agents failed:', e);
     }
+    return;
   }
   try {
     localStorage.setItem('shinobi_agents', JSON.stringify(agents));
@@ -409,6 +417,7 @@ export async function saveTeamsToDb(teams: AgentTeam[]): Promise<void> {
     } catch (e) {
       console.error('[dbClient] db_save_teams failed:', e);
     }
+    return;
   }
   try {
     localStorage.setItem('shinobi_teams', JSON.stringify(teams));
@@ -426,6 +435,7 @@ export async function saveWorkspaceStateToDb(key: string, value: any): Promise<v
     } catch (e) {
       console.error(`[dbClient] db_save_workspace_state (${key}) failed:`, e);
     }
+    return;
   }
   try {
     localStorage.setItem(`shinobi_${key}`, JSON.stringify(value));
@@ -446,6 +456,7 @@ export async function getWorkspaceStateFromDb<T>(key: string): Promise<T | null>
       return (res ?? null) as T | null;
     } catch (e) {
       console.error(`[dbClient] db_get_workspace_state (${key}) failed:`, e);
+      return null;
     }
   }
   try {

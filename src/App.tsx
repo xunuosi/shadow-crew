@@ -85,6 +85,7 @@ import {
   saveAgentsToDb,
   saveTeamsToDb,
   saveWorkspaceStateToDb,
+  isTauriEnvironment,
 } from './services/dbClient';
 import { DEFAULT_MODEL_NAME } from './config/models';
 import { resolveAgentModelConfig, setGlobalModelConfig } from './services/llmService';
@@ -428,35 +429,30 @@ export default function App() {
         if (fullData) {
           if (Array.isArray(fullData.projects) && fullData.projects.length > 0) {
             setProjects(fullData.projects);
-            try { localStorage.setItem('shinobi_projects', JSON.stringify(fullData.projects)); } catch {}
           } else if (projects.length > 0) {
             await saveProjectsToDb(projects);
           }
 
           if (Array.isArray(fullData.channels) && fullData.channels.length > 0) {
             setChannels(fullData.channels);
-            try { localStorage.setItem('shinobi_channels', JSON.stringify(fullData.channels)); } catch {}
           } else if (channels.length > 0) {
             await saveChannelsToDb(channels);
           }
 
           if (Array.isArray(fullData.threads) && fullData.threads.length > 0) {
             setThreads(fullData.threads);
-            try { localStorage.setItem('shinobi_threads', JSON.stringify(fullData.threads)); } catch {}
           } else if (threads.length > 0) {
             await saveThreadsToDb(threads);
           }
 
           if (Array.isArray(fullData.agents) && fullData.agents.length > 0) {
             setAgents(fullData.agents);
-            try { localStorage.setItem('shinobi_agents', JSON.stringify(fullData.agents)); } catch {}
           } else if (agents.length > 0) {
             await saveAgentsToDb(agents);
           }
 
           if (Array.isArray(fullData.teams) && fullData.teams.length > 0) {
             setTeams(fullData.teams);
-            try { localStorage.setItem('shinobi_teams', JSON.stringify(fullData.teams)); } catch {}
           } else if (teams.length > 0) {
             await saveTeamsToDb(teams);
           }
@@ -464,19 +460,15 @@ export default function App() {
           const wsState = fullData.workspaceState || {};
           if (wsState.activeProjectId) {
             setActiveProjectId(wsState.activeProjectId);
-            try { localStorage.setItem('shinobi_activeProjectId', JSON.stringify(wsState.activeProjectId)); } catch {}
           }
           if (wsState.activeChannelId) {
             setActiveChannelId(wsState.activeChannelId);
-            try { localStorage.setItem('shinobi_activeChannelId', JSON.stringify(wsState.activeChannelId)); } catch {}
           }
           if (wsState.activeThreadId) {
             setActiveThreadId(wsState.activeThreadId);
-            try { localStorage.setItem('shinobi_activeThreadId', JSON.stringify(wsState.activeThreadId)); } catch {}
           }
           if (wsState.subThreads) {
             setSubThreads(wsState.subThreads);
-            try { localStorage.setItem('shinobi_subThreads', JSON.stringify(wsState.subThreads)); } catch {}
           }
           if (wsState.global_model_config) setGlobalModelConfig(wsState.global_model_config);
         }
@@ -520,10 +512,12 @@ export default function App() {
         console.error('[App] SQLite saveMessagesBatchToDb failed:', e);
       });
     }
-    try {
-      localStorage.setItem('shinobi_messages', JSON.stringify(messages));
-    } catch (err) {
-      console.warn('[App] LocalStorage quota exceeded, SQLite persistence safely active.');
+    if (!isTauriEnvironment()) {
+      try {
+        localStorage.setItem('shinobi_messages', JSON.stringify(messages));
+      } catch (err) {
+        console.warn('[App] LocalStorage quota exceeded, SQLite persistence safely active.');
+      }
     }
   }, [messages]);
 
