@@ -534,6 +534,12 @@ export interface SprtGovernorState {
     dssScore: number;
     combinedScore: number;
   };
+  adaptiveMeta?: {              // 自适应多域与漏斗调控元数据 (Ada-Cogno)
+    domainType: string;
+    neutralThreshold: number;
+    sensitivity: number;
+    isFunnelActive: boolean;
+  };
 }
 
 /**
