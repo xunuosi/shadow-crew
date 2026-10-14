@@ -768,11 +768,11 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                   Description
                 </label>
                 <textarea
-                  rows={3}
+                  rows={5}
                   placeholder="Agent responsibilities and domain focus..."
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  className={`w-full rounded-xl px-3.5 py-2 text-xs focus:outline-none transition-all resize-none ${inputBg}`}
+                  className={`w-full rounded-xl px-3.5 py-2.5 text-xs leading-relaxed focus:outline-none transition-all resize-y min-h-[110px] max-h-[260px] ${inputBg}`}
                 />
               </div>
             </div>
