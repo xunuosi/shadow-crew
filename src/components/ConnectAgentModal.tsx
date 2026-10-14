@@ -213,7 +213,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         setSelectedIconId('shinobi');
         setCustomEmoji('');
         setSelectedAcpId('shinobi_core');
-        setCustomCommand('./target/debug/shinobi-agent');
+        setCustomCommand('./target/debug/shadow-crew-agent');
         setConnectTab('local');
         setRemoteUrl('ws://127.0.0.1:9000');
         setAuthToken('');
@@ -222,7 +222,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         setUseGlobalDefaultModel(true);
         setModelConfig({ ...globalCfg, useGlobalDefault: true });
         setEnvVars([
-          { id: '1', key: 'SHINOBI_LOG', value: 'debug' },
+          { id: '1', key: 'SHADOW_CREW_LOG', value: 'debug' },
           { id: '2', key: 'MEMORY_STORE', value: 'sqlite' },
         ]);
       }

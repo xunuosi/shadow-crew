@@ -177,7 +177,7 @@ export default function App() {
                     baseUrl: 'https://api.deepseek.com/v1',
                     useGlobalDefault: true,
                   },
-                  acpCommandOrUrl: './target/debug/shinobi-agent',
+                  acpCommandOrUrl: './target/debug/shadow-crew-agent',
                   workspace: updatedWorkspace || {
                     rootPath: '~/.shinobi',
                     repoName: 'shinobi-workspace',
@@ -1438,7 +1438,7 @@ export default function App() {
       isGuestClone: true,
       guestCloneFrom: guestAgent.guestCloneFrom,
       acpTransport: guestAgent.acpTransport || 'stdio',
-      acpCommandOrUrl: guestAgent.acpCommandOrUrl || './target/debug/shinobi-agent',
+      acpCommandOrUrl: guestAgent.acpCommandOrUrl || './target/debug/shadow-crew-agent',
       protocolVersion: '2025-01-01 (ACP v1.0.4)',
       capabilities: guestAgent.capabilities || {
         canUseInternalMemory: true,

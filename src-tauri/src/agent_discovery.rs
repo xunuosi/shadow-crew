@@ -42,15 +42,20 @@ pub struct PresetHarness {
 pub const PRESET_HARNESSES: &[PresetHarness] = &[
     PresetHarness {
         id: "shinobi_core",
-        name: "Shinobi Native Agent (Rust)",
+        name: "Shadow Crew Native Agent (Rust)",
         description: "Local ultra-fast native agent runtime with private SQLite memory bank",
         transport: "stdio",
-        command_candidates: &["cargo run --bin shinobi-agent -- --acp", "shinobi-agent"],
+        command_candidates: &[
+            "cargo run --bin shadow-crew-agent -- --acp",
+            "shadow-crew-agent",
+            "cargo run --bin shinobi-agent -- --acp",
+            "shinobi-agent",
+        ],
         default_args: &[],
         underlying_cli_candidates: &[],
-        install_hint: "Shinobi native agent is bundled within this workspace and ready to run.",
+        install_hint: "Shadow Crew native agent is bundled within this workspace and ready to run.",
         install_url: None,
-        recommended_env: &[("SHINOBI_LOG", "debug"), ("MEMORY_STORE", "sqlite")],
+        recommended_env: &[("SHADOW_CREW_LOG", "debug"), ("MEMORY_STORE", "sqlite")],
     },
     PresetHarness {
         id: "claude_code",
@@ -194,7 +199,7 @@ pub fn discover_presets() -> Vec<AcpRuntimeCatalogEntry> {
     PRESET_HARNESSES
         .iter()
         .map(|def| {
-            // 特殊处理 Shinobi 本地核心：只要是在此代码仓库中，始终认为可用
+            // 特殊处理 Shadow Crew / Shinobi 本地核心：只要是在此代码仓库中，始终认为可用
             if def.id == "shinobi_core" {
                 return AcpRuntimeCatalogEntry {
                     id: def.id.to_string(),
@@ -205,7 +210,7 @@ pub fn discover_presets() -> Vec<AcpRuntimeCatalogEntry> {
                     default_args: def.default_args.iter().map(|s| s.to_string()).collect(),
                     underlying_cli: None,
                     availability: AcpAvailabilityStatus::Available,
-                    binary_path: Some("cargo (workspace shinobi-agent)".to_string()),
+                    binary_path: Some("cargo (workspace shadow-crew-agent)".to_string()),
                     install_hint: def.install_hint.to_string(),
                     install_url: def.install_url.map(|s| s.to_string()),
                     recommended_env: def

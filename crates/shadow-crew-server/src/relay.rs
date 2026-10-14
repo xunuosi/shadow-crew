@@ -6,7 +6,7 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
-use shinobi_protocol::NostrChannelEvent;
+use shadow_crew_protocol::NostrChannelEvent;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};

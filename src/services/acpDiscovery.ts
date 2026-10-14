@@ -3,16 +3,16 @@ import { LocalAcpRuntime } from '../types';
 export const FALLBACK_PRESET_RUNTIMES: LocalAcpRuntime[] = [
   {
     id: 'shinobi_core',
-    name: 'Shinobi Native Agent (Rust)',
+    name: 'Shadow Crew Native Agent (Rust)',
     description: 'Local ultra-fast native agent runtime with private SQLite memory bank',
     transport: 'stdio',
-    command: 'cargo run --bin shinobi-agent -- --acp',
+    command: 'cargo run --bin shadow-crew-agent -- --acp',
     default_args: [],
     availability: 'available',
-    binary_path: 'cargo (workspace shinobi-agent)',
-    install_hint: 'Shinobi native agent is bundled within this workspace and ready to run.',
+    binary_path: 'cargo (workspace shadow-crew-agent)',
+    install_hint: 'Shadow Crew native agent is bundled within this workspace and ready to run.',
     recommended_env: [
-      ['SHINOBI_LOG', 'debug'],
+      ['SHADOW_CREW_LOG', 'debug'],
       ['MEMORY_STORE', 'sqlite'],
     ],
   },

@@ -705,7 +705,7 @@ export interface AcpTrace {
   
   skillUsed?: {
     name: string;
-    source: 'shinobi-dev-mcp' | 'agent-builtin' | 'external-tool';
+    source: 'shadow-crew-dev-mcp' | 'shinobi-dev-mcp' | 'agent-builtin' | 'external-tool';
     input: string;
     output: string;
   };

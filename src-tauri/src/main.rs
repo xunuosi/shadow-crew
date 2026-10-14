@@ -638,5 +638,5 @@ async fn main() {
             get_channel_dir_info,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running shinobi tauri desktop application");
+        .expect("error while running shadow-crew tauri desktop application");
 }

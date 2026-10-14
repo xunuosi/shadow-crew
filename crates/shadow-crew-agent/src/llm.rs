@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::time::Duration;
-use shinobi_protocol::McpCallTrace;
+use shadow_crew_protocol::McpCallTrace;
 use crate::mcp_client::SharedMcpClient;
 
 /// Shinobi 底座模型配置，由宿主 (Shadow Crew) 在拉起进程时通过 SHADOW_CREW_LLM_* 环境变量注入

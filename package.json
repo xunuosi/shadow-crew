@@ -1,5 +1,5 @@
 {
-  "name": "react-example",
+  "name": "shadow-crew",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "desktop": "cargo run -p shinobi-desktop",
+    "desktop": "cargo run -p shadow-crew-desktop",
     "dev:desktop": "tauri dev",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",

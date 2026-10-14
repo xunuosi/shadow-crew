@@ -4,7 +4,7 @@ mod memory;
 
 use anyhow::Result;
 use memory::AgentMemoryStore;
-use shinobi_protocol::{AcpPromptResult, MemoryTrace};
+use shadow_crew_protocol::{AcpPromptResult, MemoryTrace};
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
                     "id": id,
                     "result": {
                         "protocolVersion": "2025-01-01",
-                        "agentInfo": { "name": "shinobi-agent", "version": "0.1.0" },
+                        "agentInfo": { "name": "shadow-crew-agent", "version": "0.1.0" },
                         "capabilities": {
                             "prompts": { "listChanged": true },
                             "tools": { "listChanged": true },

@@ -7,7 +7,7 @@ Shadow Crew —— 多 Agent 协同桌面应用（Tauri + React 19 + Vite）。
 - 类型检查：`npm run lint`（即 `tsc --noEmit`）
 - 前端开发：`npm run dev`
 - 桌面端：`npm run dev:desktop`
-- Rust MCP 工具测试：`cargo test -p shinobi-dev-mcp`
+- Rust MCP 工具测试：`cargo test -p shadow-crew-dev-mcp`
 
 ---
 

@@ -193,9 +193,17 @@ impl AcpProcessManager {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| ".".to_string());
 
-        // 智能路径探测: 若是 shinobi-agent 命令，优先直接运行编译后的原生二进制
-        if command_line.contains("shinobi-agent") {
+        // 智能路径探测: 若是 shadow-crew-agent 或 shinobi-agent 命令，优先直接运行编译后的原生二进制
+        if command_line.contains("shadow-crew-agent") || command_line.contains("shinobi-agent") {
             let possible_bins = [
+                format!("{}/target/debug/shadow-crew-agent", cwd),
+                format!("{}/target/release/shadow-crew-agent", cwd),
+                format!("{}/target/debug/shadow-crew-agent", host_cwd),
+                format!("{}/target/release/shadow-crew-agent", host_cwd),
+                "target/debug/shadow-crew-agent".to_string(),
+                "target/release/shadow-crew-agent".to_string(),
+                "../target/debug/shadow-crew-agent".to_string(),
+                "../../target/debug/shadow-crew-agent".to_string(),
                 format!("{}/target/debug/shinobi-agent", cwd),
                 format!("{}/target/release/shinobi-agent", cwd),
                 format!("{}/target/debug/shinobi-agent", host_cwd),
@@ -209,20 +217,31 @@ impl AcpProcessManager {
                 if let Ok(canonical) = std::fs::canonicalize(bin) {
                     if canonical.is_file() {
                         actual_cmd = canonical.to_string_lossy().to_string();
-                        tracing::info!("Discovered compiled native shinobi-agent binary at: {}", actual_cmd);
+                        tracing::info!("Discovered compiled native agent binary at: {}", actual_cmd);
                         break;
                     }
                 }
             }
-            if actual_cmd == command_line && command_line.contains("--bin shinobi-agent") {
-                // 如果没有找到二进制，改用 -p shinobi-agent 避免 cargo workspace 目标未匹配
-                actual_cmd = command_line.replace("--bin shinobi-agent", "-p shinobi-agent");
+            if actual_cmd == command_line {
+                if command_line.contains("--bin shadow-crew-agent") {
+                    actual_cmd = command_line.replace("--bin shadow-crew-agent", "-p shadow-crew-agent");
+                } else if command_line.contains("--bin shinobi-agent") {
+                    actual_cmd = command_line.replace("--bin shinobi-agent", "-p shadow-crew-agent");
+                }
             }
         }
 
-        // 预先解析 shinobi-dev-mcp 绝对路径，防止切换 current_dir 到 ~/.shinobi 后相对路径失效
+        // 预先解析 shadow-crew-dev-mcp (及 shinobi-dev-mcp) 绝对路径，防止切换 current_dir 到 ~/.shinobi 后相对路径失效
         let mut resolved_dev_mcp: Option<String> = None;
         let possible_mcp_bins = [
+            format!("{}/target/debug/shadow-crew-dev-mcp", cwd),
+            format!("{}/target/release/shadow-crew-dev-mcp", cwd),
+            format!("{}/target/debug/shadow-crew-dev-mcp", host_cwd),
+            format!("{}/target/release/shadow-crew-dev-mcp", host_cwd),
+            "target/debug/shadow-crew-dev-mcp".to_string(),
+            "target/release/shadow-crew-dev-mcp".to_string(),
+            "../target/debug/shadow-crew-dev-mcp".to_string(),
+            "../../target/debug/shadow-crew-dev-mcp".to_string(),
             format!("{}/target/debug/shinobi-dev-mcp", cwd),
             format!("{}/target/release/shinobi-dev-mcp", cwd),
             format!("{}/target/debug/shinobi-dev-mcp", host_cwd),

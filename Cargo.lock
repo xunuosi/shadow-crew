@@ -3596,6 +3596,79 @@ dependencies = [
 ]
 
 [[package]]
+name = "shadow-crew-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "shadow-crew-protocol",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "shadow-crew-desktop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "shadow-crew-protocol",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-fs",
+ "tauri-plugin-shell",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "shadow-crew-dev-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "shadow-crew-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "shadow-crew-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "shadow-crew-protocol",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "sharded-slab"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3613,79 +3686,6 @@ dependencies = [
  "libc",
  "sigchld",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "shinobi-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "shinobi-protocol",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "shinobi-desktop"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "rusqlite",
- "serde",
- "serde_json",
- "shinobi-protocol",
- "tauri",
- "tauri-build",
- "tauri-plugin-fs",
- "tauri-plugin-shell",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "shinobi-dev-mcp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "shinobi-protocol"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "secp256k1",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "shinobi-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "futures-util",
- "serde",
- "serde_json",
- "shinobi-protocol",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

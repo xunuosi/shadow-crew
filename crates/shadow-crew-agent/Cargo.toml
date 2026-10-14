@@ -1,19 +1,17 @@
 [package]
-name = "shinobi-server"
+name = "shadow-crew-agent"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [dependencies]
-shinobi-protocol = { path = "../shinobi-protocol" }
+shadow-crew-protocol = { path = "../shadow-crew-protocol" }
 tokio.workspace = true
-axum.workspace = true
-tower.workspace = true
-tower-http.workspace = true
-futures-util.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+rusqlite.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true

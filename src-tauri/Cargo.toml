@@ -1,5 +1,5 @@
 [package]
-name = "shinobi-desktop"
+name = "shadow-crew-desktop"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,7 +9,7 @@ license.workspace = true
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
-shinobi-protocol = { path = "../crates/shinobi-protocol" }
+shadow-crew-protocol = { path = "../crates/shadow-crew-protocol" }
 tauri = { version = "2.0", features = [] }
 tauri-plugin-shell = "2.0"
 tauri-plugin-fs = "2.0"

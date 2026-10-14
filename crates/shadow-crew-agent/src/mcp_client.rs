@@ -8,32 +8,35 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
-/// 自动定位内置的 shinobi-dev-mcp 二进制路径
-pub fn resolve_shinobi_dev_mcp_path() -> PathBuf {
+/// 自动定位内置的 shadow-crew-dev-mcp (兼容 shinobi-dev-mcp) 二进制路径
+pub fn resolve_dev_mcp_path() -> PathBuf {
     // 1. 显式环境变量 (可由宿主注入或开发覆盖)
-    if let Ok(path) = std::env::var("SHINOBI_DEV_MCP_PATH") {
+    if let Ok(path) = std::env::var("SHADOW_CREW_DEV_MCP_PATH").or_else(|_| std::env::var("SHINOBI_DEV_MCP_PATH")) {
         let p = PathBuf::from(path.trim());
         if p.exists() {
             return p;
         }
     }
 
-    // 2. 与当前运行中的 shinobi-agent 位于同一目录 (release/debug/Tauri sidecar)
+    // 2. 与当前运行中的 agent 位于同一目录 (release/debug/Tauri sidecar)
     if let Ok(current) = std::env::current_exe() {
         if let Some(parent) = current.parent() {
-            let candidate = parent.join("shinobi-dev-mcp");
-            if candidate.exists() {
-                return candidate;
-            }
-            let candidate_exe = parent.join("shinobi-dev-mcp.exe");
-            if candidate_exe.exists() {
-                return candidate_exe;
+            for name in &["shadow-crew-dev-mcp", "shadow-crew-dev-mcp.exe", "shinobi-dev-mcp", "shinobi-dev-mcp.exe"] {
+                let candidate = parent.join(name);
+                if candidate.exists() {
+                    return candidate;
+                }
             }
         }
     }
 
     // 3. 项目常见 target 编译路径 (开发与测试环境)
     let candidates = [
+        PathBuf::from("./target/debug/shadow-crew-dev-mcp"),
+        PathBuf::from("../target/debug/shadow-crew-dev-mcp"),
+        PathBuf::from("../../target/debug/shadow-crew-dev-mcp"),
+        PathBuf::from("./target/release/shadow-crew-dev-mcp"),
+        PathBuf::from("../target/release/shadow-crew-dev-mcp"),
         PathBuf::from("./target/debug/shinobi-dev-mcp"),
         PathBuf::from("../target/debug/shinobi-dev-mcp"),
         PathBuf::from("../../target/debug/shinobi-dev-mcp"),
@@ -47,8 +50,10 @@ pub fn resolve_shinobi_dev_mcp_path() -> PathBuf {
     }
 
     // 4. 兜底回退至 PATH
-    PathBuf::from("shinobi-dev-mcp")
+    PathBuf::from("shadow-crew-dev-mcp")
 }
+
+pub use resolve_dev_mcp_path as resolve_shinobi_dev_mcp_path;
 
 /// 基于 stdio JSON-RPC 2.0 的轻量级原生 MCP 客户端
 pub struct NativeMcpClient {
@@ -114,7 +119,7 @@ impl NativeMcpClient {
             "params": {
                 "protocolVersion": "2024-11-05",
                 "clientInfo": {
-                    "name": "shinobi-agent",
+                    "name": "shadow-crew-agent",
                     "version": "0.1.0"
                 },
                 "capabilities": {

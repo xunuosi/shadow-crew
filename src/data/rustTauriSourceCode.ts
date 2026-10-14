@@ -51,17 +51,17 @@ export const RUST_TAURI_WORKSPACE_FILES: RustSourceFile[] = [
     code: `[workspace]
 resolver = "2"
 members = [
-    "crates/shinobi-protocol",
-    "crates/shinobi-server",
-    "crates/shinobi-desktop/src-tauri",
-    "crates/shinobi-agent",
-    "crates/shinobi-dev-mcp"
+    "crates/shadow-crew-protocol",
+    "crates/shadow-crew-server",
+    "src-tauri",
+    "crates/shadow-crew-agent",
+    "crates/shadow-crew-dev-mcp"
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Shinobi Team", "AI Studio"]
+authors = ["Shadow Crew Team", "AI Studio"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
@@ -92,8 +92,8 @@ thiserror = "2.0"
 `
   },
   {
-    path: 'crates/shinobi-protocol/src/acp.rs',
-    crate: 'shinobi-protocol',
+    path: 'crates/shadow-crew-protocol/src/acp.rs',
+    crate: 'shadow-crew-protocol',
     category: 'protocol',
     description: 'ACP (Agent Client Protocol) 核心协议报文结构与 JSON-RPC 2.0 序列化定义',
     language: 'rust',
@@ -196,8 +196,8 @@ pub struct McpCallTrace {
 `
   },
   {
-    path: 'crates/shinobi-desktop/src-tauri/src/main.rs',
-    crate: 'shinobi-desktop',
+    path: 'src-tauri/src/main.rs',
+    crate: 'shadow-crew-desktop',
     category: 'desktop',
     description: 'Tauri v2 桌面宿主入口，注册异步命令、初始化状态与 IPC 通信',
     language: 'rust',
@@ -292,13 +292,13 @@ async fn main() {
             read_workspace_file_sandboxed,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running shinobi tauri desktop application");
+        .expect("error while running shadow-crew tauri desktop application");
 }
 `
   },
   {
-    path: 'crates/shinobi-desktop/src-tauri/src/acp_manager.rs',
-    crate: 'shinobi-desktop',
+    path: 'src-tauri/src/acp_manager.rs',
+    crate: 'shadow-crew-desktop',
     category: 'desktop',
     description: 'Tokio 异步子进程守护器：管理 stdio 管道并转发流式日志至前端 Channel',
     language: 'rust',
@@ -417,16 +417,16 @@ impl AcpProcessManager {
 `
   },
   {
-    path: 'crates/shinobi-desktop/src-tauri/tauri.conf.json',
-    crate: 'shinobi-desktop',
+    path: 'src-tauri/tauri.conf.json',
+    crate: 'shadow-crew-desktop',
     category: 'desktop',
     description: 'Tauri v2 生产级配置：窗口定制、沙盒安全与构建产物配置',
     language: 'json',
     code: `{
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/tooling/cli/schema.json",
-  "productName": "Shinobi",
+  "productName": "Shadow Crew",
   "version": "1.0.0",
-  "identifier": "com.shinobi.workspace.desktop",
+  "identifier": "com.shadowcrew.workspace.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:3033",
@@ -436,7 +436,7 @@ impl AcpProcessManager {
   "app": {
     "windows": [
       {
-        "title": "Shinobi - Multi-Agent Stand-in Workspace",
+        "title": "Shadow Crew - Multi-Agent Stand-in Workspace",
         "width": 1400,
         "height": 900,
         "minWidth": 960,
@@ -463,8 +463,8 @@ impl AcpProcessManager {
 }`
   },
   {
-    path: 'crates/shinobi-server/src/main.rs',
-    crate: 'shinobi-server',
+    path: 'crates/shadow-crew-server/src/main.rs',
+    crate: 'shadow-crew-server',
     category: 'server',
     description: 'Axum + Tokio 高性能服务端入口，启动 WebSocket Nostr Relay 与房间分发',
     language: 'rust',
@@ -508,8 +508,8 @@ async fn main() -> anyhow::Result<()> {
 `
   },
   {
-    path: 'crates/shinobi-server/src/relay.rs',
-    crate: 'shinobi-server',
+    path: 'crates/shadow-crew-server/src/relay.rs',
+    crate: 'shadow-crew-server',
     category: 'server',
     description: 'Nostr Relay 事件发布订阅引擎：支持房间隔离、secp256k1 验证与广播',
     language: 'rust',
@@ -602,8 +602,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<RelayState>) {
 `
   },
   {
-    path: 'crates/shinobi-agent/src/memory.rs',
-    crate: 'shinobi-agent',
+    path: 'crates/shadow-crew-agent/src/memory.rs',
+    crate: 'shadow-crew-agent',
     category: 'agent',
     description: 'Agent 私有持久记忆引擎：使用本地 SQLite 存储跨会话核心偏好与架构规范',
     language: 'rust',
@@ -704,10 +704,10 @@ if ! command -v npm &> /dev/null; then
 fi
 
 echo "-> Building shared protocol library..."
-cargo build -p shinobi-protocol
+cargo build -p shadow-crew-protocol
 
-echo "-> Starting Shinobi Rust Nostr Relay in background (port 8080)..."
-cargo run -p shinobi-server &
+echo "-> Starting Shadow Crew Rust Nostr Relay in background (port 8080)..."
+cargo run -p shadow-crew-server &
 SERVER_PID=$!
 echo "Relay PID: $SERVER_PID"
 

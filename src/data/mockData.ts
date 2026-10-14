@@ -44,7 +44,7 @@ export const INITIAL_AGENTS: Agent[] = [
     },
     isManagedByYou: true,
     acpTransport: 'stdio',
-    acpCommandOrUrl: './target/debug/shinobi-agent',
+    acpCommandOrUrl: './target/debug/shadow-crew-agent',
     protocolVersion: '2025-01-01 (ACP v1.0.4)',
     capabilities: {
       canUseInternalMemory: true,

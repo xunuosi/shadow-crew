@@ -2,17 +2,17 @@
 resolver = "2"
 default-members = ["src-tauri"]
 members = [
-    "crates/shinobi-protocol",
-    "crates/shinobi-server",
+    "crates/shadow-crew-protocol",
+    "crates/shadow-crew-server",
     "src-tauri",
-    "crates/shinobi-agent",
-    "crates/shinobi-dev-mcp"
+    "crates/shadow-crew-agent",
+    "crates/shadow-crew-dev-mcp"
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Shinobi Team", "AI Studio"]
+authors = ["Shadow Crew Team", "AI Studio"]
 license = "Apache-2.0"
 
 [workspace.dependencies]

@@ -675,13 +675,13 @@ export async function sendPromptToRemoteAcpWebSocket(
 
 /**
  * 构造本地 ACP 进程的启动环境变量。
- * 内置自研 shinobi-agent 自身不持有模型配置，由宿主将「Agent 私有模型 > 全局默认模型」
+ * 内置自研 shadow-crew-agent (兼容 shinobi-agent) 自身不持有模型配置，由宿主将「Agent 私有模型 > 全局默认模型」
  * 解析结果通过 SHADOW_CREW_LLM_* 注入；外部独立 ACP 运行时（如 Claude Code）沿用其自身 ENV，不做注入。
  */
 export function buildAgentLaunchEnv(agent: Agent): Array<{ key: string; value: string }> {
   const envVars = [...(agent.envVars || [])];
-  const command = agent.acpCommandOrUrl || './target/debug/shinobi-agent';
-  if (command.includes('shinobi-agent')) {
+  const command = agent.acpCommandOrUrl || './target/debug/shadow-crew-agent';
+  if (command.includes('shadow-crew-agent') || command.includes('shinobi-agent')) {
     const cfg = resolveAgentModelConfig(agent);
     envVars.push(
       { key: 'SHADOW_CREW_LLM_PROVIDER', value: cfg.provider },
@@ -770,7 +770,7 @@ export async function sendPromptToAcpAgent(
     try {
       console.log(`[ACP Client] Invoking real ACP agent process: ${agent.id} (${agent.name})`);
 
-      const launchCommand = agent.acpCommandOrUrl || './target/debug/shinobi-agent';
+      const launchCommand = agent.acpCommandOrUrl || './target/debug/shadow-crew-agent';
       const launchEnvVars = buildAgentLaunchEnv(agent);
       const effectiveChannelId = options.channelId || roomId;
       const channelCwd = `~/.shinobi/channels/${effectiveChannelId}`;
@@ -858,7 +858,7 @@ export async function sendPromptToAcpAgent(
         }
 
         return {
-          textResponse: `⚠️【${agent.name}】ACP 通信告警：${rawErrMsg}${formattedHelp}\n\n• **本地日志落盘**：底层原始 stdio 报文已持久化落盘至 \`logs/acp.log\`。\n• **实时跟踪**：可在终端运行 \`tail -f logs/acp.log\` 查看实时流。\n• **关联命令**：\`${agent.acpCommandOrUrl || './target/debug/shinobi-agent'}\`。`,
+          textResponse: `⚠️【${agent.name}】ACP 通信告警：${rawErrMsg}${formattedHelp}\n\n• **本地日志落盘**：底层原始 stdio 报文已持久化落盘至 \`logs/acp.log\`。\n• **实时跟踪**：可在终端运行 \`tail -f logs/acp.log\` 查看实时流。\n• **关联命令**：\`${agent.acpCommandOrUrl || './target/debug/shadow-crew-agent'}\`。`,
           cartridgeCitation: citation,
           durationMs,
           isRealProcess: true,
