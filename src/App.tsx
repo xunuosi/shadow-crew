@@ -6987,6 +6987,9 @@ export default function App() {
           setIsMemoryImportModalOpen(true);
         }}
         onUpdateAgent={(agentId, updatedData) => {
+          // 清空已交付公约与花名册缓存，确保后续全会话即时重装最新的人设与团队花名册
+          deliveredStandingContextRef.current.clear();
+
           const existingAgent = agents.find((a) => a.id === agentId);
           const wasOnline =
             !!existingAgent && existingAgent.status !== 'idle' && existingAgent.status !== 'error';
