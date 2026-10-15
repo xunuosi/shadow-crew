@@ -10,6 +10,7 @@ export interface AcpSendPromptOptions {
   projectId?: string;
   channelId?: string;
   systemPrompt?: string;
+  isDm?: boolean;
 }
 
 export interface AcpAgentResponse {
@@ -772,8 +773,11 @@ export async function sendPromptToAcpAgent(
 
       const launchCommand = agent.acpCommandOrUrl || './target/debug/shadow-crew-agent';
       const launchEnvVars = buildAgentLaunchEnv(agent);
-      const effectiveChannelId = options.channelId || roomId;
-      const channelCwd = `~/.shadow-crew/channels/${effectiveChannelId}`;
+      const isDm = options.isDm ?? (Boolean(!options.channelId || options.channelId === 'direct-messages' || options.channelId.startsWith('dm-') || roomId.startsWith('thread-dm-')));
+      const targetCwd = isDm
+        ? `~/.shadow-crew/agents/${agent.id}`
+        : `~/.shadow-crew/channels/${options.channelId || roomId}`;
+      const effectiveChannelId = isDm ? undefined : (options.channelId || roomId);
 
       const response = await tauriInvoke('send_prompt_to_agent', {
         agentId: agent.id,
@@ -781,7 +785,7 @@ export async function sendPromptToAcpAgent(
         channelId: effectiveChannelId,
         prompt: enhancedPrompt,
         command: launchCommand,
-        cwd: channelCwd,
+        cwd: targetCwd,
         envVars: launchEnvVars,
         systemPrompt: resolvedSystemPrompt,
       });

@@ -293,7 +293,24 @@ export async function openChannelArtifactsFolder(channelId: string): Promise<str
 }
 
 /**
- * 获取当前频道与全局 Shinobi 路径信息
+ * 打开当前 Agent 的专属落地产物工作区目录 (在系统访达/资源管理器中弹出)
+ */
+export async function openAgentArtifactsFolder(agentId: string): Promise<string> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      const path = await invoke('open_agent_artifacts_dir', { agentId });
+      return path;
+    } catch (e) {
+      console.error('[dbClient] open_agent_artifacts_dir failed:', e);
+      throw e;
+    }
+  }
+  return `~/.shadow-crew/agents/${agentId}/artifacts/`;
+}
+
+/**
+ * 获取当前频道与全局 Shadow Crew 路径信息
  */
 export async function getChannelDirInfo(channelId: string): Promise<ChannelDirInfo | null> {
   const invoke = getTauriInvoke();
@@ -302,6 +319,21 @@ export async function getChannelDirInfo(channelId: string): Promise<ChannelDirIn
       return await invoke('get_channel_dir_info', { channelId });
     } catch (e) {
       console.error('[dbClient] get_channel_dir_info failed:', e);
+    }
+  }
+  return null;
+}
+
+/**
+ * 获取当前 Agent 与全局 Shadow Crew 路径信息
+ */
+export async function getAgentDirInfo(agentId: string): Promise<ChannelDirInfo | null> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      return await invoke('get_agent_dir_info', { agentId });
+    } catch (e) {
+      console.error('[dbClient] get_agent_dir_info failed:', e);
     }
   }
   return null;

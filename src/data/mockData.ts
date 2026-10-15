@@ -102,7 +102,7 @@ export const INITIAL_AGENTS: Agent[] = [
       repoName: 'shinobi-workspace',
       gitBranch: 'main',
       permissionMode: 'full_read_write',
-      activeFiles: ['~/.shadow-crew/channels'],
+      activeFiles: ['~/.shadow-crew/agents'],
     },
     skills: [
       {

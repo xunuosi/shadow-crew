@@ -44,6 +44,20 @@ fn get_channel_dir(channel_id: &str) -> std::path::PathBuf {
     channels_dir
 }
 
+/// 解析并创建指定 Agent 的独立私有工作区 (~/.shadow-crew/agents/<agent_id>)
+fn get_agent_dir(agent_id: &str) -> std::path::PathBuf {
+    let clean_id = if agent_id.trim().is_empty() {
+        "agent-default"
+    } else {
+        agent_id.trim()
+    };
+    let agents_dir = get_shadow_crew_home_dir().join("agents").join(clean_id);
+    let _ = std::fs::create_dir_all(&agents_dir);
+    let _ = std::fs::create_dir_all(agents_dir.join("artifacts"));
+    let _ = std::fs::create_dir_all(agents_dir.join("scratch"));
+    agents_dir
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 实例化私有持久化 SQLite 记忆引擎 (收敛至 ~/.shadow-crew/global_memory.sqlite)
@@ -227,12 +241,34 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                let current_channel_dir = get_channel_dir(&prompt_channel_id);
-                let current_channel_cwd = current_channel_dir.to_string_lossy().to_string();
-                let _ = std::env::set_current_dir(&current_channel_dir);
+                let env_agent_id = std::env::var("SHADOW_CREW_AGENT_ID").ok();
+                let maybe_agent_id = params
+                    .get("agentId")
+                    .and_then(|v| v.as_str())
+                    .or(env_agent_id.as_deref());
 
-                // 更新 channel 活跃状态
-                let meta_file = current_channel_dir.join("meta.json");
+                let is_dm = maybe_agent_id.is_some()
+                    || prompt_channel_id.starts_with("dm-")
+                    || prompt_channel_id == "direct-messages"
+                    || prompt_channel_id.is_empty();
+
+                let (current_workspace_dir, is_dm_session, current_agent_id) = if is_dm {
+                    let agent_id = maybe_agent_id.unwrap_or_else(|| {
+                        if prompt_channel_id.starts_with("dm-") {
+                            prompt_channel_id.trim_start_matches("dm-")
+                        } else {
+                            "agent-default"
+                        }
+                    });
+                    (get_agent_dir(agent_id), true, agent_id.to_string())
+                } else {
+                    (get_channel_dir(&prompt_channel_id), false, String::new())
+                };
+                let current_workspace_cwd = current_workspace_dir.to_string_lossy().to_string();
+                let _ = std::env::set_current_dir(&current_workspace_dir);
+
+                // 更新工作区活跃状态
+                let meta_file = current_workspace_dir.join("meta.json");
                 if meta_file.exists() {
                     if let Ok(content) = std::fs::read_to_string(&meta_file) {
                         if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -241,26 +277,28 @@ async fn main() -> Result<()> {
                                 .unwrap_or_default()
                                 .as_secs();
                             val["lastActive"] = serde_json::json!(now_secs);
-                            val["workspaceDir"] = serde_json::json!(current_channel_cwd);
+                            val["workspaceDir"] = serde_json::json!(current_workspace_cwd);
                             let _ = std::fs::write(&meta_file, val.to_string());
                         }
                     }
                 }
 
-                // 若此前未能启动 MCP 或切换了活跃频道，重新绑定当前频道专属工作空间
-                if mcp_client.is_none() || mcp_client_channel.as_deref() != Some(prompt_channel_id.as_str()) {
-                    if let Ok(client) = mcp_client::NativeMcpClient::spawn_and_connect(Some(&current_channel_cwd), Some(&prompt_channel_id)).await {
+                // 若此前未能启动 MCP 或切换了活跃工作区，重新绑定当前专属工作空间
+                let mcp_key = if is_dm_session { format!("agent:{}", current_agent_id) } else { prompt_channel_id.clone() };
+                if mcp_client.is_none() || mcp_client_channel.as_deref() != Some(mcp_key.as_str()) {
+                    let chan_param = if is_dm_session { None } else { Some(prompt_channel_id.as_str()) };
+                    if let Ok(client) = mcp_client::NativeMcpClient::spawn_and_connect(Some(&current_workspace_cwd), chan_param).await {
                         mcp_client = Some(Arc::new(tokio::sync::Mutex::new(client)));
-                        mcp_client_channel = Some(prompt_channel_id.clone());
+                        mcp_client_channel = Some(mcp_key);
                     }
                 }
                 
-                // 1. 从私有记忆库召回关键知识 (全局核心认知 + 频道私有知识)
+                // 1. 从私有记忆库召回关键知识 (全局核心认知 + 本地私有知识)
                 let mut recalled = memory_store.recall_relevant(query).unwrap_or_default();
-                let channel_mem_path = current_channel_dir.join("memory.sqlite").to_string_lossy().to_string();
-                if let Ok(channel_mem_store) = AgentMemoryStore::new(&channel_mem_path) {
-                    if let Ok(chan_recalled) = channel_mem_store.recall_relevant(query) {
-                        recalled.extend(chan_recalled);
+                let local_mem_path = current_workspace_dir.join("memory.sqlite").to_string_lossy().to_string();
+                if let Ok(local_mem_store) = AgentMemoryStore::new(&local_mem_path) {
+                    if let Ok(loc_recalled) = local_mem_store.recall_relevant(query) {
+                        recalled.extend(loc_recalled);
                     }
                 }
 
@@ -284,14 +322,14 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                let artifacts_dir = current_channel_dir.join("artifacts").to_string_lossy().to_string();
-                let scratch_dir = current_channel_dir.join("scratch").to_string_lossy().to_string();
-                if !system_prompt.contains("[当前频道专属工作空间环境]") && !system_prompt.contains("[当前 Agent 私聊专属独立工作空间环境]") {
-                    if prompt_channel_id.starts_with("dm-") {
+                let artifacts_dir = current_workspace_dir.join("artifacts").to_string_lossy().to_string();
+                let scratch_dir = current_workspace_dir.join("scratch").to_string_lossy().to_string();
+                if !system_prompt.contains("[当前频道专属工作空间环境]") && !system_prompt.contains("[当前 Agent 个人专属独立工作空间环境]") {
+                    if is_dm_session {
                         system_prompt.push_str(&format!(
-                            "\n\n[当前 Agent 私聊专属独立工作空间环境]:\n- 私聊隔离通道 ID: {}\n- 私聊独立工作区根目录 (Working Directory / cwd): {}\n- 专属落地产物目录 (Artifacts): {}\n- 专属临时调试目录 (Scratch): {}\n提示: 您当前处于与用户的 1-on-1 私聊中，沉淀的正式技术推演文档、方案或代码 Patch 将安全保存至您个人的专属产物目录中，与其他 Agent 物理隔离。\n",
-                            prompt_channel_id,
-                            current_channel_cwd,
+                            "\n\n[当前 Agent 个人专属独立工作空间环境]:\n- Agent ID: {}\n- Agent 独立工作区根目录 (Working Directory / cwd): {}\n- 专属落地产物目录 (Artifacts): {}\n- 专属临时调试目录 (Scratch): {}\n提示: 您当前处于与用户的 1-on-1 私聊中，沉淀的正式技术推演文档、方案或代码 Patch 将安全保存至您个人的专属产物目录中，与频道(channels)业务及其他 Agent 物理隔离。\n",
+                            current_agent_id,
+                            current_workspace_cwd,
                             artifacts_dir,
                             scratch_dir
                         ));
@@ -299,7 +337,7 @@ async fn main() -> Result<()> {
                         system_prompt.push_str(&format!(
                             "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}\n- 临时调试目录 (Scratch): {}\n提示: 如需沉淀正式技术推演文档、ADR 架构决策或代码 Patch，请优先调用 `write_channel_artifact` 工具安全保存至频道专属产物目录。\n",
                             prompt_channel_id,
-                            current_channel_cwd,
+                            current_workspace_cwd,
                             artifacts_dir,
                             scratch_dir
                         ));

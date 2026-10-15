@@ -153,6 +153,28 @@ pub fn get_tools_list() -> Value {
             }
         },
         {
+            "name": "write_agent_artifact",
+            "description": "将正式技术产物 (如 ADR 架构决策文档、推演方案白皮书、关键补丁 diff) 永久归档至指定 Agent 的个人专属产物目录 (~/.shadow-crew/agents/<agent_id>/artifacts/)。可被系统访达一键查看。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "产物文件名 (如 adr_001_storage.md, refactor_plan.md, changes.diff)"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "产物完整文本内容"
+                    },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "可选的目标 Agent ID (若省略则默认写入当前所属 Agent)"
+                    }
+                },
+                "required": ["filename", "content"]
+            }
+        },
+        {
             "name": "submit_arbitration_ruling",
             "description": "提交本议题的架构仲裁定案裁决书与权衡决策 (Architecture Decision Ruling)。将结构化裁决元数据直接上报至宿主与 ADR 画布。",
             "inputSchema": {
@@ -309,6 +331,16 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
             let channel_id = arguments["channel_id"].as_str();
             fs::write_channel_artifact(filename, content, channel_id).await
         }
+        "write_agent_artifact" => {
+            let filename = arguments["filename"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 filename"))?;
+            let content = arguments["content"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 content"))?;
+            let agent_id = arguments["agent_id"].as_str();
+            fs::write_agent_artifact(filename, content, agent_id).await
+        }
         "submit_arbitration_ruling" => {
             let decision_type = arguments["decision_type"]
                 .as_str()
@@ -383,6 +415,9 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
 }
 
 #[cfg(test)]
+pub(crate) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -399,6 +434,7 @@ mod tests {
         assert!(names.contains(&"list_dir"));
         assert!(names.contains(&"search_code"));
         assert!(names.contains(&"write_channel_artifact"));
+        assert!(names.contains(&"write_agent_artifact"));
         assert!(names.contains(&"submit_arbitration_ruling"));
         assert!(names.contains(&"submit_module_decomposition"));
     }
@@ -414,8 +450,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_tool_call_write_artifact() {
-        let temp_dir = std::env::temp_dir().join("shinobi_dispatch_test_art");
-        std::env::set_var("SHINOBI_HOME", &temp_dir);
+        let _guard = TEST_ENV_MUTEX.lock().unwrap();
+        let temp_dir = std::env::temp_dir().join("shadow_crew_dispatch_test_art").join(".shadow-crew");
+        std::env::set_var("SHADOW_CREW_HOME", &temp_dir);
 
         let args = json!({
             "filename": "test_dispatch_adr.md",
@@ -425,7 +462,17 @@ mod tests {
         let res = dispatch_tool_call("write_channel_artifact", &args).await.unwrap();
         assert!(res.contains("test_dispatch_adr.md"));
 
+        let agent_args = json!({
+            "filename": "agent_note.md",
+            "content": "# Agent Note",
+            "agent_id": "agent-dispatch-test"
+        });
+        let agent_res = dispatch_tool_call("write_agent_artifact", &agent_args).await.unwrap();
+        assert!(agent_res.contains("agent_note.md"));
+        assert!(temp_dir.join("agents").join("agent-dispatch-test").join("artifacts").join("agent_note.md").exists());
+
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        std::env::remove_var("SHADOW_CREW_HOME");
     }
 
     #[tokio::test]

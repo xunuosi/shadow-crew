@@ -503,6 +503,39 @@ fn get_channel_dir_info(channel_id: String) -> Result<serde_json::Value, String>
     }))
 }
 
+/// Tauri Command: 打开指定 Agent 的专属落地产物工作区目录 (系统 Finder / 资源管理器)
+#[tauri::command]
+async fn open_agent_artifacts_dir(agent_id: String) -> Result<String, String> {
+    let agent_dir = db_manager::get_agent_dir(&agent_id);
+    let artifacts_dir = agent_dir.join("artifacts");
+    let _ = std::fs::create_dir_all(&artifacts_dir);
+    let path_str = artifacts_dir.to_string_lossy().to_string();
+
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(&path_str).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer").arg(&path_str).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(&path_str).spawn();
+
+    Ok(path_str)
+}
+
+/// Tauri Command: 获取当前 Agent 与全局 Shadow Crew 路径信息
+#[tauri::command]
+fn get_agent_dir_info(agent_id: String) -> Result<serde_json::Value, String> {
+    let agent_dir = db_manager::get_agent_dir(&agent_id);
+    let artifacts_dir = agent_dir.join("artifacts");
+    let scratch_dir = agent_dir.join("scratch");
+    
+    Ok(serde_json::json!({
+        "agentDir": agent_dir.to_string_lossy().to_string(),
+        "artifactsDir": artifacts_dir.to_string_lossy().to_string(),
+        "scratchDir": scratch_dir.to_string_lossy().to_string(),
+        "globalDir": db_manager::get_shadow_crew_home_dir().to_string_lossy().to_string(),
+    }))
+}
+
 #[derive(serde::Deserialize)]
 pub struct HttpPostRequest {
     pub url: String,
@@ -693,6 +726,8 @@ async fn main() {
             native_http_post,
             open_channel_artifacts_dir,
             get_channel_dir_info,
+            open_agent_artifacts_dir,
+            get_agent_dir_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shadow-crew tauri desktop application");

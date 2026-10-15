@@ -272,12 +272,63 @@ pub fn get_channel_artifacts_dir(channel_id: Option<&str>) -> std::path::PathBuf
     artifacts_dir
 }
 
+/// 解析指定 Agent 的专属落地产物目录 (~/.shadow-crew/agents/<agent_id>/artifacts/)
+pub fn get_agent_artifacts_dir(agent_id: Option<&str>) -> std::path::PathBuf {
+    let clean_id = agent_id
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .or_else(|| std::env::var("SHADOW_CREW_AGENT_ID").or_else(|_| std::env::var("SHINOBI_AGENT_ID")).ok().filter(|s| !s.trim().is_empty()))
+        .unwrap_or_else(|| "agent-default".to_string());
+
+    let artifacts_dir = get_shadow_crew_home_dir()
+        .join("agents")
+        .join(clean_id)
+        .join("artifacts");
+    let _ = std::fs::create_dir_all(&artifacts_dir);
+    artifacts_dir
+}
+
+/// 将关键技术产物 (ADR 架构决策、推演设计白皮书、补丁 diff) 归档至指定 Agent 专属产物目录 (~/.shadow-crew/agents/<agent_id>/artifacts/)
+pub async fn write_agent_artifact(
+    filename: &str,
+    content: &str,
+    agent_id: Option<&str>,
+) -> Result<String> {
+    let p = Path::new(filename);
+    let clean_name = p
+        .file_name()
+        .ok_or_else(|| anyhow!("无效的产物文件名: {}", filename))?;
+    let artifacts_dir = get_agent_artifacts_dir(agent_id);
+    fs::create_dir_all(&artifacts_dir)
+        .await
+        .map_err(|e| anyhow!("创建 Agent 产物目录失败 [{}]: {}", artifacts_dir.display(), e))?;
+
+    let target_path = artifacts_dir.join(clean_name);
+
+    fs::write(&target_path, content.as_bytes())
+        .await
+        .map_err(|e| anyhow!("写入 Agent 产物失败 [{}]: {}", target_path.display(), e))?;
+
+    Ok(format!(
+        "产物已成功归档到当前 Agent 专属产物目录: {} (大小: {} 字节)",
+        target_path.display(),
+        content.len()
+    ))
+}
+
 /// 将关键技术产物 (ADR 架构决策、推演设计白皮书、补丁 diff) 归档至当前频道专属产物目录
 pub async fn write_channel_artifact(
     filename: &str,
     content: &str,
     channel_id: Option<&str>,
 ) -> Result<String> {
+    if let Some(id) = channel_id {
+        if id.starts_with("agent-") || id.starts_with("dm-") {
+            let clean_agent_id = id.trim_start_matches("dm-");
+            return write_agent_artifact(filename, content, Some(clean_agent_id)).await;
+        }
+    }
+
     let p = Path::new(filename);
     let clean_name = p
         .file_name()
@@ -331,6 +382,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_channel_artifact() {
+        let _guard = crate::tools::TEST_ENV_MUTEX.lock().unwrap();
         let temp_dir = std::env::temp_dir().join("shadow_crew_mcp_test_art").join(".shadow-crew");
         std::env::set_var("SHADOW_CREW_HOME", &temp_dir);
 
@@ -340,13 +392,18 @@ mod tests {
         assert!(msg.contains("adr_001.md"));
         assert!(msg.contains("test-chan"));
 
-        // Test DM isolated artifact directory
+        // Test Agent isolated artifact directory (routed from dm-* or agent-* to agents/)
         let dm_res = write_channel_artifact("design_spec.md", "# Design Spec", Some("dm-agent-test-999")).await;
         assert!(dm_res.is_ok());
         let dm_msg = dm_res.unwrap();
         assert!(dm_msg.contains("design_spec.md"));
-        assert!(dm_msg.contains("dm-agent-test-999"));
-        assert!(temp_dir.join("channels").join("dm-agent-test-999").join("artifacts").join("design_spec.md").exists());
+        assert!(dm_msg.contains("agent-test-999"));
+        assert!(temp_dir.join("agents").join("agent-test-999").join("artifacts").join("design_spec.md").exists());
+
+        // Test direct write_agent_artifact
+        let direct_agent_res = write_agent_artifact("profile_patch.md", "# Profile Patch", Some("agent-direct-123")).await;
+        assert!(direct_agent_res.is_ok());
+        assert!(temp_dir.join("agents").join("agent-direct-123").join("artifacts").join("profile_patch.md").exists());
 
         let _ = fs::remove_dir_all(&temp_dir).await;
         std::env::remove_var("SHADOW_CREW_HOME");

@@ -53,7 +53,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   draftId,
 }) => {
   const [content, setContent] = useState('');
-  const [selectedModel, setSelectedModel] = useState<'claude' | 'deepseek' | 'openai' | 'shinobi'>('claude');
   const [isMentionOpen, setIsMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -409,55 +408,13 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             {/* Left Action Icons */}
             <div className="flex items-center gap-1 text-fg-muted flex-wrap">
               {!isDm ? (
-                <>
-                  <button 
-                    onClick={handleToolbarAtClick}
-                    className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
-                    title="输入 @ 提及 Agent"
-                  >
-                    <AtSign className="w-3.5 h-3.5 text-accent" />
-                  </button>
-
-                  {/* Model Badges Pill Switcher (Matching colorful O M D 🥷 in screenshot) */}
-                  <div className="flex items-center bg-surface rounded-lg p-0.5 border border-border gap-0.5 mx-1 shrink-0">
-                    <button
-                      onClick={() => setSelectedModel('openai')}
-                      className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
-                        selectedModel === 'openai' ? 'bg-red-500/20 text-red-600 dark:text-red-300 border border-red-500/50' : 'text-fg-muted hover:text-fg'
-                      }`}
-                      title="OpenAI GPT-4o"
-                    >
-                      O
-                    </button>
-                    <button
-                      onClick={() => setSelectedModel('claude')}
-                      className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
-                        selectedModel === 'claude' ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/50' : 'text-fg-muted hover:text-fg'
-                      }`}
-                      title="Anthropic Claude 3.7"
-                    >
-                      M
-                    </button>
-                    <button
-                      onClick={() => setSelectedModel('deepseek')}
-                      className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
-                        selectedModel === 'deepseek' ? 'bg-blue-500/20 text-blue-600 dark:text-blue-300 border border-blue-500/50' : 'text-fg-muted hover:text-fg'
-                      }`}
-                      title="DeepSeek V3 / R1"
-                    >
-                      D
-                    </button>
-                    <button
-                      onClick={() => setSelectedModel('shinobi')}
-                      className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
-                        selectedModel === 'shinobi' ? 'bg-accent/20 text-accent border border-accent/50' : 'text-fg-muted hover:text-fg'
-                      }`}
-                      title="Shinobi Engine"
-                    >
-                      🥷
-                    </button>
-                  </div>
-                </>
+                <button 
+                  onClick={handleToolbarAtClick}
+                  className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
+                  title="输入 @ 提及 Agent"
+                >
+                  <AtSign className="w-3.5 h-3.5 text-accent" />
+                </button>
               ) : (
                 /* In DM mode: show 1-on-1 target agent pill */
                 activeAgents[0] && (

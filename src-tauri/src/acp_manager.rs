@@ -827,16 +827,37 @@ impl AcpProcessManager {
             }
         }
 
-        // 2. 解析当前频道的专属独立工作空间路径 ~/.shadow-crew/channels/<channel_id>
-        let effective_channel_id = channel_id
-            .map(|c| c.trim())
-            .filter(|c| !c.is_empty())
-            .unwrap_or(room_id);
-        let channel_workspace_dir = crate::db_manager::get_channel_dir(effective_channel_id);
-        let channel_cwd = channel_workspace_dir.to_string_lossy().to_string();
-        let session_key = format!("{}:{}", effective_channel_id, room_id);
+        // 2. 区分当前交互场景：是当前 Agent 的 1-on-1 私聊，还是多 Agent 频道研讨
+        // 私聊判定：未指定频道、属于私聊标记（如 dm-*、direct-messages）或 room_id 属于 thread-dm-*
+        let is_dm = channel_id.is_none()
+            || channel_id.map(|c| c.trim().is_empty() || c == "direct-messages" || c.starts_with("dm-")).unwrap_or(false)
+            || room_id.starts_with("thread-dm-");
 
-        // 3. 确保当前频道/房间绑定了有效的 ACP sessionId (通过 session/new 创建，并将 cwd 绑定至频道独立工作区)
+        let (target_workspace_dir, session_key, workspace_notice) = if is_dm {
+            // Agent 个人专属私有空间：~/.shadow-crew/agents/<agent_id>/
+            let agent_dir = crate::db_manager::get_agent_dir(agent_id);
+            let agent_cwd = agent_dir.to_string_lossy().to_string();
+            let key = format!("agent:{}:dm", agent_id);
+            let notice = format!(
+                "\n\n[当前 Agent 个人专属独立工作空间环境]:\n- Agent ID: {}\n- Agent 独立工作区根目录 (Working Directory / cwd): {}\n- 专属落地产物目录 (Artifacts): {}/artifacts\n- 专属临时调试目录 (Scratch): {}/scratch\n提示: 您当前处于与用户的 1-on-1 私聊中，沉淀的技术推演文档、方案或代码 Patch 将安全保存至您个人的专属产物目录中，与频道(channels)业务及其他 Agent 物理隔离。",
+                agent_id, agent_cwd, agent_cwd, agent_cwd
+            );
+            (agent_dir, key, notice)
+        } else {
+            // 频道公共研讨空间：~/.shadow-crew/channels/<channel_id>/
+            let effective_chan_id = channel_id.map(|c| c.trim()).filter(|c| !c.is_empty()).unwrap_or(room_id);
+            let chan_dir = crate::db_manager::get_channel_dir(effective_chan_id);
+            let chan_cwd = chan_dir.to_string_lossy().to_string();
+            let key = format!("{}:{}", effective_chan_id, room_id);
+            let notice = format!(
+                "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}/artifacts\n- 临时调试目录 (Scratch): {}/scratch",
+                effective_chan_id, chan_cwd, chan_cwd, chan_cwd
+            );
+            (chan_dir, key, notice)
+        };
+        let workspace_cwd = target_workspace_dir.to_string_lossy().to_string();
+
+        // 3. 确保当前会话绑定了有效的 ACP sessionId (通过 session/new 创建，并将 cwd 绑定至对应独立工作区)
         let mut session_id = {
             let map = agent.session_ids.lock().await;
             map.get(&session_key).cloned()
@@ -853,23 +874,14 @@ impl AcpProcessManager {
                 map.insert(new_sess_id, sess_tx);
             }
             let mut params = serde_json::json!({
-                "cwd": &channel_cwd,
+                "cwd": &workspace_cwd,
                 "mcpServers": [],
-                "channelId": effective_channel_id
             });
-            // 对标 Buzz: 在 session/new 时将系统公约、人设以及频道/私聊专属独立工作空间路径注入底层
-            let is_dm = effective_channel_id.starts_with("dm-");
-            let workspace_notice = if is_dm {
-                format!(
-                    "\n\n[当前 Agent 私聊专属独立工作空间环境]:\n- 私聊隔离通道 ID: {}\n- 私聊独立工作区根目录 (Working Directory / cwd): {}\n- 专属落地产物目录 (Artifacts): {}/artifacts\n- 专属临时调试目录 (Scratch): {}/scratch\n提示: 您当前处于与用户的 1-on-1 私聊中，沉淀的技术推演文档、方案或代码 Patch 将安全保存至您个人的专属产物目录中，与其他 Agent 物理隔离。",
-                    effective_channel_id, channel_cwd, channel_cwd, channel_cwd
-                )
-            } else {
-                format!(
-                    "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}/artifacts\n- 临时调试目录 (Scratch): {}/scratch",
-                    effective_channel_id, channel_cwd, channel_cwd, channel_cwd
-                )
-            };
+            if is_dm {
+                params["agentId"] = serde_json::Value::String(agent_id.to_string());
+            } else if let Some(c) = channel_id {
+                params["channelId"] = serde_json::Value::String(c.to_string());
+            }
             let enriched_sp = match system_prompt {
                 Some(sp) if !sp.trim().is_empty() => format!("{}{}", sp, workspace_notice),
                 _ => workspace_notice,
@@ -900,12 +912,12 @@ impl AcpProcessManager {
                 }
             };
             tracing::info!(
-                "[Agent {}] Obtained sessionId for channel {} (room {}): {} (cwd: {})",
+                "[Agent {}] Obtained sessionId for key {} (room {}): {} (cwd: {})",
                 agent_id,
-                effective_channel_id,
+                session_key,
                 room_id,
                 sid,
-                channel_cwd
+                workspace_cwd
             );
             agent.session_ids.lock().await.insert(session_key.clone(), sid.clone());
             session_id = Some(sid);
@@ -913,7 +925,7 @@ impl AcpProcessManager {
 
         let current_session_id = session_id.unwrap_or_else(|| format!("session-{}", session_key));
 
-        // 4. 构造标准 ACP session/prompt 请求 (携带频道专属 cwd 与 channelId)
+        // 4. 构造标准 ACP session/prompt 请求 (携带独立工作区 cwd 与 channelId/agentId)
         let req_id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -929,8 +941,7 @@ impl AcpProcessManager {
 
         let mut prompt_params = serde_json::json!({
             "sessionId": current_session_id,
-            "channelId": effective_channel_id,
-            "cwd": &channel_cwd,
+            "cwd": &workspace_cwd,
             "prompt": [
                 {
                     "type": "text",
@@ -938,6 +949,11 @@ impl AcpProcessManager {
                 }
             ]
         });
+        if is_dm {
+            prompt_params["agentId"] = serde_json::Value::String(agent_id.to_string());
+        } else if let Some(c) = channel_id {
+            prompt_params["channelId"] = serde_json::Value::String(c.to_string());
+        }
 
         if let Some(sp) = system_prompt {
             if !sp.trim().is_empty() {
@@ -1151,26 +1167,26 @@ mod runtime_status_tests {
     }
 
     #[test]
-    fn channel_workspace_dirs_are_isolated_under_shadow_crew_home() {
+    fn channel_and_agent_workspace_dirs_are_isolated_under_shadow_crew_home() {
         let tmp_root = std::env::temp_dir().join("shadow_crew_channel_workspace_test");
         std::env::set_var("SHADOW_CREW_HOME", &tmp_root);
         let home = crate::db_manager::get_shadow_crew_home_dir();
         let chan_a = crate::db_manager::get_channel_dir("channel-alpha-test");
         let chan_b = crate::db_manager::get_channel_dir("channel-beta-test");
-        let dm_agent_1 = crate::db_manager::get_channel_dir("dm-agent-1790582453199");
-        let dm_agent_2 = crate::db_manager::get_channel_dir("dm-agent-1792035238590");
-        assert!(chan_a.starts_with(&home));
-        assert!(chan_b.starts_with(&home));
-        assert!(dm_agent_1.starts_with(&home));
-        assert!(dm_agent_2.starts_with(&home));
+        let agent_1 = crate::db_manager::get_agent_dir("agent-1790582453199");
+        let agent_2 = crate::db_manager::get_agent_dir("agent-1792035238590");
+        assert!(chan_a.starts_with(home.join("channels")));
+        assert!(chan_b.starts_with(home.join("channels")));
+        assert!(agent_1.starts_with(home.join("agents")));
+        assert!(agent_2.starts_with(home.join("agents")));
         assert_ne!(chan_a, chan_b);
-        assert_ne!(dm_agent_1, dm_agent_2);
-        assert_ne!(dm_agent_1, chan_a);
+        assert_ne!(agent_1, agent_2);
+        assert_ne!(agent_1, chan_a);
         assert!(chan_a.join("artifacts").exists());
         assert!(chan_a.join("scratch").exists());
-        assert!(dm_agent_1.join("artifacts").exists());
-        assert!(dm_agent_1.join("scratch").exists());
-        assert!(dm_agent_2.join("artifacts").exists());
+        assert!(agent_1.join("artifacts").exists());
+        assert!(agent_1.join("scratch").exists());
+        assert!(agent_2.join("artifacts").exists());
         let _ = std::fs::remove_dir_all(&tmp_root);
         std::env::remove_var("SHADOW_CREW_HOME");
     }

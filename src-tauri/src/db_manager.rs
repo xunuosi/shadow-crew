@@ -60,6 +60,20 @@ pub fn get_channel_dir(channel_id: &str) -> std::path::PathBuf {
     channels_dir
 }
 
+/// 获取指定 Agent 的独立私有工作区目录 (~/.shadow-crew/agents/<agent_id>)
+pub fn get_agent_dir(agent_id: &str) -> std::path::PathBuf {
+    let clean_id = if agent_id.trim().is_empty() {
+        "agent-default"
+    } else {
+        agent_id.trim()
+    };
+    let agents_dir = get_shadow_crew_home_dir().join("agents").join(clean_id);
+    let _ = std::fs::create_dir_all(&agents_dir);
+    let _ = std::fs::create_dir_all(agents_dir.join("artifacts"));
+    let _ = std::fs::create_dir_all(agents_dir.join("scratch"));
+    agents_dir
+}
+
 /// 解析默认 SQLite 记忆与数据持久化路径 (收敛至 ~/.shadow-crew/global_memory.sqlite)
 pub fn get_default_db_path() -> String {
     if let Ok(env_path) = std::env::var("SHADOW_CREW_MEMORY_DB").or_else(|_| std::env::var("SHINOBI_MEMORY_DB")) {
