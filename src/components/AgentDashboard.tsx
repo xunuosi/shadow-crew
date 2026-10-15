@@ -324,10 +324,10 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                                 setActiveMenuId(null);
                               }}
                               className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-fg flex items-center gap-2 cursor-pointer font-medium text-blue-600 dark:text-blue-400"
-                              title="复用现有配置快速创建全新 Agent (独立 ID 与独立沙箱)"
+                              title="复用当前配置快速生成全新独立副本 (独立 ID 与隔离记忆)"
                             >
                               <Copy className="w-3.5 h-3.5 text-blue-500" />
-                              <span>复制 Agent (创建新智能体)</span>
+                              <span>快速复制 Agent (生成独立副本)</span>
                             </button>
                           )}
                           <button

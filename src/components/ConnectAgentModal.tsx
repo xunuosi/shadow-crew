@@ -547,14 +547,14 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           <div>
             <h2 className="font-bold text-lg tracking-tight">
               {initialAgent
-                ? `Edit Agent: ${initialAgent.name}`
+                ? `编辑 Agent: ${initialAgent.name}`
                 : isDuplicateMode
-                ? '复制并创建全新 Agent'
+                ? `复制 Agent: ${duplicateAgent?.name || ''}`
                 : 'Create New Agent'}
             </h2>
             {isDuplicateMode && duplicateAgent && (
               <p className="text-[11px] text-blue-600 dark:text-cyan-400 mt-0.5 font-medium">
-                基于「{duplicateAgent.name}」复用配置，生成独立的全新智能体
+                基于「{duplicateAgent.name}」参数生成独立副本智能体
               </p>
             )}
           </div>
@@ -638,26 +638,6 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
         {/* Modal Form Content */}
         <form onSubmit={handleSubmit} className="p-6 overflow-y-auto overflow-x-hidden space-y-5 text-xs">
-          {/* Duplicate Mode Declaration Callout */}
-          {isDuplicateMode && duplicateAgent && (
-            <div className="p-3.5 rounded-2xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 flex items-start gap-3 shadow-xs">
-              <div className="p-2 rounded-xl bg-blue-100 dark:bg-blue-900/60 text-blue-600 dark:text-cyan-400 shrink-0 mt-0.5">
-                <Copy className="w-4 h-4" />
-              </div>
-              <div className="text-xs space-y-1">
-                <div className="font-semibold text-blue-900 dark:text-blue-200 flex items-center gap-1.5">
-                  <span>全新独立智能体声明</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-200/60 dark:bg-blue-800/60 text-blue-800 dark:text-blue-300 font-mono font-medium">
-                    配置复用
-                  </span>
-                </div>
-                <p className="text-[11px] text-blue-700/90 dark:text-blue-300/80 leading-relaxed">
-                  当前正在从「<strong>{duplicateAgent.name}</strong>」复用模型参数、系统角色与环境预设。创建后将分配<strong>全新的独立 Agent ID</strong>，享有专属隔离的 SQLite 记忆库与私有执行环境，不影响原 Agent 的任何运行状态与历史记忆。
-                </p>
-              </div>
-            </div>
-          )}
-
           {/* Top Section: Icon Placeholder (Left) & Name / Description (Right) */}
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-5">
             {/* Left: Avatar Artwork Preview & Selector */}
@@ -1441,7 +1421,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                 ) : initialAgent ? (
                   '保存修改 (Save Changes)'
                 ) : isDuplicateMode ? (
-                  '🚀 确认创建全新 Agent (复用配置)'
+                  '确认复制 (创建副本)'
                 ) : connectTab === 'remote' ? (
                   '连接远程 Agent (Connect Remote)'
                 ) : selectedAcp.availability === 'not_adapted' ? (

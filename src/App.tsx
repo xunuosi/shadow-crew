@@ -6587,10 +6587,51 @@ export default function App() {
             setDuplicatingAgent(null);
             setIsConnectModalOpen(true);
           }}
-          onDuplicateAgent={(agent) => {
-            setDuplicatingAgent(agent);
-            setEditingAgent(null);
-            setIsConnectModalOpen(true);
+          onDuplicateAgent={async (agent) => {
+            const timestamp = Date.now();
+            const newId = `agent-${timestamp}`;
+            const cleanName = `${agent.name} 副本`;
+            const cleanHandle = `@${cleanName.toLowerCase().replace(/\s+/g, '-')}`;
+
+            const duplicated: Agent = {
+              ...agent,
+              id: newId,
+              name: cleanName,
+              handle: cleanHandle,
+              status: 'idle',
+              statusDetail: undefined,
+              isManagedByYou: true,
+              modelConfig: agent.modelConfig ? { ...agent.modelConfig } : undefined,
+              envVars: agent.envVars ? agent.envVars.map((v) => ({ ...v })) : [],
+              workspace: {
+                ...(agent.workspace || {
+                  rootPath: activeProject?.localWorkspaceRoot || '~/.shinobi',
+                  repoName: 'shinobi-workspace',
+                  gitBranch: 'main',
+                  permissionMode: 'full_read_write',
+                  activeFiles: ['~/.shinobi/channels'],
+                }),
+              },
+              memory: {
+                internalMemoryPath: '~/.shinobi/global_memory.sqlite',
+                persistentType: 'sqlite',
+                persistentItems: [],
+                sessionCacheCount: 0,
+                cartridges: agent.memory?.cartridges ? [...agent.memory.cartridges] : [],
+              },
+              capabilities: {
+                canUseInternalMemory: true,
+                canAccessWorkspaceFiles: true,
+                canExecuteSkills: true,
+                canDelegateToSubAgents: true,
+                supportsStreaming: true,
+                ...(agent.capabilities || {}),
+              },
+            };
+
+            const nextAgents = [...agents, duplicated];
+            setAgents(nextAgents);
+            await saveAgentsToDb(nextAgents);
           }}
           onOpenCreateTeamModal={() => setIsCreateTeamModalOpen(true)}
           onOpenAgentDefaultsModal={() => setIsAgentDefaultsModalOpen(true)}
