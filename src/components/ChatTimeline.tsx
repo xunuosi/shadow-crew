@@ -41,7 +41,7 @@ import { renderFormattedContent } from '../utils/formatMentions';
 import { isAgentOffline } from '../utils/agentRuntime';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
-import { openChannelArtifactsFolder } from '../services/dbClient';
+import { openChannelArtifactsFolder, openAgentArtifactsFolder } from '../services/dbClient';
 
 interface ChatTimelineProps {
   messages: Message[];
@@ -516,23 +516,28 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           </button>
 
           {/* Channel / DM Artifacts Folder Toggle */}
-          {(channel || activeThread.channelId) && (
+          {(channel || activeThread?.type === 'dm' || activeThread?.channelId) && (
             <button
               onClick={async () => {
-                const targetChannelId = channel?.id || activeThread.channelId;
-                if (targetChannelId) {
-                  try {
-                    await openChannelArtifactsFolder(targetChannelId);
-                  } catch (e) {
-                    console.error('Failed to open artifacts directory:', e);
+                try {
+                  if (activeThread?.type === 'dm') {
+                    const agentId = activeThread.authorId || (activeThread.activeAgentIds && activeThread.activeAgentIds[0]) || activeThread.id.replace('thread-dm-', '');
+                    await openAgentArtifactsFolder(agentId);
+                  } else {
+                    const targetChannelId = channel?.id || activeThread?.channelId;
+                    if (targetChannelId) {
+                      await openChannelArtifactsFolder(targetChannelId);
+                    }
                   }
+                } catch (e) {
+                  console.error('Failed to open artifacts directory:', e);
                 }
               }}
               className="hidden @lg:flex px-2 py-1 rounded-lg hover:text-amber-500 hover:bg-surface-hover border border-transparent hover:border-amber-500/30 transition-all items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
               title={
-                activeThread.type === 'dm'
-                  ? `打开此 Agent 私聊专属隔离产物目录 (~/.shadow-crew/channels/${activeThread.channelId}/artifacts/)`
-                  : `打开当前频道专属产物归档目录 (~/.shadow-crew/channels/${channel?.id || activeThread.channelId}/artifacts/)`
+                activeThread?.type === 'dm'
+                  ? `打开此 Agent 专属隔离产物目录 (~/.shadow-crew/agents/${activeThread.authorId || activeThread.id.replace('thread-dm-', '')}/artifacts/)`
+                  : `打开当前频道专属产物归档目录 (~/.shadow-crew/channels/${channel?.id || activeThread?.channelId}/artifacts/)`
               }
             >
               <FolderArchive className="w-3.5 h-3.5 text-amber-500 shrink-0" />
@@ -637,23 +642,28 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                   <span>查看协同成员 ({activeAgents.length + 1})</span>
                 </button>
 
-                {(channel || activeThread.channelId) && (
+                {(channel || activeThread?.type === 'dm' || activeThread?.channelId) && (
                   <button
                     onClick={async () => {
-                      const targetChannelId = channel?.id || activeThread.channelId;
-                      if (targetChannelId) {
-                        try {
-                          await openChannelArtifactsFolder(targetChannelId);
-                        } catch (e) {
-                          console.error('Failed to open artifacts directory:', e);
+                      try {
+                        if (activeThread?.type === 'dm') {
+                          const agentId = activeThread.authorId || (activeThread.activeAgentIds && activeThread.activeAgentIds[0]) || activeThread.id.replace('thread-dm-', '');
+                          await openAgentArtifactsFolder(agentId);
+                        } else {
+                          const targetChannelId = channel?.id || activeThread?.channelId;
+                          if (targetChannelId) {
+                            await openChannelArtifactsFolder(targetChannelId);
+                          }
                         }
+                      } catch (e) {
+                        console.error('Failed to open artifacts directory:', e);
                       }
                       setShowMoreMenu(false);
                     }}
                     className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-hover text-fg transition-colors cursor-pointer"
                   >
                     <FolderArchive className="w-4 h-4 text-amber-500 shrink-0" />
-                    <span>{activeThread.type === 'dm' ? '打开私聊专属产物目录 (Artifacts)' : '打开落地产物目录 (Artifacts)'}</span>
+                    <span>{activeThread?.type === 'dm' ? '打开 Agent 专属产物目录 (Artifacts)' : '打开频道落地产物目录 (Artifacts)'}</span>
                   </button>
                 )}
 
@@ -799,13 +809,27 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
         {filteredMessages.length === 0 && (
           <div className="max-w-md mx-auto text-center py-16 space-y-3 select-none">
             <div className="w-12 h-12 rounded-2xl bg-surface-subtle border border-border flex items-center justify-center mx-auto text-fg-muted shadow-xs">
-              <Bot className="w-6 h-6" />
+              {activeThread.type === 'dm' && dmTargetAgent ? (
+                <UnifiedAvatar
+                  agent={dmTargetAgent}
+                  avatar={dmTargetAgent.avatar || activeThread.authorAvatar}
+                  name={dmTargetAgent.name || activeThread.authorName}
+                  size="md"
+                  className="w-8 h-8"
+                />
+              ) : (
+                <Bot className="w-6 h-6" />
+              )}
             </div>
             <div className="text-sm font-semibold text-fg">
-              {filter === 'topics' ? '暂无专属议题' : '暂无会话记录'}
+              {activeThread.type === 'dm'
+                ? `与 ${dmTargetAgent?.name || activeThread.authorName} 的私聊会话`
+                : filter === 'topics' ? '暂无专属议题' : '暂无会话记录'}
             </div>
             <p className="text-xs text-fg-muted leading-relaxed">
-              {filter === 'topics' 
+              {activeThread.type === 'dm'
+                ? '在下方输入框直接发送消息，与该 Agent 进行一对一专属问答与任务协作。'
+                : filter === 'topics' 
                 ? '点击右上角“新建议题”或在底部输入框发起独立方案推演。' 
                 : '在下方输入框发送消息，或调用已配置的本地 ACP Agent 开始协作。'}
             </p>

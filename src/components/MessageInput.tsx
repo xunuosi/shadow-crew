@@ -168,7 +168,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (isMentionOpen && totalCount > 0) {
+    if (!isDm && isMentionOpen && totalCount > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         setMentionIndex((prev) => (prev + 1) % totalCount);
@@ -213,14 +213,18 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     const val = e.target.value;
     updateContent(val);
 
-    const cursor = e.target.selectionStart || 0;
-    const textBefore = val.slice(0, cursor);
-    const match = textBefore.match(/(?:^|\s)@([a-zA-Z0-9_-]*)$/);
+    if (!isDm) {
+      const cursor = e.target.selectionStart || 0;
+      const textBefore = val.slice(0, cursor);
+      const match = textBefore.match(/(?:^|\s)@([a-zA-Z0-9_-]*)$/);
 
-    if (match) {
-      setMentionQuery(match[1]);
-      setIsMentionOpen(true);
-      setMentionIndex(0);
+      if (match) {
+        setMentionQuery(match[1]);
+        setIsMentionOpen(true);
+        setMentionIndex(0);
+      } else {
+        setIsMentionOpen(false);
+      }
     } else {
       setIsMentionOpen(false);
     }
@@ -256,8 +260,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       className="p-3.5 bg-surface border-t border-border select-none text-xs transition-colors duration-150"
     >
       <div className="max-w-3xl mx-auto space-y-2">
-        {/* 1. Top Quick-Mention Agent Pills + New Topic Trigger (Scenario-Adaptive & Collapsible) */}
-        {((!isDm && (activeAgents.length > 0 || onOpenNewTopicModal)) || (isDm && onOpenNewTopicModal)) && (
+        {/* 1. Top Quick-Mention Agent Pills + New Topic Trigger (Scenario-Adaptive & Collapsible - Only in Channel) */}
+        {!isDm && (activeAgents.length > 0 || onOpenNewTopicModal) && (
           <div className="flex items-center gap-1.5 pb-0.5 text-[11px] relative">
             {onOpenNewTopicModal && (
               <button
@@ -356,15 +360,17 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
         {/* 2. Main Textarea Box with Floating Mention Suggestions */}
         <div className="relative bg-surface-subtle border border-border rounded-2xl p-3 focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/20 transition-all">
-          <MentionSuggestions
-            isOpen={isMentionOpen}
-            query={mentionQuery}
-            agents={candidateAgents}
-            activeMemberIds={(activeAgents || []).map((a) => a.id)}
-            selectedIndex={mentionIndex}
-            onSelect={handleSelectMention}
-            onClose={() => setIsMentionOpen(false)}
-          />
+          {!isDm && (
+            <MentionSuggestions
+              isOpen={isMentionOpen}
+              query={mentionQuery}
+              agents={candidateAgents}
+              activeMemberIds={(activeAgents || []).map((a) => a.id)}
+              selectedIndex={mentionIndex}
+              onSelect={handleSelectMention}
+              onClose={() => setIsMentionOpen(false)}
+            />
+          )}
 
           {/* Quoting Preview Banner */}
           {quotingMessage && (
@@ -389,7 +395,11 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             value={content}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
-            placeholder={`在 #${channelName} 发起讨论或输入 @ 召唤 Agent 执行推演... (⌘ + Enter 发送)`}
+            placeholder={
+              isDm
+                ? `与 ${channelName} 私聊对话... (⌘ + Enter 发送)`
+                : `在 #${channelName} 发起讨论或输入 @ 召唤 Agent 执行推演... (⌘ + Enter 发送)`
+            }
             rows={2}
             className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none leading-relaxed"
           />
@@ -398,53 +408,69 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           <div className="flex items-center justify-between pt-2 border-t border-border mt-1 select-none">
             {/* Left Action Icons */}
             <div className="flex items-center gap-1 text-fg-muted flex-wrap">
-              <button 
-                onClick={handleToolbarAtClick}
-                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
-                title="输入 @ 提及 Agent"
-              >
-                <AtSign className="w-3.5 h-3.5 text-accent" />
-              </button>
+              {!isDm ? (
+                <>
+                  <button 
+                    onClick={handleToolbarAtClick}
+                    className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
+                    title="输入 @ 提及 Agent"
+                  >
+                    <AtSign className="w-3.5 h-3.5 text-accent" />
+                  </button>
 
-              {/* Model Badges Pill Switcher (Matching colorful O M M in screenshot) */}
-              <div className="flex items-center bg-surface rounded-lg p-0.5 border border-border gap-0.5 mx-1 shrink-0">
-                <button
-                  onClick={() => setSelectedModel('openai')}
-                  className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
-                    selectedModel === 'openai' ? 'bg-red-500/20 text-red-600 dark:text-red-300 border border-red-500/50' : 'text-fg-muted hover:text-fg'
-                  }`}
-                  title="OpenAI GPT-4o"
-                >
-                  O
-                </button>
-                <button
-                  onClick={() => setSelectedModel('claude')}
-                  className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
-                    selectedModel === 'claude' ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/50' : 'text-fg-muted hover:text-fg'
-                  }`}
-                  title="Anthropic Claude 3.7"
-                >
-                  M
-                </button>
-                <button
-                  onClick={() => setSelectedModel('deepseek')}
-                  className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
-                    selectedModel === 'deepseek' ? 'bg-blue-500/20 text-blue-600 dark:text-blue-300 border border-blue-500/50' : 'text-fg-muted hover:text-fg'
-                  }`}
-                  title="DeepSeek V3 / R1"
-                >
-                  D
-                </button>
-                <button
-                  onClick={() => setSelectedModel('shinobi')}
-                  className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
-                    selectedModel === 'shinobi' ? 'bg-accent/20 text-accent border border-accent/50' : 'text-fg-muted hover:text-fg'
-                  }`}
-                  title="Shinobi Engine"
-                >
-                  🥷
-                </button>
-              </div>
+                  {/* Model Badges Pill Switcher (Matching colorful O M D 🥷 in screenshot) */}
+                  <div className="flex items-center bg-surface rounded-lg p-0.5 border border-border gap-0.5 mx-1 shrink-0">
+                    <button
+                      onClick={() => setSelectedModel('openai')}
+                      className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
+                        selectedModel === 'openai' ? 'bg-red-500/20 text-red-600 dark:text-red-300 border border-red-500/50' : 'text-fg-muted hover:text-fg'
+                      }`}
+                      title="OpenAI GPT-4o"
+                    >
+                      O
+                    </button>
+                    <button
+                      onClick={() => setSelectedModel('claude')}
+                      className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
+                        selectedModel === 'claude' ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/50' : 'text-fg-muted hover:text-fg'
+                      }`}
+                      title="Anthropic Claude 3.7"
+                    >
+                      M
+                    </button>
+                    <button
+                      onClick={() => setSelectedModel('deepseek')}
+                      className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
+                        selectedModel === 'deepseek' ? 'bg-blue-500/20 text-blue-600 dark:text-blue-300 border border-blue-500/50' : 'text-fg-muted hover:text-fg'
+                      }`}
+                      title="DeepSeek V3 / R1"
+                    >
+                      D
+                    </button>
+                    <button
+                      onClick={() => setSelectedModel('shinobi')}
+                      className={`min-w-[22px] h-[22px] px-1 rounded flex items-center justify-center text-[10px] font-bold leading-none transition-all cursor-pointer shrink-0 ${
+                        selectedModel === 'shinobi' ? 'bg-accent/20 text-accent border border-accent/50' : 'text-fg-muted hover:text-fg'
+                      }`}
+                      title="Shinobi Engine"
+                    >
+                      🥷
+                    </button>
+                  </div>
+                </>
+              ) : (
+                /* In DM mode: show 1-on-1 target agent pill */
+                activeAgents[0] && (
+                  <div 
+                    className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-surface border border-border text-fg-secondary text-[11px] font-medium mr-1 shrink-0 select-none"
+                    title={`当前正与 ${activeAgents[0].name} (${activeAgents[0].role || '专属Agent'}) 进行 1对1 独立私聊`}
+                  >
+                    <UnifiedAvatar agent={activeAgents[0]} avatar={activeAgents[0].avatar} name={activeAgents[0].name} size="xs" className="w-3.5 h-3.5" />
+                    <span className="font-semibold text-fg truncate max-w-[140px]">{activeAgents[0].name}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-accent/10 text-accent font-mono font-medium">1对1私聊</span>
+                  </div>
+                )
+              )}
 
               {/* Attachment */}
               <button 
