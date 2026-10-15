@@ -21,6 +21,7 @@ import {
   Cpu,
   Key,
   Loader2,
+  Copy,
 } from 'lucide-react';
 import { AgentAvatarArtwork } from './AgentAvatarArtwork';
 import { discoverLocalAcpRuntimes, FALLBACK_PRESET_RUNTIMES } from '../services/acpDiscovery';
@@ -36,6 +37,7 @@ interface ConnectAgentModalProps {
   onConnectAgent: (newAgent: Partial<Agent>) => void;
   defaultWorkspaceRoot?: string;
   initialAgent?: Agent | null;
+  duplicateAgent?: Agent | null;
   onUpdateAgent?: (agentId: string, updatedData: Partial<Agent>) => void;
   onOpenImportModal?: () => void;
 }
@@ -64,10 +66,13 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   onConnectAgent,
   defaultWorkspaceRoot,
   initialAgent,
+  duplicateAgent,
   onUpdateAgent,
   onOpenImportModal,
 }) => {
   if (!isOpen) return null;
+
+  const isDuplicateMode = Boolean(duplicateAgent && !initialAgent);
 
   // Connection Tab: 'local' | 'remote' | 'clone'
   const [connectTab, setConnectTab] = useState<'local' | 'remote' | 'clone'>('local');
@@ -122,21 +127,23 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   // Initialize or reset form based on initialAgent (only on modal open or agent switch)
   useEffect(() => {
     const justOpened = isOpen && !prevIsOpenRef.current;
-    const agentChanged = isOpen && (initialAgent?.id || null) !== prevAgentIdRef.current;
+    const currentTargetId = initialAgent?.id || (duplicateAgent ? `dup-${duplicateAgent.id}` : null);
+    const agentChanged = isOpen && currentTargetId !== prevAgentIdRef.current;
 
     if (justOpened || agentChanged) {
       const globalCfg = getGlobalModelConfig();
-      if (initialAgent) {
-        setName(initialAgent.name || '');
-        setRole(initialAgent.role || '');
-        setDescription(initialAgent.description || '');
-        setCustomCommand(initialAgent.acpCommandOrUrl || '');
+      const target = initialAgent || duplicateAgent;
+      if (target) {
+        setName(duplicateAgent ? `${target.name} 副本` : (target.name || ''));
+        setRole(target.role || '');
+        setDescription(target.description || '');
+        setCustomCommand(target.acpCommandOrUrl || '');
 
-        if (initialAgent.modelConfig) {
-          setUseGlobalDefaultModel(initialAgent.modelConfig.useGlobalDefault ?? false);
+        if (target.modelConfig) {
+          setUseGlobalDefaultModel(target.modelConfig.useGlobalDefault ?? false);
           const effectiveCfg = {
             ...globalCfg,
-            ...initialAgent.modelConfig,
+            ...target.modelConfig,
           };
           setModelConfig(effectiveCfg);
         } else {
@@ -144,27 +151,27 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           setModelConfig({ ...globalCfg, useGlobalDefault: true });
         }
 
-        if (initialAgent.isRemote || initialAgent.acpTransport === 'websocket') {
+        if (target.isRemote || target.acpTransport === 'websocket') {
           setConnectTab('remote');
-          setRemoteUrl(initialAgent.remoteUrl || initialAgent.acpCommandOrUrl || 'ws://127.0.0.1:9000');
-          setAuthToken(initialAgent.authToken || '');
-          setReadOnlyGuard(initialAgent.readOnlyGuard ?? true);
+          setRemoteUrl(target.remoteUrl || target.acpCommandOrUrl || 'ws://127.0.0.1:9000');
+          setAuthToken(target.authToken || '');
+          setReadOnlyGuard(target.readOnlyGuard ?? true);
         } else {
           setConnectTab('local');
         }
 
         // Map icon from avatar FIRST!
         const matchedByAvatar = PRESET_ICONS.find(
-          (p) => p.icon === initialAgent.avatar || p.id === initialAgent.avatar
+          (p) => p.icon === target.avatar || p.id === target.avatar
         );
         if (matchedByAvatar) {
           setSelectedIconId(matchedByAvatar.id);
           setCustomEmoji('');
-        } else if (initialAgent.avatar && initialAgent.avatar.trim()) {
+        } else if (target.avatar && target.avatar.trim()) {
           setSelectedIconId('custom');
-          setCustomEmoji(initialAgent.avatar.trim());
+          setCustomEmoji(target.avatar.trim());
         } else {
-          const lowerName = (initialAgent.name || '').toLowerCase();
+          const lowerName = (target.name || '').toLowerCase();
           if (lowerName.includes('shinobi') || lowerName.includes('ninja')) {
             setSelectedIconId('shinobi');
           } else if (lowerName.includes('claude')) {
@@ -188,9 +195,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         }
 
         // Map envVars
-        if (initialAgent.envVars && initialAgent.envVars.length > 0) {
+        if (target.envVars && target.envVars.length > 0) {
           setEnvVars(
-            initialAgent.envVars.map((v, idx) => ({
+            target.envVars.map((v, idx) => ({
               id: `env-${idx}-${Date.now()}`,
               key: v.key,
               value: v.value,
@@ -203,14 +210,15 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         // Map ACP runtime
         const matched = runtimes.find(
           (r) =>
-            r.name.toLowerCase() === initialAgent.localAcpProfile?.toLowerCase() ||
-            r.command === initialAgent.acpCommandOrUrl
+            r.name.toLowerCase() === target.localAcpProfile?.toLowerCase() ||
+            r.command === target.acpCommandOrUrl
         );
         if (matched) {
           setSelectedAcpId(matched.id);
         }
       } else {
         setName('Shinobi Native Agent');
+        setRole('High-Performance Native Agent');
         setDescription('Local ultra-fast native agent runtime with private SQLite memory bank.');
         setSelectedIconId('shinobi');
         setCustomEmoji('');
@@ -231,8 +239,8 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     }
 
     prevIsOpenRef.current = isOpen;
-    prevAgentIdRef.current = initialAgent?.id || null;
-  }, [initialAgent, isOpen]);
+    prevAgentIdRef.current = initialAgent?.id || (duplicateAgent ? `dup-${duplicateAgent.id}` : null);
+  }, [initialAgent, duplicateAgent, isOpen]);
 
   const handleTestRemote = async () => {
     const trimmedUrl = remoteUrl.trim();
@@ -350,7 +358,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || isSavingAndVerifying) return;
-    if (!initialAgent && !isRemoteMode && !isReady) return;
+    if (!initialAgent && !isDuplicateMode && !isRemoteMode && !isReady) return;
     if (isRemoteMode && !remoteUrl.trim()) return;
 
     setIsSavingAndVerifying(true);
@@ -359,7 +367,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     const effectiveAvatar =
       customEmoji.trim() ||
       chosenIcon?.icon ||
-      (isRemoteMode ? '🌐' : initialAgent?.avatar || '🥷');
+      (isRemoteMode ? '🌐' : initialAgent?.avatar || duplicateAgent?.avatar || '🥷');
 
     const resolvedCommand = isRemoteMode
       ? remoteUrl.trim()
@@ -536,9 +544,20 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       >
         {/* Modal Header */}
         <div className={`px-6 py-4 border-b flex items-center justify-between ${isLightMode ? 'border-gray-100' : 'border-[#1b2536]'}`}>
-          <h2 className="font-bold text-lg tracking-tight">
-            {initialAgent ? `Edit Agent: ${initialAgent.name}` : 'Create New Agent'}
-          </h2>
+          <div>
+            <h2 className="font-bold text-lg tracking-tight">
+              {initialAgent
+                ? `Edit Agent: ${initialAgent.name}`
+                : isDuplicateMode
+                ? '复制并创建全新 Agent'
+                : 'Create New Agent'}
+            </h2>
+            {isDuplicateMode && duplicateAgent && (
+              <p className="text-[11px] text-blue-600 dark:text-cyan-400 mt-0.5 font-medium">
+                基于「{duplicateAgent.name}」复用配置，生成独立的全新智能体
+              </p>
+            )}
+          </div>
 
           <div className="flex items-center gap-2">
             {/* Theme Toggle Button */}
@@ -566,7 +585,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         </div>
 
         {/* Connection Mode Tabs (Local vs Remote vs Clone) */}
-        {!initialAgent && (
+        {!initialAgent && !isDuplicateMode && (
           <div className={`px-6 pt-3 flex border-b gap-5 text-xs font-semibold ${isLightMode ? 'border-gray-100 bg-gray-50/70' : 'border-[#1b2536] bg-[#121824]'}`}>
             <button
               type="button"
@@ -619,6 +638,26 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
         {/* Modal Form Content */}
         <form onSubmit={handleSubmit} className="p-6 overflow-y-auto overflow-x-hidden space-y-5 text-xs">
+          {/* Duplicate Mode Declaration Callout */}
+          {isDuplicateMode && duplicateAgent && (
+            <div className="p-3.5 rounded-2xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 flex items-start gap-3 shadow-xs">
+              <div className="p-2 rounded-xl bg-blue-100 dark:bg-blue-900/60 text-blue-600 dark:text-cyan-400 shrink-0 mt-0.5">
+                <Copy className="w-4 h-4" />
+              </div>
+              <div className="text-xs space-y-1">
+                <div className="font-semibold text-blue-900 dark:text-blue-200 flex items-center gap-1.5">
+                  <span>全新独立智能体声明</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-200/60 dark:bg-blue-800/60 text-blue-800 dark:text-blue-300 font-mono font-medium">
+                    配置复用
+                  </span>
+                </div>
+                <p className="text-[11px] text-blue-700/90 dark:text-blue-300/80 leading-relaxed">
+                  当前正在从「<strong>{duplicateAgent.name}</strong>」复用模型参数、系统角色与环境预设。创建后将分配<strong>全新的独立 Agent ID</strong>，享有专属隔离的 SQLite 记忆库与私有执行环境，不影响原 Agent 的任何运行状态与历史记忆。
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Top Section: Icon Placeholder (Left) & Name / Description (Right) */}
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-5">
             {/* Left: Avatar Artwork Preview & Selector */}
@@ -1360,7 +1399,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
             }`}
           >
             <div>
-              {connectTab === 'local' && !isReady && !initialAgent && (
+              {connectTab === 'local' && !isReady && !initialAgent && !isDuplicateMode && (
                 <span className="text-[11px] text-amber-600 dark:text-amber-400 font-medium">
                   * 需完成本地安装/适配后方可创建
                 </span>
@@ -1384,10 +1423,10 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                 disabled={
                   isSavingAndVerifying ||
                   !name.trim() ||
-                  (connectTab === 'remote' ? !remoteUrl.trim() : !initialAgent && !isReady)
+                  (connectTab === 'remote' ? !remoteUrl.trim() : !initialAgent && !isDuplicateMode && !isReady)
                 }
                 className={`px-5 py-2 rounded-xl text-xs font-semibold text-white transition-all shadow-md flex items-center gap-1.5 ${
-                  !isSavingAndVerifying && name.trim() && (connectTab === 'remote' ? remoteUrl.trim() : initialAgent || isReady)
+                  !isSavingAndVerifying && name.trim() && (connectTab === 'remote' ? remoteUrl.trim() : initialAgent || isDuplicateMode || isReady)
                     ? isLightMode
                       ? 'bg-[#2563eb] hover:bg-[#1d4ed8] cursor-pointer'
                       : 'bg-cyan-600 hover:bg-cyan-500 cursor-pointer'
@@ -1401,6 +1440,8 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                   </>
                 ) : initialAgent ? (
                   '保存修改 (Save Changes)'
+                ) : isDuplicateMode ? (
+                  '🚀 确认创建全新 Agent (复用配置)'
                 ) : connectTab === 'remote' ? (
                   '连接远程 Agent (Connect Remote)'
                 ) : selectedAcp.availability === 'not_adapted' ? (

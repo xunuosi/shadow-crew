@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Agent, AgentTeam, Channel } from '../types';
 import { 
   Plus, 
@@ -19,6 +19,7 @@ import {
   PanelLeft,
   Cpu,
   Terminal,
+  Copy,
 } from 'lucide-react';
 import { AgentAvatarArtwork, TeamArtwork } from './AgentAvatarArtwork';
 import { ThemeSwitcher } from './ThemeSwitcher';
@@ -36,6 +37,7 @@ interface AgentDashboardProps {
   onStart1on1Chat: (agent: Agent) => void;
   onInspectAgent: (agentId: string) => void;
   onEditAgent?: (agent: Agent) => void;
+  onDuplicateAgent?: (agent: Agent) => void;
   onDeleteAgent?: (agentId: string) => void;
   onDeleteTeam?: (teamId: string) => void;
   onExportAgentMemory?: (agent: Agent) => void;
@@ -56,6 +58,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   onStart1on1Chat,
   onInspectAgent,
   onEditAgent,
+  onDuplicateAgent,
   onDeleteAgent,
   onDeleteTeam,
   onExportAgentMemory,
@@ -66,6 +69,33 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [activeTeamMenuId, setActiveTeamMenuId] = useState<string | null>(null);
   const [allStopped, setAllStopped] = useState(false);
+
+  // 点击其它区域或按 Escape 键自动回收 Agent/Team 下拉菜单
+  useEffect(() => {
+    if (!activeMenuId && !activeTeamMenuId) return;
+
+    const handlePointerDown = (e: MouseEvent | TouchEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target || !target.closest('[data-dropdown-menu]')) {
+        setActiveMenuId(null);
+        setActiveTeamMenuId(null);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setActiveMenuId(null);
+        setActiveTeamMenuId(null);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [activeMenuId, activeTeamMenuId]);
 
   const handleStopAll = () => {
     agents.forEach((ag) => {
@@ -252,7 +282,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                       </button>
                     )}
 
-                    <div className="relative">
+                    <div className="relative" data-dropdown-menu>
                       <button
                         onClick={() => setActiveMenuId(isMenuOpen ? null : agent.id)}
                         className="p-1 text-fg-muted hover:text-fg rounded-lg hover:bg-surface-hover transition-colors cursor-pointer"
@@ -286,6 +316,19 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                                 <span>配置底座大模型 (LLM)</span>
                               </button>
                             </>
+                          )}
+                          {onDuplicateAgent && (
+                            <button
+                              onClick={() => {
+                                onDuplicateAgent(agent);
+                                setActiveMenuId(null);
+                              }}
+                              className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-fg flex items-center gap-2 cursor-pointer font-medium text-blue-600 dark:text-blue-400"
+                              title="复用现有配置快速创建全新 Agent (独立 ID 与独立沙箱)"
+                            >
+                              <Copy className="w-3.5 h-3.5 text-blue-500" />
+                              <span>复制 Agent (创建新智能体)</span>
+                            </button>
                           )}
                           <button
                             onClick={() => {
@@ -563,7 +606,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     <Info className="w-4 h-4" />
                   </div>
 
-                  <div className="relative">
+                  <div className="relative" data-dropdown-menu>
                     <button
                       onClick={() => setActiveTeamMenuId(isMenuOpen ? null : team.id)}
                       className="p-1 text-fg-muted hover:text-fg rounded-lg hover:bg-surface-hover transition-colors cursor-pointer"

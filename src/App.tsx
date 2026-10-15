@@ -622,6 +622,7 @@ export default function App() {
   const [modalChannelId, setModalChannelId] = useState<string | null>(null);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState<boolean>(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
+  const [duplicatingAgent, setDuplicatingAgent] = useState<Agent | null>(null);
   const [isMemoryExportModalOpen, setIsMemoryExportModalOpen] = useState<boolean>(false);
   const [exportingAgent, setExportingAgent] = useState<Agent | null>(null);
   const [isMemoryImportModalOpen, setIsMemoryImportModalOpen] = useState<boolean>(false);
@@ -6583,12 +6584,19 @@ export default function App() {
           onToggleSidebar={() => toggleSidebar()}
           onOpenConnectAgentModal={() => {
             setEditingAgent(null);
+            setDuplicatingAgent(null);
+            setIsConnectModalOpen(true);
+          }}
+          onDuplicateAgent={(agent) => {
+            setDuplicatingAgent(agent);
+            setEditingAgent(null);
             setIsConnectModalOpen(true);
           }}
           onOpenCreateTeamModal={() => setIsCreateTeamModalOpen(true)}
           onOpenAgentDefaultsModal={() => setIsAgentDefaultsModalOpen(true)}
           onEditAgent={(agent) => {
             setEditingAgent(agent);
+            setDuplicatingAgent(null);
             setIsConnectModalOpen(true);
           }}
           onExportAgentMemory={(agent) => {
@@ -6873,6 +6881,7 @@ export default function App() {
           onOpenRustTauriHub={() => setIsRustTauriHubOpen(true)}
           onEditAgent={(agent) => {
             setEditingAgent(agent);
+            setDuplicatingAgent(null);
             setIsConnectModalOpen(true);
           }}
           onToggleCartridge={handleToggleCartridge}
@@ -6898,7 +6907,11 @@ export default function App() {
           const created: AgentTeam = { ...newTeam, id: `team-${Date.now()}` };
           setTeams((prev) => [...prev, created]);
         }}
-        onOpenConnectModal={() => setIsConnectModalOpen(true)}
+        onOpenConnectModal={() => {
+          setEditingAgent(null);
+          setDuplicatingAgent(null);
+          setIsConnectModalOpen(true);
+        }}
       />
 
       {/* 7.1 Modal: Create Team Popup */}
@@ -6979,11 +6992,15 @@ export default function App() {
         onClose={() => {
           setIsConnectModalOpen(false);
           setEditingAgent(null);
+          setDuplicatingAgent(null);
         }}
         initialAgent={editingAgent}
+        duplicateAgent={duplicatingAgent}
         defaultWorkspaceRoot={activeProject?.localWorkspaceRoot || '~/.shinobi'}
         onOpenImportModal={() => {
           setIsConnectModalOpen(false);
+          setEditingAgent(null);
+          setDuplicatingAgent(null);
           setIsMemoryImportModalOpen(true);
         }}
         onUpdateAgent={(agentId, updatedData) => {
@@ -7172,6 +7189,7 @@ export default function App() {
             },
           };
           setAgents((prev) => [...prev, newAg]);
+          setDuplicatingAgent(null);
         }}
       />
 
