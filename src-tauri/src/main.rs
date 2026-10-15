@@ -96,17 +96,25 @@ async fn send_prompt_to_agent(
     _app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let manager = state.acp_manager.lock().await;
+    // 关键并发隔离：在极小作用域内获取目标 Agent 的轻量级 Clone 句柄并检查存活状态，
+    // 立即释放全局 acp_manager 锁！不同 Agent 的长耗时 LLM 推演（数分钟）完全并发执行。
+    let agent = {
+        let manager = state.acp_manager.lock().await;
 
-    // 严格检查 Agent 进程是否已由用户手动启动，禁止程序自发静默自动拉起
-    if !manager.is_agent_running(&agent_id) {
-        return Err(format!(
-            "Agent '{}' 尚未开启通信。请先在 Agent 控制面板点击「Start」启动进程并建立 ACP 握手连接。",
-            agent_id
-        ));
-    }
+        // 严格检查 Agent 进程是否已由用户手动启动，禁止程序自发静默自动拉起
+        if !manager.is_agent_running(&agent_id) {
+            return Err(format!(
+                "Agent '{}' 尚未开启通信。请先在 Agent 控制面板点击「Start」启动进程并建立 ACP 握手连接。",
+                agent_id
+            ));
+        }
 
-    let response = manager
+        manager
+            .get_agent(&agent_id)
+            .ok_or_else(|| format!("Agent '{}' not found", agent_id))?
+    };
+
+    let response = agent
         .send_session_prompt(
             &agent_id,
             &room_id,

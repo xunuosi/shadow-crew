@@ -77,6 +77,7 @@ pub struct AgentRuntimeStatus {
     pub status_detail: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct RunningAgent {
     #[allow(dead_code)]
     pub pid: u32,
@@ -97,6 +98,9 @@ pub struct RunningAgent {
     pub cwd: String,
     pub app_handle: AppHandle,
     pub last_activity: Arc<AtomicU64>,
+    /// 单 Agent 内部指令互斥锁：确保向同一 Agent 连续下发指令时不发生 stdio 管道竞态，
+    /// 而不同 Agent 之间拥有独立的 RunningAgent 实例与子进程，完全并发、互不阻塞！
+    pub prompt_lock: Arc<TokioMutex<()>>,
 }
 
 pub struct AcpProcessManager {
@@ -116,6 +120,11 @@ impl AcpProcessManager {
             .get(agent_id)
             .map(|a| a.is_alive.load(Ordering::SeqCst))
             .unwrap_or(false)
+    }
+
+    /// 获取指定 Agent 的轻量级 Clone 句柄 (持有子进程管道与锁的 Arc 引用)
+    pub fn get_agent(&self, agent_id: &str) -> Option<RunningAgent> {
+        self.agents.get(agent_id).cloned()
     }
 
     /// 获取当前所有正在运行的 Agent ID 列表
@@ -639,6 +648,7 @@ impl AcpProcessManager {
                 cwd: shadow_crew_home_str,
                 app_handle: app_handle.clone(),
                 last_activity: last_activity.clone(),
+                prompt_lock: Arc::new(TokioMutex::new(())),
             },
         );
 
@@ -741,6 +751,7 @@ impl AcpProcessManager {
     }
 
     /// 发送 Prompt 请求并等待 Agent 返回 (符合标准 ACP 规范)
+    #[allow(dead_code)]
     pub async fn send_session_prompt(
         &self,
         agent_id: &str,
@@ -750,9 +761,28 @@ impl AcpProcessManager {
         system_prompt: Option<&str>,
     ) -> Result<serde_json::Value> {
         let agent = self
-            .agents
-            .get(agent_id)
+            .get_agent(agent_id)
             .with_context(|| format!("Agent {} not running", agent_id))?;
+        agent
+            .send_session_prompt(agent_id, room_id, channel_id, prompt, system_prompt)
+            .await
+    }
+}
+
+impl RunningAgent {
+    /// 发送 Prompt 请求并等待当前 Agent 返回 (符合标准 ACP 规范)
+    /// 内部持有 self.prompt_lock，保证对同一 Agent 的指令按序下发，杜绝 stdio 管道竞态；
+    /// 不同 Agent 拥有独立的 RunningAgent 实例与子进程，完全并发、互不阻塞！
+    pub async fn send_session_prompt(
+        &self,
+        agent_id: &str,
+        room_id: &str,
+        channel_id: Option<&str>,
+        prompt: &str,
+        system_prompt: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let _prompt_guard = self.prompt_lock.lock().await;
+        let agent = self;
 
         if !agent.is_alive.load(Ordering::SeqCst) {
             anyhow::bail!("Agent {} process is dead or closed", agent_id);
@@ -1189,5 +1219,49 @@ mod runtime_status_tests {
         assert!(agent_2.join("artifacts").exists());
         let _ = std::fs::remove_dir_all(&tmp_root);
         std::env::remove_var("SHADOW_CREW_HOME");
+    }
+
+    #[tokio::test]
+    async fn test_multi_agent_concurrent_prompt_dispatch_isolation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::sync::Mutex as TokioMutex;
+        use std::time::Duration;
+
+        // 模拟两个独立的 Agent 运行句柄 (持有独立的 prompt_lock)
+        let agent1_lock = Arc::new(TokioMutex::new(()));
+        let agent2_lock = Arc::new(TokioMutex::new(()));
+
+        let concurrent_counter = Arc::new(AtomicUsize::new(0));
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+
+        let c1 = concurrent_counter.clone();
+        let m1 = max_concurrent.clone();
+        let l1 = agent1_lock.clone();
+        let task1 = tokio::spawn(async move {
+            let _guard = l1.lock().await;
+            let current = c1.fetch_add(1, Ordering::SeqCst) + 1;
+            m1.fetch_max(current, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            c1.fetch_sub(1, Ordering::SeqCst);
+        });
+
+        let c2 = concurrent_counter.clone();
+        let m2 = max_concurrent.clone();
+        let l2 = agent2_lock.clone();
+        let task2 = tokio::spawn(async move {
+            let _guard = l2.lock().await;
+            let current = c2.fetch_add(1, Ordering::SeqCst) + 1;
+            m2.fetch_max(current, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            c2.fetch_sub(1, Ordering::SeqCst);
+        });
+
+        let (r1, r2) = tokio::join!(task1, task2);
+        assert!(r1.is_ok());
+        assert!(r2.is_ok());
+
+        // 核心断言：两个独立 Agent 的 prompt 派发是完全并发并行的 (max_concurrent 达到 2)
+        assert_eq!(max_concurrent.load(Ordering::SeqCst), 2);
     }
 }

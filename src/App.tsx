@@ -6146,13 +6146,16 @@ export default function App() {
   const handleSendMessage = (content: string) => {
     if (!content.trim() || !activeThread) return;
 
-    const targetChannelId = activeThread.type === 'dm'
+    const currentThreadId = activeThread.id;
+    const isDmThread = activeThread.type === 'dm';
+
+    const targetChannelId = isDmThread
       ? undefined
       : activeChannel?.id;
 
     const userMsg: Message = {
       id: `msg-${Date.now()}`,
-      threadId: activeThread.id,
+      threadId: currentThreadId,
       channelId: targetChannelId,
       authorId: 'user-norris',
       authorName: 'Norris_M5Pro',
@@ -6166,7 +6169,7 @@ export default function App() {
 
     setMessages((prev) => ({
       ...prev,
-      [activeThread.id]: [...(prev[activeThread.id] || []), userMsg],
+      [currentThreadId]: [...(prev[currentThreadId] || []), userMsg],
     }));
 
     // Detect responding agents:
@@ -6365,24 +6368,24 @@ export default function App() {
     // Handle agent response via ACP client (real stdio subprocess or fallback)
     sendPromptToAcpAgent({
       agent: primaryResponder,
-      roomId: activeThread.id,
+      roomId: currentThreadId,
       prompt: finalPrompt,
       projectId: activeProjectId,
       channelId: targetChannelId,
       systemPrompt: compositeSystemPrompt,
-      isDm: activeThread.type === 'dm',
+      isDm: isDmThread,
     })
       .then((acpResp) => {
         setActiveExecutions((prev) => {
           const next = { ...prev };
-          delete next[`${activeThread.id}:${primaryResponder.id}`];
+          delete next[`${currentThreadId}:${primaryResponder.id}`];
           if (Object.keys(next).length === 0) setIsGenerating(false);
           return next;
         });
 
         const agentReply: Message = {
           id: `msg-reply-${Date.now()}`,
-          threadId: activeThread.id,
+          threadId: currentThreadId,
           channelId: targetChannelId,
           authorId: primaryResponder.id,
           authorName: primaryResponder.name,
@@ -6396,7 +6399,7 @@ export default function App() {
           thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已检索私有记忆库并完成技术边界考量'),
           diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
           cartridgeCitation: acpResp.cartridgeCitation,
-          collaborationInfo: activeThread.type === 'dm' ? undefined : {
+          collaborationInfo: isDmThread ? undefined : {
             cascadeId,
             hop: 1,
             maxHops: 8,
@@ -6415,7 +6418,7 @@ export default function App() {
 
         setMessages((prev) => ({
           ...prev,
-          [activeThread.id]: [...(prev[activeThread.id] || []), agentReply],
+          [currentThreadId]: [...(prev[currentThreadId] || []), agentReply],
         }));
 
         setAgents((prev) => prev.map((a) => (a.id === primaryResponder.id ? { ...a, status: 'running' } : a)));
@@ -6428,12 +6431,12 @@ export default function App() {
         });
 
         // 仅在非 DM (即频道多 Agent 协同) 场景下触发跨智能体互相 @ 级联调度
-        if (activeThread.type !== 'dm') {
+        if (!isDmThread) {
           dispatchCascadingAgentResponse({
             cascadeId,
             invokingAgent: primaryResponder,
             replyContent: acpResp.textResponse,
-            roomId: activeThread.id,
+            roomId: currentThreadId,
             isTopic: false,
             queuedCollaborators: respondingAgents.slice(1),
           });
@@ -6442,7 +6445,7 @@ export default function App() {
       .catch((err) => {
         setActiveExecutions((prev) => {
           const next = { ...prev };
-          delete next[`${activeThread.id}:${primaryResponder.id}`];
+          delete next[`${currentThreadId}:${primaryResponder.id}`];
           if (Object.keys(next).length === 0) setIsGenerating(false);
           return next;
         });
@@ -6450,7 +6453,7 @@ export default function App() {
         console.error('Failed to send prompt to agent:', err);
         const errorReply: Message = {
           id: `msg-err-${Date.now()}`,
-          threadId: activeThread.id,
+          threadId: currentThreadId,
           channelId: targetChannelId,
           authorId: primaryResponder.id,
           authorName: primaryResponder.name,
@@ -6463,7 +6466,7 @@ export default function App() {
         };
         setMessages((prev) => ({
           ...prev,
-          [activeThread.id]: [...(prev[activeThread.id] || []), errorReply],
+          [currentThreadId]: [...(prev[currentThreadId] || []), errorReply],
         }));
         setAgents((prev) => prev.map((a) => (a.id === primaryResponder.id ? { ...a, status: 'idle' } : a)));
         syncRunningAgentsWithBackend();
