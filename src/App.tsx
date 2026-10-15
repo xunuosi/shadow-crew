@@ -139,7 +139,7 @@ export default function App() {
       const saved = localStorage.getItem('shinobi_agents');
       if (saved) {
         const parsed = JSON.parse(saved);
-          // Filter out contaminated mock agent IDs from the bad UI revision and migrate legacy workspace paths to ~/.shinobi
+          // Filter out contaminated mock agent IDs from the bad UI revision and migrate legacy workspace paths to ~/.shadow-crew
           const filtered = parsed
             .filter(
               (a: any) =>
@@ -154,23 +154,24 @@ export default function App() {
                 !updatedWorkspace?.rootPath ||
                 updatedWorkspace.rootPath === '.' ||
                 updatedWorkspace.rootPath.includes('/home/norris') ||
-                updatedWorkspace.rootPath.includes('/shadow-crew')
+                updatedWorkspace.rootPath.includes('/shadow-crew') ||
+                updatedWorkspace.rootPath.includes('/.shinobi')
               ) {
                 updatedWorkspace = {
                   ...(updatedWorkspace || {}),
-                  rootPath: '~/.shinobi',
-                  repoName: 'shinobi-workspace',
+                  rootPath: '~/.shadow-crew',
+                  repoName: 'shadow-crew-workspace',
                   gitBranch: updatedWorkspace?.gitBranch || 'main',
                   permissionMode: updatedWorkspace?.permissionMode || 'full_read_write',
-                  activeFiles: ['~/.shinobi/channels'],
+                  activeFiles: ['~/.shadow-crew/channels'],
                 };
               }
               const updatedMemory = a.memory
                 ? {
                     ...a.memory,
                     internalMemoryPath:
-                      !a.memory.internalMemoryPath || a.memory.internalMemoryPath.includes('.local/share/shinobi')
-                        ? '~/.shinobi/global_memory.sqlite'
+                      !a.memory.internalMemoryPath || a.memory.internalMemoryPath.includes('.local/share') || a.memory.internalMemoryPath.includes('.shinobi')
+                        ? '~/.shadow-crew/global_memory.sqlite'
                         : a.memory.internalMemoryPath,
                   }
                 : undefined;
@@ -193,11 +194,11 @@ export default function App() {
                   },
                   acpCommandOrUrl: './target/debug/shadow-crew-agent',
                   workspace: updatedWorkspace || {
-                    rootPath: '~/.shinobi',
-                    repoName: 'shinobi-workspace',
+                    rootPath: '~/.shadow-crew',
+                    repoName: 'shadow-crew-workspace',
                     gitBranch: 'main',
                     permissionMode: 'full_read_write',
-                    activeFiles: ['~/.shinobi/global_memory.sqlite'],
+                    activeFiles: ['~/.shadow-crew/global_memory.sqlite'],
                   },
                 };
               }
@@ -271,8 +272,8 @@ export default function App() {
             .map((p: any) => ({
               ...p,
               localWorkspaceRoot:
-                !p.localWorkspaceRoot || p.localWorkspaceRoot.includes('/shadow-crew')
-                  ? '~/.shinobi'
+                !p.localWorkspaceRoot || p.localWorkspaceRoot.includes('/shadow-crew') || p.localWorkspaceRoot.includes('/.shinobi')
+                  ? '~/.shadow-crew'
                   : p.localWorkspaceRoot,
             }));
           if (filtered.length > 0) return filtered;
@@ -310,10 +311,10 @@ export default function App() {
           const filtered = parsed
             .filter((c: any) => !MOCK_CHANNEL_IDS.has(c.id) && c.status !== 'deleted')
             .map((c: any) => {
-              const channelWorkspaceRoot = `~/.shinobi/channels/${c.id}`;
+              const channelWorkspaceRoot = `~/.shadow-crew/channels/${c.id}`;
               const currentRoot = c.mountedWorkspace?.rootPath;
               const migratedRoot =
-                !currentRoot || currentRoot === '.' || currentRoot.includes('/shadow-crew')
+                !currentRoot || currentRoot === '.' || currentRoot.includes('/shadow-crew') || currentRoot.includes('/.shinobi')
                   ? channelWorkspaceRoot
                   : currentRoot;
               return {
@@ -1504,16 +1505,16 @@ export default function App() {
         supportsStreaming: true,
       },
       workspace: guestAgent.workspace || {
-        rootPath: '~/.shinobi',
-        repoName: 'shinobi-workspace',
+        rootPath: '~/.shadow-crew',
+        repoName: 'shadow-crew-workspace',
         gitBranch: 'main',
         permissionMode: 'full_read_write',
-        activeFiles: ['~/.shinobi/global_memory.sqlite'],
+        activeFiles: ['~/.shadow-crew/global_memory.sqlite'],
       },
       envVars: guestAgent.envVars || [],
       skills: [],
       memory: guestAgent.memory || {
-        internalMemoryPath: '~/.shinobi/global_memory.sqlite',
+        internalMemoryPath: '~/.shadow-crew/global_memory.sqlite',
         persistentType: 'sqlite',
         persistentItems: [],
         sessionCacheCount: 0,
@@ -1525,7 +1526,7 @@ export default function App() {
   // Handle Creation of New Channel (Topic)
   const handleCreateChannel = (newChan: Omit<Channel, 'id' | 'unreadCount'>) => {
     const id = `channel-${Date.now()}`;
-    const channelWorkspacePath = `~/.shinobi/channels/${id}`;
+    const channelWorkspacePath = `~/.shadow-crew/channels/${id}`;
     const created: Channel = {
       ...newChan,
       id,
@@ -5934,7 +5935,7 @@ export default function App() {
     const effectiveChanId = topicChannel?.id || 'general';
     const workspaceRoot =
       topicChannel?.mountedWorkspace?.rootPath ||
-      `~/.shinobi/channels/${effectiveChanId}`;
+      `~/.shadow-crew/channels/${effectiveChanId}`;
 
     const res = await applyTopicPatchToWorkspace({
       workspaceRoot,
@@ -6389,7 +6390,7 @@ export default function App() {
           thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已检索私有记忆库并完成技术边界考量'),
           diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
           cartridgeCitation: acpResp.cartridgeCitation,
-          collaborationInfo: {
+          collaborationInfo: activeThread.type === 'dm' ? undefined : {
             cascadeId,
             hop: 1,
             maxHops: 8,
@@ -6605,15 +6606,15 @@ export default function App() {
               envVars: agent.envVars ? agent.envVars.map((v) => ({ ...v })) : [],
               workspace: {
                 ...(agent.workspace || {
-                  rootPath: activeProject?.localWorkspaceRoot || '~/.shinobi',
-                  repoName: 'shinobi-workspace',
+                  rootPath: activeProject?.localWorkspaceRoot || '~/.shadow-crew',
+                  repoName: 'shadow-crew-workspace',
                   gitBranch: 'main',
                   permissionMode: 'full_read_write',
-                  activeFiles: ['~/.shinobi/channels'],
+                  activeFiles: ['~/.shadow-crew/channels'],
                 }),
               },
               memory: {
-                internalMemoryPath: '~/.shinobi/global_memory.sqlite',
+                internalMemoryPath: '~/.shadow-crew/global_memory.sqlite',
                 persistentType: 'sqlite',
                 persistentItems: [],
                 sessionCacheCount: 0,
@@ -7037,7 +7038,7 @@ export default function App() {
         }}
         initialAgent={editingAgent}
         duplicateAgent={duplicatingAgent}
-        defaultWorkspaceRoot={activeProject?.localWorkspaceRoot || '~/.shinobi'}
+        defaultWorkspaceRoot={activeProject?.localWorkspaceRoot || '~/.shadow-crew'}
         onOpenImportModal={() => {
           setIsConnectModalOpen(false);
           setEditingAgent(null);
@@ -7214,15 +7215,15 @@ export default function App() {
               supportsStreaming: true,
             },
             workspace: {
-              rootPath: agentData.workspace?.rootPath || activeProject?.localWorkspaceRoot || '~/.shinobi',
-              repoName: 'shinobi-workspace',
+              rootPath: agentData.workspace?.rootPath || activeProject?.localWorkspaceRoot || '~/.shadow-crew',
+              repoName: 'shadow-crew-workspace',
               gitBranch: 'main',
               permissionMode: agentData.readOnlyGuard ? 'read_only' : 'full_read_write',
-              activeFiles: ['~/.shinobi/channels'],
+              activeFiles: ['~/.shadow-crew/channels'],
             },
             skills: [],
             memory: {
-              internalMemoryPath: '~/.shinobi/global_memory.sqlite',
+              internalMemoryPath: '~/.shadow-crew/global_memory.sqlite',
               persistentType: 'sqlite',
               persistentItems: [],
               sessionCacheCount: 0,
@@ -7275,7 +7276,7 @@ export default function App() {
         isOpen={isMemoryImportModalOpen}
         agents={agents}
         defaultAgentId={selectedAgentId || undefined}
-        defaultWorkspaceRoot={activeProject?.localWorkspaceRoot || '~/.shinobi'}
+        defaultWorkspaceRoot={activeProject?.localWorkspaceRoot || '~/.shadow-crew'}
         onClose={() => setIsMemoryImportModalOpen(false)}
         onMountCartridge={handleMountCartridge}
         onCloneGuestAgent={handleCloneGuestAgent}

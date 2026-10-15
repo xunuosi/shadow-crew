@@ -58,7 +58,7 @@ export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({
     }
   }, [isOpen]);
 
-  const [memoryPath, setMemoryPath] = useState('~/.local/share/shinobi/memory.sqlite');
+  const [memoryPath, setMemoryPath] = useState('~/.shadow-crew/global_memory.sqlite');
   const [defaultTimeout, setDefaultTimeout] = useState('60');
   const [sandboxMode, setSandboxMode] = useState('diff_only');
   const [isSaved, setIsSaved] = useState(false);

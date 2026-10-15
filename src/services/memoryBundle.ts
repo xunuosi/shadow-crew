@@ -304,7 +304,7 @@ export function createGuestAgentFromBundle(
     },
     skills: [],
     memory: {
-      internalMemoryPath: `~/.local/share/shinobi/guest_${agentId}_memory.sqlite`,
+      internalMemoryPath: `~/.shadow-crew/guest_${agentId}_memory.sqlite`,
       persistentType: 'sqlite',
       persistentItems: bundle.memories.map((m) => ({
         id: m.id,

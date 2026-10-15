@@ -289,7 +289,7 @@ export async function openChannelArtifactsFolder(channelId: string): Promise<str
       throw e;
     }
   }
-  return `~/.shinobi/channels/${channelId}/artifacts/`;
+  return `~/.shadow-crew/channels/${channelId}/artifacts/`;
 }
 
 /**

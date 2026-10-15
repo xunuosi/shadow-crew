@@ -258,6 +258,7 @@ async fn apply_workspace_patch(
     let trimmed_root = workspace_root.trim();
     let canonical_root = if trimmed_root.is_empty()
         || trimmed_root == "."
+        || trimmed_root.starts_with("~/.shadow-crew")
         || trimmed_root.starts_with("~/.shinobi")
         || trimmed_root.contains("/shadow-crew")
     {

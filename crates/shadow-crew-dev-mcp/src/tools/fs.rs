@@ -234,9 +234,10 @@ pub async fn search_code(
     }
 }
 
-/// 解析用户级 Shinobi 根目录 (~/.shinobi)
-pub fn get_shinobi_home_dir() -> std::path::PathBuf {
-    let base = std::env::var("SHINOBI_HOME")
+/// 解析用户级 Shadow Crew 根目录 (~/.shadow-crew)
+pub fn get_shadow_crew_home_dir() -> std::path::PathBuf {
+    let base = std::env::var("SHADOW_CREW_HOME")
+        .or_else(|_| std::env::var("SHINOBI_HOME"))
         .ok()
         .map(std::path::PathBuf::from)
         .or_else(|| {
@@ -248,22 +249,22 @@ pub fn get_shinobi_home_dir() -> std::path::PathBuf {
         })
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    if base.ends_with(".shinobi") {
+    if base.ends_with(".shadow-crew") {
         base
     } else {
-        base.join(".shinobi")
+        base.join(".shadow-crew")
     }
 }
 
-/// 解析指定频道的落地产物目录 (~/.shinobi/channels/<channel_id>/artifacts/)
+/// 解析指定频道的落地产物目录 (~/.shadow-crew/channels/<channel_id>/artifacts/)
 pub fn get_channel_artifacts_dir(channel_id: Option<&str>) -> std::path::PathBuf {
     let clean_id = channel_id
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .or_else(|| std::env::var("SHINOBI_CHANNEL_ID").ok().filter(|s| !s.trim().is_empty()))
+        .or_else(|| std::env::var("SHADOW_CREW_CHANNEL_ID").or_else(|_| std::env::var("SHINOBI_CHANNEL_ID")).ok().filter(|s| !s.trim().is_empty()))
         .unwrap_or_else(|| "chan-default".to_string());
 
-    let artifacts_dir = get_shinobi_home_dir()
+    let artifacts_dir = get_shadow_crew_home_dir()
         .join("channels")
         .join(clean_id)
         .join("artifacts");

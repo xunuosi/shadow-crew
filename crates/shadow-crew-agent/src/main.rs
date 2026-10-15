@@ -8,9 +8,10 @@ use shadow_crew_protocol::{AcpPromptResult, MemoryTrace};
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
-/// 解析用户级全局 Shinobi 根目录 (~/.shinobi)
-fn get_shinobi_home_dir() -> std::path::PathBuf {
-    let base = std::env::var("SHINOBI_HOME")
+/// 解析用户级全局 Shadow Crew 根目录 (~/.shadow-crew)
+fn get_shadow_crew_home_dir() -> std::path::PathBuf {
+    let base = std::env::var("SHADOW_CREW_HOME")
+        .or_else(|_| std::env::var("SHINOBI_HOME"))
         .ok()
         .map(std::path::PathBuf::from)
         .or_else(|| {
@@ -22,21 +23,21 @@ fn get_shinobi_home_dir() -> std::path::PathBuf {
         })
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    if base.ends_with(".shinobi") {
+    if base.ends_with(".shadow-crew") {
         base
     } else {
-        base.join(".shinobi")
+        base.join(".shadow-crew")
     }
 }
 
-/// 解析并创建指定频道的独立私有工作区 (~/.shinobi/channels/<channel_id>)
+/// 解析并创建指定频道的独立私有工作区 (~/.shadow-crew/channels/<channel_id>)
 fn get_channel_dir(channel_id: &str) -> std::path::PathBuf {
     let clean_id = if channel_id.trim().is_empty() {
         "chan-default"
     } else {
         channel_id.trim()
     };
-    let channels_dir = get_shinobi_home_dir().join("channels").join(clean_id);
+    let channels_dir = get_shadow_crew_home_dir().join("channels").join(clean_id);
     let _ = std::fs::create_dir_all(&channels_dir);
     let _ = std::fs::create_dir_all(channels_dir.join("artifacts"));
     let _ = std::fs::create_dir_all(channels_dir.join("scratch"));
@@ -45,14 +46,15 @@ fn get_channel_dir(channel_id: &str) -> std::path::PathBuf {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 实例化私有持久化 SQLite 记忆引擎 (收敛至 ~/.shinobi/global_memory.sqlite)
-    let db_path = std::env::var("SHINOBI_MEMORY_DB")
+    // 实例化私有持久化 SQLite 记忆引擎 (收敛至 ~/.shadow-crew/global_memory.sqlite)
+    let db_path = std::env::var("SHADOW_CREW_MEMORY_DB")
+        .or_else(|_| std::env::var("SHINOBI_MEMORY_DB"))
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| {
-            let shinobi_home = get_shinobi_home_dir();
-            let _ = std::fs::create_dir_all(&shinobi_home);
-            shinobi_home.join("global_memory.sqlite").to_string_lossy().to_string()
+            let home = get_shadow_crew_home_dir();
+            let _ = std::fs::create_dir_all(&home);
+            home.join("global_memory.sqlite").to_string_lossy().to_string()
         });
     let is_first_init = !std::path::Path::new(&db_path).exists();
     let memory_store = AgentMemoryStore::new(&db_path)?;
@@ -71,9 +73,9 @@ async fn main() -> Result<()> {
         );
     }
 
-    let shinobi_home = get_shinobi_home_dir();
-    let _ = std::fs::create_dir_all(&shinobi_home);
-    let _ = std::env::set_current_dir(&shinobi_home);
+    let shadow_crew_home = get_shadow_crew_home_dir();
+    let _ = std::fs::create_dir_all(&shadow_crew_home);
+    let _ = std::env::set_current_dir(&shadow_crew_home);
 
     let stdin = io::stdin();
     let stdout_shared = Arc::new(std::sync::Mutex::new(io::stdout()));

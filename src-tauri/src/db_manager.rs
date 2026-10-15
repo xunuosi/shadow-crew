@@ -22,9 +22,10 @@ pub struct DatabaseManager {
     db_path: String,
 }
 
-/// 获取用户级全局 Shinobi 根目录 (~/.shinobi)
-pub fn get_shinobi_home_dir() -> std::path::PathBuf {
-    let base = std::env::var("SHINOBI_HOME")
+/// 获取用户级全局 Shadow Crew 根目录 (~/.shadow-crew)
+pub fn get_shadow_crew_home_dir() -> std::path::PathBuf {
+    let base = std::env::var("SHADOW_CREW_HOME")
+        .or_else(|_| std::env::var("SHINOBI_HOME"))
         .ok()
         .map(std::path::PathBuf::from)
         .or_else(|| {
@@ -36,60 +37,41 @@ pub fn get_shinobi_home_dir() -> std::path::PathBuf {
         })
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    if base.ends_with(".shinobi") {
+    if base.ends_with(".shadow-crew") {
         base
     } else {
-        base.join(".shinobi")
+        base.join(".shadow-crew")
     }
 }
 
-/// 获取指定频道的私有工作区目录 (~/.shinobi/channels/<channel_id>)
+pub use get_shadow_crew_home_dir as get_shinobi_home_dir;
+
+/// 获取指定频道的私有工作区目录 (~/.shadow-crew/channels/<channel_id>)
 pub fn get_channel_dir(channel_id: &str) -> std::path::PathBuf {
     let clean_id = if channel_id.trim().is_empty() {
         "chan-default"
     } else {
         channel_id.trim()
     };
-    let channels_dir = get_shinobi_home_dir().join("channels").join(clean_id);
+    let channels_dir = get_shadow_crew_home_dir().join("channels").join(clean_id);
     let _ = std::fs::create_dir_all(&channels_dir);
     let _ = std::fs::create_dir_all(channels_dir.join("artifacts"));
     let _ = std::fs::create_dir_all(channels_dir.join("scratch"));
     channels_dir
 }
 
-/// 解析默认 SQLite 记忆与数据持久化路径 (收敛至 ~/.shinobi/global_memory.sqlite，并自动迁移遗留数据)
+/// 解析默认 SQLite 记忆与数据持久化路径 (收敛至 ~/.shadow-crew/global_memory.sqlite)
 pub fn get_default_db_path() -> String {
-    if let Ok(env_path) = std::env::var("SHINOBI_MEMORY_DB") {
+    if let Ok(env_path) = std::env::var("SHADOW_CREW_MEMORY_DB").or_else(|_| std::env::var("SHINOBI_MEMORY_DB")) {
         if !env_path.trim().is_empty() {
             return env_path;
         }
     }
 
-    let shinobi_dir = get_shinobi_home_dir();
-    let _ = std::fs::create_dir_all(&shinobi_dir);
+    let home_dir = get_shadow_crew_home_dir();
+    let _ = std::fs::create_dir_all(&home_dir);
 
-    let target_db = shinobi_dir.join("global_memory.sqlite");
-
-    // 检查并静默迁移项目目录下的旧数据库 (shinobi_agent_memory.db)
-    if !target_db.exists() {
-        if let Ok(curr) = std::env::current_dir() {
-            let candidates = [
-                curr.join("shinobi_agent_memory.db"),
-                curr.join("../shinobi_agent_memory.db"),
-                curr.join("src-tauri/shinobi_agent_memory.db"),
-            ];
-            for old_db in candidates {
-                if old_db.exists() && old_db.is_file() {
-                    if let Ok(_) = std::fs::copy(&old_db, &target_db) {
-                        tracing::info!("Successfully migrated legacy database from {} to {}", old_db.display(), target_db.display());
-                        let _ = std::fs::rename(&old_db, old_db.with_extension("db.migrated_bak"));
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
+    let target_db = home_dir.join("global_memory.sqlite");
     target_db.to_string_lossy().to_string()
 }
 

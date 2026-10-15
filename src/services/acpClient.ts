@@ -773,7 +773,7 @@ export async function sendPromptToAcpAgent(
       const launchCommand = agent.acpCommandOrUrl || './target/debug/shadow-crew-agent';
       const launchEnvVars = buildAgentLaunchEnv(agent);
       const effectiveChannelId = options.channelId || roomId;
-      const channelCwd = `~/.shinobi/channels/${effectiveChannelId}`;
+      const channelCwd = `~/.shadow-crew/channels/${effectiveChannelId}`;
 
       const response = await tauriInvoke('send_prompt_to_agent', {
         agentId: agent.id,
@@ -1209,7 +1209,7 @@ export async function applyTopicPatchToWorkspace(
   }
 
   // Web 环境回退：写入虚拟工作区缓存并返回合入明细
-  const virtualArtifactsDir = `~/.shinobi/channels/${channelId || 'general'}/artifacts/${topicId}`;
+  const virtualArtifactsDir = `~/.shadow-crew/channels/${channelId || 'general'}/artifacts/${topicId}`;
   const appliedFiles = patches.map((p) => ({
     filename: p.filename,
     mode: 'workspace_memory' as const,

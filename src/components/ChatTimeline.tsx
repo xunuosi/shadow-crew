@@ -529,7 +529,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 }
               }}
               className="hidden @lg:flex px-2 py-1 rounded-lg hover:text-amber-500 hover:bg-surface-hover border border-transparent hover:border-amber-500/30 transition-all items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
-              title="打开当前频道专属产物归档目录 (~/.shinobi/channels/<channel_id>/artifacts/)"
+              title="打开当前频道专属产物归档目录 (~/.shadow-crew/channels/<channel_id>/artifacts/)"
             >
               <FolderArchive className="w-3.5 h-3.5 text-amber-500 shrink-0" />
               <span className="hidden @xl:inline font-mono">产物 (Artifacts)</span>

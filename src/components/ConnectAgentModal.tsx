@@ -487,7 +487,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         },
         skills: [],
         memory: {
-          internalMemoryPath: `~/.local/share/shinobi/${name
+          internalMemoryPath: `~/.shadow-crew/${name
             .toLowerCase()
             .replace(/\s+/g, '_')}_memory.sqlite`,
           persistentType: 'sqlite',

@@ -9,12 +9,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
 
-/// 格式化并写入本地持久化日志文件 (~/.shinobi/logs/acp.log)
+/// 格式化并写入本地持久化日志文件 (~/.shadow-crew/logs/acp.log)
 pub fn log_acp_event(agent_id: &str, direction: &str, line: &str) {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
     let formatted = format!("[{}] [{}] [{}] {}\n", now, agent_id, direction, line);
 
-    let logs_dir = crate::db_manager::get_shinobi_home_dir().join("logs");
+    let logs_dir = crate::db_manager::get_shadow_crew_home_dir().join("logs");
     let _ = std::fs::create_dir_all(&logs_dir);
     let log_file = logs_dir.join("acp.log");
 
@@ -231,7 +231,7 @@ impl AcpProcessManager {
             }
         }
 
-        // 预先解析 shadow-crew-dev-mcp (及 shinobi-dev-mcp) 绝对路径，防止切换 current_dir 到 ~/.shinobi 后相对路径失效
+        // 预先解析 shadow-crew-dev-mcp (及 shinobi-dev-mcp) 绝对路径，防止切换 current_dir 到 ~/.shadow-crew 后相对路径失效
         let mut resolved_dev_mcp: Option<String> = None;
         let possible_mcp_bins = [
             format!("{}/target/debug/shadow-crew-dev-mcp", cwd),
@@ -291,16 +291,18 @@ impl AcpProcessManager {
         let program = parts[0];
         let args = &parts[1..];
 
-        // 统一将所有 Agent 底层进程的默认根工作目录收敛至用户级全局 ~/.shinobi，彻底脱离项目源码仓目录
-        let shinobi_home = crate::db_manager::get_shinobi_home_dir();
-        let shinobi_home_str = shinobi_home.to_string_lossy().to_string();
+        // 统一将所有 Agent 底层进程的默认根工作目录收敛至用户级全局 ~/.shadow-crew，彻底脱离项目源码仓目录
+        let shadow_crew_home = crate::db_manager::get_shadow_crew_home_dir();
+        let shadow_crew_home_str = shadow_crew_home.to_string_lossy().to_string();
         let default_db = crate::db_manager::get_default_db_path();
 
         let mut cmd = Command::new(program);
         cmd.args(args)
-            .current_dir(&shinobi_home)
+            .current_dir(&shadow_crew_home)
             .env("PATH", &extra_paths)
-            .env("SHINOBI_HOME", &shinobi_home)
+            .env("SHADOW_CREW_HOME", &shadow_crew_home)
+            .env("SHINOBI_HOME", &shadow_crew_home)
+            .env("SHADOW_CREW_MEMORY_DB", &default_db)
             .env("SHINOBI_MEMORY_DB", &default_db)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -308,6 +310,7 @@ impl AcpProcessManager {
             .kill_on_drop(true);
 
         if let Some(ref mcp_path) = resolved_dev_mcp {
+            cmd.env("SHADOW_CREW_DEV_MCP_PATH", mcp_path);
             cmd.env("SHINOBI_DEV_MCP_PATH", mcp_path);
         }
 
@@ -633,7 +636,7 @@ impl AcpProcessManager {
                 auth_state: auth_state.clone(),
                 status_detail: status_detail.clone(),
                 session_ids,
-                cwd: shinobi_home_str,
+                cwd: shadow_crew_home_str,
                 app_handle: app_handle.clone(),
                 last_activity: last_activity.clone(),
             },
@@ -824,7 +827,7 @@ impl AcpProcessManager {
             }
         }
 
-        // 2. 解析当前频道的专属独立工作空间路径 ~/.shinobi/channels/<channel_id>
+        // 2. 解析当前频道的专属独立工作空间路径 ~/.shadow-crew/channels/<channel_id>
         let effective_channel_id = channel_id
             .map(|c| c.trim())
             .filter(|c| !c.is_empty())
@@ -1140,10 +1143,10 @@ mod runtime_status_tests {
     }
 
     #[test]
-    fn channel_workspace_dirs_are_isolated_under_shinobi_home() {
-        let tmp_root = std::env::temp_dir().join("shinobi_channel_workspace_test");
-        std::env::set_var("SHINOBI_HOME", &tmp_root);
-        let home = crate::db_manager::get_shinobi_home_dir();
+    fn channel_workspace_dirs_are_isolated_under_shadow_crew_home() {
+        let tmp_root = std::env::temp_dir().join("shadow_crew_channel_workspace_test");
+        std::env::set_var("SHADOW_CREW_HOME", &tmp_root);
+        let home = crate::db_manager::get_shadow_crew_home_dir();
         let chan_a = crate::db_manager::get_channel_dir("channel-alpha-test");
         let chan_b = crate::db_manager::get_channel_dir("channel-beta-test");
         assert!(chan_a.starts_with(&home));
@@ -1152,6 +1155,6 @@ mod runtime_status_tests {
         assert!(chan_a.join("artifacts").exists());
         assert!(chan_a.join("scratch").exists());
         let _ = std::fs::remove_dir_all(&tmp_root);
-        std::env::remove_var("SHINOBI_HOME");
+        std::env::remove_var("SHADOW_CREW_HOME");
     }
 }
