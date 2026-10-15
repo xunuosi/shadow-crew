@@ -331,8 +331,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_channel_artifact() {
-        let temp_dir = std::env::temp_dir().join("shinobi_mcp_test_art");
-        std::env::set_var("SHINOBI_HOME", &temp_dir);
+        let temp_dir = std::env::temp_dir().join("shadow_crew_mcp_test_art").join(".shadow-crew");
+        std::env::set_var("SHADOW_CREW_HOME", &temp_dir);
 
         let res = write_channel_artifact("adr_001.md", "# ADR 001\nDecisions made.", Some("test-chan")).await;
         assert!(res.is_ok());
@@ -340,6 +340,15 @@ mod tests {
         assert!(msg.contains("adr_001.md"));
         assert!(msg.contains("test-chan"));
 
+        // Test DM isolated artifact directory
+        let dm_res = write_channel_artifact("design_spec.md", "# Design Spec", Some("dm-agent-test-999")).await;
+        assert!(dm_res.is_ok());
+        let dm_msg = dm_res.unwrap();
+        assert!(dm_msg.contains("design_spec.md"));
+        assert!(dm_msg.contains("dm-agent-test-999"));
+        assert!(temp_dir.join("channels").join("dm-agent-test-999").join("artifacts").join("design_spec.md").exists());
+
         let _ = fs::remove_dir_all(&temp_dir).await;
+        std::env::remove_var("SHADOW_CREW_HOME");
     }
 }

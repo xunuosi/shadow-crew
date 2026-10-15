@@ -404,7 +404,7 @@ export default function App() {
                   m.type === 'topic' ||
                   m.agentBadge === 'Consensus Rollup' ||
                   m.agentBadge === 'Channel Guard' ||
-                  (m.channelId && m.channelId !== 'direct-messages')
+                  (m.channelId && m.channelId !== 'direct-messages' && !m.channelId.startsWith('dm-'))
                 ) {
                   return false;
                 }
@@ -691,9 +691,11 @@ export default function App() {
     if (!rawThread) return null;
     if (rawThread.type === 'dm') {
       const dmAgent = agents.find((a) => a.id === rawThread.authorId || rawThread.id === `thread-dm-${a.id}`);
+      const dmChannelId = dmAgent ? `dm-${dmAgent.id}` : (rawThread.channelId && rawThread.channelId !== 'direct-messages' ? rawThread.channelId : 'dm-unknown');
       if (dmAgent) {
         return {
           ...rawThread,
+          channelId: dmChannelId,
           authorName: dmAgent.name,
           authorAvatar: dmAgent.avatar,
           authorHandle: dmAgent.handle,
@@ -1244,10 +1246,12 @@ export default function App() {
 
     // Check if DM thread already exists
     let dmThread = threads.find((t) => t.type === 'dm' && (t.authorId === agent.id || t.id === `thread-dm-${agent.id}`));
+    const dmChannelId = `dm-${agent.id}`;
+
     if (!dmThread) {
       dmThread = {
         id: `thread-dm-${agent.id}`,
-        channelId: 'direct-messages',
+        channelId: dmChannelId,
         channelName: `与 ${agent.name} 私聊`,
         type: 'dm',
         title: `与 ${agent.name} 的私信会话`,
@@ -1266,20 +1270,21 @@ export default function App() {
           {
             id: `msg-${Date.now()}`,
             threadId: dmThread!.id,
-            channelId: 'direct-messages',
+            channelId: dmChannelId,
             authorId: agent.id,
             authorName: agent.name,
             authorHandle: agent.handle,
             authorAvatar: agent.avatar,
             isAgent: true,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `你好！我是 **${agent.name}**。ACP 独立进程已就绪，当前挂载协议通道：\`${agent.acpTransport}\`，随时可以开始讨论。`,
+            content: `你好！我是 **${agent.name}**。ACP 独立进程已就绪，当前挂载协议通道：\`${agent.acpTransport}\`，专属产物工作区：\`~/.shadow-crew/channels/${dmChannelId}/artifacts/\`。随时可以开始讨论。`,
           },
         ],
       }));
     } else {
-      // If dmThread already exists, ensure its metadata matches the latest agent profile
+      // If dmThread already exists, ensure its metadata matches the latest agent profile and isolated channelId
       if (
+        dmThread.channelId !== dmChannelId ||
         dmThread.authorAvatar !== agent.avatar ||
         dmThread.authorName !== agent.name ||
         dmThread.authorHandle !== agent.handle
@@ -1289,6 +1294,7 @@ export default function App() {
             t.id === dmThread!.id
               ? {
                   ...t,
+                  channelId: dmChannelId,
                   authorName: agent.name,
                   authorAvatar: agent.avatar,
                   authorHandle: agent.handle,
@@ -1837,7 +1843,11 @@ export default function App() {
       : activeChannel;
     const targetChannelId = isTopic
       ? (topicTargetChannel?.id || activeChannel?.id)
-      : (activeThread?.type === 'dm' ? 'direct-messages' : activeChannel?.id);
+      : (activeThread?.type === 'dm'
+          ? (activeThread.channelId && activeThread.channelId !== 'direct-messages'
+              ? activeThread.channelId
+              : `dm-${activeThread.authorId || (activeThread.activeAgentIds && activeThread.activeAgentIds[0]) || activeThread.id.replace('thread-dm-', '')}`)
+          : activeChannel?.id);
 
     // 1. 严格仅从当前频道准入的候选成员中解析显式 @ 的目标 (绝不越界回退全工作区)
     let targetAgents = parseAgentMentions(replyContent, candidateAgents, invokingAgent.id);
@@ -6143,7 +6153,12 @@ export default function App() {
   const handleSendMessage = (content: string) => {
     if (!content.trim() || !activeThread) return;
 
-    const targetChannelId = activeThread.type === 'dm' ? 'direct-messages' : activeChannel?.id;
+    const dmTargetAgentId = activeThread.authorId || (activeThread.activeAgentIds && activeThread.activeAgentIds[0]) || activeThread.id.replace('thread-dm-', '');
+    const targetChannelId = activeThread.type === 'dm'
+      ? (activeThread.channelId && activeThread.channelId !== 'direct-messages'
+          ? activeThread.channelId
+          : `dm-${dmTargetAgentId}`)
+      : activeChannel?.id;
 
     const userMsg: Message = {
       id: `msg-${Date.now()}`,

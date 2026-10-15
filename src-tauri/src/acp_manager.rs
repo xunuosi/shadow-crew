@@ -857,11 +857,19 @@ impl AcpProcessManager {
                 "mcpServers": [],
                 "channelId": effective_channel_id
             });
-            // 对标 Buzz: 在 session/new 时将系统公约、人设以及频道专属独立工作空间路径注入底层
-            let workspace_notice = format!(
-                "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}/artifacts\n- 临时调试目录 (Scratch): {}/scratch",
-                effective_channel_id, channel_cwd, channel_cwd, channel_cwd
-            );
+            // 对标 Buzz: 在 session/new 时将系统公约、人设以及频道/私聊专属独立工作空间路径注入底层
+            let is_dm = effective_channel_id.starts_with("dm-");
+            let workspace_notice = if is_dm {
+                format!(
+                    "\n\n[当前 Agent 私聊专属独立工作空间环境]:\n- 私聊隔离通道 ID: {}\n- 私聊独立工作区根目录 (Working Directory / cwd): {}\n- 专属落地产物目录 (Artifacts): {}/artifacts\n- 专属临时调试目录 (Scratch): {}/scratch\n提示: 您当前处于与用户的 1-on-1 私聊中，沉淀的技术推演文档、方案或代码 Patch 将安全保存至您个人的专属产物目录中，与其他 Agent 物理隔离。",
+                    effective_channel_id, channel_cwd, channel_cwd, channel_cwd
+                )
+            } else {
+                format!(
+                    "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}/artifacts\n- 临时调试目录 (Scratch): {}/scratch",
+                    effective_channel_id, channel_cwd, channel_cwd, channel_cwd
+                )
+            };
             let enriched_sp = match system_prompt {
                 Some(sp) if !sp.trim().is_empty() => format!("{}{}", sp, workspace_notice),
                 _ => workspace_notice,
@@ -1149,11 +1157,20 @@ mod runtime_status_tests {
         let home = crate::db_manager::get_shadow_crew_home_dir();
         let chan_a = crate::db_manager::get_channel_dir("channel-alpha-test");
         let chan_b = crate::db_manager::get_channel_dir("channel-beta-test");
+        let dm_agent_1 = crate::db_manager::get_channel_dir("dm-agent-1790582453199");
+        let dm_agent_2 = crate::db_manager::get_channel_dir("dm-agent-1792035238590");
         assert!(chan_a.starts_with(&home));
         assert!(chan_b.starts_with(&home));
+        assert!(dm_agent_1.starts_with(&home));
+        assert!(dm_agent_2.starts_with(&home));
         assert_ne!(chan_a, chan_b);
+        assert_ne!(dm_agent_1, dm_agent_2);
+        assert_ne!(dm_agent_1, chan_a);
         assert!(chan_a.join("artifacts").exists());
         assert!(chan_a.join("scratch").exists());
+        assert!(dm_agent_1.join("artifacts").exists());
+        assert!(dm_agent_1.join("scratch").exists());
+        assert!(dm_agent_2.join("artifacts").exists());
         let _ = std::fs::remove_dir_all(&tmp_root);
         std::env::remove_var("SHADOW_CREW_HOME");
     }

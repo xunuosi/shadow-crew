@@ -286,14 +286,24 @@ async fn main() -> Result<()> {
 
                 let artifacts_dir = current_channel_dir.join("artifacts").to_string_lossy().to_string();
                 let scratch_dir = current_channel_dir.join("scratch").to_string_lossy().to_string();
-                if !system_prompt.contains("[当前频道专属工作空间环境]") {
-                    system_prompt.push_str(&format!(
-                        "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}\n- 临时调试目录 (Scratch): {}\n提示: 如需沉淀正式技术推演文档、ADR 架构决策或代码 Patch，请优先调用 `write_channel_artifact` 工具安全保存至频道专属产物目录。\n",
-                        prompt_channel_id,
-                        current_channel_cwd,
-                        artifacts_dir,
-                        scratch_dir
-                    ));
+                if !system_prompt.contains("[当前频道专属工作空间环境]") && !system_prompt.contains("[当前 Agent 私聊专属独立工作空间环境]") {
+                    if prompt_channel_id.starts_with("dm-") {
+                        system_prompt.push_str(&format!(
+                            "\n\n[当前 Agent 私聊专属独立工作空间环境]:\n- 私聊隔离通道 ID: {}\n- 私聊独立工作区根目录 (Working Directory / cwd): {}\n- 专属落地产物目录 (Artifacts): {}\n- 专属临时调试目录 (Scratch): {}\n提示: 您当前处于与用户的 1-on-1 私聊中，沉淀的正式技术推演文档、方案或代码 Patch 将安全保存至您个人的专属产物目录中，与其他 Agent 物理隔离。\n",
+                            prompt_channel_id,
+                            current_channel_cwd,
+                            artifacts_dir,
+                            scratch_dir
+                        ));
+                    } else {
+                        system_prompt.push_str(&format!(
+                            "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}\n- 临时调试目录 (Scratch): {}\n提示: 如需沉淀正式技术推演文档、ADR 架构决策或代码 Patch，请优先调用 `write_channel_artifact` 工具安全保存至频道专属产物目录。\n",
+                            prompt_channel_id,
+                            current_channel_cwd,
+                            artifacts_dir,
+                            scratch_dir
+                        ));
+                    }
                 }
 
                 let session_id = params.get("sessionId").and_then(|v| v.as_str()).unwrap_or("shinobi-session-default");
