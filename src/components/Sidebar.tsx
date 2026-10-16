@@ -256,12 +256,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     }`}
                   >
                     <div className="flex items-center gap-1.5 truncate min-w-0 flex-1 mr-1">
-                      {channel.isPrivate ? (
-                        <Lock className={`w-3 h-3 shrink-0 ${isActive ? 'text-amber-500' : 'text-fg-muted'}`} />
-                      ) : (
-                        <Hash className={`w-3 h-3 shrink-0 ${isActive ? 'text-accent' : 'text-fg-muted'}`} />
-                      )}
-
+                      <Hash className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-accent' : 'text-fg-muted'}`} />
                       <span className="truncate text-xs font-medium">{channel.name}</span>
                     </div>
 

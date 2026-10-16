@@ -3,10 +3,8 @@ import { Channel, Agent, AgentTeam } from '../types';
 import { 
   X, 
   Hash, 
-  Lock, 
   Users, 
-  Check,
-  Globe
+  Check
 } from 'lucide-react';
 
 interface CreateChannelModalProps {
@@ -30,7 +28,6 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
 }) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [isPrivate, setIsPrivate] = useState(true);
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [initialInvitedAgentIds, setInitialInvitedAgentIds] = useState<string[]>(() =>
     agents.map((a) => a.id)
@@ -45,7 +42,6 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
     if (isOpen && !prevIsOpenRef.current) {
       setName('');
       setDescription('');
-      setIsPrivate(true);
       setSelectedTeamId(null);
       setInitialInvitedAgentIds(agentsRef.current.map((a) => a.id));
       const timer = setTimeout(() => {
@@ -88,8 +84,8 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
       status: 'active',
       description: cleanDesc,
       topic: cleanDesc || undefined,
-      isPrivate,
-      iconName: isPrivate ? 'Lock' : 'Hash',
+      isPrivate: false,
+      iconName: 'Hash',
       assignedTeamId: selectedTeamId || undefined,
       assignedAgentIds: initialInvitedAgentIds,
       memberIds,
@@ -112,11 +108,7 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
         <div className="px-5 py-3.5 border-b border-border flex items-center justify-between bg-surface-subtle">
           <div className="space-y-0.5">
             <div className="flex items-center gap-2">
-              {isPrivate ? (
-                <Lock className="w-4 h-4 text-accent shrink-0" />
-              ) : (
-                <Hash className="w-4 h-4 text-accent shrink-0" />
-              )}
+              <Hash className="w-4 h-4 text-accent shrink-0" />
               <span className="font-bold text-sm text-fg">
                 创建协同频道 (Create Channel)
               </span>
@@ -147,7 +139,7 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
             </div>
             <div className="relative flex items-center">
               <span className="absolute left-3 text-fg-muted font-bold font-mono text-sm">
-                {isPrivate ? '🔒' : '#'}
+                #
               </span>
               <input
                 ref={nameInputRef}
@@ -159,7 +151,7 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
                 placeholder="例如：general、产品方案脑暴、架构评审、日常沟通..."
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full bg-surface border border-border rounded-xl pl-8 pr-3 py-2.5 text-xs text-fg placeholder-fg-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-all"
+                className="w-full bg-surface border border-border rounded-xl pl-7 pr-3 py-2.5 text-xs text-fg placeholder-fg-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-all"
               />
             </div>
           </div>
@@ -184,47 +176,7 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
             />
           </div>
 
-          {/* 3. Channel Visibility (Private vs Open) */}
-          <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-surface-subtle border border-border">
-            <div className="space-y-0.5 min-w-0">
-              <div className="text-xs font-semibold text-fg flex items-center gap-1.5">
-                <span>访问权限 (Visibility)</span>
-              </div>
-              <p className="text-[10px] text-fg-muted truncate">
-                {isPrivate
-                  ? '仅受邀成员与勾选的 Agent 可访问此频道上下文'
-                  : '工作区内所有成员均可浏览并加入讨论'}
-              </p>
-            </div>
-            <div className="flex items-center bg-surface p-0.5 rounded-lg border border-border shrink-0">
-              <button
-                type="button"
-                onClick={() => setIsPrivate(true)}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center gap-1 transition-all cursor-pointer ${
-                  isPrivate
-                    ? 'bg-accent text-accent-fg shadow-2xs font-semibold'
-                    : 'text-fg-secondary hover:text-fg'
-                }`}
-              >
-                <Lock className="w-3 h-3" />
-                <span>私密</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsPrivate(false)}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center gap-1 transition-all cursor-pointer ${
-                  !isPrivate
-                    ? 'bg-accent text-accent-fg shadow-2xs font-semibold'
-                    : 'text-fg-secondary hover:text-fg'
-                }`}
-              >
-                <Globe className="w-3 h-3" />
-                <span>公开</span>
-              </button>
-            </div>
-          </div>
-
-          {/* 4. Initial Agent Members & Team Presets */}
+          {/* 3. Initial Agent Members & Team Presets */}
           <div className="p-3.5 rounded-xl bg-surface-subtle border border-border space-y-2.5">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-center gap-1.5 text-fg font-semibold text-xs">
