@@ -73,7 +73,7 @@ export const DeleteChannelModal: React.FC<DeleteChannelModalProps> = ({
             </li>
             <li className="flex items-center gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
-              <span>释放对分支 <code className="text-fg font-mono">{channel.gitBranch || 'main'}</code> 的编辑锁定</span>
+              <span>清理该频道默认工作空间 (<code className="text-fg font-mono">~/.shadow-crew/channels/{channel.id}</code>) 下的关联状态</span>
             </li>
           </ul>
 

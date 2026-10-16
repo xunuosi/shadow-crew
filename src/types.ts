@@ -227,16 +227,16 @@ export interface Project {
   createdAt: number;
 }
 
-export type ChannelKind = 'feature' | 'requirement' | 'task';
+export type ChannelKind = 'general' | 'feature' | 'requirement' | 'task';
 export type ChannelStatus = 'active' | 'archived' | 'deleted';
 
-// L1 功能/需求/任务 频道
+// L1 协同频道 (通用实时交流与协作流)
 export interface Channel {
   id: string;
   projectId: string;
   creatorId: string; // 拥有者与删除权限人
   name: string;
-  kind: ChannelKind;
+  kind?: ChannelKind;
   status: ChannelStatus;
   description: string;
   topic?: string;
@@ -246,13 +246,10 @@ export interface Channel {
   assignedTeamId?: string;
   assignedAgentIds: string[];
   memberIds: string[]; // 频道成员列表 (默认初始仅为 [creatorId])
-  gitBranch?: string;
   createdAt?: number;
   deletedAt?: number;
   mountedWorkspace?: {
     rootPath?: string;
-    repoName?: string;
-    gitBranch?: string;
   };
 }
 

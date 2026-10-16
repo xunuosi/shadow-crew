@@ -414,30 +414,19 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 )}
               </span>
             ) : (
-              <span className="flex items-center gap-1.5 truncate min-w-0">
+              <span className="flex items-center gap-2 truncate min-w-0">
                 <span className="text-accent font-mono font-bold truncate">#{channel?.name || activeThread.channelName}</span>
-                {channel?.kind && (
-                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-mono font-semibold border shrink-0 ${
-                    channel.kind === 'feature'
-                      ? 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 border-cyan-500/30'
-                      : channel.kind === 'requirement'
-                      ? 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-500/30'
-                      : 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30'
-                  }`}>
-                    {channel.kind.toUpperCase()}
+                {channel?.description && (
+                  <span
+                    className="hidden @xl:inline-block text-[11px] text-fg-muted font-normal truncate max-w-[260px] border-l border-border pl-2"
+                    title={channel.description}
+                  >
+                    {channel.description}
                   </span>
                 )}
               </span>
             )}
           </div>
-
-          {/* Git Branch Badge */}
-          {channel?.gitBranch && (
-            <span className="hidden @3xl:inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-surface text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-mono shrink-0">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              <span className="max-w-[120px] truncate">{channel.gitBranch}</span>
-            </span>
-          )}
 
           {/* Filter Pill Tabs */}
           {activeThread.type !== 'dm' && (

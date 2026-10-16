@@ -261,23 +261,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       ) : (
                         <Hash className={`w-3 h-3 shrink-0 ${isActive ? 'text-accent' : 'text-fg-muted'}`} />
                       )}
-                      
-                      {/* Kind Badge */}
-                      {channel.kind === 'feature' && (
-                        <span className="text-[9px] px-1 py-0.5 rounded bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 font-mono border border-cyan-500/20 shrink-0">
-                          feat
-                        </span>
-                      )}
-                      {channel.kind === 'requirement' && (
-                        <span className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 font-mono border border-purple-500/20 shrink-0">
-                          req
-                        </span>
-                      )}
-                      {channel.kind === 'task' && (
-                        <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-mono border border-amber-500/20 shrink-0">
-                          task
-                        </span>
-                      )}
 
                       <span className="truncate text-xs font-medium">{channel.name}</span>
                     </div>

@@ -320,8 +320,6 @@ export default function App() {
               return {
                 ...c,
                 mountedWorkspace: {
-                  repoName: c.mountedWorkspace?.repoName || c.name || 'channel-workspace',
-                  gitBranch: c.mountedWorkspace?.gitBranch || c.gitBranch || 'main',
                   rootPath: migratedRoot,
                 },
               };
@@ -1204,13 +1202,13 @@ export default function App() {
         channelId,
         channelName: targetChan?.name || 'chat',
         type: 'thread',
-        title: `${targetChan?.name || '研讨频道'} 启动与目标同步`,
+        title: `#${targetChan?.name || '频道'}`,
         authorId: currentUserId,
         authorName: 'Norris_M5Pro',
         authorAvatar: '👨‍💻',
         authorHandle: '@Norris_M5Pro',
         timestamp: 'Just now',
-        preview: `欢迎进入 #${targetChan?.name || '频道'}。类别：[${targetChan?.kind || 'feature'}]。`,
+        preview: targetChan?.description || `欢迎进入 #${targetChan?.name || '频道'} 协同空间。`,
         activeAgentIds: targetChan?.assignedAgentIds || [],
       };
       setThreads((prev) => [defaultThread, ...prev]);
@@ -1228,7 +1226,7 @@ export default function App() {
             authorAvatar: '👨‍💻',
             isAgent: false,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `欢迎来到 **#${targetChan?.name || '频道'}**！\n- **类型**：\`[${targetChan?.kind || 'feature'}]\`\n- **说明**：${targetChan?.description || '自由推演与协作研讨'}\n请在下方输入框中发送消息或 @ 目标成员开始推演。`,
+            content: `欢迎来到 **#${targetChan?.name || '频道'}**！${targetChan?.description ? `\n- **频道简介**：${targetChan.description}` : ''}\n- **互动方式**：可直接 \`@Agent\` 进行日常对话，或点击右上角 **「+ 新建议题」** 发起结构化深度推演。`,
           },
         ],
       }));
@@ -1526,7 +1524,7 @@ export default function App() {
     setAgents((prev) => [...prev, fullAgent]);
   };
 
-  // Handle Creation of New Channel (Topic)
+  // Handle Creation of New Channel
   const handleCreateChannel = (newChan: Omit<Channel, 'id' | 'unreadCount'>) => {
     const id = `channel-${Date.now()}`;
     const channelWorkspacePath = `~/.shadow-crew/channels/${id}`;
@@ -1535,8 +1533,6 @@ export default function App() {
       id,
       unreadCount: 0,
       mountedWorkspace: {
-        repoName: newChan.mountedWorkspace?.repoName || newChan.name || 'channel-workspace',
-        gitBranch: newChan.mountedWorkspace?.gitBranch || newChan.gitBranch || 'main',
         rootPath: channelWorkspacePath,
       },
     };
@@ -1549,13 +1545,13 @@ export default function App() {
       channelId: id,
       channelName: created.name,
       type: 'thread',
-      title: `${created.name} 启动与目标同步`,
+      title: `#${created.name}`,
       authorId: currentUserId,
       authorName: 'Norris_M5Pro',
       authorAvatar: '👨‍💻',
       authorHandle: '@Norris_M5Pro',
       timestamp: 'Just now',
-      preview: `研讨频道已激活。类别：[${created.kind || 'feature'}]，探讨主题：${created.topic || '自由协同'}。`,
+      preview: created.description || `欢迎进入 #${created.name} 协同频道。`,
       activeAgentIds: created.assignedAgentIds,
     };
     setThreads((prev) => [defaultThread, ...prev]);
@@ -1573,7 +1569,7 @@ export default function App() {
           authorAvatar: '👨‍💻',
           isAgent: false,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `欢迎进入 **#${created.name}** 研讨空间！\n- **类型**：\`[${created.kind || 'feature'}]\`\n- **准入机制**：默认仅创建者入驻（Creator-only），成员需显式受邀\n- **主题方向**：${created.topic || '暂无特定方向'}\n${created.assignedAgentIds && created.assignedAgentIds.length > 0 ? `- **初始协作 Agent**：${created.assignedAgentIds.map(id => agents.find(a => a.id === id)?.name).filter(Boolean).join('、')} 已就位。` : '- **提示**：当前仅创建者在频道中，可点击右上角成员管理邀请专属 Agent。'}`,
+          content: `欢迎进入 **#${created.name}** 协同频道！${created.description ? `\n- **频道简介**：${created.description}` : ''}\n${created.assignedAgentIds && created.assignedAgentIds.length > 0 ? `- **在场 Agent**：${created.assignedAgentIds.map(id => agents.find(a => a.id === id)?.name).filter(Boolean).join('、')} 已就绪` : '- **当前成员**：仅您本人在频道中，可点击右上角「邀请/管理 Agent」随时添加协作伙伴'}\n- **使用提示**：在下方输入框直接 \`@Agent\` 即可自由交流，或点击右上角 **「+ 新建议题」** 开启结构化专题讨论。`,
         },
       ],
     }));
