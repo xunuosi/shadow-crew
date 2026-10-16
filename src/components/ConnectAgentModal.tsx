@@ -421,9 +421,18 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       : { modelBadge: isRemoteMode ? 'Remote ACP' : 'ACP Stdio', modelConfig: undefined };
 
     if (initialAgent && onUpdateAgent) {
+      const trimmedName = name.trim();
+      const generatedHandle = `@${trimmedName.toLowerCase().replace(/\s+/g, '-')}`;
+      const finalHandle =
+        !initialAgent.handle ||
+        initialAgent.name !== trimmedName ||
+        (initialAgent.handle.includes('副本') && !trimmedName.includes('副本'))
+          ? generatedHandle
+          : initialAgent.handle;
+
       onUpdateAgent(initialAgent.id, {
-        name: name.trim(),
-        handle: initialAgent.handle || `@${name.trim().toLowerCase().replace(/\s+/g, '-')}`,
+        name: trimmedName,
+        handle: finalHandle,
         avatar: effectiveAvatar,
         role: role.trim() || initialAgent.role || (isRemoteMode ? 'Remote ACP Agent' : selectedAcp.name),
         description: description.trim() || initialAgent.description || (isRemoteMode ? 'Remote WebSocket ACP Endpoint' : selectedAcp.description),

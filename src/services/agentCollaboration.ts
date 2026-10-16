@@ -73,8 +73,37 @@ export interface CollaborationCascade {
 }
 
 /**
+ * 单词与标识符延续字符 (用于判断 @mention 边界，严格防止前缀重叠与词中误伤)
+ * 英文字母、数字、下划线、短横线均视为标识符构成字符
+ */
+export const IDENTIFIER_CHAR_REGEX = /[a-zA-Z0-9_\-]/;
+
+/**
+ * 全员点名匹配正则：必须具备独立的词法边界，防止类似 contact@all.com 或 overall 误触发
+ */
+export const ALL_MENTION_REGEX = /(?:^|[^a-zA-Z0-9_\-])@(all|所有人|team)(?:$|[^a-zA-Z0-9_\-])/i;
+
+/**
+ * 判断内容是否包含合法的全员点名 (@all / @所有人 / @team)
+ */
+export function isAllMention(content: string): boolean {
+  if (!content) return false;
+  return ALL_MENTION_REGEX.test(content);
+}
+
+/**
  * 从文本中提取所有被 @ 提到的有效 Agent
- * 自动排除发言者自己，且仅识别当前频道/工作区已准入的 Agent
+ * 自动排除发言者自己，且仅识别当前候选范围已准入的 Agent
+ *
+ * 核心机制：
+ * 1. 严格词法与标识符边界检测 (Word/Token Boundary)：
+ *    - @ 前不能为标识符字符 [a-zA-Z0-9_\-] (防止 email@domain 或 abc-@mention 误伤)；
+ *    - 匹配串后不能为标识符字符 [a-zA-Z0-9_\-]，或域名后缀 (.com, .ai 等) 或路径前缀 (/repo)；
+ *    - 完美支持句末标点符号 (@agent. 或 @agent，)、空格 (@agent ) 以及中文无空格连缀 (@agent请从逃逸红队视角开始攻击)。
+ * 2. 最长匹配优先 (Longest Match First) 与区间占用锁定 (Range Reservation)：
+ *    - 降序排序所有候选模式 (如 @mycodex-02 / @mycodex-副本 优先于 @mycodex)；
+ *    - 匹配成功后锁定字符区间 [start, end)，杜绝短子串在长 handle 中产生前缀冲突或重叠误领。
+ * 3. 彻底废除破环性字符裁剪 (禁止 replace(/[^a-z0-9]/g, ''))，完整保留 CJK 中文别名与符号。
  */
 export function parseAgentMentions(
   content: string,
@@ -85,45 +114,111 @@ export function parseAgentMentions(
     return [];
   }
 
-  const mentions: Agent[] = [];
-  const lowerContent = content.toLowerCase();
-
-  // 若存在 @all，将当前工作区除自己外的全部 Agent 纳入
-  if (lowerContent.includes('@all') || lowerContent.includes('@所有人') || lowerContent.includes('@team')) {
+  // 若存在独立边界的 @all / @所有人 / @team，将候选范围除自己外的全部 Agent 纳入
+  if (isAllMention(content)) {
     return availableAgents.filter((a) => a.id !== currentAgentId);
   }
 
-  // 规范化纯字母数字内容，用于模糊/忽略连字符与大小写匹配 (例如 @MyClaudeCode vs @claude-code)
-  const alphaContent = lowerContent.replace(/[^a-z0-9@]/g, '');
+  const lowerContent = content.toLowerCase();
+
+  // 1. 为每个候选 Agent 收集所有合法的 @ 提及候选模式
+  interface AgentPattern {
+    pattern: string;
+    agent: Agent;
+  }
+
+  const patterns: AgentPattern[] = [];
 
   for (const agent of availableAgents) {
     if (currentAgentId && agent.id === currentAgentId) {
       continue;
     }
 
-    const handle = agent.handle.toLowerCase();
-    const name = agent.name.toLowerCase();
-    const cleanHandle = handle.replace(/^@/, '');
-    const alphaHandle = cleanHandle.replace(/[^a-z0-9]/g, '');
-    const alphaName = name.replace(/[^a-z0-9]/g, '');
+    const candidateStrings: string[] = [];
 
-    // 匹配模式：
-    // 1. 显式 @handle (如 @shinobi-core, @openclaw-mantis)
-    // 2. 显式 @name (如 @Shinobi Core, @MyClaudeCode)
-    // 3. 规范化模糊匹配 (如 @myclaudecode 匹配 MyClaudeCode 或 claude-code)
-    const hasHandle = handle && lowerContent.includes(handle);
-    const hasAtName = name && lowerContent.includes(`@${name}`);
-    const hasAlphaHandle = alphaHandle && alphaContent.includes(`@${alphaHandle}`);
-    const hasAlphaName = alphaName && alphaContent.includes(`@${alphaName}`);
+    // 模式 A: 规范化 handle (如 @mycodex, @mycodex-02, @mycodex-副本)
+    const rawHandle = (agent.handle || '').trim();
+    if (rawHandle) {
+      const handleWithAt = rawHandle.startsWith('@') ? rawHandle : `@${rawHandle}`;
+      candidateStrings.push(handleWithAt.toLowerCase());
 
-    if (hasHandle || hasAtName || hasAlphaHandle || hasAlphaName) {
-      if (!mentions.some((m) => m.id === agent.id)) {
-        mentions.push(agent);
+      // 若 handle 带有短横线，补充空格别名 (如 @shinobi-core -> @shinobi core)
+      if (rawHandle.includes('-')) {
+        candidateStrings.push(`@${rawHandle.replace(/^@/, '').replace(/-/g, ' ')}`.toLowerCase());
       }
+    }
+
+    // 模式 B: 显式 @name (如 @MyCodex, @GlmClaude-01, @架构师)
+    const rawName = (agent.name || '').trim();
+    if (rawName) {
+      const nameWithAt = rawName.startsWith('@') ? rawName : `@${rawName}`;
+      candidateStrings.push(nameWithAt.toLowerCase());
+
+      // 若名称包含空格，补充短横线别名 (如 @Claude Code -> @claude-code)
+      if (rawName.includes(' ')) {
+        candidateStrings.push(`@${rawName.replace(/\s+/g, '-')}`.toLowerCase());
+      }
+    }
+
+    // 去重并写入列表
+    const uniquePatterns = Array.from(new Set(candidateStrings)).filter((p) => p.length > 1);
+    for (const p of uniquePatterns) {
+      patterns.push({ pattern: p, agent });
     }
   }
 
-  return mentions;
+  // 2. 最长匹配优先：按模式长度降序排序，确保长 handle (@mycodex-02 / @mycodex-副本) 优先占用字符区间
+  patterns.sort((a, b) => b.pattern.length - a.pattern.length);
+
+  // 3. 区间占用锁定与边界校验
+  const claimedRanges: { start: number; end: number }[] = [];
+  const matchedAgents: Agent[] = [];
+
+  for (const { pattern, agent } of patterns) {
+    let searchIndex = 0;
+
+    while (searchIndex < lowerContent.length) {
+      const matchIndex = lowerContent.indexOf(pattern, searchIndex);
+      if (matchIndex === -1) {
+        break;
+      }
+
+      const endIndex = matchIndex + pattern.length;
+
+      // 检查前置边界：必须为字符串开头，或者前一个字符不是标识符字符 [a-zA-Z0-9_\-]
+      const isStartValid = matchIndex === 0 || !IDENTIFIER_CHAR_REGEX.test(lowerContent[matchIndex - 1]);
+
+      // 检查后置边界：必须为字符串末尾，或者下一个字符不是标识符字符 [a-zA-Z0-9_\-]
+      const nextChar = lowerContent[endIndex];
+      let isEndValid = nextChar === undefined || !IDENTIFIER_CHAR_REGEX.test(nextChar);
+
+      // 特殊情况：如果下一个字符是 . 或 /，且紧随其后依然是字母数字 (例如 @mycodex.com 或 @mycodex/repo)，属于域名/路径，非合法提及
+      if (
+        isEndValid &&
+        (nextChar === '.' || nextChar === '/') &&
+        endIndex + 1 < lowerContent.length &&
+        /[a-zA-Z0-9]/.test(lowerContent[endIndex + 1])
+      ) {
+        isEndValid = false;
+      }
+
+      // 检查是否与已被更长模式占用的区间冲突
+      const isOverlapping = claimedRanges.some(
+        (range) => Math.max(range.start, matchIndex) < Math.min(range.end, endIndex)
+      );
+
+      if (isStartValid && isEndValid && !isOverlapping) {
+        claimedRanges.push({ start: matchIndex, end: endIndex });
+        if (!matchedAgents.some((m) => m.id === agent.id)) {
+          matchedAgents.push(agent);
+        }
+      }
+
+      searchIndex = matchIndex + 1;
+    }
+  }
+
+  return matchedAgents;
 }
 
 export interface LoopGuardResult {

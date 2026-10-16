@@ -92,6 +92,7 @@ import { resolveAgentModelConfig, setGlobalModelConfig } from './services/llmSer
 import {
   CollaborationCascade,
   parseAgentMentions,
+  isAllMention,
   checkLoopGuard,
   buildAgentPersonaPrompt,
   buildCompositeSystemPrompt,
@@ -445,7 +446,16 @@ export default function App() {
           }
 
           if (Array.isArray(fullData.agents) && fullData.agents.length > 0) {
-            setAgents(fullData.agents);
+            const sanitizedAgents = fullData.agents.map((ag: Agent) => {
+              if (!ag.handle || (ag.name && ag.handle.includes('副本') && !ag.name.includes('副本'))) {
+                return {
+                  ...ag,
+                  handle: `@${ag.name.trim().toLowerCase().replace(/\s+/g, '-')}`,
+                };
+              }
+              return ag;
+            });
+            setAgents(sanitizedAgents);
           } else if (agents.length > 0) {
             await saveAgentsToDb(agents);
           }
@@ -1843,8 +1853,7 @@ export default function App() {
 
     // 检查是否存在对未受邀外部 Agent 的越界 @ 点名
     if (activeThread.type !== 'dm') {
-      const lowerReply = replyContent.toLowerCase();
-      const isReplyAll = lowerReply.includes('@all') || lowerReply.includes('@所有人') || lowerReply.includes('@team');
+      const isReplyAll = isAllMention(replyContent);
       const uninvitedMentions = isReplyAll
         ? []
         : parseAgentMentions(replyContent, agents, invokingAgent.id)
@@ -4661,12 +4670,11 @@ export default function App() {
       .filter((a): a is Agent => Boolean(a))
       .filter((a) => channelAssigned.some((ca) => ca.id === a.id));
 
-    const lowerContent = content.toLowerCase();
-    const isAllMention = lowerContent.includes('@all') || lowerContent.includes('@所有人') || lowerContent.includes('@team');
+    const isTopicAll = isAllMention(content);
 
     let userMentionedAgents: Agent[] = [];
 
-    if (isAllMention) {
+    if (isTopicAll) {
       // 议题中 @all 严格限制在当前议题已参与的 Agent (或当前频道已准入的 Agent)，绝对不能越界拉取全工作区外部成员
       userMentionedAgents = topicAssigned.length > 0 ? topicAssigned : channelAssigned;
     } else {
@@ -6182,12 +6190,11 @@ export default function App() {
       .filter((a): a is Agent => Boolean(a));
 
     // 2. Parse mentioned agents
-    const lowerContent = content.toLowerCase();
-    const isAllMention = lowerContent.includes('@all') || lowerContent.includes('@所有人') || lowerContent.includes('@team');
+    const isChannelAll = isAllMention(content);
 
     let userMentionedAgents: Agent[] = [];
 
-    if (isAllMention) {
+    if (isChannelAll) {
       // 频道内 @all 严格限定在当前频道已准入的成员范围，绝不能越界拉取全工作区外部成员进频道
       userMentionedAgents = channelAssigned;
     } else {
