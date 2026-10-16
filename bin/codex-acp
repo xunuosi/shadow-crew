@@ -132,6 +132,7 @@ function codexVersion() {
   return cachedCodexVersion;
 }
 let currentCwd = process.cwd();
+let currentAdditionalDirs = [];
 let activeSessionId = `codex-sess-${Date.now()}`;
 let sessionSystemPrompt = '';
 
@@ -218,6 +219,11 @@ rl.on('line', async (line) => {
     if (params?.cwd) {
       currentCwd = params.cwd;
     }
+    if (Array.isArray(params?.additionalDirectories)) {
+      currentAdditionalDirs = params.additionalDirectories.filter(Boolean);
+    } else {
+      currentAdditionalDirs = [];
+    }
     // 强制按每次 session/new 重置系统提示词，防止跨会话/私聊残留旧公约
     sessionSystemPrompt = params?.systemPrompt || '';
     activeSessionId = `codex-sess-${Date.now()}`;
@@ -235,6 +241,13 @@ rl.on('line', async (line) => {
         stopReason: 'error',
       });
       return;
+    }
+
+    if (params?.cwd) {
+      currentCwd = params.cwd;
+    }
+    if (Array.isArray(params?.additionalDirectories)) {
+      currentAdditionalDirs = params.additionalDirectories.filter(Boolean);
     }
 
     const rawPrompt = params?.prompt;
@@ -255,9 +268,24 @@ rl.on('line', async (line) => {
       ? `${sessionSystemPrompt}\n\n${userPromptText}`
       : userPromptText;
 
+    // 方案 A：精准开放工作区写权限 (-s workspace-write)，保证 Agent 能正常落盘 artifacts/scratch，
+    // 同时通过 Seatbelt 沙箱阻断对外部目录的越界篡改。支持环境变量 CODEX_SANDBOX (如 danger-full-access / read-only)
+    // 或 CODEX_DANGEROUSLY_BYPASS_SANDBOX=1 进行环境级覆盖。
     const args = ['exec', '--skip-git-repo-check', '--json'];
+    if (process.env.CODEX_DANGEROUSLY_BYPASS_SANDBOX === '1') {
+      args.push('--dangerously-bypass-approvals-and-sandbox');
+    } else {
+      const sandboxMode = process.env.CODEX_SANDBOX || 'workspace-write';
+      args.push('-s', sandboxMode);
+    }
+
     if (currentCwd && fs.existsSync(currentCwd)) {
       args.push('--cd', currentCwd);
+    }
+    for (const dir of currentAdditionalDirs) {
+      if (typeof dir === 'string' && fs.existsSync(dir)) {
+        args.push('--add-dir', dir);
+      }
     }
     args.push('-');
 
