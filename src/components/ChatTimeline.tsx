@@ -103,6 +103,18 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     message: Message;
   } | null>(null);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+
+  const scrollToMessageTop = useCallback((targetMsgId: string) => {
+    const el = document.getElementById(`chat-msg-${targetMsgId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setHighlightedMessageId(targetMsgId);
+      setTimeout(() => {
+        setHighlightedMessageId((prev) => (prev === targetMsgId ? null : prev));
+      }, 2200);
+    }
+  }, []);
 
   // Close popovers and context menu on global click or Escape
   useEffect(() => {
@@ -825,11 +837,11 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           </div>
         )}
 
-        {filteredMessages.map((message) => {
+        {filteredMessages.map((message, msgIdx) => {
           // Render Topic Message Card
           if (message.type === 'topic' && message.topicData) {
             return (
-              <div key={message.id} className="max-w-3xl mx-auto w-full min-w-0">
+              <div key={message.id} id={`chat-msg-${message.id}`} className="max-w-3xl mx-auto w-full min-w-0 scroll-mt-4">
                 <TopicMessageCard
                   topic={message.topicData}
                   agents={agents}
@@ -867,11 +879,57 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             message.authorAvatar === '👨‍💻' ||
             (!authorAgent && !message.isAgent && !message.managedBy && (message.authorName === 'Norris_M5Pro' || message.authorName === 'You'));
 
+          const resolveCollaborationTargetId = (preferRoot: boolean): string | null => {
+            const collab = message.collaborationInfo;
+            if (!collab) return null;
+
+            // 1. Resolve root question message ID (original prompt at the beginning of this cascade)
+            let rootId: string | null = null;
+            if (collab.rootMessageId && filteredMessages.some((m) => m.id === collab.rootMessageId)) {
+              rootId = collab.rootMessageId;
+            } else {
+              for (let i = msgIdx - 1; i >= 0; i--) {
+                const candidate = filteredMessages[i];
+                if (!candidate.isAgent && candidate.authorId !== 'system' && candidate.type !== 'topic') {
+                  rootId = candidate.id;
+                  break;
+                }
+              }
+            }
+
+            // 2. Resolve direct invoking message ID (the message by @Agent that summoned this reply)
+            let sourceId: string | null = null;
+            if (collab.sourceMessageId && filteredMessages.some((m) => m.id === collab.sourceMessageId)) {
+              sourceId = collab.sourceMessageId;
+            } else if (collab.invokedByAgentId || collab.invokedByAgentName) {
+              for (let i = msgIdx - 1; i >= 0; i--) {
+                const candidate = filteredMessages[i];
+                if (
+                  (collab.invokedByAgentId && candidate.authorId === collab.invokedByAgentId) ||
+                  (collab.invokedByAgentName && candidate.authorName === collab.invokedByAgentName)
+                ) {
+                  sourceId = candidate.id;
+                  break;
+                }
+              }
+            }
+
+            if (preferRoot) {
+              return rootId || sourceId || (msgIdx > 0 ? filteredMessages[0].id : null);
+            }
+            return sourceId || rootId || (msgIdx > 0 ? filteredMessages[0].id : null);
+          };
+
           return (
             <article
+              id={`chat-msg-${message.id}`}
               key={message.id}
               onContextMenu={(e) => handleContextMenu(e, message)}
-              className="max-w-3xl mx-auto group relative transition-all rounded-xl p-2 -mx-2 hover:bg-surface-subtle/40"
+              className={`max-w-3xl mx-auto group relative transition-all duration-300 rounded-xl p-2 -mx-2 scroll-mt-4 ${
+                highlightedMessageId === message.id
+                  ? 'bg-blue-50/90 dark:bg-blue-500/15 ring-2 ring-blue-400 dark:ring-blue-400/60 shadow-md'
+                  : 'hover:bg-surface-subtle/40'
+              }`}
             >
               {/* Message Header */}
               <div className="flex items-center justify-between mb-2">
@@ -900,32 +958,94 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                     )}
 
                     {message.agentBadge && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-mono border border-emerald-500/30 shrink-0">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-800 border-emerald-300 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30 font-mono border shrink-0">
                         {message.agentBadge}
                       </span>
                     )}
 
-                    {message.collaborationInfo && (
-                      <span
-                        className={`text-[10px] px-1.5 py-0.5 rounded font-mono border shrink-0 flex items-center gap-1 ${
-                          message.collaborationInfo.isCircuitBroken
-                            ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-semibold'
-                            : 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30'
-                        }`}
-                      >
-                        {message.collaborationInfo.isCircuitBroken ? (
-                          <>
-                            <span>🛡️ 协同熔断</span>
-                            <span>(Hop {message.collaborationInfo.hop})</span>
-                          </>
-                        ) : (
-                          <>
-                            <span>🔗 响应 {message.collaborationInfo.invokedByAgentName || message.collaborationInfo.invokedByAgentHandle || '协同'}</span>
-                            <span>(Hop {message.collaborationInfo.hop}/{message.collaborationInfo.maxHops})</span>
-                          </>
-                        )}
-                      </span>
-                    )}
+                    {message.collaborationInfo && (() => {
+                      const collab = message.collaborationInfo;
+                      const hop = collab.hop || 1;
+                      const maxHops = collab.maxHops || 12;
+                      const progressPct = Math.min(100, Math.max(8, Math.round((hop / maxHops) * 100)));
+                      const isNearLimit = !collab.isCircuitBroken && hop >= Math.ceil(maxHops * 0.75);
+                      const rawInvoker = collab.invokedByAgentName || collab.invokedByAgentHandle || '提问';
+                      const invokerDisplay = rawInvoker.startsWith('@') ? rawInvoker : `@${rawInvoker}`;
+                      const rootTargetId = resolveCollaborationTargetId(true);
+                      const sourceTargetId = resolveCollaborationTargetId(false);
+
+                      const badgeColorCls = collab.isCircuitBroken
+                        ? 'text-rose-800 bg-rose-50 border-rose-300 dark:text-rose-300 dark:bg-rose-500/15 dark:border-rose-500/30 font-semibold'
+                        : isNearLimit
+                        ? 'text-amber-800 bg-amber-50 border-amber-300 dark:text-amber-300 dark:bg-amber-500/15 dark:border-amber-500/30'
+                        : 'text-blue-800 bg-blue-50 border-blue-300 dark:text-blue-300 dark:bg-blue-500/15 dark:border-blue-500/30';
+
+                      const barTrackCls = collab.isCircuitBroken
+                        ? 'bg-rose-200/80 dark:bg-rose-950/70'
+                        : isNearLimit
+                        ? 'bg-amber-200/80 dark:bg-amber-950/70'
+                        : 'bg-blue-200/80 dark:bg-blue-950/70';
+
+                      const barFillCls = collab.isCircuitBroken
+                        ? 'bg-rose-600 dark:bg-rose-400'
+                        : isNearLimit
+                        ? 'bg-amber-600 dark:bg-amber-400'
+                        : 'bg-blue-600 dark:bg-blue-400';
+
+                      return (
+                        <span
+                          className={`text-[10px] px-1.5 py-0.5 rounded-md font-mono border shrink-0 inline-flex items-center gap-1.5 transition-all ${badgeColorCls}`}
+                        >
+                          {collab.isCircuitBroken ? (
+                            <button
+                              type="button"
+                              onClick={() => rootTargetId && scrollToMessageTop(rootTargetId)}
+                              className="inline-flex items-center gap-1.5 cursor-pointer hover:opacity-80"
+                              title="已达协同轮次上限自动熔断 · 点击跳转到对应原始提问消息开头"
+                            >
+                              <span>🛡️ 协同熔断</span>
+                              <span className={`w-10 h-1.5 rounded-full overflow-hidden inline-flex items-center ${barTrackCls}`}>
+                                <span className={`h-full rounded-full ${barFillCls}`} style={{ width: '100%' }} />
+                              </span>
+                              <span>{hop}/{maxHops}</span>
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const targetId = rootTargetId || sourceTargetId;
+                                  if (targetId) scrollToMessageTop(targetId);
+                                }}
+                                className="inline-flex items-center gap-1 cursor-pointer hover:underline underline-offset-2"
+                                title={`响应 ${invokerDisplay} · 点击跳转到对应原始提问消息开头`}
+                              >
+                                <CornerDownRight className="w-2.5 h-2.5 shrink-0 opacity-80" />
+                                <span>响应 {invokerDisplay}</span>
+                              </button>
+                              <span className="opacity-30 select-none">|</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const targetId = sourceTargetId || rootTargetId;
+                                  if (targetId) scrollToMessageTop(targetId);
+                                }}
+                                className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80"
+                                title={`协同轮次进度 ${hop}/${maxHops} · 点击定位到 ${invokerDisplay} 的触发消息开头`}
+                              >
+                                <span className={`w-10 h-1.5 rounded-full overflow-hidden inline-flex items-center ${barTrackCls}`}>
+                                  <span
+                                    className={`h-full rounded-full transition-all duration-300 ${barFillCls}`}
+                                    style={{ width: `${progressPct}%` }}
+                                  />
+                                </span>
+                                <span className="font-semibold">{hop}/{maxHops}</span>
+                              </button>
+                            </>
+                          )}
+                        </span>
+                      );
+                    })()}
 
                     <span className="text-[10px] text-fg-muted font-mono">
                       · {message.timestamp}

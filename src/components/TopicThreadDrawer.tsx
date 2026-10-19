@@ -375,6 +375,18 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     message: Message;
   } | null>(null);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+
+  const scrollToTopicMessageTop = useCallback((targetMsgId: string) => {
+    const el = document.getElementById(`topic-msg-${targetMsgId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setHighlightedMessageId(targetMsgId);
+      setTimeout(() => {
+        setHighlightedMessageId((prev) => (prev === targetMsgId ? null : prev));
+      }, 2200);
+    }
+  }, []);
 
   // Close context menu on global click or Escape
   useEffect(() => {
@@ -1621,7 +1633,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         ) : (
           messages
             .filter((msg) => activeModuleFilterId === 'ALL' || !msg.moduleId || msg.moduleId === activeModuleFilterId)
-            .map((msg) => {
+            .map((msg, msgIdx, visibleMsgs) => {
             const isThinkingOpen = expandedThinking[msg.id] ?? true;
             const isAgent = msg.agentBadge || msg.authorName.includes('Agent') || msg.authorName.includes('Reviewer');
             const gameRoleBadge = getGameRoleBadge(msg);
@@ -1646,12 +1658,54 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               msg.authorAvatar === '👨‍💻' ||
               (!authorAgent && !isAgent && (msg.authorName === 'Norris_M5Pro' || msg.authorName === 'You'));
 
+            const resolveTopicCollaborationTargetId = (preferRoot: boolean): string | null => {
+              const collab = msg.collaborationInfo;
+              if (!collab) return null;
+
+              let rootId: string | null = null;
+              if (collab.rootMessageId && visibleMsgs.some((m) => m.id === collab.rootMessageId)) {
+                rootId = collab.rootMessageId;
+              } else {
+                for (let i = msgIdx - 1; i >= 0; i--) {
+                  const candidate = visibleMsgs[i];
+                  if (!candidate.isAgent && candidate.authorId !== 'system') {
+                    rootId = candidate.id;
+                    break;
+                  }
+                }
+              }
+
+              let sourceId: string | null = null;
+              if (collab.sourceMessageId && visibleMsgs.some((m) => m.id === collab.sourceMessageId)) {
+                sourceId = collab.sourceMessageId;
+              } else if (collab.invokedByAgentId || collab.invokedByAgentName) {
+                for (let i = msgIdx - 1; i >= 0; i--) {
+                  const candidate = visibleMsgs[i];
+                  if (
+                    (collab.invokedByAgentId && candidate.authorId === collab.invokedByAgentId) ||
+                    (collab.invokedByAgentName && candidate.authorName === collab.invokedByAgentName)
+                  ) {
+                    sourceId = candidate.id;
+                    break;
+                  }
+                }
+              }
+
+              if (preferRoot) {
+                return rootId || sourceId || (msgIdx > 0 ? visibleMsgs[0].id : null);
+              }
+              return sourceId || rootId || (msgIdx > 0 ? visibleMsgs[0].id : null);
+            };
+
             return (
               <div
+                id={`topic-msg-${msg.id}`}
                 key={msg.id}
                 onContextMenu={(e) => handleContextMenu(e, msg)}
-                className={`space-y-2.5 p-3.5 rounded-2xl border transition-all relative ${
-                  msg.isPending
+                className={`space-y-2.5 p-3.5 rounded-2xl border transition-all duration-300 relative scroll-mt-3 ${
+                  highlightedMessageId === msg.id
+                    ? 'bg-blue-50/90 dark:bg-blue-500/15 border-blue-400 dark:border-blue-400/60 ring-2 ring-blue-400/60 shadow-md'
+                    : msg.isPending
                     ? 'bg-purple-500/[0.04] dark:bg-purple-950/20 border-purple-500/40 shadow-xs ring-1 ring-purple-500/20'
                     : 'bg-surface border-border hover:border-purple-500/40 group'
                 }`}
@@ -1717,32 +1771,96 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                           className={`text-[9px] px-1.5 py-0.5 rounded font-mono border truncate max-w-[180px] shrink-0 font-medium ${
                             msg.agentBadge === 'Gavel Ready'
                               ? 'bg-amber-500/20 text-amber-800 dark:text-amber-200 border-amber-500/40 font-semibold'
-                              : 'bg-purple-500/15 text-purple-600 dark:text-purple-300 border-purple-500/30'
+                              : 'bg-purple-50 text-purple-800 border-purple-300 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/30'
                           }`}
                           title={msg.agentBadge}
                         >
                           {msg.agentBadge}
                         </span>
                       ) : null}
-                      {msg.collaborationInfo && (
-                        <span
-                          className={`text-[9px] px-1.5 py-0.5 rounded font-mono border shrink-0 flex items-center gap-1 max-w-[220px] ${
-                            msg.collaborationInfo.isCircuitBroken
-                              ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-semibold'
-                              : 'bg-purple-500/15 text-purple-600 dark:text-purple-300 border-purple-500/30'
-                          }`}
-                          title={msg.collaborationInfo.isCircuitBroken ? '协同熔断' : `响应 ${msg.collaborationInfo.invokedByAgentName || msg.collaborationInfo.invokedByAgentHandle || '协同'} (Hop ${msg.collaborationInfo.hop})`}
-                        >
-                          {msg.collaborationInfo.isCircuitBroken ? (
-                            <span className="whitespace-nowrap">🛡️ 协同熔断</span>
-                          ) : (
-                            <>
-                              <span className="truncate">🔗 响应 {msg.collaborationInfo.invokedByAgentName || msg.collaborationInfo.invokedByAgentHandle || '协同'}</span>
-                              <span className="shrink-0">(Hop {msg.collaborationInfo.hop})</span>
-                            </>
-                          )}
-                        </span>
-                      )}
+                      {msg.collaborationInfo && (() => {
+                        const collab = msg.collaborationInfo;
+                        const hop = collab.hop || 1;
+                        const maxHops = collab.maxHops || 12;
+                        const progressPct = Math.min(100, Math.max(8, Math.round((hop / maxHops) * 100)));
+                        const isNearLimit = !collab.isCircuitBroken && hop >= Math.ceil(maxHops * 0.75);
+                        const rawInvoker = collab.invokedByAgentName || collab.invokedByAgentHandle || '提问';
+                        const invokerDisplay = rawInvoker.startsWith('@') ? rawInvoker : `@${rawInvoker}`;
+                        const rootTargetId = resolveTopicCollaborationTargetId(true);
+                        const sourceTargetId = resolveTopicCollaborationTargetId(false);
+
+                        const badgeColorCls = collab.isCircuitBroken
+                          ? 'text-rose-800 bg-rose-50 border-rose-300 dark:text-rose-300 dark:bg-rose-500/15 dark:border-rose-500/30 font-semibold'
+                          : isNearLimit
+                          ? 'text-amber-800 bg-amber-50 border-amber-300 dark:text-amber-300 dark:bg-amber-500/15 dark:border-amber-500/30'
+                          : 'text-blue-800 bg-blue-50 border-blue-300 dark:text-blue-300 dark:bg-blue-500/15 dark:border-blue-500/30';
+
+                        const barTrackCls = collab.isCircuitBroken
+                          ? 'bg-rose-200/80 dark:bg-rose-950/70'
+                          : isNearLimit
+                          ? 'bg-amber-200/80 dark:bg-amber-950/70'
+                          : 'bg-blue-200/80 dark:bg-blue-950/70';
+
+                        const barFillCls = collab.isCircuitBroken
+                          ? 'bg-rose-600 dark:bg-rose-400'
+                          : isNearLimit
+                          ? 'bg-amber-600 dark:bg-amber-400'
+                          : 'bg-blue-600 dark:bg-blue-400';
+
+                        return (
+                          <span
+                            className={`text-[9px] px-1.5 py-0.5 rounded font-mono border shrink-0 inline-flex items-center gap-1 transition-all ${badgeColorCls}`}
+                          >
+                            {collab.isCircuitBroken ? (
+                              <button
+                                type="button"
+                                onClick={() => rootTargetId && scrollToTopicMessageTop(rootTargetId)}
+                                className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80"
+                                title="已达协同轮次上限自动熔断 · 点击跳转到对应原始提问消息开头"
+                              >
+                                <span className="whitespace-nowrap">🛡️ 协同熔断</span>
+                                <span className={`w-8 h-1.5 rounded-full overflow-hidden inline-flex items-center ${barTrackCls}`}>
+                                  <span className={`h-full rounded-full ${barFillCls}`} style={{ width: '100%' }} />
+                                </span>
+                                <span>{hop}/{maxHops}</span>
+                              </button>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const targetId = rootTargetId || sourceTargetId;
+                                    if (targetId) scrollToTopicMessageTop(targetId);
+                                  }}
+                                  className="inline-flex items-center gap-0.5 cursor-pointer hover:underline underline-offset-2 max-w-[140px]"
+                                  title={`响应 ${invokerDisplay} · 点击跳转到对应原始提问消息开头`}
+                                >
+                                  <CornerDownRight className="w-2.5 h-2.5 shrink-0 opacity-80" />
+                                  <span className="truncate">响应 {invokerDisplay}</span>
+                                </button>
+                                <span className="opacity-30 select-none">|</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const targetId = sourceTargetId || rootTargetId;
+                                    if (targetId) scrollToTopicMessageTop(targetId);
+                                  }}
+                                  className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80 shrink-0"
+                                  title={`协同轮次进度 ${hop}/${maxHops} · 点击定位到 ${invokerDisplay} 的触发消息开头`}
+                                >
+                                  <span className={`w-8 h-1.5 rounded-full overflow-hidden inline-flex items-center ${barTrackCls}`}>
+                                    <span
+                                      className={`h-full rounded-full transition-all duration-300 ${barFillCls}`}
+                                      style={{ width: `${progressPct}%` }}
+                                    />
+                                  </span>
+                                  <span className="font-semibold">{hop}/{maxHops}</span>
+                                </button>
+                              </>
+                            )}
+                          </span>
+                        );
+                      })()}
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0 ml-auto self-start">

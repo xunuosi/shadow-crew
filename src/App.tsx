@@ -1806,13 +1806,14 @@ export default function App() {
   const dispatchCascadingAgentResponse = async (options: {
     cascadeId: string;
     invokingAgent: Agent;
+    invokingMessageId?: string;
     replyContent: string;
     roomId: string;
     isTopic: boolean;
     topicId?: string;
     queuedCollaborators?: Agent[];
   }) => {
-    const { cascadeId, invokingAgent, replyContent, roomId, isTopic, topicId, queuedCollaborators = [] } = options;
+    const { cascadeId, invokingAgent, invokingMessageId, replyContent, roomId, isTopic, topicId, queuedCollaborators = [] } = options;
     const cascade = activeCascadesRef.current[cascadeId];
     if (!cascade || cascade.isAborted) return;
 
@@ -1927,6 +1928,7 @@ export default function App() {
         dispatchCascadingAgentResponse({
           cascadeId,
           invokingAgent,
+          invokingMessageId,
           replyContent,
           roomId,
           isTopic,
@@ -1968,6 +1970,8 @@ export default function App() {
             cascadeId,
             hop: cascade.depth,
             maxHops: cascade.maxDepth,
+            rootMessageId: cascade.rootMessageId,
+            sourceMessageId: invokingMessageId || cascade.rootMessageId,
             isCircuitBroken: true,
             circuitBreakReason: loopCheck.reason,
           },
@@ -2090,7 +2094,7 @@ export default function App() {
         authorHandle: targetAgent.handle,
         authorAvatar: targetAgent.avatar,
         isAgent: true,
-        agentBadge: `${targetAgent.modelBadge?.split(' ')[0] || 'Local'} · 协同响应 (Hop ${nextDepth})`,
+        agentBadge: `${targetAgent.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : targetAgent.isRemote ? 'ACP Remote' : 'ACP'}`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         content: acpResp.textResponse,
         thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已基于协同上下文完成审查与规约对齐'),
@@ -2100,6 +2104,8 @@ export default function App() {
           cascadeId,
           hop: nextDepth,
           maxHops: cascade.maxDepth,
+          rootMessageId: cascade.rootMessageId,
+          sourceMessageId: invokingMessageId || cascade.rootMessageId,
           invokedByAgentId: invokingAgent.id,
           invokedByAgentName: invokingAgent.name,
           invokedByAgentHandle: invokingAgent.handle,
@@ -2154,6 +2160,7 @@ export default function App() {
       dispatchCascadingAgentResponse({
         cascadeId,
         invokingAgent: targetAgent,
+        invokingMessageId: nextReply.id,
         replyContent: acpResp.textResponse,
         roomId,
         isTopic,
@@ -5093,7 +5100,12 @@ export default function App() {
             collaborationInfo: {
               cascadeId,
               hop: 1,
-              maxHops: 8,
+              maxHops: 12,
+              rootMessageId: userMsg.id,
+              sourceMessageId: userMsg.id,
+              invokedByAgentId: userMsg.authorId,
+              invokedByAgentName: userMsg.authorName,
+              invokedByAgentHandle: userMsg.authorHandle,
             },
           };
 
@@ -5348,6 +5360,7 @@ export default function App() {
             dispatchCascadingAgentResponse({
               cascadeId,
               invokingAgent: agent,
+              invokingMessageId: agentReply.id,
               replyContent: acpResp.textResponse,
               roomId: topicId,
               isTopic: true,
@@ -6405,7 +6418,12 @@ export default function App() {
           collaborationInfo: isDmThread ? undefined : {
             cascadeId,
             hop: 1,
-            maxHops: 8,
+            maxHops: 12,
+            rootMessageId: userMsg.id,
+            sourceMessageId: userMsg.id,
+            invokedByAgentId: userMsg.authorId,
+            invokedByAgentName: userMsg.authorName,
+            invokedByAgentHandle: userMsg.authorHandle,
           },
           acpTrace: {
             requestId: `acp-${Date.now()}`,
@@ -6438,6 +6456,7 @@ export default function App() {
           dispatchCascadingAgentResponse({
             cascadeId,
             invokingAgent: primaryResponder,
+            invokingMessageId: agentReply.id,
             replyContent: acpResp.textResponse,
             roomId: currentThreadId,
             isTopic: false,

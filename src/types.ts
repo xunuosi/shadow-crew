@@ -199,6 +199,8 @@ export interface CollaborationInfo {
   cascadeId: string;
   hop: number;
   maxHops: number;
+  rootMessageId?: string;
+  sourceMessageId?: string;
   invokedByAgentId?: string;
   invokedByAgentName?: string;
   invokedByAgentHandle?: string;
