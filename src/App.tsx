@@ -663,6 +663,25 @@ export default function App() {
   const activeExecutionsRef = useRef(activeExecutions);
   activeExecutionsRef.current = activeExecutions;
 
+  /**
+   * 同步更新 messagesRef.current 并提交 React 状态更新 (Commit Messages Synchronously)
+   *
+   * 根因防御：在 React 18/19 自动批处理下，若先调用了 setActiveExecutions 等其他 setState，
+   * 紧随其后的 setMessages(prev => ...) 不会同步执行 updater，而是推迟至下一轮渲染。
+   * 这会导致 Promise.allSettled 微任务立即进入下一跳时，messagesRef.current 缺失刚刚产出的触发消息。
+   * 通过在调用 setMessages 前同步对 messagesRef.current 执行幂等更新，确保任意同步/微任务时刻读取的快照均包含最新消息。
+   */
+  const commitMessages = (
+    updater: (prev: Record<string, Message[]>) => Record<string, Message[]>
+  ) => {
+    messagesRef.current = updater(messagesRef.current);
+    setMessages((prev) => {
+      const next = updater(prev);
+      messagesRef.current = next;
+      return next;
+    });
+  };
+
   // 对标 Buzz: 记录每个会话/房间与 Agent 之间的立足上下文 (Standing Context) 交付状态
   // 保证整套平台公约与团队花名册只在 Session 建立时/第 1 轮传递，后续日常交互均为纯净指令
   const deliveredStandingContextRef = useRef<Set<string>>(new Set());
@@ -1736,23 +1755,29 @@ export default function App() {
       ? `已发起 4+1 认知协同决策议题【${topicData.title}】。\n目标背景：${topicData.description || '开始架构决策攻防推演。'}\n【4+1 协同角色配置】：\n- 🏛️ 提案者：${topicData.gameRoles.proposers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- ⚔️ 红队对抗：${topicData.gameRoles.challengers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}${verifiersSummary}\n- ⚖️ 流程综合：${topicData.gameRoles.arbiters.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- 👤 终局裁判：${topicData.gameRoles.humanIsArbiter ? 'Norris_M5Pro (人类首席仲裁官, 持法槌)' : '已委派 AI 综合仲裁'}${diversityWarning}`
       : `已发起议题【${topicData.title}】。\n目标背景：${topicData.description || '开始方案推演。'}\n指派 Agent：${validAssignedAgentIds.length > 0 ? validAssignedAgentIds.map(id => agents.find(a => a.id === id)?.name).filter(Boolean).join('、') : '暂无 (可在抽屉中指派)'}。`;
 
-    setMessages((prev) => ({
-      ...prev,
-      [targetChannelThread.id]: [...(prev[targetChannelThread.id] || []), topicCardMsg],
-      [topicId]: [
-        {
-          id: `topic-msg-init-${Date.now()}`,
-          threadId: topicId,
-          authorId: 'user-norris',
-          authorName: 'Norris_M5Pro',
-          authorHandle: '@Norris_M5Pro',
-          authorAvatar: '👨‍💻',
-          isAgent: false,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: initContent,
-        },
-      ],
-    }));
+    const initTopicMsg: Message = {
+      id: `topic-msg-init-${Date.now()}`,
+      threadId: topicId,
+      authorId: 'user-norris',
+      authorName: 'Norris_M5Pro',
+      authorHandle: '@Norris_M5Pro',
+      authorAvatar: '👨‍💻',
+      isAgent: false,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      content: initContent,
+    };
+
+    commitMessages((prev) => {
+      const existingThreadMsgs = prev[targetChannelThread.id] || [];
+      const nextThreadMsgs = existingThreadMsgs.some((m) => m.id === topicCardMsg.id)
+        ? existingThreadMsgs
+        : [...existingThreadMsgs, topicCardMsg];
+      return {
+        ...prev,
+        [targetChannelThread.id]: nextThreadMsgs,
+        [topicId]: [initTopicMsg],
+      };
+    });
 
     setActiveTopicId(topicId);
   };
@@ -2116,7 +2141,7 @@ export default function App() {
 
     await Promise.allSettled(
       allowedTargets.map(async (item) => {
-        const { targetAgent, invokingAgents, sourceMessageIds } = item;
+        const { targetAgent, invokingAgents, sourceMessageIds, combinedReplies } = item;
         const primaryInvoker = invokingAgents[0] || effectiveTurnOutputs[0].agent;
         const execKey = isTopic && topicId ? `${topicId}:${targetAgent.id}` : `${roomId}:${targetAgent.id}`;
         const sessionKey = `${roomId}:${targetAgent.id}`;
@@ -2130,10 +2155,12 @@ export default function App() {
         deliveredStandingContextRef.current.add(sessionKey);
 
         // 对标 Buzz queue.rs: 基于该 Agent 在当前会话的水位线提取未读增量事件批次 (<delta-events>)
+        // 同时将本轮触发输出 effectiveTurnOutputs 显式合并入快照（按消息 ID 幂等去重），彻底消除异步批处理导致的漏读竞态
         const lastWatermark = sessionWatermarksRef.current.get(sessionKey);
         const roomTranscript = messagesRef.current[roomId] || [];
         const deltaBatch = extractUnreadDeltaMessages({
           messages: roomTranscript,
+          turnOutputs: effectiveTurnOutputs,
           lastWatermarkMessageId: lastWatermark,
           coldStartSinceMessageId: !isTopic ? cascade.rootMessageId : undefined,
           excludeAuthorId: targetAgent.id,
@@ -2142,12 +2169,18 @@ export default function App() {
           sessionWatermarksRef.current.set(sessionKey, deltaBatch.latestWatermarkMessageId);
         }
 
+        const latestTriggerReplyContent =
+          combinedReplies.length > 0
+            ? combinedReplies[combinedReplies.length - 1].content
+            : effectiveTurnOutputs[effectiveTurnOutputs.length - 1]?.replyContent || '';
+
         const cascadePrompt = buildNormalModeTurnPrompt({
           targetAgent,
           availableAgents: candidateAgents,
           roomId,
           isWarmSession: deltaBatch.isWarmSession,
           deltaMessages: deltaBatch.deltaMessages,
+          triggerContent: latestTriggerReplyContent,
           hop: nextDepth,
           maxHops: cascade.maxDepth,
           invokingAgents,
@@ -2200,8 +2233,11 @@ export default function App() {
           };
 
           if (isTopic && topicId) {
-            setMessages((prev) => {
-              const nextTopicMsgs = [...(prev[topicId] || []), nextReply];
+            commitMessages((prev) => {
+              const existing = prev[topicId] || [];
+              const nextTopicMsgs = existing.some((m) => m.id === nextReply.id)
+                ? existing
+                : [...existing, nextReply];
 
               let parentThreadId: string | null = null;
               for (const [tId, msgList] of Object.entries(prev) as [string, Message[]][]) {
@@ -2218,7 +2254,7 @@ export default function App() {
                         ...m,
                         topicData: {
                           ...m.topicData,
-                          repliesCount: nextTopicMsgs.length,
+                          repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
                           latestReplyPreview: nextReply.content.slice(0, 60),
                         },
                       };
@@ -2227,22 +2263,22 @@ export default function App() {
                   })
                 : [];
 
-              const next = {
+              return {
                 ...prev,
                 [topicId]: nextTopicMsgs,
                 ...(parentThreadId ? { [parentThreadId]: updatedParentMsgs } : {}),
               };
-              messagesRef.current = next;
-              return next;
             });
           } else {
-            setMessages((prev) => {
-              const next = {
+            commitMessages((prev) => {
+              const existing = prev[roomId] || [];
+              const nextRoomMsgs = existing.some((m) => m.id === nextReply.id)
+                ? existing
+                : [...existing, nextReply];
+              return {
                 ...prev,
-                [roomId]: [...(prev[roomId] || []), nextReply],
+                [roomId]: nextRoomMsgs,
               };
-              messagesRef.current = next;
-              return next;
             });
           }
 
@@ -2276,13 +2312,15 @@ export default function App() {
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             content: `⚠️ **协同接力异常**：${err instanceof Error ? err.message : String(err)}`,
           };
-          setMessages((prev) => {
-            const next = {
+          commitMessages((prev) => {
+            const existing = prev[roomId] || [];
+            const nextRoomMsgs = existing.some((m) => m.id === errorReply.id)
+              ? existing
+              : [...existing, errorReply];
+            return {
               ...prev,
-              [roomId]: [...(prev[roomId] || []), errorReply],
+              [roomId]: nextRoomMsgs,
             };
-            messagesRef.current = next;
-            return next;
           });
         }
       })
@@ -4737,9 +4775,11 @@ export default function App() {
       content,
     };
 
-    setMessages((prev) => {
+    commitMessages((prev) => {
       const topicMsgs = prev[topicId] || [];
-      const nextTopicMsgs = [...topicMsgs, userMsg];
+      const nextTopicMsgs = topicMsgs.some((m) => m.id === userMsg.id)
+        ? topicMsgs
+        : [...topicMsgs, userMsg];
 
       let parentThreadId: string | null = null;
       for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
@@ -4757,7 +4797,7 @@ export default function App() {
                 topicData: {
                   ...m.topicData,
                   status: m.topicData.status === 'open' ? 'investigating' : m.topicData.status,
-                  repliesCount: nextTopicMsgs.length,
+                  repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
                   latestReplyPreview: content.slice(0, 60),
                 },
               };
@@ -4766,13 +4806,11 @@ export default function App() {
           })
         : [];
 
-      const next = {
+      return {
         ...prev,
         [topicId]: nextTopicMsgs,
         ...(parentThreadId ? { [parentThreadId]: updatedParentMsgs } : {}),
       };
-      messagesRef.current = next;
-      return next;
     });
 
     const topicChannel = channels.find((c) => c.id === activeTopicData?.channelId) || activeChannel;
@@ -5022,7 +5060,7 @@ export default function App() {
     );
 
     // 提取议题前序研讨记录（若启用 G-Frame 模块化隔离且当前模块已有专属消息，则仅注入本模块沙箱内的历史）
-    const existingTopicMsgs = messages[topicId] || [];
+    const existingTopicMsgs = messagesRef.current[topicId] || [];
     const activeModState = activeTopicData?.gameTheoreticState?.modularState;
     const activeModSlice =
       activeModState?.enabled && activeModState.activeModuleId
@@ -5124,6 +5162,7 @@ export default function App() {
         const currentTopicTranscript = messagesRef.current[topicId] || [];
         const deltaBatch = extractUnreadDeltaMessages({
           messages: currentTopicTranscript,
+          triggerMessages: [userMsg],
           lastWatermarkMessageId: lastWatermark,
           excludeAuthorId: agent.id,
         });
@@ -5215,10 +5254,16 @@ export default function App() {
         gameRole: isGameTheoretic ? targetRoleType : undefined,
       };
 
-      setMessages((prev) => ({
-        ...prev,
-        [topicId]: [...(prev[topicId] || []), pendingMsg],
-      }));
+      commitMessages((prev) => {
+        const existing = prev[topicId] || [];
+        const nextTopicMsgs = existing.some((m) => m.id === pendingId)
+          ? existing
+          : [...existing, pendingMsg];
+        return {
+          ...prev,
+          [topicId]: nextTopicMsgs,
+        };
+      });
 
       return sendPromptToAcpAgent({
         agent,
@@ -5283,11 +5328,13 @@ export default function App() {
             },
           };
 
-          setMessages((prev) => {
+          commitMessages((prev) => {
             const existing = prev[topicId] || [];
             const hasPending = existing.some((m) => m.id === pendingId);
             const nextTopicMsgs = hasPending
               ? existing.map((m) => (m.id === pendingId ? agentReply : m))
+              : existing.some((m) => m.id === agentReply.id)
+              ? existing
               : [...existing, agentReply];
             let parentThreadId: string | null = null;
             for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
@@ -5313,13 +5360,11 @@ export default function App() {
                 })
               : [];
 
-            const next = {
+            return {
               ...prev,
               [topicId]: nextTopicMsgs,
               ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
             };
-            messagesRef.current = next;
-            return next;
           });
 
           logRpc(agent.name, 'agent_to_client', 'session/prompt:result', {
@@ -5579,11 +5624,13 @@ export default function App() {
             }));
           }
 
-          setMessages((prev) => {
+          commitMessages((prev) => {
             const existing = prev[topicId] || [];
             const hasPending = existing.some((m) => m.id === pendingId);
             const nextTopicMsgs = hasPending
               ? existing.map((m) => (m.id === pendingId ? errorReply : m))
+              : existing.some((m) => m.id === errorReply.id)
+              ? existing
               : [...existing, errorReply];
             return {
               ...prev,
@@ -6381,13 +6428,15 @@ export default function App() {
       reactions: [],
     };
 
-    setMessages((prev) => {
-      const nextThreadMsgs = [...(prev[currentThreadId] || []), userMsg];
-      messagesRef.current = {
+    commitMessages((prev) => {
+      const existing = prev[currentThreadId] || [];
+      const nextThreadMsgs = existing.some((m) => m.id === userMsg.id)
+        ? existing
+        : [...existing, userMsg];
+      return {
         ...prev,
         [currentThreadId]: nextThreadMsgs,
       };
-      return messagesRef.current;
     });
 
     // Detect responding agents:
@@ -6595,6 +6644,7 @@ export default function App() {
 
       const deltaBatch = extractUnreadDeltaMessages({
         messages: roomTranscript,
+        triggerMessages: [userMsg],
         lastWatermarkMessageId: lastWatermark,
         coldStartSinceMessageId: userMsg.id,
         excludeAuthorId: targetAgent.id,
@@ -6686,13 +6736,15 @@ export default function App() {
             },
           };
 
-          setMessages((prev) => {
-            const nextThreadMsgs = [...(prev[currentThreadId] || []), agentReply];
-            messagesRef.current = {
+          commitMessages((prev) => {
+            const existing = prev[currentThreadId] || [];
+            const nextThreadMsgs = existing.some((m) => m.id === agentReply.id)
+              ? existing
+              : [...existing, agentReply];
+            return {
               ...prev,
               [currentThreadId]: nextThreadMsgs,
             };
-            return messagesRef.current;
           });
 
           setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'running' } : a)));
@@ -6732,13 +6784,15 @@ export default function App() {
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             content: `⚠️ **ACP 通信异常**：${err instanceof Error ? err.message : String(err)}\n\n请检查 Agent 命令配置或相关依赖环境。`,
           };
-          setMessages((prev) => {
-            const nextThreadMsgs = [...(prev[currentThreadId] || []), errorReply];
-            messagesRef.current = {
+          commitMessages((prev) => {
+            const existing = prev[currentThreadId] || [];
+            const nextThreadMsgs = existing.some((m) => m.id === errorReply.id)
+              ? existing
+              : [...existing, errorReply];
+            return {
               ...prev,
               [currentThreadId]: nextThreadMsgs,
             };
-            return messagesRef.current;
           });
           setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'idle' } : a)));
           syncRunningAgentsWithBackend();

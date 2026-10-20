@@ -877,6 +877,68 @@ function isSystemControlMessage(msg: RoomTranscriptEntry): boolean {
 }
 
 /**
+ * 将当前轮次刚产出的触发消息/并发回复按 ID 幂等合并进房间消息快照中
+ *
+ * 解决核心竞态问题：
+ * 在 React 18/19 自动批处理 (Automatic Batching) 下，当上一跳的完成回调紧挨着 `setActiveExecutions` 调用 `setMessages(prev => ...)` 时，
+ * React 会将 `setMessages` 的 updater 推迟到下一帧渲染阶段执行，而 `Promise.allSettled` 微任务会在此之前立即唤醒下一跳。
+ * 通过在提取 `<delta-events>` 前显式将本轮触发消息 (`triggerMessages`) 与本轮 Agent 产出 (`turnOutputs`) 幂等合并入快照，
+ * 确保被点名的下一跳 Agent 100% 能够读到刚刚触发它的那条消息，且水位线 (`latestWatermarkMessageId`) 同步推进到该触发消息。
+ */
+export function mergeTurnOutputsIntoTranscript(
+  messages: RoomTranscriptEntry[],
+  turnOutputs?: TurnAgentOutput[],
+  triggerMessages?: RoomTranscriptEntry[]
+): RoomTranscriptEntry[] {
+  const base = (messages || []).map((m) => ({ ...m }));
+  const indexById = new Map<string, number>();
+  base.forEach((m, idx) => {
+    indexById.set(m.id, idx);
+  });
+
+  if (triggerMessages && triggerMessages.length > 0) {
+    for (const trig of triggerMessages) {
+      if (!trig || !trig.id || !trig.content?.trim()) continue;
+      const existingIdx = indexById.get(trig.id);
+      if (existingIdx !== undefined) {
+        if (base[existingIdx].isPending || !base[existingIdx].content?.trim()) {
+          base[existingIdx] = { ...base[existingIdx], ...trig, isPending: false };
+        }
+      } else {
+        indexById.set(trig.id, base.length);
+        base.push({ ...trig, isPending: false });
+      }
+    }
+  }
+
+  if (turnOutputs && turnOutputs.length > 0) {
+    for (const out of turnOutputs) {
+      if (!out || !out.messageId || !out.replyContent?.trim()) continue;
+      const entry: RoomTranscriptEntry = {
+        id: out.messageId,
+        authorId: out.agent.id,
+        authorName: out.agent.name,
+        authorHandle: out.agent.handle,
+        content: out.replyContent,
+        isAgent: true,
+        isPending: false,
+      };
+      const existingIdx = indexById.get(out.messageId);
+      if (existingIdx !== undefined) {
+        if (base[existingIdx].isPending || !base[existingIdx].content?.trim()) {
+          base[existingIdx] = { ...base[existingIdx], ...entry };
+        }
+      } else {
+        indexById.set(out.messageId, base.length);
+        base.push(entry);
+      }
+    }
+  }
+
+  return base;
+}
+
+/**
  * 基于 `(roomId, agentId)` 水位线提取未读增量事件批次 (对标 Buzz EventQueue::flush)
  *
  * 核心不变量：
@@ -884,9 +946,14 @@ function isSystemControlMessage(msg: RoomTranscriptEntry): boolean {
  * 2. 即使首轮多个 Agent 并发执行、各自回复以任意乱序落库，下一轮唤醒某 Agent 时，
  *    只要从其上次派发水位线 `lastWatermarkMessageId` 往后切片，并排除该 Agent 自己产出的消息 (`excludeAuthorId`)，
  *    就能 100% 精确捕获并发期间其他所有同事产出的回复，绝不漏读、绝不重复投递！
+ * 3. 若传入 `turnOutputs` 或 `triggerMessages`，会在切片前先按消息 ID 去重合并进快照，杜绝异步状态尚未落库导致漏读触发消息。
  */
 export function extractUnreadDeltaMessages(options: {
   messages: RoomTranscriptEntry[];
+  /** 本轮刚刚完成并触发下一跳的 Agent 回复列表（防御 React 异步批处理导致 messagesRef 尚未落盘的竞态） */
+  turnOutputs?: TurnAgentOutput[];
+  /** 显式触发本次派发的消息列表（如首轮用户刚发送的消息） */
+  triggerMessages?: RoomTranscriptEntry[];
   lastWatermarkMessageId?: string;
   /** 冷启动（尚无水位线）时的起始锚点消息 ID（包含该条消息），防止把频道内数天前已完结的历史讨论一股脑灌入新会话 */
   coldStartSinceMessageId?: string;
@@ -895,13 +962,16 @@ export function extractUnreadDeltaMessages(options: {
 }): DeltaBatchResult {
   const {
     messages,
+    turnOutputs,
+    triggerMessages,
     lastWatermarkMessageId,
     coldStartSinceMessageId,
     excludeAuthorId,
     maxBatchEvents = MAX_DELTA_BATCH_EVENTS,
   } = options;
 
-  const validMessages = (messages || []).filter((m) => !isSystemControlMessage(m));
+  const mergedMessages = mergeTurnOutputsIntoTranscript(messages, turnOutputs, triggerMessages);
+  const validMessages = mergedMessages.filter((m) => !isSystemControlMessage(m));
   const latestWatermarkMessageId =
     validMessages.length > 0 ? validMessages[validMessages.length - 1].id : lastWatermarkMessageId;
 
@@ -1006,20 +1076,33 @@ export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOpti
   const peerHandles = peers.map((p) => resolveEffectiveAgentHandle(p)).join(', ');
   const targetEffectiveHandle = resolveEffectiveAgentHandle(targetAgent);
 
-  const effectiveEntries: RoomTranscriptEntry[] =
-    deltaMessages.length > 0
-      ? deltaMessages
-      : triggerContent.trim()
-      ? [
-          {
-            id: 'trigger-inline',
+  const trimmedTrigger = triggerContent.trim();
+  const hasTriggerInDelta =
+    !trimmedTrigger || deltaMessages.some((m) => m.content.trim() === trimmedTrigger);
+
+  const fallbackTriggerEntry: RoomTranscriptEntry | null =
+    trimmedTrigger && !hasTriggerInDelta
+      ? hop > 1 && invokingAgents.length > 0
+        ? {
+            id: 'trigger-inline-agent',
+            authorId: invokingAgents[0].id,
+            authorName: invokingAgents.map((a) => a.name).join(' & '),
+            authorHandle: invokingAgents[0].handle,
+            content: trimmedTrigger,
+            isAgent: true,
+          }
+        : {
+            id: 'trigger-inline-user',
             authorId: 'user',
             authorName: 'User',
-            content: triggerContent,
+            content: trimmedTrigger,
             isAgent: false,
-          },
-        ]
-      : [];
+          }
+      : null;
+
+  const effectiveEntries: RoomTranscriptEntry[] = fallbackTriggerEntry
+    ? [...deltaMessages, fallbackTriggerEntry]
+    : deltaMessages;
 
   const deltaBody = effectiveEntries.map(formatDeltaEntryLine).join('\n\n');
   const deltaSection = wrapSemanticSection('delta-events', deltaBody, {

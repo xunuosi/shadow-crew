@@ -7,6 +7,7 @@ import {
   escapeSemanticText,
   wrapSemanticSection,
   extractUnreadDeltaMessages,
+  mergeTurnOutputsIntoTranscript,
   buildNormalModeTurnPrompt,
   aggregateTurnBarrierMentions,
   buildCascadePrompt,
@@ -426,6 +427,205 @@ console.log('\n4️⃣ 测试 Turn Barrier 跨并发回复 @mention 去重合并
   assert(
     silentResolution.nextTargets.length === 0,
     '当本轮回复不含任何新增 @mention 时，nextTargets 为空，触发“静默即成功”自然收敛'
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 5. 5-Hop 多轮接力防漏读竞态回归测试 (TC-2.2: 确保每跳 <delta-events> 必含触发消息)
+// ---------------------------------------------------------------------------
+console.log('\n5️⃣ 测试 5-Hop 级联接力防漏读竞态回归 (OpenClaw -> MyClaudeCode -> MyCodex -> GlmClaude -> OpenClaw)');
+{
+  const agentOpenClaw = createMockAgent({
+    id: 'agent-openclaw',
+    name: 'OpenClaw',
+    handle: '@openclaw',
+    role: '插件生态产品经理',
+    avatar: '🦞',
+    modelBadge: 'Claude',
+  });
+  const agentMyClaude = createMockAgent({
+    id: 'agent-myclaude',
+    name: 'MyClaudeCode',
+    handle: '@myclaudecode',
+    role: '系统架构师',
+    avatar: '🧠',
+    modelBadge: 'Claude',
+  });
+  const agentMyCodex = createMockAgent({
+    id: 'agent-mycodex',
+    name: 'MyCodex',
+    handle: '@mycodex',
+    role: '沙箱安全工程师',
+    avatar: '🛡️',
+    modelBadge: 'Codex',
+  });
+  const agentGlmClaude = createMockAgent({
+    id: 'agent-glmclaude',
+    name: 'GlmClaude',
+    handle: '@glmclaude',
+    role: '内核隔离专家',
+    avatar: '⚙️',
+    modelBadge: 'GLM',
+  });
+
+  const fiveHopTeam = [agentOpenClaw, agentMyClaude, agentMyCodex, agentGlmClaude];
+  const watermarks = new Map<string, string>();
+  const roomId = 'topic-tc-2-2';
+
+  const userInitMsg: RoomTranscriptEntry = {
+    id: 'topic-msg-init-1',
+    authorId: 'user-norris',
+    authorName: 'Norris_M5Pro',
+    content: '已发起议题【插件生态持久化与沙箱隔离边界】',
+    isAgent: false,
+  };
+  const userQuestionMsg: RoomTranscriptEntry = {
+    id: 'topic-msg-user-2',
+    authorId: 'user-norris',
+    authorName: 'Norris_M5Pro',
+    content: '@openclaw 请先梳理四层状态存储分类与接力审查点。',
+    isAgent: false,
+  };
+
+  // Hop 1: OpenClaw 被用户唤醒（模拟 React 尚未将 userQuestionMsg 刷入数组，依靠 triggerMessages 幂等补齐）
+  const hop1Batch = extractUnreadDeltaMessages({
+    messages: [userInitMsg],
+    triggerMessages: [userQuestionMsg],
+    lastWatermarkMessageId: watermarks.get(`${roomId}:${agentOpenClaw.id}`),
+    excludeAuthorId: agentOpenClaw.id,
+  });
+  if (hop1Batch.latestWatermarkMessageId) {
+    watermarks.set(`${roomId}:${agentOpenClaw.id}`, hop1Batch.latestWatermarkMessageId);
+  }
+  assert(
+    hop1Batch.deltaMessages.length === 2 &&
+      hop1Batch.deltaMessages[1].id === 'topic-msg-user-2' &&
+      watermarks.get(`${roomId}:${agentOpenClaw.id}`) === 'topic-msg-user-2',
+    'Hop 1 (OpenClaw): 完整收到 2 条用户消息，水位线锚定为 topic-msg-user-2'
+  );
+
+  const replyHop1 = {
+    agent: agentOpenClaw,
+    messageId: 'reply-hop-1-openclaw',
+    replyContent: '【第 1 轮 OpenClaw 正文：提出四层状态模型】请 @myclaudecode 审查架构层。',
+  };
+
+  // Hop 2: MyClaudeCode 被唤醒（模拟 React setMessages updater 尚未执行，messages 快照中仍只有 2 条用户消息）
+  const hop2Batch = extractUnreadDeltaMessages({
+    messages: [userInitMsg, userQuestionMsg],
+    turnOutputs: [replyHop1],
+    lastWatermarkMessageId: watermarks.get(`${roomId}:${agentMyClaude.id}`),
+    excludeAuthorId: agentMyClaude.id,
+  });
+  if (hop2Batch.latestWatermarkMessageId) {
+    watermarks.set(`${roomId}:${agentMyClaude.id}`, hop2Batch.latestWatermarkMessageId);
+  }
+  const hop2Prompt = buildNormalModeTurnPrompt({
+    targetAgent: agentMyClaude,
+    availableAgents: fiveHopTeam,
+    roomId,
+    isWarmSession: hop2Batch.isWarmSession,
+    deltaMessages: hop2Batch.deltaMessages,
+    triggerContent: replyHop1.replyContent,
+    hop: 2,
+    maxHops: 12,
+    invokingAgents: [agentOpenClaw],
+  });
+  assert(
+    hop2Batch.deltaMessages.length === 3 &&
+      hop2Batch.deltaMessages[2].id === 'reply-hop-1-openclaw' &&
+      hop2Prompt.includes('【第 1 轮 OpenClaw 正文：提出四层状态模型】') &&
+      watermarks.get(`${roomId}:${agentMyClaude.id}`) === 'reply-hop-1-openclaw',
+    'Hop 2 (MyClaudeCode): <delta-events> 包含 2 条用户消息 + 触发它的【第 1 轮 OpenClaw 正文】，绝不漏帧'
+  );
+
+  // 此时 Hop 1 已落库，但 Hop 2 刚产出 replyHop2 尚未刷入 React 快照
+  const transcriptAfterHop1 = mergeTurnOutputsIntoTranscript(
+    [userInitMsg, userQuestionMsg],
+    [replyHop1]
+  );
+  const replyHop2 = {
+    agent: agentMyClaude,
+    messageId: 'reply-hop-2-myclaude',
+    replyContent: '【第 2 轮 MyClaudeCode 正文：补充三层传播机制】请 @mycodex 审查边界。',
+  };
+
+  // Hop 3: MyCodex 被唤醒
+  const hop3Batch = extractUnreadDeltaMessages({
+    messages: transcriptAfterHop1,
+    turnOutputs: [replyHop2],
+    lastWatermarkMessageId: watermarks.get(`${roomId}:${agentMyCodex.id}`),
+    excludeAuthorId: agentMyCodex.id,
+  });
+  if (hop3Batch.latestWatermarkMessageId) {
+    watermarks.set(`${roomId}:${agentMyCodex.id}`, hop3Batch.latestWatermarkMessageId);
+  }
+  assert(
+    hop3Batch.deltaMessages.length === 4 &&
+      hop3Batch.deltaMessages[2].id === 'reply-hop-1-openclaw' &&
+      hop3Batch.deltaMessages[3].id === 'reply-hop-2-myclaude',
+    'Hop 3 (MyCodex): <delta-events> 包含用户×2 + 第 1 轮 + 触发它的【第 2 轮 MyClaudeCode 正文】'
+  );
+
+  const transcriptAfterHop2 = mergeTurnOutputsIntoTranscript(transcriptAfterHop1, [replyHop2]);
+  const replyHop3 = {
+    agent: agentMyCodex,
+    messageId: 'reply-hop-3-mycodex',
+    replyContent: '【第 3 轮 MyCodex 正文：六类存储矩阵】请 @glmclaude 评估内核层。',
+  };
+
+  // Hop 4: GlmClaude 被唤醒
+  const hop4Batch = extractUnreadDeltaMessages({
+    messages: transcriptAfterHop2,
+    turnOutputs: [replyHop3],
+    lastWatermarkMessageId: watermarks.get(`${roomId}:${agentGlmClaude.id}`),
+    excludeAuthorId: agentGlmClaude.id,
+  });
+  if (hop4Batch.latestWatermarkMessageId) {
+    watermarks.set(`${roomId}:${agentGlmClaude.id}`, hop4Batch.latestWatermarkMessageId);
+  }
+  assert(
+    hop4Batch.deltaMessages.length === 5 &&
+      hop4Batch.deltaMessages[4].id === 'reply-hop-3-mycodex',
+    'Hop 4 (GlmClaude): <delta-events> 包含用户×2 + 第 1、2 轮 + 触发它的【第 3 轮 MyCodex 正文】'
+  );
+
+  const transcriptAfterHop3 = mergeTurnOutputsIntoTranscript(transcriptAfterHop2, [replyHop3]);
+  const replyHop4 = {
+    agent: agentGlmClaude,
+    messageId: 'reply-hop-4-glmclaude',
+    replyContent: '【第 4 轮 GlmClaude 正文：内核层批评与四问判据】请 @openclaw 最终回应。',
+  };
+
+  // Hop 5: OpenClaw 再次被唤醒（热会话 Warm Session，上次水位线为 topic-msg-user-2）
+  const hop5Batch = extractUnreadDeltaMessages({
+    messages: transcriptAfterHop3,
+    turnOutputs: [replyHop4],
+    lastWatermarkMessageId: watermarks.get(`${roomId}:${agentOpenClaw.id}`),
+    excludeAuthorId: agentOpenClaw.id,
+  });
+  if (hop5Batch.latestWatermarkMessageId) {
+    watermarks.set(`${roomId}:${agentOpenClaw.id}`, hop5Batch.latestWatermarkMessageId);
+  }
+  const hop5Prompt = buildNormalModeTurnPrompt({
+    targetAgent: agentOpenClaw,
+    availableAgents: fiveHopTeam,
+    roomId,
+    isWarmSession: hop5Batch.isWarmSession,
+    deltaMessages: hop5Batch.deltaMessages,
+    triggerContent: replyHop4.replyContent,
+    hop: 5,
+    maxHops: 12,
+    invokingAgents: [agentGlmClaude],
+  });
+  assert(
+    hop5Batch.isWarmSession === true &&
+      hop5Batch.deltaMessages.length === 3 &&
+      hop5Batch.deltaMessages[0].id === 'reply-hop-2-myclaude' &&
+      hop5Batch.deltaMessages[1].id === 'reply-hop-3-mycodex' &&
+      hop5Batch.deltaMessages[2].id === 'reply-hop-4-glmclaude' &&
+      hop5Prompt.includes('【第 4 轮 GlmClaude 正文：内核层批评与四问判据】'),
+    'Hop 5 (OpenClaw 热会话): <delta-events> 完整包含第 2、3 轮及触发它的【第 4 轮 GlmClaude 正文】（同时自动排除第 1 轮自身发言）'
   );
 }
 
