@@ -88,7 +88,7 @@ import {
   isTauriEnvironment,
 } from './services/dbClient';
 import { DEFAULT_MODEL_NAME } from './config/models';
-import { resolveAgentModelConfig, setGlobalModelConfig } from './services/llmService';
+import { resolveAgentModelConfig, setGlobalModelConfig, clearLlmSessionHistory } from './services/llmService';
 import {
   CollaborationCascade,
   parseAgentMentions,
@@ -100,6 +100,11 @@ import {
   buildCascadePrompt,
   buildTopicPrompt,
   buildExecutionPrompt,
+  extractUnreadDeltaMessages,
+  buildNormalModeTurnPrompt,
+  aggregateTurnBarrierMentions,
+  TurnAgentOutput,
+  AggregatedMentionTarget,
   generateDeterministicMcdaPayload,
   compileMinorityReport,
   extractOrCompileMinorityReport,
@@ -651,6 +656,9 @@ export default function App() {
   // 对标 Buzz: 记录每个会话/房间与 Agent 之间的立足上下文 (Standing Context) 交付状态
   // 保证整套平台公约与团队花名册只在 Session 建立时/第 1 轮传递，后续日常交互均为纯净指令
   const deliveredStandingContextRef = useRef<Set<string>>(new Set());
+  // 对标 Buzz queue.rs: 记录每个 (roomId:agentId) 会话已投递的最新消息水位线 ID (Watermark)
+  // 热会话后续唤醒时仅冲刷水位线之后的未读增量事件批次 (<delta-events>)，避免重复复读历史背景
+  const sessionWatermarksRef = useRef<Map<string, string>>(new Map());
   // 记录正在执行中的三元博弈阶段交接，杜绝并发重入与重复下发 Prompt
   const inFlightHandoverRef = useRef<Set<string>>(new Set());
   // 记录各阶段 Self-Refine 重试次数 (硬门禁: 上限为 STAGE_CONTRACT_MAX_RETRIES)
@@ -978,12 +986,18 @@ export default function App() {
       const payload = event?.payload;
       if (payload && payload.agent_id) {
         if (payload.status === 'stopped') {
-          // Agent 停止或重启后，清空该 Agent 在各房间的交付缓存，确保新拉起后重新注入 session/new
+          // Agent 停止或重启后，清空该 Agent 在各房间的交付缓存与消息水位线，确保新拉起后重新注入 session/new
           deliveredStandingContextRef.current.forEach((key) => {
             if (key.endsWith(`:${payload.agent_id}`)) {
               deliveredStandingContextRef.current.delete(key);
             }
           });
+          Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
+            if (key.endsWith(`:${payload.agent_id}`)) {
+              sessionWatermarksRef.current.delete(key);
+            }
+          });
+          clearLlmSessionHistory(payload.agent_id);
         }
         setAgents((prev) =>
           prev.map((a) => {
@@ -1802,20 +1816,46 @@ export default function App() {
     setEditingTopic(null);
   };
 
-  // 多智能体跨 Agent 互相 @ 与自主级联调度器 (Cascading Agent Mention Dispatcher)
+  // 多智能体跨 Agent 互相 @ 与自主级联调度器 (Turn Barrier + Mention Deduplication + Watermark Delta Dispatcher)
   const dispatchCascadingAgentResponse = async (options: {
     cascadeId: string;
-    invokingAgent: Agent;
+    invokingAgent?: Agent;
     invokingMessageId?: string;
-    replyContent: string;
+    replyContent?: string;
+    turnOutputs?: TurnAgentOutput[];
     roomId: string;
     isTopic: boolean;
     topicId?: string;
     queuedCollaborators?: Agent[];
   }) => {
-    const { cascadeId, invokingAgent, invokingMessageId, replyContent, roomId, isTopic, topicId, queuedCollaborators = [] } = options;
+    const {
+      cascadeId,
+      invokingAgent,
+      invokingMessageId,
+      replyContent,
+      turnOutputs,
+      roomId,
+      isTopic,
+      topicId,
+      queuedCollaborators = [],
+    } = options;
     const cascade = activeCascadesRef.current[cascadeId];
     if (!cascade || cascade.isAborted) return;
+
+    const effectiveTurnOutputs: TurnAgentOutput[] =
+      turnOutputs && turnOutputs.length > 0
+        ? turnOutputs
+        : invokingAgent
+        ? [
+            {
+              agent: invokingAgent,
+              messageId: invokingMessageId || cascade.rootMessageId,
+              replyContent: replyContent || '',
+            },
+          ]
+        : [];
+
+    if (effectiveTurnOutputs.length === 0) return;
 
     // 获取当前频道/议题准入的候选 Agent 列表 (严格限制在当前频道或议题范围内)
     const currentChannelAgentIds = Array.from(
@@ -1826,74 +1866,76 @@ export default function App() {
       ])
     );
     const channelAgents = currentChannelAgentIds
-      .map((id) => agents.find((a) => a.id === id))
+      .map((id) => agentsRef.current.find((a) => a.id === id))
       .filter((a): a is Agent => Boolean(a));
-    
-    const topicAgents = (isTopic && topicId)
-      ? ((activeTopicData?.participatingAgentIds || [])
-          .map((id) => agents.find((a) => a.id === id))
-          .filter((a): a is Agent => Boolean(a))
-          .filter((a) => channelAgents.some((ca) => ca.id === a.id)))
-      : [];
 
-    const candidateAgents = topicAgents.length > 0
-      ? topicAgents
-      : (activeThread.type === 'dm'
-          ? agents.filter((a) => a.id === activeThread.authorId || activeThread.activeAgentIds?.includes(a.id))
-          : channelAgents);
+    const currentTopicObj = isTopic && topicId ? getTopicData(topicId) || activeTopicData : activeTopicData;
+    const topicAgents =
+      isTopic && topicId
+        ? (currentTopicObj?.participatingAgentIds || [])
+            .map((id) => agentsRef.current.find((a) => a.id === id))
+            .filter((a): a is Agent => Boolean(a))
+            .filter((a) => channelAgents.some((ca) => ca.id === a.id))
+        : [];
+
+    const candidateAgents =
+      topicAgents.length > 0
+        ? topicAgents
+        : activeThread.type === 'dm'
+        ? agentsRef.current.filter(
+            (a) => a.id === activeThread.authorId || activeThread.activeAgentIds?.includes(a.id)
+          )
+        : channelAgents;
 
     const topicTargetChannel = isTopic
-      ? (channels.find((c) => c.id === activeTopicData?.channelId) || activeChannel)
+      ? channels.find((c) => c.id === currentTopicObj?.channelId) || activeChannel
       : activeChannel;
     const targetChannelId = isTopic
-      ? (topicTargetChannel?.id || activeChannel?.id)
-      : (activeThread?.type === 'dm' ? undefined : activeChannel?.id);
+      ? topicTargetChannel?.id || activeChannel?.id
+      : activeThread?.type === 'dm'
+      ? undefined
+      : activeChannel?.id;
 
-    // 1. 严格仅从当前频道准入的候选成员中解析显式 @ 的目标 (绝不越界回退全工作区)
-    let targetAgents = parseAgentMentions(replyContent, candidateAgents, invokingAgent.id);
+    // 1. 轮次同步屏障 (Turn Barrier) 汇总解析本轮所有并发发言中的 @mention 并去重合并
+    const barrierResolution = aggregateTurnBarrierMentions({
+      turnOutputs: effectiveTurnOutputs,
+      candidateAgents,
+      allWorkspaceAgents: agentsRef.current,
+      isDm: activeThread.type === 'dm',
+      queuedCollaborators,
+    });
 
-    // 检查是否存在对未受邀外部 Agent 的越界 @ 点名
-    if (activeThread.type !== 'dm') {
-      const isReplyAll = isAllMention(replyContent);
-      const uninvitedMentions = isReplyAll
-        ? []
-        : parseAgentMentions(replyContent, agents, invokingAgent.id)
-            .filter((a) => !candidateAgents.some((ca) => ca.id === a.id));
-      if (uninvitedMentions.length > 0) {
-        const guardNotice: Message = {
-          id: `channel-guard-${Date.now()}`,
-          threadId: roomId,
-          channelId: targetChannelId,
-          authorId: 'system',
-          authorName: 'Shadow Crew 频道隔离守护',
-          authorHandle: '@channel-guard',
-          authorAvatar: '🔒',
-          isAgent: true,
-          agentBadge: 'Channel Guard',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `🔒 **频道准入拦截**：${invokingAgent.name} 尝试点名了 ${uninvitedMentions.map((a) => `@${a.name} (${a.handle})`).join('、')}，但该 Agent **未加入当前频道**。\n\n根据受邀准入原则，未受邀成员无法跨频道接收协同调度。如需其参与推演，请点击右上角「成员管理」邀请入驻。`,
-        };
-        setMessages((prev) => {
-          const targetList = prev[roomId] || [];
-          return {
-            ...prev,
-            [roomId]: [...targetList, guardNotice],
-          };
-        });
-      }
+    // 渲染未受邀外部 Agent 的越界点名拦截提示
+    if (barrierResolution.uninvitedMentions.length > 0) {
+      const guardMessages: Message[] = barrierResolution.uninvitedMentions.map((u, idx) => ({
+        id: `channel-guard-${Date.now()}-${idx}`,
+        threadId: roomId,
+        channelId: targetChannelId,
+        authorId: 'system',
+        authorName: 'Shadow Crew 频道隔离守护',
+        authorHandle: '@channel-guard',
+        authorAvatar: '🔒',
+        isAgent: true,
+        agentBadge: 'Channel Guard',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: `🔒 **频道准入拦截**：${u.invokingAgent.name} 尝试点名了 ${u.uninvitedAgents.map((a) => `@${a.name} (${a.handle})`).join('、')}，但该 Agent **未加入当前频道**。\n\n根据受邀准入原则，未受邀成员无法跨频道接收协同调度。如需其参与推演，请点击右上角「成员管理」邀请入驻。`,
+      }));
+      setMessages((prev) => {
+        const nextList = [...(prev[roomId] || []), ...guardMessages];
+        const next = { ...prev, [roomId]: nextList };
+        messagesRef.current = next;
+        return next;
+      });
     }
 
-    // 2. 若正文中未显式 @，但存在用户最初批量 @ 进来的排队协作者
-    let remainingQueued: Agent[] = [];
-    let isQueuedByUserInput = false;
-    if (targetAgents.length === 0 && queuedCollaborators.length > 0) {
-      targetAgents = [queuedCollaborators[0]];
-      remainingQueued = queuedCollaborators.slice(1);
-      isQueuedByUserInput = true;
-    }
+    const hadExplicitMentions = effectiveTurnOutputs.some(
+      (o) => parseAgentMentions(o.replyContent, candidateAgents, o.agent.id).length > 0
+    );
+    const remainingQueued =
+      !hadExplicitMentions && queuedCollaborators.length > 0 ? queuedCollaborators.slice(1) : queuedCollaborators;
 
-    if (targetAgents.length === 0) {
-      // 协同链自然收敛结束
+    if (barrierResolution.nextTargets.length === 0) {
+      // 协同链自然收敛结束 (Silence as Success)
       setActiveCascades((prev) => {
         const next = { ...prev };
         delete next[cascadeId];
@@ -1902,34 +1944,78 @@ export default function App() {
       return;
     }
 
-    const targetAgent = targetAgents[0];
+    // 2. 筛选在线且通过 LoopGuard 检查的目标 Agent
+    const allowedTargets: AggregatedMentionTarget[] = [];
 
-    // 严格检查通信状态：若未手动点击 Start 开启通信（或握手失败），则进行拦截并引导，尝试继续唤醒后续已连接的协作者
-    if (isAgentOffline(targetAgent)) {
-      const offlineNotice: Message = {
-        id: `msg-offline-collab-${Date.now()}`,
-        threadId: roomId,
-        channelId: targetChannelId,
-        authorId: 'system',
-        authorName: 'Shadow Crew 通信管控',
-        authorHandle: '@connection-guard',
-        authorAvatar: '🔌',
-        isAgent: true,
-        agentBadge: 'Communication Required',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: `🔌 **Agent 通信尚未开启**：协同目标 **${targetAgent.name}** 当前处于离线/未连接状态，无法接力推演。需先在左侧控制面板点击【Start】开启通信。`,
-      };
-      setMessages((prev) => ({
-        ...prev,
-        [roomId]: [...(prev[roomId] || []), offlineNotice],
-      }));
+    for (const item of barrierResolution.nextTargets) {
+      const targetAgent = item.targetAgent;
 
-      if (remainingQueued.length > 0) {
+      if (isAgentOffline(targetAgent)) {
+        const offlineNotice: Message = {
+          id: `msg-offline-collab-${Date.now()}-${targetAgent.id}`,
+          threadId: roomId,
+          channelId: targetChannelId,
+          authorId: 'system',
+          authorName: 'Shadow Crew 通信管控',
+          authorHandle: '@connection-guard',
+          authorAvatar: '🔌',
+          isAgent: true,
+          agentBadge: 'Communication Required',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `🔌 **Agent 通信尚未开启**：协同目标 **${targetAgent.name}** 当前处于离线/未连接状态，无法接力推演。需先在左侧控制面板点击【Start】开启通信。`,
+        };
+        setMessages((prev) => {
+          const next = { ...prev, [roomId]: [...(prev[roomId] || []), offlineNotice] };
+          messagesRef.current = next;
+          return next;
+        });
+        continue;
+      }
+
+      const loopCheck = checkLoopGuard(cascade, targetAgent.id);
+      if (!loopCheck.allowed) {
+        console.log(`[CollaborationCascade] Cascade ${cascadeId} target ${targetAgent.name} terminated:`, loopCheck.reason);
+        if (!loopCheck.isSilentEnd) {
+          const breakMsg: Message = {
+            id: `circuit-break-${Date.now()}-${targetAgent.id}`,
+            threadId: roomId,
+            channelId: targetChannelId,
+            authorId: 'system',
+            authorName: 'Shadow Crew 协同管控',
+            authorHandle: '@loop-guard',
+            authorAvatar: '🛡️',
+            isAgent: true,
+            agentBadge: 'Circuit Breaker',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `⚡ **多智能体协同已停止**：${loopCheck.reason}`,
+            collaborationInfo: {
+              cascadeId,
+              hop: cascade.depth,
+              maxHops: cascade.maxDepth,
+              rootMessageId: cascade.rootMessageId,
+              sourceMessageId: item.sourceMessageIds[0] || cascade.rootMessageId,
+              isCircuitBroken: true,
+              circuitBreakReason: loopCheck.reason,
+            },
+          };
+          setMessages((prev) => {
+            const next = { ...prev, [roomId]: [...(prev[roomId] || []), breakMsg] };
+            messagesRef.current = next;
+            return next;
+          });
+        }
+        continue;
+      }
+
+      allowedTargets.push(item);
+    }
+
+    if (allowedTargets.length === 0) {
+      if (remainingQueued.length > 0 && remainingQueued.length < queuedCollaborators.length) {
+        const fallbackOutput = effectiveTurnOutputs[effectiveTurnOutputs.length - 1];
         dispatchCascadingAgentResponse({
           cascadeId,
-          invokingAgent,
-          invokingMessageId,
-          replyContent,
+          turnOutputs: [fallbackOutput],
           roomId,
           isTopic,
           topicId,
@@ -1945,254 +2031,268 @@ export default function App() {
       return;
     }
 
-    const loopCheck = checkLoopGuard(cascade, targetAgent.id);
-
-    if (!loopCheck.allowed) {
-      console.log(`[CollaborationCascade] Cascade ${cascadeId} terminated:`, loopCheck.reason);
-
-      // 对标 Buzz 静默收敛哲学：
-      // 常规轮次自然收敛兜底时，静默终止并清理级联状态，严禁向消息流注入打断人类思路的生硬熔断卡片。
-      // 仅在非静默场景（如人工显式终止）时才输出系统提示。
-      if (!loopCheck.isSilentEnd) {
-        const breakMsg: Message = {
-          id: `circuit-break-${Date.now()}`,
-          threadId: roomId,
-          channelId: targetChannelId,
-          authorId: 'system',
-          authorName: 'Shadow Crew 协同管控',
-          authorHandle: '@loop-guard',
-          authorAvatar: '🛡️',
-          isAgent: true,
-          agentBadge: 'Circuit Breaker',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `⚡ **多智能体协同已停止**：${loopCheck.reason}`,
-          collaborationInfo: {
-            cascadeId,
-            hop: cascade.depth,
-            maxHops: cascade.maxDepth,
-            rootMessageId: cascade.rootMessageId,
-            sourceMessageId: invokingMessageId || cascade.rootMessageId,
-            isCircuitBroken: true,
-            circuitBreakReason: loopCheck.reason,
-          },
-        };
-
-        setMessages((prev) => {
-          const targetList = prev[roomId] || [];
-          return {
-            ...prev,
-            [roomId]: [...targetList, breakMsg],
-          };
-        });
-      }
-
-      setActiveCascades((prev) => {
-        const next = { ...prev };
-        delete next[cascadeId];
-        return next;
-      });
-      return;
+    // 3. 更新 Cascade 状态 (推进 Hop 深度并记录本轮所有去重后的被唤醒 Agent)
+    const nextDepth = cascade.depth + 1;
+    const nextCallCounts = { ...cascade.agentCallCounts };
+    for (const item of allowedTargets) {
+      nextCallCounts[item.targetAgent.id] = (nextCallCounts[item.targetAgent.id] || 0) + 1;
     }
 
-    // 更新 Cascade 状态
-    const nextDepth = cascade.depth + 1;
     const updatedCascade: CollaborationCascade = {
       ...cascade,
       depth: nextDepth,
-      visitedAgentIds: [...cascade.visitedAgentIds, targetAgent.id],
-      agentCallCounts: {
-        ...cascade.agentCallCounts,
-        [targetAgent.id]: (cascade.agentCallCounts[targetAgent.id] || 0) + 1,
-      },
+      visitedAgentIds: [...cascade.visitedAgentIds, ...allowedTargets.map((t) => t.targetAgent.id)],
+      agentCallCounts: nextCallCounts,
     };
 
+    activeCascadesRef.current = {
+      ...activeCascadesRef.current,
+      [cascadeId]: updatedCascade,
+    };
     setActiveCascades((prev) => ({
       ...prev,
       [cascadeId]: updatedCascade,
     }));
 
-    const topicContext: TopicPromptContext | undefined = isTopic && activeTopicData
-      ? {
-          topicId: activeTopicData.id,
-          title: activeTopicData.title,
-          description: activeTopicData.description,
-          channelName: topicTargetChannel?.name || 'chat',
-          status: activeTopicData.status,
-          discussionMode: activeTopicData.discussionMode,
-          gameRoles: activeTopicData.gameRoles,
-          participatingAgents: candidateAgents,
-        }
-      : undefined;
+    const topicContext: TopicPromptContext | undefined =
+      isTopic && currentTopicObj
+        ? {
+            topicId: currentTopicObj.id,
+            title: currentTopicObj.title,
+            description: currentTopicObj.description,
+            channelName: topicTargetChannel?.name || 'chat',
+            status: currentTopicObj.status,
+            discussionMode: currentTopicObj.discussionMode,
+            gameRoles: currentTopicObj.gameRoles,
+            participatingAgents: candidateAgents,
+          }
+        : undefined;
 
-    // 构造具有前序方案与明确协作诉求的上下文提示词 (严格使用当前频道的候选成员花名册)
-    const cascadePrompt = buildCascadePrompt({
-      targetAgent,
-      invokingAgent,
-      originalUserPrompt: cascade.originalPrompt,
-      invokingAgentReply: replyContent,
-      cascade: updatedCascade,
-      availableAgents: candidateAgents,
-      topic: topicContext,
-      isQueuedByUserInput,
-    });
-
-    const execKey = isTopic && topicId ? `${topicId}:${targetAgent.id}` : `${roomId}:${targetAgent.id}`;
     setIsGenerating(true);
-    setActiveExecutions((prev) => ({
-      ...prev,
-      [execKey]: {
+    const newExecs: Record<string, ActiveAgentExecution> = {};
+    allowedTargets.forEach((item, idx) => {
+      const targetAgent = item.targetAgent;
+      const execKey = isTopic && topicId ? `${topicId}:${targetAgent.id}` : `${roomId}:${targetAgent.id}`;
+      const invokerNames = item.invokingAgents.map((a) => `@${a.name}`).join('、');
+      newExecs[execKey] = {
         agentId: targetAgent.id,
         agentName: targetAgent.name,
         agentAvatar: targetAgent.avatar,
         threadId: roomId,
         topicId: isTopic ? topicId : undefined,
         status: 'thinking',
-        currentActionDetail: isQueuedByUserInput
-          ? `正在基于议题陈述独立观点 (Hop ${nextDepth}/${cascade.maxDepth})...`
-          : `正在响应 @${invokingAgent.name} 的协同研讨 (Hop ${nextDepth}/${cascade.maxDepth})...`,
-        startedAt: Date.now(),
+        currentActionDetail: `正在响应 ${invokerNames} 的协同研讨 (Hop ${nextDepth}/${cascade.maxDepth})...`,
+        startedAt: Date.now() + idx * 50,
         cascadeHop: nextDepth,
-        invokingAgentName: invokingAgent.name,
-      },
+        invokingAgentName: item.invokingAgents.map((a) => a.name).join(' & '),
+      };
+    });
+
+    setActiveExecutions((prev) => ({
+      ...prev,
+      ...newExecs,
     }));
 
-    // 维持 Agent 在线基线状态 ('running')，具体推演任务由 activeExecutions 独立追踪，杜绝状态跨会话污染
-    setAgents((prev) => prev.map((a) => (a.id === targetAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a)));
+    setAgents((prev) =>
+      prev.map((a) =>
+        allowedTargets.some((t) => t.targetAgent.id === a.id) && a.status !== 'running'
+          ? { ...a, status: 'running' }
+          : a
+      )
+    );
 
-    const sessionKey = `${roomId}:${targetAgent.id}`;
-    const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
-    const systemPrompt = buildCompositeSystemPrompt({
-      agent: targetAgent,
-      availableAgents: candidateAgents,
-      includeRoster: !isStandingContextDelivered,
-    });
-    deliveredStandingContextRef.current.add(sessionKey);
+    // 4. 并行派发本跳所有去重后的目标 Agent，并在全部完成后进入下一道 Turn Barrier
+    const hopOutputs: TurnAgentOutput[] = [];
 
-    try {
-      const acpResp = await sendPromptToAcpAgent({
-        agent: targetAgent,
-        roomId,
-        prompt: cascadePrompt,
-        projectId: activeProjectId,
-        channelId: targetChannelId,
-        systemPrompt,
-      });
+    await Promise.allSettled(
+      allowedTargets.map(async (item) => {
+        const { targetAgent, invokingAgents, sourceMessageIds } = item;
+        const primaryInvoker = invokingAgents[0] || effectiveTurnOutputs[0].agent;
+        const execKey = isTopic && topicId ? `${topicId}:${targetAgent.id}` : `${roomId}:${targetAgent.id}`;
+        const sessionKey = `${roomId}:${targetAgent.id}`;
 
-      setActiveExecutions((prev) => {
-        const next = { ...prev };
-        delete next[execKey];
-        if (Object.keys(next).length === 0) setIsGenerating(false);
-        return next;
-      });
+        const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
+        const systemPrompt = buildCompositeSystemPrompt({
+          agent: targetAgent,
+          availableAgents: candidateAgents,
+          includeRoster: !isStandingContextDelivered,
+        });
+        deliveredStandingContextRef.current.add(sessionKey);
 
-      const nextReply: Message = {
-        id: `msg-collab-${Date.now()}-${targetAgent.id}`,
-        threadId: roomId,
-        channelId: targetChannelId,
-        authorId: targetAgent.id,
-        authorName: targetAgent.name,
-        authorHandle: targetAgent.handle,
-        authorAvatar: targetAgent.avatar,
-        isAgent: true,
-        agentBadge: `${targetAgent.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : targetAgent.isRemote ? 'ACP Remote' : 'ACP'}`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: acpResp.textResponse,
-        thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已基于协同上下文完成审查与规约对齐'),
-        diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
-        cartridgeCitation: acpResp.cartridgeCitation,
-        collaborationInfo: {
-          cascadeId,
+        // 对标 Buzz queue.rs: 基于该 Agent 在当前会话的水位线提取未读增量事件批次 (<delta-events>)
+        const lastWatermark = sessionWatermarksRef.current.get(sessionKey);
+        const roomTranscript = messagesRef.current[roomId] || [];
+        const deltaBatch = extractUnreadDeltaMessages({
+          messages: roomTranscript,
+          lastWatermarkMessageId: lastWatermark,
+          excludeAuthorId: targetAgent.id,
+        });
+        if (deltaBatch.latestWatermarkMessageId) {
+          sessionWatermarksRef.current.set(sessionKey, deltaBatch.latestWatermarkMessageId);
+        }
+
+        const cascadePrompt = buildNormalModeTurnPrompt({
+          targetAgent,
+          availableAgents: candidateAgents,
+          roomId,
+          isWarmSession: deltaBatch.isWarmSession,
+          deltaMessages: deltaBatch.deltaMessages,
           hop: nextDepth,
           maxHops: cascade.maxDepth,
-          rootMessageId: cascade.rootMessageId,
-          sourceMessageId: invokingMessageId || cascade.rootMessageId,
-          invokedByAgentId: invokingAgent.id,
-          invokedByAgentName: invokingAgent.name,
-          invokedByAgentHandle: invokingAgent.handle,
-        },
-      };
+          invokingAgents,
+          topic: topicContext,
+          isDm: false,
+        });
 
-      if (isTopic && topicId) {
-        setMessages((prev) => {
-          const nextTopicMsgs = [...(prev[topicId] || []), nextReply];
-          
-          let parentThreadId: string | null = null;
-          for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
-            if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
-              parentThreadId = tId;
-              break;
-            }
+        try {
+          const acpResp = await sendPromptToAcpAgent({
+            agent: targetAgent,
+            roomId,
+            prompt: cascadePrompt,
+            projectId: activeProjectId,
+            channelId: targetChannelId,
+            systemPrompt,
+          });
+
+          setActiveExecutions((prev) => {
+            const next = { ...prev };
+            delete next[execKey];
+            if (Object.keys(next).length === 0) setIsGenerating(false);
+            return next;
+          });
+
+          const nextReply: Message = {
+            id: `msg-collab-${Date.now()}-${targetAgent.id}`,
+            threadId: roomId,
+            channelId: targetChannelId,
+            authorId: targetAgent.id,
+            authorName: targetAgent.name,
+            authorHandle: targetAgent.handle,
+            authorAvatar: targetAgent.avatar,
+            isAgent: true,
+            agentBadge: `${targetAgent.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : targetAgent.isRemote ? 'ACP Remote' : 'ACP'}`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: acpResp.textResponse,
+            thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已基于增量上下文批次完成审查与规约对齐'),
+            diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
+            cartridgeCitation: acpResp.cartridgeCitation,
+            collaborationInfo: {
+              cascadeId,
+              hop: nextDepth,
+              maxHops: cascade.maxDepth,
+              rootMessageId: cascade.rootMessageId,
+              sourceMessageId: sourceMessageIds[0] || cascade.rootMessageId,
+              invokedByAgentId: primaryInvoker.id,
+              invokedByAgentName: invokingAgents.map((a) => a.name).join(' & '),
+              invokedByAgentHandle: primaryInvoker.handle,
+            },
+          };
+
+          if (isTopic && topicId) {
+            setMessages((prev) => {
+              const nextTopicMsgs = [...(prev[topicId] || []), nextReply];
+
+              let parentThreadId: string | null = null;
+              for (const [tId, msgList] of Object.entries(prev) as [string, Message[]][]) {
+                if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+                  parentThreadId = tId;
+                  break;
+                }
+              }
+
+              const updatedParentMsgs = parentThreadId
+                ? (prev[parentThreadId] || []).map((m) => {
+                    if (m.type === 'topic' && m.topicData?.id === topicId) {
+                      return {
+                        ...m,
+                        topicData: {
+                          ...m.topicData,
+                          repliesCount: nextTopicMsgs.length,
+                          latestReplyPreview: nextReply.content.slice(0, 60),
+                        },
+                      };
+                    }
+                    return m;
+                  })
+                : [];
+
+              const next = {
+                ...prev,
+                [topicId]: nextTopicMsgs,
+                ...(parentThreadId ? { [parentThreadId]: updatedParentMsgs } : {}),
+              };
+              messagesRef.current = next;
+              return next;
+            });
+          } else {
+            setMessages((prev) => {
+              const next = {
+                ...prev,
+                [roomId]: [...(prev[roomId] || []), nextReply],
+              };
+              messagesRef.current = next;
+              return next;
+            });
           }
 
-          const updatedParentMsgs = parentThreadId
-            ? (prev[parentThreadId] || []).map((m) => {
-                if (m.type === 'topic' && m.topicData?.id === topicId) {
-                  return {
-                    ...m,
-                    topicData: {
-                      ...m.topicData,
-                      repliesCount: nextTopicMsgs.length,
-                      latestReplyPreview: nextReply.content.slice(0, 60),
-                    },
-                  };
-                }
-                return m;
-              })
-            : [];
+          setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'running' } : a)));
+          syncRunningAgentsWithBackend();
 
-          return {
-            ...prev,
-            [topicId]: nextTopicMsgs,
-            ...(parentThreadId ? { [parentThreadId]: updatedParentMsgs } : {}),
+          hopOutputs.push({
+            agent: targetAgent,
+            messageId: nextReply.id,
+            replyContent: acpResp.textResponse,
+          });
+        } catch (err) {
+          setActiveExecutions((prev) => {
+            const next = { ...prev };
+            delete next[execKey];
+            if (Object.keys(next).length === 0) setIsGenerating(false);
+            return next;
+          });
+
+          console.error('Cascading agent dispatch failed:', err);
+          const errorReply: Message = {
+            id: `msg-collab-err-${Date.now()}-${targetAgent.id}`,
+            threadId: roomId,
+            channelId: targetChannelId,
+            authorId: targetAgent.id,
+            authorName: targetAgent.name,
+            authorHandle: targetAgent.handle,
+            authorAvatar: targetAgent.avatar,
+            isAgent: true,
+            agentBadge: 'ACP Error',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `⚠️ **协同接力异常**：${err instanceof Error ? err.message : String(err)}`,
           };
-        });
-      } else {
-        setMessages((prev) => ({
-          ...prev,
-          [roomId]: [...(prev[roomId] || []), nextReply],
-        }));
-      }
+          setMessages((prev) => {
+            const next = {
+              ...prev,
+              [roomId]: [...(prev[roomId] || []), errorReply],
+            };
+            messagesRef.current = next;
+            return next;
+          });
+        }
+      })
+    );
 
-      setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'running' } : a)));
-      syncRunningAgentsWithBackend();
-
-      // 递归触发下一跳（同时继续携带可能剩余的未响应协作者）
-      dispatchCascadingAgentResponse({
+    // 5. 本跳同步屏障 (Turn Barrier) 汇合完成后，进入下一跳评估
+    if (hopOutputs.length > 0) {
+      await dispatchCascadingAgentResponse({
         cascadeId,
-        invokingAgent: targetAgent,
-        invokingMessageId: nextReply.id,
-        replyContent: acpResp.textResponse,
+        turnOutputs: hopOutputs,
         roomId,
         isTopic,
         topicId,
         queuedCollaborators: remainingQueued,
       });
-    } catch (err) {
-      setActiveExecutions((prev) => {
+    } else {
+      setActiveCascades((prev) => {
         const next = { ...prev };
-        delete next[execKey];
-        if (Object.keys(next).length === 0) setIsGenerating(false);
+        delete next[cascadeId];
         return next;
       });
-
-      console.error('Cascading agent dispatch failed:', err);
-      const errorReply: Message = {
-        id: `msg-collab-err-${Date.now()}`,
-        threadId: roomId,
-        channelId: targetChannelId,
-        authorId: targetAgent.id,
-        authorName: targetAgent.name,
-        authorHandle: targetAgent.handle,
-        authorAvatar: targetAgent.avatar,
-        isAgent: true,
-        agentBadge: 'ACP Error',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: `⚠️ **协同接力异常**：${err instanceof Error ? err.message : String(err)}`,
-      };
-      setMessages((prev) => ({
-        ...prev,
-        [roomId]: [...(prev[roomId] || []), errorReply],
-      }));
     }
   };
 
@@ -4655,11 +4755,13 @@ export default function App() {
           })
         : [];
 
-      return {
+      const next = {
         ...prev,
         [topicId]: nextTopicMsgs,
         ...(parentThreadId ? { [parentThreadId]: updatedParentMsgs } : {}),
       };
+      messagesRef.current = next;
+      return next;
     });
 
     const topicChannel = channels.find((c) => c.id === activeTopicData?.channelId) || activeChannel;
@@ -4955,8 +5057,34 @@ export default function App() {
       recentHistory,
     };
 
-    // 2. 向 onlineAgents 下发 prompt
-    onlineAgents.forEach((agent) => {
+    // 2. 向 onlineAgents 下发 prompt (标准模式采用共享级联 + 水位线增量 + Turn Barrier 同步汇合)
+    const sharedStandardCascadeId = `cascade-topic-${Date.now()}`;
+    if (!isGameTheoretic) {
+      const initialCallCounts: Record<string, number> = {};
+      onlineAgents.forEach((ag) => {
+        initialCallCounts[ag.id] = 1;
+      });
+      const sharedCascade: CollaborationCascade = {
+        cascadeId: sharedStandardCascadeId,
+        rootMessageId: userMsg.id,
+        roomId: topicId,
+        originalPrompt: content,
+        depth: 1,
+        maxDepth: 12,
+        visitedAgentIds: onlineAgents.map((a) => a.id),
+        agentCallCounts: initialCallCounts,
+        isAborted: false,
+      };
+      activeCascadesRef.current = {
+        ...activeCascadesRef.current,
+        [sharedStandardCascadeId]: sharedCascade,
+      };
+      setActiveCascades((prev) => ({ ...prev, [sharedStandardCascadeId]: sharedCascade }));
+    }
+
+    const standardTurnOutputs: TurnAgentOutput[] = [];
+
+    const agentTurnPromises = onlineAgents.map((agent) => {
       const execKey = `${topicId}:${agent.id}`;
       const sessionKey = `${topicId}:${agent.id}`;
       const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
@@ -4966,31 +5094,61 @@ export default function App() {
         includeRoster: !isStandingContextDelivered,
       });
 
-      const structuredTopicPrompt = buildTopicPrompt({
-        topic: topicContext,
-        userContent: content,
-        targetAgent: agent,
-        availableAgents: candidateAgents,
-      });
-
-      const finalPrompt = structuredTopicPrompt;
+      let finalPrompt: string;
+      if (isGameTheoretic) {
+        finalPrompt = buildTopicPrompt({
+          topic: topicContext,
+          userContent: content,
+          targetAgent: agent,
+          availableAgents: candidateAgents,
+        });
+      } else {
+        // 对标 Buzz: 标准模式按 (topicId:agentId) 水位线提取未读增量批次 (<delta-events>)
+        const lastWatermark = sessionWatermarksRef.current.get(sessionKey);
+        const currentTopicTranscript = messagesRef.current[topicId] || [];
+        const deltaBatch = extractUnreadDeltaMessages({
+          messages: currentTopicTranscript,
+          lastWatermarkMessageId: lastWatermark,
+          excludeAuthorId: agent.id,
+        });
+        if (deltaBatch.latestWatermarkMessageId) {
+          sessionWatermarksRef.current.set(sessionKey, deltaBatch.latestWatermarkMessageId);
+        }
+        finalPrompt = buildNormalModeTurnPrompt({
+          targetAgent: agent,
+          availableAgents: candidateAgents,
+          roomId: topicId,
+          isWarmSession: deltaBatch.isWarmSession,
+          deltaMessages: deltaBatch.deltaMessages,
+          triggerContent: content,
+          hop: 1,
+          maxHops: 12,
+          topic: topicContext,
+          isDm: false,
+          isParallelFirstTurn: onlineAgents.length > 1,
+        });
+      }
 
       deliveredStandingContextRef.current.add(sessionKey);
 
-      // 初始化级联状态
-      const cascadeId = `cascade-topic-${Date.now()}-${agent.id}`;
-      const newCascade: CollaborationCascade = {
-        cascadeId,
-        rootMessageId: userMsg.id,
-        roomId: topicId,
-        originalPrompt: content,
-        depth: 1,
-        maxDepth: 12,
-        visitedAgentIds: [agent.id],
-        agentCallCounts: { [agent.id]: 1 },
-        isAborted: false,
-      };
-      setActiveCascades((prev) => ({ ...prev, [cascadeId]: newCascade }));
+      const cascadeId = isGameTheoretic
+        ? `cascade-topic-${Date.now()}-${agent.id}`
+        : sharedStandardCascadeId;
+
+      if (isGameTheoretic) {
+        const newCascade: CollaborationCascade = {
+          cascadeId,
+          rootMessageId: userMsg.id,
+          roomId: topicId,
+          originalPrompt: content,
+          depth: 1,
+          maxDepth: 12,
+          visitedAgentIds: [agent.id],
+          agentCallCounts: { [agent.id]: 1 },
+          isAborted: false,
+        };
+        setActiveCascades((prev) => ({ ...prev, [cascadeId]: newCascade }));
+      }
 
       logRpc(agent.name, 'client_to_agent', 'session/prompt', {
         jsonrpc: '2.0',
@@ -5046,7 +5204,7 @@ export default function App() {
         [topicId]: [...(prev[topicId] || []), pendingMsg],
       }));
 
-      sendPromptToAcpAgent({
+      return sendPromptToAcpAgent({
         agent,
         roomId: topicId,
         prompt: finalPrompt,
@@ -5139,11 +5297,13 @@ export default function App() {
                 })
               : [];
 
-            return {
+            const next = {
               ...prev,
               [topicId]: nextTopicMsgs,
               ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
             };
+            messagesRef.current = next;
+            return next;
           });
 
           logRpc(agent.name, 'agent_to_client', 'session/prompt:result', {
@@ -5356,15 +5516,11 @@ export default function App() {
               }
             }
           } else {
-            // 标准讨论模式：常规自然语言 @ 级联接力
-            dispatchCascadingAgentResponse({
-              cascadeId,
-              invokingAgent: agent,
-              invokingMessageId: agentReply.id,
+            // 标准讨论模式：收集本轮并发输出，待 Turn Barrier 全部汇合后统一去重触发下一跳
+            standardTurnOutputs.push({
+              agent,
+              messageId: agentReply.id,
               replyContent: acpResp.textResponse,
-              roomId: topicId,
-              isTopic: true,
-              topicId,
             });
           }
         })
@@ -5422,6 +5578,21 @@ export default function App() {
           });
         });
     });
+
+    // 标准讨论模式：Turn Barrier 同步屏障 —— 等待首轮所有并发 Agent 全部执行完毕后，统一聚合去重 @mention 唤醒下一跳
+    if (!isGameTheoretic && agentTurnPromises.length > 0) {
+      Promise.allSettled(agentTurnPromises).then(() => {
+        if (standardTurnOutputs.length > 0) {
+          dispatchCascadingAgentResponse({
+            cascadeId: sharedStandardCascadeId,
+            turnOutputs: standardTurnOutputs,
+            roomId: topicId,
+            isTopic: true,
+            topicId,
+          });
+        }
+      });
+    }
   };
 
   const dispatchTopicExecution = async (options: {
@@ -6184,10 +6355,14 @@ export default function App() {
       reactions: [],
     };
 
-    setMessages((prev) => ({
-      ...prev,
-      [currentThreadId]: [...(prev[currentThreadId] || []), userMsg],
-    }));
+    setMessages((prev) => {
+      const nextThreadMsgs = [...(prev[currentThreadId] || []), userMsg];
+      messagesRef.current = {
+        ...prev,
+        [currentThreadId]: nextThreadMsgs,
+      };
+      return messagesRef.current;
+    });
 
     // Detect responding agents:
     // 1. Resolve channel assigned agents (merge assignedAgentIds, memberIds, activeAgentIds)
@@ -6291,10 +6466,12 @@ export default function App() {
       return;
     }
 
-    const primaryResponder = respondingAgents[0];
+    // 严格检查通信状态：分离离线与在线 Agent
+    const offlineAgents = respondingAgents.filter((a) => isAgentOffline(a));
+    const onlineAgents = respondingAgents.filter((a) => !isAgentOffline(a));
 
-    // 严格检查通信状态：若未手动点击 Start 开启通信（或握手失败），则进行拦截并引导
-    if (isAgentOffline(primaryResponder)) {
+    if (offlineAgents.length > 0) {
+      const offlineNames = offlineAgents.map((a) => `**${a.name}**`).join('、');
       setTimeout(() => {
         const offlineNotice: Message = {
           id: `msg-offline-${Date.now()}`,
@@ -6307,35 +6484,26 @@ export default function App() {
           isAgent: true,
           agentBadge: 'Communication Required',
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `🔌 **Agent 通信尚未开启**：**${primaryResponder.name}** 当前处于离线/未连接状态。\n\n根据产品规范，需先在左侧「Agents & 编队」面板点击该 Agent 头像下方的【Start】按钮开启通信连接后方可协作推演。\n\n*(开启通信后，重新发送消息或在此 @ 召唤即可正常推演)*`,
+          content: `🔌 **Agent 通信尚未开启**：${offlineNames} 当前处于离线/未连接状态。\n\n根据产品规范，需先在左侧「Agents & 编队」面板点击该 Agent 头像下方的【Start】按钮开启通信连接后方可协作推演。\n\n*(开启通信后，重新发送消息或在此 @ 召唤即可正常推演)*`,
         };
         setMessages((prev) => ({
           ...prev,
           [activeThread.id]: [...(prev[activeThread.id] || []), offlineNotice],
         }));
       }, 300);
-      return;
     }
+
+    if (onlineAgents.length === 0) return;
 
     setIsGenerating(true);
     const now = Date.now();
-    const sessionKey = `${activeThread.id}:${primaryResponder.id}`;
-    const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
 
-    // 对标 Buzz: 组合 Agent 自身专精人设与频道级花名册公约
-    // 私聊 (DM) 模式下 includeRoster: false，只注入自身专精人设；频道模式下首轮同时注入花名册公约
-    const compositeSystemPrompt = buildCompositeSystemPrompt({
-      agent: primaryResponder,
-      availableAgents: candidateAgents,
-      includeRoster: activeThread.type !== 'dm' && !isStandingContextDelivered,
-    });
-
-    const finalPrompt = content;
-
-    deliveredStandingContextRef.current.add(sessionKey);
-
-    // 初始化协同链状态
+    // 初始化协同链状态（首轮所有并发在线 Agent 共享同一协同链实例）
     const cascadeId = `cascade-thread-${Date.now()}`;
+    const initialCallCounts: Record<string, number> = {};
+    onlineAgents.forEach((ag) => {
+      initialCallCounts[ag.id] = 1;
+    });
     const newCascade: CollaborationCascade = {
       cascadeId,
       rootMessageId: userMsg.id,
@@ -6343,35 +6511,24 @@ export default function App() {
       originalPrompt: content,
       depth: 1,
       maxDepth: 12, // 对标 Buzz: 提升至 12 轮作为不可见安全兜底
-      visitedAgentIds: [primaryResponder.id],
-      agentCallCounts: { [primaryResponder.id]: 1 },
+      visitedAgentIds: onlineAgents.map((ag) => ag.id),
+      agentCallCounts: initialCallCounts,
       isAborted: false,
     };
     setActiveCascades((prev) => ({ ...prev, [cascadeId]: newCascade }));
 
     const newExecs: Record<string, ActiveAgentExecution> = {};
-    respondingAgents.forEach((ag, idx) => {
+    onlineAgents.forEach((ag, idx) => {
       // 维持 Agent 在线基线状态 ('running')，具体推演任务由 activeExecutions 独立追踪
       setAgents((prev) => prev.map((a) => (a.id === ag.id && a.status !== 'running' ? { ...a, status: 'running' } : a)));
-      logRpc(ag.name, 'client_to_agent', 'session/prompt', {
-        jsonrpc: '2.0',
-        id: Date.now() + idx,
-        method: 'session/prompt',
-        params: {
-          threadId: activeThread.id,
-          prompt: finalPrompt,
-          channelId: targetChannelId,
-        },
-      });
-
       newExecs[`${activeThread.id}:${ag.id}`] = {
         agentId: ag.id,
         agentName: ag.name,
         agentAvatar: ag.avatar,
         threadId: activeThread.id,
-        status: idx === 0 ? 'thinking' : 'queued',
-        currentActionDetail: idx === 0 ? '正在深度推演方案并对齐上下文 (Hop 1)...' : '排队等待协同推演中...',
-        startedAt: now + idx * 200,
+        status: 'thinking',
+        currentActionDetail: '正在并发推演方案并对齐增量上下文 (Hop 1)...',
+        startedAt: now + idx * 50,
         cascadeHop: 1,
       };
     });
@@ -6381,118 +6538,185 @@ export default function App() {
       ...newExecs,
     }));
 
-    // Handle agent response via ACP client (real stdio subprocess or fallback)
-    sendPromptToAcpAgent({
-      agent: primaryResponder,
-      roomId: currentThreadId,
-      prompt: finalPrompt,
-      projectId: activeProjectId,
-      channelId: targetChannelId,
-      systemPrompt: compositeSystemPrompt,
-      isDm: isDmThread,
-    })
-      .then((acpResp) => {
-        setActiveExecutions((prev) => {
-          const next = { ...prev };
-          delete next[`${currentThreadId}:${primaryResponder.id}`];
-          if (Object.keys(next).length === 0) setIsGenerating(false);
-          return next;
-        });
+    const turnOutputs: TurnAgentOutput[] = [];
 
-        const agentReply: Message = {
-          id: `msg-reply-${Date.now()}`,
+    // Hop 1 并发 Fan-out：所有被点名的在线 Agent 同时推演，并在 Turn Barrier 汇合
+    const hop1Promises = onlineAgents.map((targetAgent, idx) => {
+      const sessionKey = `${currentThreadId}:${targetAgent.id}`;
+      const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
+
+      // 对标 Buzz: 组合 Agent 自身专精人设与频道级花名册公约
+      const compositeSystemPrompt = buildCompositeSystemPrompt({
+        agent: targetAgent,
+        availableAgents: candidateAgents,
+        includeRoster: !isDmThread && !isStandingContextDelivered,
+      });
+
+      const lastWatermark = sessionWatermarksRef.current.get(sessionKey);
+      const roomTranscript = messagesRef.current[currentThreadId] || [];
+
+      const deltaBatch = extractUnreadDeltaMessages({
+        messages: roomTranscript,
+        lastWatermarkMessageId: lastWatermark,
+        excludeAuthorId: targetAgent.id,
+      });
+
+      const finalPrompt = buildNormalModeTurnPrompt({
+        targetAgent,
+        availableAgents: candidateAgents,
+        roomId: currentThreadId,
+        isWarmSession: deltaBatch.isWarmSession,
+        deltaMessages: deltaBatch.deltaMessages,
+        hop: 1,
+        maxHops: 12,
+        isDm: isDmThread,
+      });
+
+      deliveredStandingContextRef.current.add(sessionKey);
+      if (deltaBatch.latestWatermarkMessageId) {
+        sessionWatermarksRef.current.set(sessionKey, deltaBatch.latestWatermarkMessageId);
+      }
+
+      logRpc(targetAgent.name, 'client_to_agent', 'session/prompt', {
+        jsonrpc: '2.0',
+        id: Date.now() + idx,
+        method: 'session/prompt',
+        params: {
           threadId: currentThreadId,
+          prompt: finalPrompt,
           channelId: targetChannelId,
-          authorId: primaryResponder.id,
-          authorName: primaryResponder.name,
-          authorHandle: primaryResponder.handle,
-          authorAvatar: primaryResponder.avatar,
-          isAgent: true,
-          managedBy: primaryResponder.isManagedByYou ? 'you' : undefined,
-          agentBadge: `${primaryResponder.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : primaryResponder.isRemote ? 'ACP Remote' : 'ACP'}`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: acpResp.textResponse,
-          thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已检索私有记忆库并完成技术边界考量'),
-          diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
-          cartridgeCitation: acpResp.cartridgeCitation,
-          collaborationInfo: isDmThread ? undefined : {
-            cascadeId,
-            hop: 1,
-            maxHops: 12,
-            rootMessageId: userMsg.id,
-            sourceMessageId: userMsg.id,
-            invokedByAgentId: userMsg.authorId,
-            invokedByAgentName: userMsg.authorName,
-            invokedByAgentHandle: userMsg.authorHandle,
-          },
-          acpTrace: {
-            requestId: `acp-${Date.now()}`,
-            method: 'session/prompt',
-            durationMs: acpResp.durationMs,
-            workspaceAction: {
-              action: 'read',
-              path: primaryResponder.workspace?.activeFiles?.[0] || 'src/App.tsx',
-              summary: `Target workspace: ${primaryResponder.workspace?.rootPath || '.'}${acpResp.isRealProcess ? ' (Real stdio process)' : primaryResponder.isRemote ? ' (Remote WebSocket)' : ''}`,
+          concurrentFanOut: onlineAgents.length > 1,
+          deltaCount: deltaBatch.deltaMessages.length,
+        },
+      });
+
+      return sendPromptToAcpAgent({
+        agent: targetAgent,
+        roomId: currentThreadId,
+        prompt: finalPrompt,
+        projectId: activeProjectId,
+        channelId: targetChannelId,
+        systemPrompt: compositeSystemPrompt,
+        isDm: isDmThread,
+      })
+        .then((acpResp) => {
+          setActiveExecutions((prev) => {
+            const next = { ...prev };
+            delete next[`${currentThreadId}:${targetAgent.id}`];
+            if (Object.keys(next).length === 0) setIsGenerating(false);
+            return next;
+          });
+
+          const agentReply: Message = {
+            id: `msg-reply-${Date.now()}-${targetAgent.id}`,
+            threadId: currentThreadId,
+            channelId: targetChannelId,
+            authorId: targetAgent.id,
+            authorName: targetAgent.name,
+            authorHandle: targetAgent.handle,
+            authorAvatar: targetAgent.avatar,
+            isAgent: true,
+            managedBy: targetAgent.isManagedByYou ? 'you' : undefined,
+            agentBadge: `${targetAgent.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : targetAgent.isRemote ? 'ACP Remote' : 'ACP'}`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: acpResp.textResponse,
+            thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已消化增量事件流并完成技术边界考量'),
+            diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
+            cartridgeCitation: acpResp.cartridgeCitation,
+            collaborationInfo: isDmThread ? undefined : {
+              cascadeId,
+              hop: 1,
+              maxHops: 12,
+              rootMessageId: userMsg.id,
+              sourceMessageId: userMsg.id,
+              invokedByAgentId: userMsg.authorId,
+              invokedByAgentName: userMsg.authorName,
+              invokedByAgentHandle: userMsg.authorHandle,
             },
-          },
-        };
+            acpTrace: {
+              requestId: `acp-${Date.now()}-${targetAgent.id}`,
+              method: 'session/prompt',
+              durationMs: acpResp.durationMs,
+              workspaceAction: {
+                action: 'read',
+                path: targetAgent.workspace?.activeFiles?.[0] || 'src/App.tsx',
+                summary: `Target workspace: ${targetAgent.workspace?.rootPath || '.'}${acpResp.isRealProcess ? ' (Real stdio process)' : targetAgent.isRemote ? ' (Remote WebSocket)' : ''}`,
+              },
+            },
+          };
 
-        setMessages((prev) => ({
-          ...prev,
-          [currentThreadId]: [...(prev[currentThreadId] || []), agentReply],
-        }));
+          setMessages((prev) => {
+            const nextThreadMsgs = [...(prev[currentThreadId] || []), agentReply];
+            messagesRef.current = {
+              ...prev,
+              [currentThreadId]: nextThreadMsgs,
+            };
+            return messagesRef.current;
+          });
 
-        setAgents((prev) => prev.map((a) => (a.id === primaryResponder.id ? { ...a, status: 'running' } : a)));
-        syncRunningAgentsWithBackend();
+          setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'running' } : a)));
+          syncRunningAgentsWithBackend();
 
-        logRpc(primaryResponder.name, 'agent_to_client', 'session/prompt:result', {
-          jsonrpc: '2.0',
-          method: 'session/prompt:result',
-          result: { status: 'completed', isRealProcess: acpResp.isRealProcess },
+          logRpc(targetAgent.name, 'agent_to_client', 'session/prompt:result', {
+            jsonrpc: '2.0',
+            method: 'session/prompt:result',
+            result: { status: 'completed', isRealProcess: acpResp.isRealProcess },
+          });
+
+          turnOutputs.push({
+            agent: targetAgent,
+            messageId: agentReply.id,
+            replyContent: acpResp.textResponse,
+          });
+        })
+        .catch((err) => {
+          setActiveExecutions((prev) => {
+            const next = { ...prev };
+            delete next[`${currentThreadId}:${targetAgent.id}`];
+            if (Object.keys(next).length === 0) setIsGenerating(false);
+            return next;
+          });
+
+          console.error('Failed to send prompt to agent:', err);
+          const errorReply: Message = {
+            id: `msg-err-${Date.now()}-${targetAgent.id}`,
+            threadId: currentThreadId,
+            channelId: targetChannelId,
+            authorId: targetAgent.id,
+            authorName: targetAgent.name,
+            authorHandle: targetAgent.handle,
+            authorAvatar: targetAgent.avatar,
+            isAgent: true,
+            agentBadge: 'ACP Error',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `⚠️ **ACP 通信异常**：${err instanceof Error ? err.message : String(err)}\n\n请检查 Agent 命令配置或相关依赖环境。`,
+          };
+          setMessages((prev) => {
+            const nextThreadMsgs = [...(prev[currentThreadId] || []), errorReply];
+            messagesRef.current = {
+              ...prev,
+              [currentThreadId]: nextThreadMsgs,
+            };
+            return messagesRef.current;
+          });
+          setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'idle' } : a)));
+          syncRunningAgentsWithBackend();
         });
+    });
 
-        // 仅在非 DM (即频道多 Agent 协同) 场景下触发跨智能体互相 @ 级联调度
-        if (!isDmThread) {
+    // Turn Barrier 同步屏障：仅在非 DM (即频道多 Agent 协同) 场景下，等待首轮所有并发 Agent 全部执行完毕后统一去重触发下一跳
+    if (!isDmThread && hop1Promises.length > 0) {
+      Promise.allSettled(hop1Promises).then(() => {
+        if (turnOutputs.length > 0) {
           dispatchCascadingAgentResponse({
             cascadeId,
-            invokingAgent: primaryResponder,
-            invokingMessageId: agentReply.id,
-            replyContent: acpResp.textResponse,
+            turnOutputs,
             roomId: currentThreadId,
             isTopic: false,
-            queuedCollaborators: respondingAgents.slice(1),
           });
         }
-      })
-      .catch((err) => {
-        setActiveExecutions((prev) => {
-          const next = { ...prev };
-          delete next[`${currentThreadId}:${primaryResponder.id}`];
-          if (Object.keys(next).length === 0) setIsGenerating(false);
-          return next;
-        });
-
-        console.error('Failed to send prompt to agent:', err);
-        const errorReply: Message = {
-          id: `msg-err-${Date.now()}`,
-          threadId: currentThreadId,
-          channelId: targetChannelId,
-          authorId: primaryResponder.id,
-          authorName: primaryResponder.name,
-          authorHandle: primaryResponder.handle,
-          authorAvatar: primaryResponder.avatar,
-          isAgent: true,
-          agentBadge: 'ACP Error',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `⚠️ **ACP 通信异常**：${err instanceof Error ? err.message : String(err)}\n\n请检查 Agent 命令配置或相关依赖环境。`,
-        };
-        setMessages((prev) => ({
-          ...prev,
-          [currentThreadId]: [...(prev[currentThreadId] || []), errorReply],
-        }));
-        setAgents((prev) => prev.map((a) => (a.id === primaryResponder.id ? { ...a, status: 'idle' } : a)));
-        syncRunningAgentsWithBackend();
       });
+    }
   };
 
   // Add Message to SubThread
@@ -7077,8 +7301,10 @@ export default function App() {
           setIsMemoryImportModalOpen(true);
         }}
         onUpdateAgent={(agentId, updatedData) => {
-          // 清空已交付公约与花名册缓存，确保后续全会话即时重装最新的人设与团队花名册
+          // 清空已交付公约、花名册缓存与水位线，确保后续全会话即时重装最新的人设与团队花名册
           deliveredStandingContextRef.current.clear();
+          sessionWatermarksRef.current.clear();
+          clearLlmSessionHistory(agentId);
 
           const existingAgent = agents.find((a) => a.id === agentId);
           const wasOnline =

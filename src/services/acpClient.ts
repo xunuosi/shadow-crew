@@ -880,7 +880,8 @@ export async function sendPromptToAcpAgent(
   if (isModelConfigReady(modelConfig)) {
     try {
       console.log(`[ACP Client] Invoking direct LLM runtime for ${agent.name} with model: ${modelConfig.modelName || modelConfig.modelId}`);
-      const llmResult = await callLlmModel(modelConfig, enhancedPrompt, resolvedSystemPrompt);
+      const sessionKey = `${roomId}:${agent.id}`;
+      const llmResult = await callLlmModel(modelConfig, enhancedPrompt, resolvedSystemPrompt, sessionKey);
       const durationMs = Date.now() - startTime;
       const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(llmResult.textResponse);
       const extractedDiffs = extractWorkspaceDiffsFromText(cleanedText);

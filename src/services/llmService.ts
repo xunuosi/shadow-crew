@@ -771,12 +771,33 @@ export async function testModelConnection(config: AgentModelConfig): Promise<Mod
 }
 
 /**
+ * 直连大模型运行时的会话级多轮对话缓存 (Key: `${roomId}:${agentId}`)
+ * 确保在 Web 预览或直连 HTTP API 模式下，增量 `<delta-events>` 批次与本地 ACP 有状态 Session 行为完全一致，
+ * 并保持严格只增不改的前缀序列以最大化大模型 Prefix KV Cache 命中率。
+ */
+const MAX_SESSION_HISTORY_MESSAGES = 24;
+const llmSessionHistoryMap = new Map<string, Array<{ role: 'user' | 'assistant'; content: string }>>();
+
+export function clearLlmSessionHistory(agentIdOrSessionKey?: string): void {
+  if (!agentIdOrSessionKey) {
+    llmSessionHistoryMap.clear();
+    return;
+  }
+  for (const key of Array.from(llmSessionHistoryMap.keys())) {
+    if (key === agentIdOrSessionKey || key.endsWith(`:${agentIdOrSessionKey}`) || key.startsWith(`${agentIdOrSessionKey}:`)) {
+      llmSessionHistoryMap.delete(key);
+    }
+  }
+}
+
+/**
  * 调用大模型生成推演回答
  */
 export async function callLlmModel(
   config: AgentModelConfig,
   prompt: string,
-  systemPrompt?: string
+  systemPrompt?: string,
+  sessionKey?: string
 ): Promise<{ textResponse: string; durationMs: number }> {
   const start = Date.now();
   const rawBaseUrl = (config.baseUrl || '').trim();
@@ -785,6 +806,25 @@ export async function callLlmModel(
   if (config.provider !== 'ollama' && !apiKey) {
     throw new Error('未配置 API Key，请先进入配置面板填写大模型密钥');
   }
+
+  const history = sessionKey ? llmSessionHistoryMap.get(sessionKey) || [] : [];
+  const conversationTurns: Array<{ role: 'user' | 'assistant'; content: string }> = [
+    ...history,
+    { role: 'user', content: prompt },
+  ];
+
+  const recordTurnSuccess = (assistantReply: string) => {
+    if (!sessionKey || !assistantReply.trim()) return;
+    const nextHistory = [
+      ...conversationTurns,
+      { role: 'assistant' as const, content: assistantReply },
+    ];
+    const bounded =
+      nextHistory.length > MAX_SESSION_HISTORY_MESSAGES
+        ? nextHistory.slice(nextHistory.length - MAX_SESSION_HISTORY_MESSAGES)
+        : nextHistory;
+    llmSessionHistoryMap.set(sessionKey, bounded);
+  };
 
   if (config.provider === 'anthropic') {
     const endpoint = buildAnthropicMessagesUrl(rawBaseUrl);
@@ -797,7 +837,7 @@ export async function callLlmModel(
     const body = {
       model: config.modelId || 'claude-3-7-sonnet-20250219',
       system: systemPrompt || undefined,
-      messages: [{ role: 'user', content: prompt }],
+      messages: conversationTurns,
       max_tokens: config.maxTokens || 4096,
       temperature: config.temperature ?? 0.7,
     };
@@ -808,6 +848,7 @@ export async function callLlmModel(
     }
 
     const text = res.data?.content?.[0]?.text || '';
+    recordTurnSuccess(text);
     return { textResponse: text, durationMs: Date.now() - start };
   } else {
     // OpenAI Compatible / Custom / Corporate Gateway
@@ -823,7 +864,7 @@ export async function callLlmModel(
     if (systemPrompt) {
       messages.push({ role: 'system', content: systemPrompt });
     }
-    messages.push({ role: 'user', content: prompt });
+    messages.push(...conversationTurns);
 
     const body = {
       model: config.modelId || 'deepseek-chat',
@@ -838,6 +879,7 @@ export async function callLlmModel(
     }
 
     const text = res.data?.choices?.[0]?.message?.content || '';
+    recordTurnSuccess(text);
     return { textResponse: text, durationMs: Date.now() - start };
   }
 }

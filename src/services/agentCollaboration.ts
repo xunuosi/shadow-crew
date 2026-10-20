@@ -746,6 +746,421 @@ ${invokingAgentReply}
 ${requestSection}${peerList}`;
 }
 
+/**
+ * ---------------------------------------------------------------------------
+ * Buzz 范式普通模式优化：语义边界包裹 (Semantic Framing) + 水位线增量冲刷 (Delta FlushBatch)
+ * + 轮次同步屏障与提及去重合并 (Turn Barrier & Mention Deduplication)
+ * 对标 crates/buzz-acp/src/{prompt_framing.rs, queue.rs, scope.rs}
+ * ---------------------------------------------------------------------------
+ */
+
+/**
+ * 单次增量批次冲刷的最大事件数上限 (对标 Buzz queue.rs MAX_BATCH_EVENTS = 50)
+ */
+export const MAX_DELTA_BATCH_EVENTS = 50;
+
+/**
+ * 转义嵌入在语义标签内部的非受信文本，防止消息正文中的 `</delta-events>` 或 `<system>` 破坏提示词语义边界
+ * (对标 Buzz prompt_framing.rs::escape_semantic_text)
+ */
+export function escapeSemanticText(value: string): string {
+  if (!value) return '';
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * 使用成对的显式 XML 语义边界包裹上下文片段，属性值自动转义，正文保持原样或由调用方按需转义
+ * (对标 Buzz prompt_framing.rs::semantic_section_with_attributes)
+ */
+export function wrapSemanticSection(
+  tag: string,
+  content: string,
+  attributes?: Record<string, string | number | undefined>
+): string {
+  const attrStr = attributes
+    ? Object.entries(attributes)
+        .filter(([, v]) => v !== undefined && v !== '')
+        .map(([k, v]) => ` ${k}="${escapeSemanticText(String(v)).replace(/"/g, '&quot;')}"`)
+        .join('')
+    : '';
+  return `<${tag}${attrStr}>\n${content}\n</${tag}>`;
+}
+
+/**
+ * 房间/线程消息轻量投影项（用于计算每个 (roomId, agentId) 的未读增量批次）
+ */
+export interface RoomTranscriptEntry {
+  id: string;
+  authorId: string;
+  authorName: string;
+  authorHandle?: string;
+  content: string;
+  isAgent?: boolean;
+  timestamp?: string;
+  isPending?: boolean;
+  agentBadge?: string;
+}
+
+export interface DeltaBatchResult {
+  /** 自上次水位线以来该 Agent 尚未读取的新增消息批次 */
+  deltaMessages: RoomTranscriptEntry[];
+  /** 本次提取时刻房间内最新一条有效消息的 ID（用于更新该 Agent 的水位线） */
+  latestWatermarkMessageId?: string;
+  /** 该 Agent 在当前会话 Scope 是否已完成首次冷启动（存在历史水位线即为热会话） */
+  isWarmSession: boolean;
+}
+
+/**
+ * 判断一条房间消息是否为平台守卫/熔断等系统控制卡片（不应作为业务上下文注入给 Agent）
+ */
+function isSystemControlMessage(msg: RoomTranscriptEntry): boolean {
+  if (msg.authorId === 'system') return true;
+  if (msg.isPending) return true;
+  if (!msg.content || !msg.content.trim()) return true;
+  if (
+    msg.agentBadge &&
+    (msg.agentBadge.includes('Guard') ||
+      msg.agentBadge.includes('Communication Required') ||
+      msg.agentBadge.includes('Circuit Breaker') ||
+      msg.agentBadge === 'System')
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 基于 `(roomId, agentId)` 水位线提取未读增量事件批次 (对标 Buzz EventQueue::flush)
+ *
+ * 核心不变量：
+ * 1. 水位线 `lastWatermarkMessageId` 记录的是「上一次向该 Agent 派发 Prompt 时，房间内最后一条有效消息的 ID」；
+ * 2. 即使首轮多个 Agent 并发执行、各自回复以任意乱序落库，下一轮唤醒某 Agent 时，
+ *    只要从其上次派发水位线 `lastWatermarkMessageId` 往后切片，并排除该 Agent 自己产出的消息 (`excludeAuthorId`)，
+ *    就能 100% 精确捕获并发期间其他所有同事产出的回复，绝不漏读、绝不重复投递！
+ */
+export function extractUnreadDeltaMessages(options: {
+  messages: RoomTranscriptEntry[];
+  lastWatermarkMessageId?: string;
+  excludeAuthorId?: string;
+  maxBatchEvents?: number;
+}): DeltaBatchResult {
+  const {
+    messages,
+    lastWatermarkMessageId,
+    excludeAuthorId,
+    maxBatchEvents = MAX_DELTA_BATCH_EVENTS,
+  } = options;
+
+  const validMessages = (messages || []).filter((m) => !isSystemControlMessage(m));
+  const latestWatermarkMessageId =
+    validMessages.length > 0 ? validMessages[validMessages.length - 1].id : lastWatermarkMessageId;
+
+  let watermarkIndex = -1;
+  if (lastWatermarkMessageId) {
+    watermarkIndex = validMessages.findIndex((m) => m.id === lastWatermarkMessageId);
+  }
+
+  const isWarmSession = Boolean(lastWatermarkMessageId && watermarkIndex !== -1);
+  const unreadSlice = watermarkIndex !== -1 ? validMessages.slice(watermarkIndex + 1) : validMessages;
+
+  const filteredDelta = excludeAuthorId
+    ? unreadSlice.filter((m) => m.authorId !== excludeAuthorId)
+    : unreadSlice;
+
+  const boundedDelta =
+    filteredDelta.length > maxBatchEvents
+      ? filteredDelta.slice(filteredDelta.length - maxBatchEvents)
+      : filteredDelta;
+
+  return {
+    deltaMessages: boundedDelta,
+    latestWatermarkMessageId,
+    isWarmSession,
+  };
+}
+
+export interface BuildNormalModeTurnPromptOptions {
+  targetAgent: Agent;
+  availableAgents: Agent[];
+  roomId: string;
+  isWarmSession: boolean;
+  deltaMessages: RoomTranscriptEntry[];
+  triggerContent?: string;
+  hop?: number;
+  maxHops?: number;
+  invokingAgents?: Agent[];
+  topic?: TopicPromptContext;
+  isDm?: boolean;
+  isParallelFirstTurn?: boolean;
+}
+
+/**
+ * 格式化单条增量消息为紧凑语义行
+ */
+function formatDeltaEntryLine(entry: RoomTranscriptEntry): string {
+  const handlePart = entry.authorHandle ? ` (${entry.authorHandle})` : '';
+  const roleTag = entry.isAgent ? 'Agent' : 'User';
+  const timePart = entry.timestamp ? ` @ ${entry.timestamp}` : '';
+  return `[${roleTag}: ${entry.authorName}${handlePart}${timePart}]:\n${escapeSemanticText(entry.content.trim())}`;
+}
+
+/**
+ * 构造普通模式（Channel 主时间轴 / Topic 标准研讨模式）下的精简增量提示词
+ *
+ * 对标 Buzz 架构优势：
+ * 1. 【冷启动 (Cold Start, isWarmSession = false)】：
+ *    首次进入当前会话 Scope 时，注入一次 `<topic-context>`（若为议题）及初始消息流，建立完整基线；
+ * 2. 【热会话增量投递 (Warm Session Delta, isWarmSession = true)】：
+ *    复用底层 ACP Session 已持有的上下文记忆，**彻底剔除重复的议题背景、原始问题复读与 15 行冗余指令模板**，
+ *    仅投递 `<delta-events>` 未读增量消息批次 + 单行轻量收敛指引，大幅节省上下文窗口并最大化 Prefix KV Cache 命中率；
+ * 3. 【首轮并行防风暴指引 (Parallel Fan-out Guard)】：
+ *    当多位 Agent 在首轮并行发言时，提醒其独立亮明专业观点，避免盲目群发 @ 导致级联风暴。
+ */
+export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOptions): string {
+  const {
+    targetAgent,
+    availableAgents,
+    roomId,
+    isWarmSession,
+    deltaMessages,
+    triggerContent = '',
+    hop = 1,
+    maxHops = 12,
+    invokingAgents = [],
+    topic,
+    isDm = false,
+    isParallelFirstTurn = false,
+  } = options;
+
+  // 1. 私聊 (DM) 极简直通：若为热会话且存在多条未读增量则包裹 delta-events，否则直传最新消息
+  if (isDm) {
+    if (isWarmSession && deltaMessages.length > 1) {
+      const body = deltaMessages.map(formatDeltaEntryLine).join('\n\n');
+      return wrapSemanticSection('delta-events', body, {
+        scope: roomId,
+        count: deltaMessages.length,
+      });
+    }
+    return triggerContent || deltaMessages[deltaMessages.length - 1]?.content || '';
+  }
+
+  const peers = availableAgents.filter((a) => a.id !== targetAgent.id);
+  const peerHandles = peers.map((p) => p.handle).join(', ');
+
+  const effectiveEntries: RoomTranscriptEntry[] =
+    deltaMessages.length > 0
+      ? deltaMessages
+      : triggerContent.trim()
+      ? [
+          {
+            id: 'trigger-inline',
+            authorId: 'user',
+            authorName: 'User',
+            content: triggerContent,
+            isAgent: false,
+          },
+        ]
+      : [];
+
+  const deltaBody = effectiveEntries.map(formatDeltaEntryLine).join('\n\n');
+  const deltaSection = wrapSemanticSection('delta-events', deltaBody, {
+    scope: roomId,
+    hop,
+    count: effectiveEntries.length,
+  });
+
+  // 2. 热会话 (Warm Session)：仅投递水位线之后的新增消息批次 (<delta-events>) + 单行收敛指引
+  if (isWarmSession) {
+    const invokersLabel =
+      invokingAgents.length > 0
+        ? invokingAgents.map((a) => `${a.name} (${a.handle})`).join('、')
+        : '团队成员';
+
+    const directiveLine =
+      hop > 1
+        ? `[🤝 协同增量批次 (Hop ${hop}/${maxHops} · 提及来源: ${invokersLabel})] 请结合当前会话已建立的上下文与上方 <delta-events> 中的最新成员发言，从【${targetAgent.name} (${targetAgent.role})】视角提供实质性技术增量；若共识已达成或无新观点补充，直接给出最终结论且**切勿 @ 任何成员**（静默即成功）${peers.length > 0 ? `；仅在确需特定专家接力时才精准 @：${peerHandles}` : ''}。`
+        : `[💬 会话增量更新] 请结合当前会话上下文与上方 <delta-events> 中的最新消息，以【${targetAgent.name} (${targetAgent.role})】身份继续推进解答${peers.length > 0 ? `（如需协作可精准 @：${peerHandles}；若已完备切勿 @ 任何人）` : ''}。`;
+
+    return `${deltaSection}\n\n${directiveLine}`;
+  }
+
+  // 3. 冷启动 (Cold Start)：当前 Agent 在该会话 Scope 的首次唤醒
+  const sections: string[] = [];
+
+  if (topic) {
+    const peerSummary =
+      peers.length > 0
+        ? peers.map((p) => `${p.handle} (${p.name} · ${p.role})`).join('、')
+        : '(当前仅你独立在线)';
+    const topicDesc = topic.description?.trim()
+      ? escapeSemanticText(topic.description.trim())
+      : '（围绕议题标题进行深度方案推演）';
+
+    const topicBody =
+      `所属频道: #${topic.channelName || 'channel'}\n` +
+      `议题编号: ${topic.topicId}\n` +
+      `议题标题: ${escapeSemanticText(topic.title)}\n` +
+      `议题背景与目标: ${topicDesc}\n` +
+      `参与研讨成员: ${peerSummary}`;
+
+    sections.push(
+      wrapSemanticSection('topic-context', topicBody, {
+        id: topic.topicId,
+        mode: 'standard',
+      })
+    );
+  }
+
+  sections.push(deltaSection);
+
+  if (hop > 1 && invokingAgents.length > 0) {
+    const invokersLabel = invokingAgents.map((a) => `${a.name} (${a.handle})`).join('、');
+    sections.push(
+      `[🤝 跨智能体协同唤醒 (Hop ${hop}/${maxHops} · 由 ${invokersLabel} 点名邀请)] 请审阅上方上下文与最新讨论增量，基于你的【${targetAgent.name} (${targetAgent.role})】专业视角给出针对性审查或技术增量；若方案已成熟收敛，直接输出结论且**切勿 @ 任何成员**${peers.length > 0 ? `；仅在确需特定成员继续接力时才精准 @：${peerHandles}` : ''}。`
+    );
+  } else if (isParallelFirstTurn && peers.length > 0) {
+    sections.push(
+      `[⚡ 首轮多专家并行独立推演 (Hop 1 · Parallel Fan-out)] 当前多位频道专家正并发独立回应用户诉求。请立足你的【${targetAgent.name} (${targetAgent.role})】专精定位给出独立方案；仅在你明确需要某位特定队友在下一轮做针对性协同审查时才使用 @handle（切勿盲目群发 @），若无需他人接力请勿添加 @。`
+    );
+  } else {
+    sections.push(
+      `请以你的专业角色定位【${targetAgent.name} (${targetAgent.handle}) · ${targetAgent.role}】回应上方 <delta-events> 中的诉求${peers.length > 0 ? `（如需特定同事接力可精准 @：${peerHandles}；若方案已完备无需他人接力，请勿在正文中 @ 任何人）` : ''}。`
+    );
+  }
+
+  return sections.join('\n\n');
+}
+
+export interface TurnAgentOutput {
+  agent: Agent;
+  messageId: string;
+  replyContent: string;
+}
+
+export interface AggregatedMentionTarget {
+  targetAgent: Agent;
+  invokingAgents: Agent[];
+  sourceMessageIds: string[];
+  combinedReplies: Array<{ agent: Agent; messageId: string; content: string }>;
+}
+
+export interface TurnBarrierResolution {
+  /** 去重合并后的下一轮待唤醒目标 Agent 列表 */
+  nextTargets: AggregatedMentionTarget[];
+  /** 尝试越界 @ 未加入当前频道/议题的外部 Agent 拦截记录 */
+  uninvitedMentions: Array<{ invokingAgent: Agent; uninvitedAgents: Agent[] }>;
+}
+
+/**
+ * 轮次同步屏障 (Turn Barrier) 提及汇聚与去重合并器
+ *
+ * 解决并发发言下的三大工程问题：
+ * 1. 【抑制级联风暴 (Anti-Fanout Explosion)】：
+ *    当同轮并发的 Agent A 和 Agent C 同时在回复中 `@AgentB` 时，屏障将其合并为对 `AgentB` 的 **单次唤醒**，
+ *    并在 `invokingAgents` 中同时记录 `[AgentA, AgentC]`，杜绝同一 Agent 在同一跳被重复并发调用；
+ * 2. 【兼容用户初始排队队列】：
+ *    若本轮没有任何 Agent 主动发出 `@mention`，但存在残留的 `queuedCollaborators`，则平滑消费队列；
+ * 3. 【越界准入统一审计】：
+ *    集中检测本轮各 Agent 是否尝试点名未加入当前频道的外部 Agent，供宿主统一渲染准入拦截提示。
+ */
+export function aggregateTurnBarrierMentions(options: {
+  turnOutputs: TurnAgentOutput[];
+  candidateAgents: Agent[];
+  allWorkspaceAgents: Agent[];
+  isDm?: boolean;
+  queuedCollaborators?: Agent[];
+}): TurnBarrierResolution {
+  const {
+    turnOutputs,
+    candidateAgents,
+    allWorkspaceAgents,
+    isDm = false,
+    queuedCollaborators = [],
+  } = options;
+
+  const targetMap = new Map<string, AggregatedMentionTarget>();
+  const uninvitedMentions: Array<{ invokingAgent: Agent; uninvitedAgents: Agent[] }> = [];
+
+  for (const output of turnOutputs) {
+    const { agent: invokingAgent, messageId, replyContent } = output;
+    if (!replyContent || !replyContent.trim()) continue;
+
+    // 1. 检查是否存在越界点名未受邀外部 Agent
+    if (!isDm) {
+      const isReplyAll = isAllMention(replyContent);
+      if (!isReplyAll) {
+        const outsiders = parseAgentMentions(replyContent, allWorkspaceAgents, invokingAgent.id).filter(
+          (a) => !candidateAgents.some((ca) => ca.id === a.id)
+        );
+        if (outsiders.length > 0) {
+          uninvitedMentions.push({
+            invokingAgent,
+            uninvitedAgents: outsiders,
+          });
+        }
+      }
+    }
+
+    // 2. 从当前频道/议题准入的候选成员中提取显式 @ 的目标
+    const mentionedInReply = parseAgentMentions(replyContent, candidateAgents, invokingAgent.id);
+    for (const target of mentionedInReply) {
+      const existing = targetMap.get(target.id);
+      if (existing) {
+        if (!existing.invokingAgents.some((ia) => ia.id === invokingAgent.id)) {
+          existing.invokingAgents.push(invokingAgent);
+        }
+        if (messageId && !existing.sourceMessageIds.includes(messageId)) {
+          existing.sourceMessageIds.push(messageId);
+        }
+        existing.combinedReplies.push({
+          agent: invokingAgent,
+          messageId,
+          content: replyContent,
+        });
+      } else {
+        targetMap.set(target.id, {
+          targetAgent: target,
+          invokingAgents: [invokingAgent],
+          sourceMessageIds: messageId ? [messageId] : [],
+          combinedReplies: [
+            {
+              agent: invokingAgent,
+              messageId,
+              content: replyContent,
+            },
+          ],
+        });
+      }
+    }
+  }
+
+  // 3. 若本轮无任何显式 @，且存在兼容排队协作者，则提取队首
+  if (targetMap.size === 0 && queuedCollaborators.length > 0 && turnOutputs.length > 0) {
+    const nextQueued = queuedCollaborators[0];
+    const lastOutput = turnOutputs[turnOutputs.length - 1];
+    targetMap.set(nextQueued.id, {
+      targetAgent: nextQueued,
+      invokingAgents: [lastOutput.agent],
+      sourceMessageIds: lastOutput.messageId ? [lastOutput.messageId] : [],
+      combinedReplies: [
+        {
+          agent: lastOutput.agent,
+          messageId: lastOutput.messageId,
+          content: lastOutput.replyContent,
+        },
+      ],
+    });
+  }
+
+  return {
+    nextTargets: Array.from(targetMap.values()),
+    uninvitedMentions,
+  };
+}
+
 export interface BuildExecutionPromptOptions {
   topic: TopicPromptContext;
   executorAgent: Agent;

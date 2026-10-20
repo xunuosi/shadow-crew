@@ -25,6 +25,8 @@ Shadow Crew —— 多 Agent 协同桌面应用（Tauri + React 19 + Vite）。
   - **定位**：Shinobi "4+1" 认知决策与确定性博弈编排协议规范（FSM 状态迁移表、阶段 Prompt 靶点载荷规范、后仲裁落地执行闭环）。
 - **[`docs/SPEC_GFRAME_BAYESIAN_MODULAR_ORCHESTRATION.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/SPEC_GFRAME_BAYESIAN_MODULAR_ORCHESTRATION.md)**
   - **定位**：CognoNexus × G-Frame 贝叶斯与团队博弈驱动的模块化分治编排规范与落地方案（阶段 0 拓扑拆解与跨模块只读《公共接口契约》、模块级上下文物理隔离沙箱、贝叶斯先验分流与后验动态升降级、模块爆炸半径硬冻结与 Wave 1~3 实施路线图）。
+- **[`docs/SPEC_NORMAL_MODE_BUZZ_CONTEXT_AND_CONCURRENT_ORCHESTRATION.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/SPEC_NORMAL_MODE_BUZZ_CONTEXT_AND_CONCURRENT_ORCHESTRATION.md)**
+  - **定位**：普通协同模式（Channel 主消息流 & Topic 标准讨论模式 `discussionMode === 'standard'`）对标 `buzz-acp` 的增量上下文与并发协同编排设计规范（会话水位线 `<delta-events>` 未读增量提取与并发水位线不变量、冷启动 vs 热会话双态 Prompt 编译、首轮并发 Fan-out + `Promise.allSettled` Turn Barrier 轮次同步屏障、`aggregateTurnBarrierMentions` 跨回复 `@mention` 去重聚合与越界守卫）。
 
 ---
 
