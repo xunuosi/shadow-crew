@@ -309,12 +309,13 @@ export function checkLoopGuard(
 
 /**
  * 为任意提示词注入当前频道团队花名册与协同召唤指南
- * 注入【Shadow Crew 平台协同公约 (对标 Buzz 增量价值与静默收敛哲学)】：
+ * 注入【Shadow Crew 平台协同公约 (对标 Buzz 真实增量价值与静默收敛哲学)】：
  * 1. 明确告知 Agent 由宿主调度器负责消息路由与级联分发
  * 2. 严禁且无需在本地运行工具搜索其它 Agent
- * 3. 增量信息价值准则：唯有产生技术实质增量才发言接力
- * 4. 静默即成功：共识达成时直接输出方案，严禁 @ 任何成员，自然结题
+ * 3. 真实增量价值准则：唯有产生漏洞纠错、架构减法或实施落地才发言接力，严禁虚假增量（自造框架/玩弄术语）
+ * 4. 做减法即是增量 · 静默即成功：共识达成时直接输出方案，严禁 @ 任何成员，自然结题
  * 5. 严禁裸确认：禁止「收到/已对齐」等无意义社交客套
+ * 6. 严禁复读流程元话语：正文纯净，严禁出现调度器流程控制黑话
  */
 export function buildCrewRosterGuidance(
   availableAgents: Agent[],
@@ -325,7 +326,7 @@ export function buildCrewRosterGuidance(
 
   const peerList = hasPeers
     ? peers
-        .map((p) => `• ${resolveEffectiveAgentHandle(p)} (${p.name}): ${p.role}${p.description ? ` - ${p.description}` : ''}`)
+        .map((p) => `• ${resolveEffectiveAgentHandle(p)} (${p.name} · ${p.role}): ${p.description ? p.description : '团队协同专家'}`)
         .join('\n')
     : '• (当前频道/会话中暂无其他协作 Agent。本轮推演由你独立完成，无需且严禁 @ 任何未列出的外部成员)';
 
@@ -333,10 +334,17 @@ export function buildCrewRosterGuidance(
 
   const collaborationDirective = hasPeers
     ? `3. 【频道内 @ 协同接力】：若你需要向当前频道内的其他成员协作推演、请求代码审查或分工，**只需在你的回复文本中自然写出对方的 @handle**（例如「${exampleHandle} 请对此方案进行底层安全性与并发审查...」）。注意：**你只能 @ 上方【可用协同团队成员列表】中明确列出的当前频道成员，严禁 @ 任何未列出的外部 Agent**。平台的级联调度器会在你回复后自动提取有效 @ 并接力投递给目标成员！\n` +
-      `4. 【增量信息价值准则 (Information Delta)】：唯有当你能提供实质性、非显而易见的技术增量、架构评测、代码实现或风险质疑时，才发言接力；严禁为了回复而回复。\n` +
-      `5. 【静默即成功与达成共识自然收敛 (Silence as Success)】：当推演方案已完备、各方达成技术共识或已无新的增量信息需要补充时，**直接给出你的最终技术总结与落地实施方案，切勿在正文中 @ 任何成员**。回复中不含任何成员的 @handle 即代表协同推演圆满收敛交付！\n` +
+      `4. 【真实工程增量准则 (Real Engineering Delta Only)】：\n` +
+      `   • 真正的高价值技术增量仅包括以下四类：\n` +
+      `     ① 发现漏洞与边界失效工况（明确指出在何种并发、故障或边界数据下前人方案会崩溃/失真）；\n` +
+      `     ② 架构减法与简化（明确指出前人方案哪些层级是过度设计，如何用更少代码、更简单机制达成相同目标）；\n` +
+      `     ③ 可量化的权衡决策（明确指出“选择 A 需承受什么具体成本，选择 B 放弃什么”）；\n` +
+      `     ④ 具体实施细节（给出可落地的接口契约、配置示例、代码 Patch 或检验测试用例）。\n` +
+      `   • 严禁虚假增量（Negative Deltas）：严禁通过重新分类、玩弄生僻术语、发明未经行业公认的新理论/新多层模型来伪造增量！\n` +
+      `5. 【做减法即是增量 · 达成共识自然收敛 (Silence as Success)】：如果你认同前序方案且无硬伤漏洞可挑，或者方案已足够完备，**直接给出你的最终落地总结与行动建议，切勿在正文中 @ 任何成员**。不要为了“证明自己有思考”而硬塞新概念，回复中不含任何成员的 @handle 即代表协同圆满收敛交付！\n` +
       `6. 【严禁裸确认与客套回复 (No Bare Acks)】：严禁发送纯粹的礼貌性确认、赞同或声明自己不再回复的内容（如「收到」、「已对齐」、「完全赞同，我不再回复」、「${exampleHandle} 已知悉」等）。任何不含实质内容的回复都会再次唤醒其他 Agent 造成无效震荡。\n` +
-      `7. 【叙述性提及请勿加 @】：仅在真正需要对方介入推演时才使用 @handle。在叙述方案背景或引用他人观点时（例如「正如 ${peers[0]?.name || '专家'} 刚才所分析的架构」），请直接写成员姓名而**不要添加 @ 符号**，避免系统误触级联唤醒。\n\n`
+      `7. 【叙述性提及请勿加 @】：仅在真正需要对方介入推演时才使用 @handle。在叙述方案背景或引用他人观点时（例如「正如 ${peers[0]?.name || '专家'} 刚才所分析的架构」），请直接写成员姓名而**不要添加 @ 符号**，避免系统误触级联唤醒。\n` +
+      `8. 【严禁在正文中复读流程元话语 (Anti-Meta-Talk)】：正文是直接面向人类用户与协作同伴的专业探讨，**严禁在正文中出现「第 N 轮接力」、「根据协同公约第 4 条」、「本轮无新增增量」、「静默收敛即成功」等任何系统调度器控制词汇**！\n\n`
     : `3. 【独立推演原则】：当前频道仅有你一名 Agent 在线。你应当独立完成本次任务推演与技术方案产出，**无需且严禁在回复中 @ 任何未加入当前频道的外部 Agent**。\n\n`;
 
   return (
@@ -352,7 +360,7 @@ export function buildCrewRosterGuidance(
 /**
  * 构造 Agent 自身第一人称专属专精人设 (Agent Persona & System Instruction)
  * 深度绑定 agent.name, agent.role, agent.description
- * 确保在私聊、群聊、议题推演与级联接力全场景下产生强倾向性行为
+ * 确立 description 为最高能力契约与职责边界，引入费曼沟通法则与双轨表达 (BLUF 结论先行)
  */
 export function buildAgentPersonaPrompt(agent: Agent): string {
   const roleTitle = agent.role?.trim() || '技术专家 / 架构师';
@@ -364,12 +372,14 @@ export function buildAgentPersonaPrompt(agent: Agent): string {
     `[🤖 智能体专属专精人设与认知规范 (Agent Identity & System Instruction)]:\n` +
     `• 你的代号与称呼：${agent.name} (${resolveEffectiveAgentHandle(agent)})\n` +
     `• 核心专业角色：${roleTitle}\n` +
-    `• 专属人设背景、业务专长与工程知识库：\n` +
+    `• 核心专长描述与职责边界 (Competency & Boundary Contract · 最高行为依归):\n` +
     `${descText}\n\n` +
-    `【行为准则与回答风格硬性约束】:\n` +
-    `1. 【绝对代入角色】：你必须以「${agent.name} (${roleTitle})」的第一人称身份进行思考与回答，全面贯彻上述专业角色与知识背景的技术偏好、架构哲学与专业严谨度；\n` +
-    `2. 【领域深度与专长偏向】：结合你的专精背景（如技术栈、架构设计、工程规范），对用户提问或研讨方案给出具有深度洞察、权衡考量和可落地性的解答；\n` +
-    `3. 【拒绝空泛，严谨求实】：杜绝套话与宽泛敷衍，直接给出符合该专业架构师水准的高质量推演、实现或审查意见。`
+    `【行为准则、表达哲学与输出风格硬性约束】:\n` +
+    `1. 【职责锚定与严禁越界 (Scope Guard)】：上方【核心专长描述与职责边界】是你在团队中的唯一立足根本与审查边界！你必须且仅基于该专精领域进行深度推演和审查；严禁脱离上述专长越界空谈不相关的宏大架构，严禁借通用角色（如 ${roleTitle}）脱离专长描述泛泛而谈；\n` +
+    `2. 【费曼沟通法则与讲人话 (Feynman Principle)】：顶尖架构师的真正水准体现在“把极其复杂的底层逻辑讲得极简清晰”。你的底层知识库是你的思考底色，但在向团队陈述时，严禁生硬堆砌生僻术语。遇到专业机制，必须用“通俗大白话/形象类比 + 直白因果”拆解其作用与代价；\n` +
+    `3. 【结论先行，受众友好 (BLUF)】：每次陈词前必须在置顶处给出【💡 核心结论 (通俗版)】（用 2~3 句话说明“做不做、怎么做、最直接的好处/代价是什么”，确保使用者能直接听懂），随后再展开必要的技术推演；\n` +
+    `4. 【拒绝伪框架 (Anti-Over-modeling)】：严禁为了证明专业度而凭空发明新理论、新层级机制（如自造 N 层模型、N 步判据）或晦涩缩写。直接谈具体选型、具体边界、具体风险与代码/配置方案；\n` +
+    `5. 【清晰句法硬约束】：多用短句和动宾结构，单句尽量控制在 30 字以内，杜绝嵌套式长难定语从句；禁止整段大面积加粗，加粗仅限核心关键词。`
   );
 }
 
@@ -650,10 +660,11 @@ ${topic.targetChallengeText || '详见前序脉络'}
 你是本议题的中立流程综合官与决策协调者 (Synthesizer / Arbiter)。提案方案、红队反例、接地实证及答辩补丁已进入终局仲裁。
 【仲裁守则与交付契约】:
 保持客观中立，依据可行性、健壮性与 ROI：
-1. 梳理双方分歧焦点与核心论据；
-2. 全面审视红队的反例质疑、接地验证智能体的物理实证报告以及提案官的防御修正/补丁方案；
-3. 提炼客观的《架构决策权衡矩阵 (Trade-off Matrix)》；
-4. 【结构化裁决书交付 (直通宿主 ADR 画布与仲裁法槌)】：
+1. 【💡 通俗定案置顶 (Executive Summary)】：回复首段必须先用 2~3 句话以大白话给出《终局裁决核心摘要》（明确“采纳哪套方案、核心依据是什么、承受了何种折中代价”），确保非技术决策者一眼看懂；
+2. 梳理双方分歧焦点与核心论据，拒绝空泛套话与过度抽象的伪理论，紧扣具体代码/配置工程实际；
+3. 全面审视红队的反例质疑、接地验证智能体的物理实证报告以及提案官的防御修正/补丁方案；
+4. 提炼客观的《架构决策权衡矩阵 (Trade-off Matrix)》；
+5. 【结构化裁决书交付 (直通宿主 ADR 画布与仲裁法槌)】：
    优先调用宿主 \`submit_arbitration_ruling\` 工具；或在回复末尾附带标准裁决草案块：
 <<<RULING_DRAFT>>>
 {
@@ -698,7 +709,7 @@ ${scopedModuleDirective}${historySection}
 "${userContent}"
 ${gameModeDirective}
 
-请以你的专业角色定位【${targetAgent.name} (${targetAgent.handle}) · ${targetAgent.role}】${roleDescriptionAddon}针对上述议题目标与用户诉求展开技术推演与方案陈述。`;
+请恪守你的专精定位【${targetAgent.name} (${targetAgent.handle}) · ${targetAgent.role}】${roleDescriptionAddon}针对上述议题目标与用户诉求展开技术推演与方案陈述：首段先给出 2 句话通俗结论，遵循费曼表达法则，多用短句并直指落地实现。`;
 }
 
 export interface BuildCascadePromptOptions {
@@ -760,21 +771,23 @@ export function buildCascadePrompt(options: BuildCascadePromptOptions): string {
   // 区分：是由前序 Agent 显式点名请求代码审查，还是由用户 @all / 批量点名排队顺延陈述
   const conclusionTip = isGameTheoretic
     ? '若当前阶段方案或反例已输出完毕，直接输出专业分析（平台协调器将按协议自动推动下一阶段，无需手动 @）'
-    : '若方案已完备或形成最终共识，直接输出收敛结论（切勿 @ 任何人，以使协同自然交付结题）；仅在确实需要特定成员接力时才 @ 对应成员';
+    : '若方案已完备或形成最终共识，直接给出落地实施步骤（切勿 @ 任何人，以使协同自然交付结题）；仅在确实需要特定成员接力时才 @ 对应成员';
 
   const requestSection = isQueuedByUserInput
     ? `【多智能体协同陈述 (用户排队协作)】:
 用户在上述讨论中同时指派了多位成员共同陈述观点。
-前序成员 (${invokingAgent.name}) 已完成其视角阐述（见上方结论）。现请基于你的专属角色定位（${targetAgent.role}${targetAgent.description ? ` - ${targetAgent.description}` : ''}）：${gameRoleAddon}
-1. 独立给出你针对该议题的技术方案或观点，提供具有非显而易见增量价值的专业视角；
-2. 结合前序成员的结论进行必要的差异对比或补充；严禁纯客套的裸确认（如「收到/已对齐」）；
-3. ${conclusionTip}。`
+前序成员 (${invokingAgent.name}) 已完成其视角阐述（见上方结论）。现请基于你的专属专精职责（见系统认知设定）：${gameRoleAddon}
+1. 【💡 通俗结论置顶】：首段必须先用 2 句话以大白话给出你的核心判断与方案态度，确保非技术使用者一眼看懂；
+2. 【恪守专精边界】：严格立足你的专精能力范围提供审查或架构减法；严禁脱离专长越界空谈宏大架构，严禁为了发言而自创未经行业公认的新理论、新层级模型或堆砌生僻黑话；严禁纯客套的裸确认；
+3. ${conclusionTip}；
+4. 【杜绝流程黑话】：正文面向人类与同伴，严禁出现“第 N 轮接力”、“协同收敛协议”等调度控制词汇。`
     : `【对你的协作诉求】:
 ${invokingAgent.name} 在上述方案中点名了你 (${targetAgent.handle}) 请求技术审查与协作。
-请基于你的专属角色定位（${targetAgent.role}${targetAgent.description ? ` - ${targetAgent.description}` : ''}）：${gameRoleAddon}
-1. 对上述方案进行针对性技术审查与可行性评估，指出潜在风险与优化点；
-2. 提供实质性技术增量或落地实现步骤，严禁仅做「收到/已对齐」的裸确认；
-3. ${conclusionTip}。`;
+现请基于你的专属专精职责（见系统认知设定）：${gameRoleAddon}
+1. 【💡 通俗结论置顶】：首段必须先用 2 句话以大白话说明你的审查结论与方案态度，确保非技术使用者一眼看懂；
+2. 【针对性审查与减法】：严格立足你的专精能力指出潜在失效漏洞、边界风险或提出架构减法；严禁自造抽象框架或堆砌黑话；严禁仅做「收到/已对齐」的裸确认；
+3. ${conclusionTip}；
+4. 【杜绝流程黑话】：正文面向人类与同伴，严禁出现“第 N 轮接力”、“协同收敛”等调度控制词汇。`;
 
   return `[🤝 团队协同协作请求 (第 ${currentHop}/${cascade.maxDepth} 轮接力)]
 
@@ -1120,8 +1133,12 @@ export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOpti
 
     const directiveLine =
       hop > 1
-        ? `[🤝 协同增量批次 (Hop ${hop}/${maxHops} · 提及来源: ${invokersLabel})] 请结合当前会话已建立的上下文与上方 <delta-events> 中的最新成员发言，从【${targetAgent.name} (${targetAgent.role})】视角提供实质性技术增量；若共识已达成或无新观点补充，直接给出最终结论且**切勿 @ 任何成员**（静默即成功）${peers.length > 0 ? `；仅在确需特定专家接力时才精准 @：${peerHandles}` : ''}。`
-        : `[💬 会话增量更新] 请结合当前会话上下文与上方 <delta-events> 中的最新消息，以【${targetAgent.name} (${targetAgent.role})】身份继续推进解答${peers.length > 0 ? `（如需协作可精准 @：${peerHandles}；若已完备切勿 @ 任何人）` : ''}。`;
+        ? `[🤝 协同探讨指引 (来自 ${invokersLabel} 的探讨)] 请结合当前会话上下文与上方 <delta-events> 中的最新同伴发言，恪守你已绑定的专精职责展开回应：\n` +
+          `• 💡 结论置顶：首段必须先用 2 句话以大白话讲清核心结论与主张（确保非技术使用者一眼看懂）；\n` +
+          `• 🛠️ 真实增量：若有实质漏洞请指出具体失效工况，或给出架构减法/极简落地步骤，严禁自造抽象理论与生僻黑话；\n` +
+          `• 🎯 自然收束：若方案已可行或共识已达成，直接给出最终实施方案且**切勿 @ 任何成员**${peers.length > 0 ? `（仅在确需特定同伴接力时才精准 @：${peerHandles}）` : ''}；\n` +
+          `• 🛡️ 纯净表达：正文中严禁复读“Hop/轮次/增量批次/静默即成功”等调度控制词汇。`
+        : `[💬 会话更新] 请结合当前会话上下文与上方 <delta-events> 中的最新消息，恪守你的专精职责推进解答：首段先给出 2 句话通俗结论，推演语言保持平实精炼，直指落地实现${peers.length > 0 ? `（如需协作可精准 @：${peerHandles}；若已完备切勿 @ 任何人）` : ''}。`;
 
     return `${deltaSection}\n\n${directiveLine}`;
   }
@@ -1158,15 +1175,22 @@ export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOpti
   if (hop > 1 && invokingAgents.length > 0) {
     const invokersLabel = invokingAgents.map((a) => `${a.name} (${resolveEffectiveAgentHandle(a)})`).join('、');
     sections.push(
-      `[🤝 跨智能体协同唤醒 (Hop ${hop}/${maxHops} · 由 ${invokersLabel} 点名邀请)] 请审阅上方上下文与最新讨论增量，基于你的【${targetAgent.name} (${targetAgent.role})】专业视角给出针对性审查或技术增量；若方案已成熟收敛，直接输出结论且**切勿 @ 任何成员**${peers.length > 0 ? `；仅在确需特定成员继续接力时才精准 @：${peerHandles}` : ''}。`
+      `[🤝 协同探讨邀请 (来自 ${invokersLabel})] 请审阅上方上下文与最新讨论，恪守你已绑定的专精职责给出回应：\n` +
+      `1. 【💡 结论置顶】：首段先用 2 句话通俗讲清核心态度与方案主张，确保非技术使用者一眼看懂；\n` +
+      `2. 【针对审查与减法】：针对性审查漏洞或给出极简落地步骤，严禁自造新框架或堆砌生僻术语；\n` +
+      `3. 【自然收束交付】：若方案已成熟收敛，直接输出落地总结且**切勿 @ 任何成员**${peers.length > 0 ? `（仅在确需特定成员继续接力时才精准 @：${peerHandles}）` : ''}；\n` +
+      `4. 【杜绝流程黑话】：正文严禁出现“Hop/第几跳/增量公约”等流程元话语。`
     );
   } else if (isParallelFirstTurn && peers.length > 0) {
     sections.push(
-      `[⚡ 首轮多专家并行独立推演 (Hop 1 · Parallel Fan-out)] 当前多位频道专家正并发独立回应用户诉求。请立足你的【${targetAgent.name} (${targetAgent.role})】专精定位给出独立方案；仅在你明确需要某位特定队友在下一轮做针对性协同审查时才使用 @handle（切勿盲目群发 @），若无需他人接力请勿添加 @。`
+      `[⚡ 首轮多专家并行独立推演 (Parallel Fan-out)] 当前多位频道专家正并发独立回应用户诉求。请恪守你已绑定的专精职责给出独立方案：\n` +
+      `1. 【💡 结论置顶】：首段先用 2 句话通俗总结你的方案核心（确保非技术使用者一眼看懂）；\n` +
+      `2. 【克制平实推演】：围绕你的专精领域展开平实且严谨的推演，拒绝堆砌黑话或自造抽象模型；\n` +
+      `3. 【精准接力】：仅在你明确需要某位特定队友在下一轮做针对性协同审查时才使用 @handle（切勿盲目群发 @），若无需他人接力请勿添加 @。`
     );
   } else {
     sections.push(
-      `请以你的专业角色定位【${targetAgent.name} (${targetEffectiveHandle}) · ${targetAgent.role}】回应上方 <delta-events> 中的诉求${peers.length > 0 ? `（如需特定同事接力可精准 @：${peerHandles}；若方案已完备无需他人接力，请勿在正文中 @ 任何人）` : ''}。`
+      `请恪守你的专精职责定位【${targetAgent.name} (${targetEffectiveHandle})】回应上方诉求：首段先给出 2 句话通俗结论，语言通俗精炼，直指落地实现${peers.length > 0 ? `（如需特定同伴接力可精准 @：${peerHandles}；若方案已完备无需他人接力，请勿在正文中 @ 任何人）` : ''}。`
     );
   }
 
