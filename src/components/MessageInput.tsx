@@ -38,6 +38,10 @@ interface MessageInputProps {
   draftId?: string;
 }
 
+// 内存级全局输入历史记录 (内存常驻，无需会话间隔离)
+const globalInputHistory: string[] = [];
+const MAX_HISTORY_SIZE = 200;
+
 export const MessageInput: React.FC<MessageInputProps> = ({
   onSendMessage,
   activeAgents,
@@ -60,6 +64,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overflowRef = useRef<HTMLDivElement>(null);
 
+  // 历史回溯游标与暂存未发送草稿 (-1 表示当前正处于实时编辑状态)
+  const historyIndexRef = useRef<number>(-1);
+  const tempDraftRef = useRef<string>('');
+
   // 输入框高度根据输入内容动态自适应扩展 (最小 44px 约2行，最大 220px 约8-10行，超出平滑滚动)
   const adjustTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
@@ -77,12 +85,14 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     adjustTextareaHeight();
   }, [content, adjustTextareaHeight]);
 
-  // 切换频道或私聊 Agent 时，自动加载对应维度的暂存草稿
+  // 切换频道或私聊 Agent 时，自动加载对应维度的暂存草稿并重置历史回溯游标
   useEffect(() => {
     if (draftType && draftId) {
       const savedDraft = getDraft(draftType, draftId);
       setContent(savedDraft);
     }
+    historyIndexRef.current = -1;
+    tempDraftRef.current = '';
   }, [draftType, draftId]);
 
   const updateContent = (valOrFn: string | ((prev: string) => string)) => {
@@ -94,6 +104,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   };
 
   const handleClearDraft = () => {
+    historyIndexRef.current = -1;
+    tempDraftRef.current = '';
     setContent('');
     if (draftType && draftId) {
       clearDraft(draftType, draftId);
@@ -142,6 +154,18 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
   const handleSend = () => {
     if (!content.trim() || isGenerating) return;
+    const trimmed = content.trim();
+
+    // 内存级输入历史存储：避免连续重复存储
+    if (globalInputHistory.length === 0 || globalInputHistory[globalInputHistory.length - 1] !== trimmed) {
+      globalInputHistory.push(trimmed);
+      if (globalInputHistory.length > MAX_HISTORY_SIZE) {
+        globalInputHistory.shift();
+      }
+    }
+    historyIndexRef.current = -1;
+    tempDraftRef.current = '';
+
     let finalContent = content;
     if (quotingMessage) {
       const quoteSnippet = quotingMessage.content.trim().split('\n')[0].slice(0, 100);
@@ -219,6 +243,59 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       }
     }
 
+    // 内存级输入历史切换：按方向键向上 (ArrowUp) 回溯历史
+    if (e.key === 'ArrowUp' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (globalInputHistory.length > 0) {
+        const textarea = textareaRef.current;
+        const cursorStart = textarea?.selectionStart ?? 0;
+        const isCursorAtFirstLine = !textarea || cursorStart === 0 || !content.slice(0, cursorStart).includes('\n');
+
+        // 如果已经在回溯中，或者光标位于首行/输入为空/单行，触发向上回溯
+        if (historyIndexRef.current !== -1 || isCursorAtFirstLine) {
+          e.preventDefault();
+          if (historyIndexRef.current === -1) {
+            tempDraftRef.current = content;
+            const nextIdx = globalInputHistory.length - 1;
+            historyIndexRef.current = nextIdx;
+            updateContent(globalInputHistory[nextIdx]);
+          } else if (historyIndexRef.current > 0) {
+            const nextIdx = historyIndexRef.current - 1;
+            historyIndexRef.current = nextIdx;
+            updateContent(globalInputHistory[nextIdx]);
+          }
+          setTimeout(() => {
+            if (textareaRef.current) {
+              const len = textareaRef.current.value.length;
+              textareaRef.current.setSelectionRange(len, len);
+            }
+          }, 0);
+          return;
+        }
+      }
+    }
+
+    // 内存级输入历史切换：按方向键向下 (ArrowDown) 前进历史或恢复未发送草稿
+    if (e.key === 'ArrowDown' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (historyIndexRef.current !== -1) {
+        e.preventDefault();
+        if (historyIndexRef.current < globalInputHistory.length - 1) {
+          const nextIdx = historyIndexRef.current + 1;
+          historyIndexRef.current = nextIdx;
+          updateContent(globalInputHistory[nextIdx]);
+        } else {
+          historyIndexRef.current = -1;
+          updateContent(tempDraftRef.current);
+        }
+        setTimeout(() => {
+          if (textareaRef.current) {
+            const len = textareaRef.current.value.length;
+            textareaRef.current.setSelectionRange(len, len);
+          }
+        }, 0);
+        return;
+      }
+    }
+
     if (isGenerating && e.key === 'Escape') {
       e.preventDefault();
       onAbort?.();
@@ -233,6 +310,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
+    historyIndexRef.current = -1;
     updateContent(val);
 
     if (!isDm) {
