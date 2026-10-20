@@ -363,7 +363,27 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     if (topic?.id) {
       clearDraft('topic', topic.id);
     }
+    if (textareaRef.current) {
+      textareaRef.current.style.height = '44px';
+    }
   };
+
+  // 议题抽屉输入框高度自适应扩展 (最小 44px 约2行，最大 200px 约8行)
+  const adjustReplyHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    const minHeight = 44;
+    const maxHeight = 200;
+    const scrollHeight = textarea.scrollHeight;
+    const nextHeight = Math.min(Math.max(scrollHeight, minHeight), maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, []);
+
+  useEffect(() => {
+    adjustReplyHeight();
+  }, [replyContent, adjustReplyHeight]);
 
   // @ Mention state for topic reply composer
   const [isMentionOpen, setIsMentionOpen] = useState(false);
@@ -686,6 +706,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       clearDraft('topic', topic.id);
     }
     setIsMentionOpen(false);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = '44px';
+    }
   };
 
   const handleSelectMention = (item: { handle: string }) => {
@@ -1609,7 +1632,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       ) : (
         <>
           {/* 3. Topic Message Stream */}
-          <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 font-sans select-text">
+          <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 space-y-4 font-sans select-text min-w-0">
             {activeModuleFilterId !== 'ALL' && (
               <div className="p-2 rounded-xl bg-purple-50 dark:bg-purple-500/15 border border-purple-300 dark:border-purple-500/30 flex items-center justify-between gap-2 text-[11px] text-purple-800 dark:text-purple-300">
                 <span>🧩 当前已开启物理沙箱隔离视图：仅展示模块 <strong className="font-mono">[{activeModuleFilterId}]</strong> 及全局契约记录</span>
@@ -2823,6 +2846,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             onKeyDown={handleKeyDown}
             placeholder={isExecuting ? "议题正在推演中... 可补充信息，按 Esc 终止推演" : "在当前议题中回复或输入 @ 召唤 Agent 继续推演... (⌘ + Enter 发送)"}
             rows={2}
+            style={{ minHeight: '44px', maxHeight: '200px' }}
             className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none leading-relaxed"
           />
           <div className="flex items-center justify-between pt-1 border-t border-border mt-1">

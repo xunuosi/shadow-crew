@@ -69,7 +69,24 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const prevSubIdRef = useRef<string | null>(null);
+
+  const adjustSubReplyHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    const minHeight = 44;
+    const maxHeight = 180;
+    const scrollHeight = textarea.scrollHeight;
+    const nextHeight = Math.min(Math.max(scrollHeight, minHeight), maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, []);
+
+  useEffect(() => {
+    adjustSubReplyHeight();
+  }, [replyContent, adjustSubReplyHeight]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const container = scrollContainerRef.current;
@@ -116,6 +133,9 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
     setReplyContent('');
     if (subThread?.id) {
       clearDraft('subthread', subThread.id);
+    }
+    if (textareaRef.current) {
+      textareaRef.current.style.height = '44px';
     }
   };
 
@@ -184,7 +204,7 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
       </div>
 
       {/* 3. Sub-Thread Message Stream */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-3 space-y-3 select-text">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-3 select-text min-w-0">
         {subThread.messages.map((msg) => {
           const authorAgent = msg.authorId
             ? agents.find(
@@ -237,12 +257,14 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
       <div className="p-3 border-t border-border bg-surface-subtle">
         <div className="relative bg-surface border border-border rounded-xl p-2 focus-within:border-purple-500 transition-all">
           <textarea
+            ref={textareaRef}
             value={replyContent}
             onChange={(e) => updateReplyContent(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="在子话题中回复... (⌘ + Enter 发送)"
             rows={2}
-            className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none"
+            style={{ minHeight: '44px', maxHeight: '180px' }}
+            className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none leading-relaxed"
           />
           <div className="flex items-center justify-between pt-1 border-t border-border mt-1">
             <div className="flex items-center gap-1.5">

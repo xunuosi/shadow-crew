@@ -767,7 +767,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
       )}
 
       {/* 2. Message Conversation Stream */}
-      <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
+      <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6 space-y-6 min-w-0">
         {/* Parent Quote Anchor (Identical to Screenshot) */}
         {activeThread.parentQuoteSnippet && (
           <div className="max-w-3xl mx-auto flex items-center gap-2 px-3.5 py-2 rounded-xl bg-surface-subtle border border-border text-fg-muted text-xs shadow-xs">
@@ -925,15 +925,15 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
               id={`chat-msg-${message.id}`}
               key={message.id}
               onContextMenu={(e) => handleContextMenu(e, message)}
-              className={`max-w-3xl mx-auto group relative transition-all duration-300 rounded-xl p-2 -mx-2 scroll-mt-4 ${
+              className={`max-w-3xl mx-auto w-full min-w-0 group relative transition-all duration-300 rounded-xl p-2 scroll-mt-4 ${
                 highlightedMessageId === message.id
                   ? 'bg-blue-50/90 dark:bg-blue-500/15 ring-2 ring-blue-400 dark:ring-blue-400/60 shadow-md'
                   : 'hover:bg-surface-subtle/40'
               }`}
             >
               {/* Message Header */}
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2.5">
+              <div className="flex items-center justify-between mb-2 gap-2 min-w-0">
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
                   <div className="shrink-0 select-none">
                     <UnifiedAvatar
                       isUser={isHumanUser}
@@ -1109,7 +1109,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
               </div>
 
               {/* Message Body */}
-              <div className="pl-10.5 space-y-3 select-text">
+              <div className="pl-10.5 space-y-3 select-text min-w-0 break-words">
                 {/* Antigravity Thinking Chain Accordion */}
                 {message.thinkingProcess && (
                   activeThread.type === 'dm' ? (

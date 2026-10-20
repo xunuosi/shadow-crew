@@ -99,7 +99,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = React.memo(({
   }, [cleanLang]);
 
   return (
-    <div className="my-3 rounded-xl border border-border overflow-hidden bg-[var(--syntax-bg)] shadow-xs transition-colors">
+    <div className="my-3 rounded-xl border border-border overflow-hidden bg-[var(--syntax-bg)] shadow-xs transition-colors max-w-full min-w-0">
       {/* 1. Header Toolbar */}
       <div className="flex items-center justify-between px-3.5 py-2 border-b border-border bg-surface-subtle/80 text-[11px] font-mono select-none">
         <div className="flex items-center gap-2">
@@ -139,16 +139,16 @@ export const CodeBlock: React.FC<CodeBlockProps> = React.memo(({
       </div>
 
       {/* 2. Code Body with Line Numbers & Optional Folding */}
-      <div className="relative">
+      <div className="relative min-w-0 max-w-full">
         <div
-          className={`overflow-x-auto p-3 text-[12px] font-mono leading-relaxed transition-all ${
+          className={`overflow-x-auto p-3 text-[12px] font-mono leading-relaxed transition-all min-w-0 max-w-full ${
             isLongCode && !isExpanded ? 'max-h-[360px] overflow-y-hidden' : ''
           }`}
         >
-          <div className="flex">
+          <div className="flex min-w-0">
             {/* Line Numbers Column */}
             {showLineNumbers && (
-              <div className="select-none text-right pr-3 mr-3 border-r border-border/40 text-fg-muted/60 text-[11px] font-mono">
+              <div className="select-none text-right pr-3 mr-3 border-r border-border/40 text-fg-muted/60 text-[11px] font-mono shrink-0">
                 {lines.map((_, idx) => (
                   <div key={idx} className="leading-relaxed">
                     {idx + 1}
@@ -158,7 +158,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = React.memo(({
             )}
 
             {/* Code Content */}
-            <pre className="flex-1 font-mono m-0 p-0 overflow-x-auto bg-transparent select-text">
+            <pre className="flex-1 font-mono m-0 p-0 overflow-x-auto bg-transparent select-text min-w-0">
               <code
                 className={`language-${cleanLang} bg-transparent p-0 block select-text`}
                 dangerouslySetInnerHTML={{ __html: highlightedHtml }}

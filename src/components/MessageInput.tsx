@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Agent, Message } from '../types';
 import { 
   Send, 
@@ -60,6 +60,23 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overflowRef = useRef<HTMLDivElement>(null);
 
+  // 输入框高度根据输入内容动态自适应扩展 (最小 44px 约2行，最大 220px 约8-10行，超出平滑滚动)
+  const adjustTextareaHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    const minHeight = 44;
+    const maxHeight = 220;
+    const scrollHeight = textarea.scrollHeight;
+    const nextHeight = Math.min(Math.max(scrollHeight, minHeight), maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, []);
+
+  useEffect(() => {
+    adjustTextareaHeight();
+  }, [content, adjustTextareaHeight]);
+
   // 切换频道或私聊 Agent 时，自动加载对应维度的暂存草稿
   useEffect(() => {
     if (draftType && draftId) {
@@ -80,6 +97,9 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     setContent('');
     if (draftType && draftId) {
       clearDraft(draftType, draftId);
+    }
+    if (textareaRef.current) {
+      textareaRef.current.style.height = '44px';
     }
   };
 
@@ -135,6 +155,9 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       clearDraft(draftType, draftId);
     }
     setIsMentionOpen(false);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = '44px';
+    }
   };
 
   const handleSelectMention = (item: { handle: string }) => {
@@ -400,6 +423,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 : `在 #${channelName} 发起讨论或输入 @ 召唤 Agent 执行推演... (⌘ + Enter 发送)`
             }
             rows={2}
+            style={{ minHeight: '44px', maxHeight: '220px' }}
             className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none leading-relaxed"
           />
 

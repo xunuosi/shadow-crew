@@ -109,7 +109,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
     }, [content]);
 
     return (
-      <div className={`markdown-body text-xs text-fg leading-relaxed break-words select-text ${className}`}>
+      <div className={`markdown-body text-xs text-fg leading-relaxed break-words select-text min-w-0 max-w-full ${className}`}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{
