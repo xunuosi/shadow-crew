@@ -844,12 +844,15 @@ function isSystemControlMessage(msg: RoomTranscriptEntry): boolean {
 export function extractUnreadDeltaMessages(options: {
   messages: RoomTranscriptEntry[];
   lastWatermarkMessageId?: string;
+  /** 冷启动（尚无水位线）时的起始锚点消息 ID（包含该条消息），防止把频道内数天前已完结的历史讨论一股脑灌入新会话 */
+  coldStartSinceMessageId?: string;
   excludeAuthorId?: string;
   maxBatchEvents?: number;
 }): DeltaBatchResult {
   const {
     messages,
     lastWatermarkMessageId,
+    coldStartSinceMessageId,
     excludeAuthorId,
     maxBatchEvents = MAX_DELTA_BATCH_EVENTS,
   } = options;
@@ -864,7 +867,15 @@ export function extractUnreadDeltaMessages(options: {
   }
 
   const isWarmSession = Boolean(lastWatermarkMessageId && watermarkIndex !== -1);
-  const unreadSlice = watermarkIndex !== -1 ? validMessages.slice(watermarkIndex + 1) : validMessages;
+  let unreadSlice: RoomTranscriptEntry[];
+  if (watermarkIndex !== -1) {
+    unreadSlice = validMessages.slice(watermarkIndex + 1);
+  } else if (coldStartSinceMessageId) {
+    const anchorIdx = validMessages.findIndex((m) => m.id === coldStartSinceMessageId);
+    unreadSlice = anchorIdx !== -1 ? validMessages.slice(anchorIdx) : validMessages;
+  } else {
+    unreadSlice = validMessages;
+  }
 
   const filteredDelta = excludeAuthorId
     ? unreadSlice.filter((m) => m.authorId !== excludeAuthorId)

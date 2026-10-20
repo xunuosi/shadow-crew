@@ -2125,6 +2125,7 @@ export default function App() {
         const deltaBatch = extractUnreadDeltaMessages({
           messages: roomTranscript,
           lastWatermarkMessageId: lastWatermark,
+          coldStartSinceMessageId: !isTopic ? cascade.rootMessageId : undefined,
           excludeAuthorId: targetAgent.id,
         });
         if (deltaBatch.latestWatermarkMessageId) {
@@ -4918,7 +4919,8 @@ export default function App() {
       if (userMentionedAgents.length > 0) {
         respondingAgents = userMentionedAgents;
       } else if (candidateAgents.length > 0) {
-        respondingAgents = [candidateAgents[0]];
+        // 标准讨论模式（对标 Buzz）：当用户未显式点名特定 Agent 时，唤醒当前议题内所有已指派的在线 Agent 在 Hop 1 并发发言
+        respondingAgents = candidateAgents;
       }
     }
 
@@ -4930,7 +4932,11 @@ export default function App() {
     const offlineAgents = respondingAgents.filter((a) => isAgentOffline(a));
     const onlineAgents = respondingAgents.filter((a) => isAgentOnline(a));
 
-    if (offlineAgents.length > 0) {
+    // 仅当用户显式点名了离线 Agent、处于博弈模式角色缺失，或全部候选 Agent 均离线时才弹出离线拦截提示
+    const shouldWarnOfflineInTopic =
+      isGameTheoretic || userMentionedAgents.length > 0 || onlineAgents.length === 0;
+
+    if (offlineAgents.length > 0 && shouldWarnOfflineInTopic) {
       const offlineDetails = offlineAgents
         .map((a) =>
           a.status === 'error'
@@ -6438,7 +6444,8 @@ export default function App() {
     } else if (userMentionedAgents.length > 0) {
       respondingAgents = userMentionedAgents;
     } else if (candidateAgents.length > 0) {
-      respondingAgents = [candidateAgents[0]];
+      // 普通频道模式（对标 Buzz）：当用户首次发言未显式点名特定单人时，唤醒当前频道内所有已准入的在线 Agent 在 Hop 1 并发发言
+      respondingAgents = candidateAgents;
     }
 
     if (respondingAgents.length === 0) {
@@ -6470,7 +6477,11 @@ export default function App() {
     const offlineAgents = respondingAgents.filter((a) => isAgentOffline(a));
     const onlineAgents = respondingAgents.filter((a) => !isAgentOffline(a));
 
-    if (offlineAgents.length > 0) {
+    // 仅当用户显式 @ 了离线 Agent（或 @all），或者频道内没有任何在线 Agent 时，才弹出离线提示
+    const shouldWarnOffline =
+      isDmThread || isChannelAll || userMentionedAgents.length > 0 || onlineAgents.length === 0;
+
+    if (offlineAgents.length > 0 && shouldWarnOffline) {
       const offlineNames = offlineAgents.map((a) => `**${a.name}**`).join('、');
       setTimeout(() => {
         const offlineNotice: Message = {
@@ -6515,6 +6526,10 @@ export default function App() {
       agentCallCounts: initialCallCounts,
       isAborted: false,
     };
+    activeCascadesRef.current = {
+      ...activeCascadesRef.current,
+      [cascadeId]: newCascade,
+    };
     setActiveCascades((prev) => ({ ...prev, [cascadeId]: newCascade }));
 
     const newExecs: Record<string, ActiveAgentExecution> = {};
@@ -6527,7 +6542,10 @@ export default function App() {
         agentAvatar: ag.avatar,
         threadId: activeThread.id,
         status: 'thinking',
-        currentActionDetail: '正在并发推演方案并对齐增量上下文 (Hop 1)...',
+        currentActionDetail:
+          onlineAgents.length > 1
+            ? '正在并发独立推演方案并对齐增量上下文 (并行 Hop 1)...'
+            : '正在深度推演方案并对齐增量上下文 (Hop 1)...',
         startedAt: now + idx * 50,
         cascadeHop: 1,
       };
@@ -6540,7 +6558,7 @@ export default function App() {
 
     const turnOutputs: TurnAgentOutput[] = [];
 
-    // Hop 1 并发 Fan-out：所有被点名的在线 Agent 同时推演，并在 Turn Barrier 汇合
+    // Hop 1 并发 Fan-out：所有在线 Agent 同时推演，并在 Turn Barrier 汇合
     const hop1Promises = onlineAgents.map((targetAgent, idx) => {
       const sessionKey = `${currentThreadId}:${targetAgent.id}`;
       const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
@@ -6558,6 +6576,7 @@ export default function App() {
       const deltaBatch = extractUnreadDeltaMessages({
         messages: roomTranscript,
         lastWatermarkMessageId: lastWatermark,
+        coldStartSinceMessageId: userMsg.id,
         excludeAuthorId: targetAgent.id,
       });
 
@@ -6567,9 +6586,11 @@ export default function App() {
         roomId: currentThreadId,
         isWarmSession: deltaBatch.isWarmSession,
         deltaMessages: deltaBatch.deltaMessages,
+        triggerContent: content,
         hop: 1,
         maxHops: 12,
         isDm: isDmThread,
+        isParallelFirstTurn: onlineAgents.length > 1,
       });
 
       deliveredStandingContextRef.current.add(sessionKey);

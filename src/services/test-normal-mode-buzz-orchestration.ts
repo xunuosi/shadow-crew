@@ -247,6 +247,20 @@ console.log('\n2️⃣ 测试并发乱序到达下的会话水位线不变量 (C
       bulkBatch.deltaMessages[49].id === 'msg-bulk-65',
     `当未读事件数超出 MAX_DELTA_BATCH_EVENTS (${MAX_DELTA_BATCH_EVENTS}) 时，自动保留最近 ${MAX_DELTA_BATCH_EVENTS} 条增量`
   );
+
+  // 测试冷启动锚点 coldStartSinceMessageId：隔离频道中数天前已完结的历史讨论
+  const anchorBatch = extractUnreadDeltaMessages({
+    messages: manyMessages,
+    lastWatermarkMessageId: undefined,
+    coldStartSinceMessageId: 'msg-bulk-64',
+  });
+  assert(
+    !anchorBatch.isWarmSession &&
+      anchorBatch.deltaMessages.length === 2 &&
+      anchorBatch.deltaMessages[0].id === 'msg-bulk-64' &&
+      anchorBatch.deltaMessages[1].id === 'msg-bulk-65',
+    '冷启动指定 coldStartSinceMessageId 时，精准从本轮新发起的锚点消息开始切片，隔离历史陈旧对话污染'
+  );
 }
 
 // ---------------------------------------------------------------------------
