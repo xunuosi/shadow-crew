@@ -28,6 +28,7 @@ import { discoverLocalAcpRuntimes, FALLBACK_PRESET_RUNTIMES } from '../services/
 import { probeRemoteAcpConnection } from '../services/acpClient';
 import { DEFAULT_MODEL_NAME } from '../config/models';
 import { PROVIDER_PRESETS, getGlobalModelConfig, getActiveProviderPreset, testModelConnection } from '../services/llmService';
+import { normalizeAgentHandle } from '../services/agentCollaboration';
 import { ModelSelectorCombobox } from './ModelSelectorCombobox';
 import { AgentRuntimeStatus } from '../types';
 
@@ -422,13 +423,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
     if (initialAgent && onUpdateAgent) {
       const trimmedName = name.trim();
-      const generatedHandle = `@${trimmedName.toLowerCase().replace(/\s+/g, '-')}`;
-      const finalHandle =
-        !initialAgent.handle ||
-        initialAgent.name !== trimmedName ||
-        (initialAgent.handle.includes('副本') && !trimmedName.includes('副本'))
-          ? generatedHandle
-          : initialAgent.handle;
+      const finalHandle = normalizeAgentHandle(trimmedName, initialAgent.id);
 
       onUpdateAgent(initialAgent.id, {
         name: trimmedName,
@@ -461,9 +456,10 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           : { statusDetail: initialAgent.statusDetail }),
       });
     } else {
+      const trimmedName = name.trim();
       onConnectAgent({
-        name: name.trim(),
-        handle: `@${name.trim().toLowerCase().replace(/\s+/g, '-')}`,
+        name: trimmedName,
+        handle: normalizeAgentHandle(trimmedName),
         avatar: effectiveAvatar,
         role: role.trim() || (isRemoteMode ? 'Remote ACP Agent' : selectedAcp.name),
         description: description.trim() || (isRemoteMode ? 'Remote WebSocket ACP Endpoint' : selectedAcp.description),

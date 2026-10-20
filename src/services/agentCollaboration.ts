@@ -79,6 +79,50 @@ export interface CollaborationCascade {
 export const IDENTIFIER_CHAR_REGEX = /[a-zA-Z0-9_\-]/;
 
 /**
+ * 根据 Agent 名称生成规范化的唯一通信 Handle (@handle)
+ * 强制保持 handle 与 name 严格对齐（如 GlmClaude-01 -> @glmclaude-01），
+ * 彻底杜绝改名后遗留历史旧 handle（如 @glmclaude）导致跨 Agent 误识别
+ */
+export function normalizeAgentHandle(name: string, agentId?: string): string {
+  const trimmed = (name || '').trim();
+  if (!trimmed) return '@agent';
+  if (agentId === 'agent-shinobi-core' && trimmed === 'Shinobi Core (Rust)') {
+    return '@shinobi-core';
+  }
+  const clean = trimmed.replace(/^@+/, '').toLowerCase().replace(/\s+/g, '-');
+  return `@${clean}`;
+}
+
+/**
+ * 获取 Agent 的有效规范化 Handle：
+ * - 若 handle 缺失、包含已移除的「副本」后缀、或因改名遗留了缺失编号后缀的旧前缀（如 GlmClaude-01 残留 @glmclaude），
+ *   则强制对齐至基于当前 name 生成的规范化 handle (@glmclaude-01)。
+ */
+export function resolveEffectiveAgentHandle(agent: Pick<Agent, 'id' | 'name' | 'handle'>): string {
+  const canonical = normalizeAgentHandle(agent.name, agent.id);
+  const raw = (agent.handle || '').trim();
+  if (!raw) return canonical;
+
+  const rawWithAt = (raw.startsWith('@') ? raw : `@${raw}`).toLowerCase();
+  if (rawWithAt === canonical) return canonical;
+
+  // 1. 历史「副本」残留清理
+  if (rawWithAt.includes('副本') && !canonical.includes('副本')) {
+    return canonical;
+  }
+
+  // 2. 改名增补数字编号后缀后遗留的旧短前缀（例如 GlmClaude 改名为 GlmClaude-01 后，旧 handle 仍残留 @glmclaude）
+  if (
+    /[-_]\d+$/.test(canonical) &&
+    canonical.replace(/[-_]\d+$/, '') === rawWithAt
+  ) {
+    return canonical;
+  }
+
+  return rawWithAt;
+}
+
+/**
  * 全员点名匹配正则：必须具备独立的词法边界，防止类似 contact@all.com 或 overall 误触发
  */
 export const ALL_MENTION_REGEX = /(?:^|[^a-zA-Z0-9_\-])@(all|所有人|team)(?:$|[^a-zA-Z0-9_\-])/i;
@@ -136,15 +180,15 @@ export function parseAgentMentions(
 
     const candidateStrings: string[] = [];
 
-    // 模式 A: 规范化 handle (如 @mycodex, @mycodex-02, @mycodex-副本)
-    const rawHandle = (agent.handle || '').trim();
-    if (rawHandle) {
-      const handleWithAt = rawHandle.startsWith('@') ? rawHandle : `@${rawHandle}`;
-      candidateStrings.push(handleWithAt.toLowerCase());
+    // 模式 A: 有效规范化 handle (如 @mycodex, @mycodex-02, @glmclaude-01)
+    // 若 Agent 因改名残留了缺失后缀的旧 handle（如 GlmClaude-01 残留 @glmclaude），强制使用对齐后的规范化 handle
+    const effectiveHandle = resolveEffectiveAgentHandle(agent);
+    if (effectiveHandle) {
+      candidateStrings.push(effectiveHandle.toLowerCase());
 
       // 若 handle 带有短横线，补充空格别名 (如 @shinobi-core -> @shinobi core)
-      if (rawHandle.includes('-')) {
-        candidateStrings.push(`@${rawHandle.replace(/^@/, '').replace(/-/g, ' ')}`.toLowerCase());
+      if (effectiveHandle.includes('-')) {
+        candidateStrings.push(`@${effectiveHandle.replace(/^@/, '').replace(/-/g, ' ')}`.toLowerCase());
       }
     }
 
@@ -281,11 +325,11 @@ export function buildCrewRosterGuidance(
 
   const peerList = hasPeers
     ? peers
-        .map((p) => `• ${p.handle} (${p.name}): ${p.role}${p.description ? ` - ${p.description}` : ''}`)
+        .map((p) => `• ${resolveEffectiveAgentHandle(p)} (${p.name}): ${p.role}${p.description ? ` - ${p.description}` : ''}`)
         .join('\n')
     : '• (当前频道/会话中暂无其他协作 Agent。本轮推演由你独立完成，无需且严禁 @ 任何未列出的外部成员)';
 
-  const exampleHandle = hasPeers ? peers[0].handle : '@agent';
+  const exampleHandle = hasPeers ? resolveEffectiveAgentHandle(peers[0]) : '@agent';
 
   const collaborationDirective = hasPeers
     ? `3. 【频道内 @ 协同接力】：若你需要向当前频道内的其他成员协作推演、请求代码审查或分工，**只需在你的回复文本中自然写出对方的 @handle**（例如「${exampleHandle} 请对此方案进行底层安全性与并发审查...」）。注意：**你只能 @ 上方【可用协同团队成员列表】中明确列出的当前频道成员，严禁 @ 任何未列出的外部 Agent**。平台的级联调度器会在你回复后自动提取有效 @ 并接力投递给目标成员！\n` +
@@ -318,7 +362,7 @@ export function buildAgentPersonaPrompt(agent: Agent): string {
 
   return (
     `[🤖 智能体专属专精人设与认知规范 (Agent Identity & System Instruction)]:\n` +
-    `• 你的代号与称呼：${agent.name} (${agent.handle})\n` +
+    `• 你的代号与称呼：${agent.name} (${resolveEffectiveAgentHandle(agent)})\n` +
     `• 核心专业角色：${roleTitle}\n` +
     `• 专属人设背景、业务专长与工程知识库：\n` +
     `${descText}\n\n` +
@@ -959,7 +1003,8 @@ export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOpti
   }
 
   const peers = availableAgents.filter((a) => a.id !== targetAgent.id);
-  const peerHandles = peers.map((p) => p.handle).join(', ');
+  const peerHandles = peers.map((p) => resolveEffectiveAgentHandle(p)).join(', ');
+  const targetEffectiveHandle = resolveEffectiveAgentHandle(targetAgent);
 
   const effectiveEntries: RoomTranscriptEntry[] =
     deltaMessages.length > 0
@@ -987,7 +1032,7 @@ export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOpti
   if (isWarmSession) {
     const invokersLabel =
       invokingAgents.length > 0
-        ? invokingAgents.map((a) => `${a.name} (${a.handle})`).join('、')
+        ? invokingAgents.map((a) => `${a.name} (${resolveEffectiveAgentHandle(a)})`).join('、')
         : '团队成员';
 
     const directiveLine =
@@ -1004,7 +1049,7 @@ export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOpti
   if (topic) {
     const peerSummary =
       peers.length > 0
-        ? peers.map((p) => `${p.handle} (${p.name} · ${p.role})`).join('、')
+        ? peers.map((p) => `${resolveEffectiveAgentHandle(p)} (${p.name} · ${p.role})`).join('、')
         : '(当前仅你独立在线)';
     const topicDesc = topic.description?.trim()
       ? escapeSemanticText(topic.description.trim())
@@ -1028,7 +1073,7 @@ export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOpti
   sections.push(deltaSection);
 
   if (hop > 1 && invokingAgents.length > 0) {
-    const invokersLabel = invokingAgents.map((a) => `${a.name} (${a.handle})`).join('、');
+    const invokersLabel = invokingAgents.map((a) => `${a.name} (${resolveEffectiveAgentHandle(a)})`).join('、');
     sections.push(
       `[🤝 跨智能体协同唤醒 (Hop ${hop}/${maxHops} · 由 ${invokersLabel} 点名邀请)] 请审阅上方上下文与最新讨论增量，基于你的【${targetAgent.name} (${targetAgent.role})】专业视角给出针对性审查或技术增量；若方案已成熟收敛，直接输出结论且**切勿 @ 任何成员**${peers.length > 0 ? `；仅在确需特定成员继续接力时才精准 @：${peerHandles}` : ''}。`
     );
@@ -1038,7 +1083,7 @@ export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOpti
     );
   } else {
     sections.push(
-      `请以你的专业角色定位【${targetAgent.name} (${targetAgent.handle}) · ${targetAgent.role}】回应上方 <delta-events> 中的诉求${peers.length > 0 ? `（如需特定同事接力可精准 @：${peerHandles}；若方案已完备无需他人接力，请勿在正文中 @ 任何人）` : ''}。`
+      `请以你的专业角色定位【${targetAgent.name} (${targetEffectiveHandle}) · ${targetAgent.role}】回应上方 <delta-events> 中的诉求${peers.length > 0 ? `（如需特定同事接力可精准 @：${peerHandles}；若方案已完备无需他人接力，请勿在正文中 @ 任何人）` : ''}。`
     );
   }
 

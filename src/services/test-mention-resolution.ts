@@ -1,4 +1,10 @@
-import { parseAgentMentions, isAllMention } from './agentCollaboration';
+import {
+  parseAgentMentions,
+  isAllMention,
+  normalizeAgentHandle,
+  resolveEffectiveAgentHandle,
+  buildCrewRosterGuidance,
+} from './agentCollaboration';
 import { Agent } from '../types';
 
 function createMockAgent(id: string, name: string, handle: string): Agent {
@@ -146,4 +152,40 @@ const allAgents = [agent1, agent2, agentGlm, agentChinese, agentSpaces];
   console.log('✅ Test 12 Passed: currentAgentId exclusion');
 }
 
-console.log('🎉 ALL 12 MENTION RESOLUTION TESTS PASSED SUCCESSFULLY!');
+// Test 13: Renamed agent with stale legacy handle (e.g. GlmClaude -> GlmClaude-01 still holding @glmclaude)
+// Must NOT allow @glmclaude to falsely match GlmClaude-01, and roster must advertise @glmclaude-01
+{
+  const staleGlm01 = createMockAgent('agent-1790582453199', 'GlmClaude-01', '@glmclaude');
+  const glm02 = createMockAgent('agent-1774879745525', 'GlmClaude-02', '@glmclaude-02');
+  const pool = [agent1, staleGlm01, glm02];
+
+  console.assert(
+    normalizeAgentHandle(staleGlm01.name, staleGlm01.id) === '@glmclaude-01',
+    'Test 13a failed: normalizeAgentHandle should return @glmclaude-01'
+  );
+  console.assert(
+    resolveEffectiveAgentHandle(staleGlm01) === '@glmclaude-01',
+    'Test 13b failed: resolveEffectiveAgentHandle should upgrade stale @glmclaude to @glmclaude-01'
+  );
+
+  const roster = buildCrewRosterGuidance(pool, agent1.id);
+  console.assert(
+    roster.includes('@glmclaude-01 (GlmClaude-01)') && !roster.includes('@glmclaude (GlmClaude-01)'),
+    `Test 13c failed: roster leaked stale @glmclaude handle:\n${roster}`
+  );
+
+  const falseMentions = parseAgentMentions('请 @glmclaude 补充并发压测意见', pool, agent1.id);
+  console.assert(
+    falseMentions.length === 0,
+    `Test 13d failed: @glmclaude must NOT match GlmClaude-01, got ${falseMentions.map((m) => m.name)}`
+  );
+
+  const exactMentions = parseAgentMentions('请 @glmclaude-01 补充并发压测意见', pool, agent1.id);
+  console.assert(
+    exactMentions.length === 1 && exactMentions[0].id === staleGlm01.id,
+    'Test 13e failed: @glmclaude-01 should match GlmClaude-01'
+  );
+  console.log('✅ Test 13 Passed: Stale @glmclaude handle on GlmClaude-01 is normalized to @glmclaude-01 and never false-matched');
+}
+
+console.log('🎉 ALL 13 MENTION RESOLUTION TESTS PASSED SUCCESSFULLY!');

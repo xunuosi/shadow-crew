@@ -91,6 +91,7 @@ import { DEFAULT_MODEL_NAME } from './config/models';
 import { resolveAgentModelConfig, setGlobalModelConfig, clearLlmSessionHistory } from './services/llmService';
 import {
   CollaborationCascade,
+  normalizeAgentHandle,
   parseAgentMentions,
   isAllMention,
   checkLoopGuard,
@@ -183,6 +184,7 @@ export default function App() {
                 : undefined;
               const baseAgent = {
                 ...a,
+                handle: normalizeAgentHandle(a.name, a.id),
                 ...(updatedMemory ? { memory: updatedMemory } : {}),
                 status: 'idle', // 启动默认未开启通信，需用户在面板点击 Start
                 statusDetail: undefined,
@@ -451,16 +453,24 @@ export default function App() {
           }
 
           if (Array.isArray(fullData.agents) && fullData.agents.length > 0) {
+            let handleMigrated = false;
             const sanitizedAgents = fullData.agents.map((ag: Agent) => {
-              if (!ag.handle || (ag.name && ag.handle.includes('副本') && !ag.name.includes('副本'))) {
+              const expectedHandle = normalizeAgentHandle(ag.name, ag.id);
+              if (ag.handle !== expectedHandle) {
+                handleMigrated = true;
                 return {
                   ...ag,
-                  handle: `@${ag.name.trim().toLowerCase().replace(/\s+/g, '-')}`,
+                  handle: expectedHandle,
                 };
               }
               return ag;
             });
             setAgents(sanitizedAgents);
+            if (handleMigrated) {
+              deliveredStandingContextRef.current.clear();
+              sessionWatermarksRef.current.clear();
+              await saveAgentsToDb(sanitizedAgents);
+            }
           } else if (agents.length > 0) {
             await saveAgentsToDb(agents);
           }
@@ -5537,9 +5547,7 @@ export default function App() {
             if (Object.keys(next).length === 0) setIsGenerating(false);
             return next;
           });
-          setAgents((prev) =>
-            prev.map((a) => (a.id === agent.id ? { ...a, status: 'idle' } : a))
-          );
+          syncRunningAgentsWithBackend();
           console.error('Failed to send topic prompt to agent:', err);
           const errorReply: Message = {
             id: `topic-reply-err-${Date.now()}-${agent.id}`,
@@ -6252,19 +6260,43 @@ export default function App() {
 
   // Interrupt / Abort Agent Execution (Individual or Global)
   const handleAbortAgent = (agentId: string, threadId?: string) => {
+    let remainingInThread = 0;
     setActiveExecutions((prev) => {
       const next = { ...prev };
       Object.keys(next).forEach((key) => {
         const item = next[key];
-        if (item.agentId === agentId && (!threadId || item.threadId === threadId)) {
+        const matchesThread = !threadId || item.threadId === threadId || item.topicId === threadId;
+        if (item.agentId === agentId && matchesThread) {
           delete next[key];
+        } else if (matchesThread) {
+          remainingInThread++;
         }
       });
+      if (Object.keys(next).length === 0) {
+        setIsGenerating(false);
+      }
       return next;
     });
 
+    if (!threadId || remainingInThread === 0) {
+      setActiveCascades((prev) => {
+        const next: Record<string, CollaborationCascade> = {};
+        (Object.entries(prev) as [string, CollaborationCascade][]).forEach(([k, v]) => {
+          if (!threadId || v.roomId === threadId) {
+            next[k] = { ...v, isAborted: true };
+          } else {
+            next[k] = v;
+          }
+        });
+        activeCascadesRef.current = next;
+        return next;
+      });
+    }
+
+    // 重点：在会话状态栏点击「停止」仅中止当前推演轮次，Agent 必须维持在线就绪状态 ('running')，
+    // 严禁将其设为 'idle' (离线) 或调用 stop_acp_agent 杀死守护进程，否则后续协同接力会误报离线
     setAgents((prev) =>
-      prev.map((a) => (a.id === agentId ? { ...a, status: 'idle' } : a))
+      prev.map((a) => (a.id === agentId && a.status !== 'idle' ? { ...a, status: 'running' } : a))
     );
 
     if (threadId) {
@@ -6286,19 +6318,6 @@ export default function App() {
         };
       });
     }
-
-    if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
-      (window as any).__TAURI_INTERNALS__.invoke('stop_acp_agent', { agentId }).catch(() => {});
-    }
-
-    setTimeout(() => {
-      setActiveExecutions((current) => {
-        if (Object.keys(current).length === 0) {
-          setIsGenerating(false);
-        }
-        return current;
-      });
-    }, 0);
   };
 
   const handleAbortAll = (threadId?: string) => {
@@ -6311,6 +6330,7 @@ export default function App() {
           next[k] = v;
         }
       });
+      activeCascadesRef.current = next;
       return next;
     });
 
@@ -6319,7 +6339,7 @@ export default function App() {
       const next = { ...prev };
       Object.keys(next).forEach((key) => {
         const item = next[key];
-        if (!threadId || item.threadId === threadId) {
+        if (!threadId || item.threadId === threadId || item.topicId === threadId) {
           agentsToReset.push(item.agentId);
           delete next[key];
         }
