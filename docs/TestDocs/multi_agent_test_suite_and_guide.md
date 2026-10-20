@@ -21,8 +21,72 @@
 | 用例编号 | 用例名称 | 参会配置与环境 | 测试步骤与异常注入 | 预期量化指标与通过标准（Assertions） |
 | :--- | :--- | :--- | :--- | :--- |
 | **TC-2.1** | **零人工干预下的多轮自主接力（Autonomous Relay）** | 房间内加入 4 个不同角色 Agent，设为 `free_discussion` 模式，最大自主轮次 `maxRounds = 6` | 用户仅发送 1 条初始消息：`"围绕下一代桌面端插件沙箱的权限隔离方案展开 6 轮自主探讨"`，期间人工不再输入任何内容 | 1. **连续轮次达成率**：系统自动连续完成全部 `6` 轮发言，中途不出现停滞（Stall 超时 $> 30\text{s}$）。<br>2. **无自循环断言（No Self-Loop）**：对于任意轮次 $r \in [2, 6]$，均满足 `speaker[r] !== speaker[r-1]`（禁止同一 Agent 连续自言自语）。 |
-| **TC-2.2** | **发言分布均衡度与 `@` 定向点名响应测试** | 4 个 Agent 在线，第 2 轮发言的 Agent 在文本末尾显式输出 `@Agent_C 请补充存储层方案` | 观察调度器在第 3 轮的发言人指派逻辑，并统计 8 轮讨论后的发言次数分布 | 1. **定向点名命中率**：当上一轮包含有效 `@handle` 时，下一轮由被点名 Agent 接话的准确率 $= 100\%$。<br>2. **发言分布香农熵（Speaker Entropy）**：$H = -\sum p_i \log_2 p_i / \log_2 N \ge 0.85$，证明无个别 Agent 垄断讨论。 |
+| **TC-2.2** | **发言分布均衡度与 `@` 定向点名响应测试** | 4 个 Agent 在线（`@openclaw-mantis`、`@myclaudecode`、`@mycodex`、`@glmclaude-01`），讨论模式为**标准协作模式**（`discussionMode='standard'`；产品当前无 `free_discussion` 枚举）。开题消息**只 @ 一位**成员，禁止 `@all`——否则 Hop 1 会并发 fan-out 出 4 条发言，轮次定义直接失效。 | 使用 §TC-2.2-A 的 V1 开题输入，脚本化 8 轮线性接力：第 2 轮发言人 MyClaudeCode 在结尾原样输出 `@mycodex 请补充存储层方案`；第 3 轮应由被点名的 MyCodex 接话；第 8 轮收束且不再 @。期间人工不介入。 | 1. **定向点名命中率**：上一轮含有效 `@handle` 时，下一轮由被点名 Agent 接话的准确率 $= 100\%$。<br>2. **发言分布香农熵（Speaker Entropy）**：$H = -\sum p_i \log_2 p_i / \log_2 N \ge 0.85$，证明无个别 Agent 垄断讨论。<br>3. **轮次有效性前置（不满足则该轮作废）**：轮次定义为「一条 Agent 发言 = 一轮」，共 8 条；`collaborationInfo.hop` 必须严格递增 `1..8`，出现重复 hop 即判定发生了 fan-out 或分支。 |
 | **TC-2.3** | **ACP 子进程异常离线下的平滑降级连续性** | 3 个本地 ACP Stdio Agent + 1 个远程 WebSocket Agent | 在第 3 轮轮到某本地 ACP Agent 发言时，强行终止其子进程或模拟响应超时（$> 15\text{s}$） | 1. **自动 Fallback 触发**：`acpClient.ts` 捕获异常后自动切换至 `callLlmModel` 直连降级，并在 `AcpInspector` 记录告警。<br>2. **状态机零卡死**：第 3 轮降级回复正常落库，第 4~6 轮其他 Agent 继续自主发言，房间状态最终正常归位为 `'idle'`。 |
+
+#### TC-2.2-A：开题输入 V1（用于测定向点名命中率）
+
+**前置条件**：4 个 Agent 全部已 Start 在线，且都已加入同一频道或议题的参与名单；讨论模式为**标准协作模式**；开题消息**只 @ 一位**成员（禁止 `@all`）。
+
+```text
+【接力协议 · 共 8 轮 · 每轮一人发言】
+
+参与成员与固定顺序：
+① OpenClaw Mantis (@openclaw-mantis)
+② MyClaudeCode (@myclaudecode)
+③ MyCodex (@mycodex)
+④ GlmClaude-01 (@glmclaude-01)
+按此顺序循环两遍，共 8 轮。
+
+规则：
+1. 本轮只有被 @ 的那一位发言，其余成员保持静默。
+2. 每轮发言结尾有且只有一个 @，指向顺序中的下一位（第 8 轮除外）。
+3. 第 2 轮发言人 MyClaudeCode 必须在结尾原样写出：@mycodex 请补充存储层方案
+4. 第 8 轮 GlmClaude-01 给出最终总结，结尾不要 @ 任何人。
+5. 不要在正文中 @ 其他人，避免唤醒额外分支。
+
+议题：当前项目是一个多 Agent 协作工具，对于多 Agent 之间的信息共享和隔离，应该如何进行功能分类？目的是减少 token 的使用量和调用的响应速度。
+
+第 1 轮由 @openclaw-mantis 开始：请先给出信息共享与隔离的功能分类骨架，并在结尾 @myclaudecode 请其评审。
+```
+
+预期链路（用于对照实际落库结果）：
+
+| 轮次 | 发言人 | 结尾 `@` | 说明 |
+| :--- | :--- | :--- | :--- |
+| 1 | OpenClaw Mantis | `@myclaudecode` | 开题只点名这一人 |
+| 2 | MyClaudeCode | `@mycodex 请补充存储层方案` | TC-2.2 定向点名注入点 |
+| 3 | MyCodex | `@glmclaude-01` | **命中判定点**：被点名者必须接话 |
+| 4 | GlmClaude-01 | `@openclaw-mantis` | |
+| 5 | OpenClaw Mantis | `@myclaudecode` | |
+| 6 | MyClaudeCode | `@mycodex` | |
+| 7 | MyCodex | `@glmclaude-01` | |
+| 8 | GlmClaude-01 | 无 | 总结收束 |
+
+预期指标：定向点名命中率 `1/1 = 100%`；发言分布 `2/2/2/2`，香农熵 $H = 1.0 \ge 0.85$。
+
+#### TC-2.2-B：开题输入 V2（用于测真实发言分布熵）
+
+V1 的顺序、次数与收束均由 prompt 预设，其 $H = 1.0$ 是构造出来的，只能作为**定向点名命中率**的样本，不能证明系统不会让单个 Agent 垄断。分布均衡度需用下列 V2 单独跑 $k=5$ 取均值：
+
+```text
+【自主接力 · 共 8 轮 · 不预设发言顺序】
+
+参与成员：OpenClaw Mantis (@openclaw-mantis)、MyClaudeCode (@myclaudecode)、MyCodex (@mycodex)、GlmClaude-01 (@glmclaude-01)。
+
+规则：每次发言结尾必须 @ 一位"本轮最需要补充其盲区"的成员，不要 @ 自己，也不要 @ 已给出最终结论的人；累计满 8 条发言后，最后一位请收束总结并停止 @。
+
+议题：当前项目是一个多 Agent 协作工具，对于多 Agent 之间的信息共享和隔离，应该如何进行功能分类？目的是减少 token 的使用量和调用的响应速度。
+
+第 1 轮由 @openclaw-mantis 开始。
+```
+
+#### 轮次有效性前置（V1/V2 通用）
+
+1. **轮 = 一条 Agent 发言**。平台侧无"轮次计数器"，消息里的 `collaborationInfo.hop` 是级联深度：未点名开题时 Hop 1 会对全部在线成员并发 fan-out，因此"发言条数"与"跳数"必须分开统计。
+2. **V1 的 `hop` 必须严格递增 `1..8`**；出现重复 hop（例如 `1,1,1,1,2,2,2,3,3`）即说明发生了 fan-out 或分支，该轮作废。
+3. **任一发言人遗漏 `@` 即触发"静默即成功"收敛**，链路在下一跳直接结束且不产生告警——此时该轮同样作废，需重跑，不得将其计入 Stall 或降级。
+4. `@glmclaude` 为历史 handle，当前 GlmClaude-01 的实际 handle 是 `@glmclaude-01`；用例输入与判定脚本均以实际 handle 为准。
 
 ### 3. 测试模块三：博弈论模式（`game_theoretic`）vs 普通模式（`free_discussion`）可信度对比
 
