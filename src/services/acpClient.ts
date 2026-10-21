@@ -1417,6 +1417,7 @@ export async function clearAcpAgentSessions(agentId?: string, sessionKeyPrefix?:
       console.log(`[ACP Client] Cleared ACP process session_ids (agentId: ${agentId}, prefix: ${sessionKeyPrefix})`);
     } catch (e) {
       console.warn('[ACP Client] Failed to invoke clear_agent_sessions in Tauri:', e);
+      throw e;
     }
   }
 }

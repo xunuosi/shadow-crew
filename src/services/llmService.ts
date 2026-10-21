@@ -1344,27 +1344,32 @@ export function isValidMicroAgentSummary(text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.length < 20 || trimmed.length > 2000) return false;
 
-  // 1. 拒绝模型拒答、道歉与闲聊套话
-  const refusalPattern =
-    /(?:抱歉|对不起|无法提供|无法总结|作为(?:一个)?(?:AI|人工智能)|I cannot|I am unable|I apologize|as an AI language model)/i;
-  if (refusalPattern.test(trimmed)) {
+  // 1. 拒绝纯 JSON 报错报文或纯 HTTP 错误响应行
+  if (
+    /^\s*\{[\s\S]*"error"[\s\S]*\}\s*$/i.test(trimmed) ||
+    /^\s*(?:error\s*:|status\s*:\s*(?:error|failed)|http\s*(?:status)?\s*\d{3}|429\s+too\s+many|rate\s*limit\s*exceeded|gateway\s*timeout|bad\s*request|unauthorized)\b/i.test(trimmed)
+  ) {
     return false;
   }
 
-  // 2. 拒绝错误报文与未经解析的 JSON 报错
-  if (
-    /^\s*\{[\s\S]*"error"[\s\S]*\}/i.test(trimmed) ||
-    /(?:rate limit|unauthorized|bad request|gateway timeout)/i.test(trimmed)
-  ) {
+  // 2. 拒绝模型直接拒答、歉意闲聊或明确拒绝执行总结指令
+  // 注意：精准限制在“整段开头为道歉/身份声明”或“针对总结任务本身的拒答词”，
+  // 杜绝误杀包含“无法提供跨区域强一致性”或“接口存在 rate limit”等正常工程架构与争议结论
+  const openingApologyOrRefusal =
+    /^\s*(?:抱歉|对不起|很抱歉|非常抱歉|作为(?:一个)?(?:AI|人工智能)|I apologize|I am sorry|I'm sorry|I cannot fulfill|I am unable to fulfill)/i;
+  const explicitTaskRefusal =
+    /(?:无法总结|不能总结|无法进行总结|无法提炼|无法处理上述对话|unable to summarize|cannot summarize|as an AI language model[,\s].*?(?:cannot|unable))/i;
+  if (openingApologyOrRefusal.test(trimmed) || explicitTaskRefusal.test(trimmed)) {
     return false;
   }
 
   // 3. 必须包含至少一个核心分类结构标题或结构性要点
   const structuralKeywords = [
-    /【(?:架构|技术决议|方案|选型)/,
-    /【(?:关键参数|参数|约束|硬性约束)/,
-    /【(?:未决争议|争议|待办|风险)/,
-    /【(?:重要执行结果|执行结果|成果|合入)/,
+    /【(?:架构|技术决议|方案|选型|技术边界|技术方案|核心决议|演进)/,
+    /【(?:关键参数|参数|约束|硬性约束|指标|限流)/,
+    /【(?:未决争议|争议|待办|风险|挑战)/,
+    /【(?:重要执行结果|执行结果|成果|合入|落地)/,
+    /(?:\*{2}|•|\-)?\s*【?(?:架构|技术决议|关键参数|核心参数|未决争议|待办事项|重要执行结果|工程边界)/,
   ];
 
   return structuralKeywords.some((re) => re.test(trimmed));

@@ -668,6 +668,7 @@ export default function App() {
   agentsRef.current = agents;
   const activeExecutionsRef = useRef(activeExecutions);
   activeExecutionsRef.current = activeExecutions;
+  const generationEpochRef = useRef<number>(0);
 
   /**
    * 同步更新 messagesRef.current 并提交 React 状态更新 (Commit Messages Synchronously)
@@ -5301,6 +5302,7 @@ export default function App() {
         };
       });
 
+      const turnEpoch = generationEpochRef.current;
       return sendPromptToAcpAgent({
         agent,
         roomId: topicId,
@@ -5311,6 +5313,10 @@ export default function App() {
         discussionMode: activeTopicData?.discussionMode,
       })
         .then((acpResp) => {
+          if (turnEpoch !== generationEpochRef.current) {
+            console.log('[App] Dropping topic prompt reply because history was cleared');
+            return null;
+          }
           setActiveExecutions((prev) => {
             const next = { ...prev };
             delete next[execKey];
@@ -6725,6 +6731,7 @@ export default function App() {
         },
       });
 
+      const turnEpoch = generationEpochRef.current;
       return sendPromptToAcpAgent({
         agent: targetAgent,
         roomId: currentThreadId,
@@ -6735,6 +6742,10 @@ export default function App() {
         isDm: isDmThread,
       })
         .then((acpResp) => {
+          if (turnEpoch !== generationEpochRef.current) {
+            console.log('[App] Dropping thread prompt reply because history was cleared');
+            return null;
+          }
           setActiveExecutions((prev) => {
             const next = { ...prev };
             delete next[`${currentThreadId}:${targetAgent.id}`];
@@ -7374,6 +7385,8 @@ export default function App() {
         onClose={() => setIsStorageSettingsModalOpen(false)}
         messages={Object.values(messages).flat()}
         onMessagesCleared={async () => {
+          generationEpochRef.current++;
+          handleAbortAll();
           setMessages({});
           messagesRef.current = {};
           deliveredStandingContextRef.current.clear();

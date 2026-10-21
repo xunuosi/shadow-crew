@@ -515,6 +515,12 @@ console.log('\n1️⃣1️⃣ 测试上下文压缩双模架构 (compactConversa
   assert(isValidMicroAgentSummary('{"error": {"message": "Rate limit exceeded"}}') === false, '过滤 JSON 错误报文');
   assert(isValidMicroAgentSummary('短文本') === false, '过滤过短文本');
 
+  // 11.6.1 验证工程边界词防误杀（如“无法提供幂等性保证”、“网关 rate limit 为 100 QPS”不应被误判）
+  const engineeringSummaryWithNegativePhrases = `• 【架构与技术决议】: 当前消息总线无法提供跨区域强一致性保证，采用最终一致性架构
+• 【关键参数与约束】: 网关层配置 rate limit 为 500 QPS，超限请求进入削峰队列
+• 【重要执行结果】: 团队一致同意保留本地缓存优先策略，已完成验证合入`;
+  assert(isValidMicroAgentSummary(engineeringSummaryWithNegativePhrases) === true, '包含工程描述"无法提供"与"rate limit"的真实技术摘要不应被误杀拒答');
+
   // 拒绝回答时，buildFoldedSummaryTurn 自动无缝降级为 rule_based
   const rejectedTurn = buildFoldedSummaryTurn(sampleHistory.slice(0, 4), 300, '抱歉，我无法总结这段对话。');
   assert(rejectedTurn[0].content.includes('mode="rule_based"'), '当模型输出拒答时，自动降级为 mode="rule_based"');

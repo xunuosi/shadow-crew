@@ -842,13 +842,13 @@ fn normalize_system_prompt_for_sync(prompt: &str) -> String {
     let mut clean = prompt.to_string();
     if let Some(start) = clean.find("[🛡️ Shadow Crew 平台智能体协同公约") {
         if let Some(end) = clean[start..].find("[当前") {
-            clean = format!("{}{}", clean[..start].trim_end(), &clean[start + end..]);
+            clean = format!("{}\n\n{}", clean[..start].trim_end(), clean[start + end..].trim_start());
         } else {
             clean = clean[..start].trim_end().to_string();
         }
     } else if let Some(start) = clean.find("[👥 可用协同团队成员列表]:") {
         if let Some(end) = clean[start..].find("[当前") {
-            clean = format!("{}{}", clean[..start].trim_end(), &clean[start + end..]);
+            clean = format!("{}\n\n{}", clean[..start].trim_end(), clean[start + end..].trim_start());
         } else {
             clean = clean[..start].trim_end().to_string();
         }
@@ -1388,5 +1388,34 @@ mod runtime_status_tests {
 
         // 核心断言：两个独立 Agent 的 prompt 派发是完全并发并行的 (max_concurrent 达到 2)
         assert_eq!(max_concurrent.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn test_normalize_system_prompt_for_sync() {
+        use super::normalize_system_prompt_for_sync;
+
+        let base_persona = "[🤖 智能体专属专精人设与认知规范]:\n• 你的代号：Coder (技术专家)\n• 核心职责：负责代码实现";
+        let roster_v1 = "\n\n[🛡️ Shadow Crew 平台智能体协同公约 (Agent Collaboration Directive)]:\n[👥 可用协同团队成员列表]:\n• @alice (Alice · 架构师)\n• @bob (Bob · 审查员)";
+        let roster_v2 = "\n\n[🛡️ Shadow Crew 平台智能体协同公约 (Agent Collaboration Directive)]:\n[👥 可用协同团队成员列表]:\n• @alice (Alice · 架构师)\n• @bob (Bob · 审查员)\n• @carol (Carol · 测试专家)";
+        let workspace_env = "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: chan-1\n- 根目录: ~/.shadow-crew/channels/chan-1";
+
+        let cold_prompt_v1 = format!("{}{}{}", base_persona, roster_v1, workspace_env);
+        let warm_prompt = format!("{}{}", base_persona, workspace_env);
+        let cold_prompt_v2 = format!("{}{}{}", base_persona, roster_v2, workspace_env);
+
+        let norm_cold_v1 = normalize_system_prompt_for_sync(&cold_prompt_v1);
+        let norm_warm = normalize_system_prompt_for_sync(&warm_prompt);
+        let norm_cold_v2 = normalize_system_prompt_for_sync(&cold_prompt_v2);
+
+        // 核心断言 1：冷启动（带团队花名册）与第二轮热会话（剥离花名册），规范化后严格一致
+        assert_eq!(norm_cold_v1, norm_warm);
+        // 核心断言 2：新成员加入后花名册更新，基础人设依然规范化一致，不触发 session 误杀
+        assert_eq!(norm_cold_v2, norm_warm);
+
+        // 核心断言 3：当用户真正修改了 Agent 自身的人设（如代号或职责变化）时，规范化后严格不同
+        let changed_persona = "[🤖 智能体专属专精人设与认知规范]:\n• 你的代号：Reviewer (安全架构师)";
+        let changed_prompt = format!("{}{}", changed_persona, workspace_env);
+        let norm_changed = normalize_system_prompt_for_sync(&changed_prompt);
+        assert_ne!(norm_changed, norm_warm);
     }
 }

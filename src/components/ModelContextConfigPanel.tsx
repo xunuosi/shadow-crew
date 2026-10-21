@@ -14,7 +14,7 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { AgentModelConfig, ReasoningLevelItem } from '../types';
-import { getModelSafeContextBudget } from '../services/llmService';
+import { getModelSafeContextBudget, resolveMicroSummaryModel } from '../services/llmService';
 
 export interface ModelContextConfigPanelProps {
   modelConfig: AgentModelConfig;
@@ -686,6 +686,26 @@ export const ModelContextConfigPanel: React.FC<ModelContextConfigPanelProps> = (
             )}
           </span>
         </div>
+
+        {isMicroAgentEnabled && (
+          <div className="pt-1.5 space-y-1">
+            <div className="flex items-center justify-between text-[10px]">
+              <span className={labelColor}>自定义微总结轻量模型 ID (可选):</span>
+              <span className="text-fg-muted font-mono text-[9px]">
+                {modelConfig.microSummaryModelId
+                  ? '已自定义'
+                  : `默认推导: ${resolveMicroSummaryModel(modelConfig)}`}
+              </span>
+            </div>
+            <input
+              type="text"
+              value={modelConfig.microSummaryModelId || ''}
+              onChange={(e) => onChange({ microSummaryModelId: e.target.value.trim() || undefined })}
+              placeholder="如 gpt-4o-mini、claude-3-5-haiku-20241022、deepseek-chat"
+              className={`w-full px-2.5 py-1 text-[11px] font-mono rounded-lg border outline-none ${inputBg}`}
+            />
+          </div>
+        )}
       </div>
 
       {/* 换算指南提示 */}
