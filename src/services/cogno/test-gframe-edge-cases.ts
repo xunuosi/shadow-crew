@@ -282,22 +282,17 @@ console.log('\n--- EDGE-05 反馈向量语义 (覆盖累计值 vs 增量累加) 
 console.log('\n--- EDGE-06 答辩阶段实证计数硬编码 (静态契约扫描 src/App.tsx) ---');
 {
   const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
-  const lines = appSource.split('\n');
-  // 结构化多行扫描：定位 advanceModularOrchestration 调用块内的 verifiedClaims 字面量，
-  // 避免单行正则漏检（字段常跨行书写）。
-  const hardcodedHit = lines.findIndex((line, idx) => {
-    if (!/verifiedClaims:\s*2\s*,?/.test(line)) return false;
-    const windowText = lines.slice(Math.max(0, idx - 10), idx + 5).join('\n');
-    return (
-      /(advanceModularOrchestration|stepModularStageTransition)/.test(windowText) &&
-      /refutedClaims:\s*0\s*,?/.test(windowText)
-    );
-  });
-  const usesComputedCounter = lines.some((l) => /verifiedClaims:\s*verifiedDefenseCount/.test(l));
-  if (hardcodedHit >= 0) {
+
+  // 结构化匹配：定位 advanceModularOrchestration / stepModularStageTransition 调用块内是否存在数字字面量硬编码
+  const hardcodedMatch = appSource.match(
+    /(?:advanceModularOrchestration|stepModularStageTransition)\s*\([\s\S]{0,300}?verifiedClaims:\s*2\b[\s\S]{0,100}?refutedClaims:\s*0\b/
+  );
+  const usesComputedCounter = /verifiedClaims:\s*verifiedDefenseCount/.test(appSource);
+
+  if (hardcodedMatch) {
     defect(
       'EDGE-06',
-      `src/App.tsx:${hardcodedHit + 1} 答辩阶段 advanceModularOrchestration 硬编码 { verifiedClaims: 2, refutedClaims: 0 }，` +
+      `src/App.tsx 答辩阶段 advanceModularOrchestration 硬编码 { verifiedClaims: 2, refutedClaims: 0 }，` +
         `导致规则 C (SCOPED_DEFENSE_REFINE) 在真实运行期不可达，后验风险 P_posterior 不反映真实证伪数，` +
         `与 SPEC「实时反馈捕获 Γ_k」存在偏差`
     );
@@ -767,10 +762,9 @@ console.log('\n--- N11 全 fast_track 议题的制衡方门禁是否被误判 --
   );
 
   const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
-  // 截取「阶段 3 验证完成」到 trigger 之间的更新块，检查是否回填制衡方响应标记
-  const verStart = appSource.indexOf('阶段 3 验证完成后');
-  const verEnd = appSource.indexOf("nextStage: resolvedVerNextStage", verStart);
-  const verBlock = verStart >= 0 && verEnd > verStart ? appSource.slice(verStart, verEnd) : '';
+  // 定位验证阶段推进到 nextStage: resolvedVerNextStage 之间的更新块，检查是否回填制衡方响应标记
+  const verBlockMatch = appSource.match(/(?:stepModularStageTransition[\s\S]*?currentStage:\s*['"]verification['"][\s\S]*?nextStage:\s*resolvedVerNextStage)/);
+  const verBlock = verBlockMatch ? verBlockMatch[0] : '';
   const verBlockSetsChallenger = /isChallengerResponded/.test(verBlock);
   const fastTrackBypassMarker = /challengerBypassed|fastTrackBypassed|challengerSkippedByFastTrack/.test(appSource);
 
@@ -796,33 +790,47 @@ console.log('\n--- N11 全 fast_track 议题的制衡方门禁是否被误判 --
 // ---------------------------------------------------------------- N10
 console.log('\n--- N10 fast_track 分流是否校验验证官可用性 ---');
 {
+  // 1. 运行期纯函数单元验证：断言无可用验证官时自动降级至 challenge
+  const ftDraft = makeDraft([
+    { id: 'M1', title: 'M1 纯类型定义', responsibility: '数据结构与常量', files: ['src/a.ts'], dependsOn: [], level: 'low_deterministic' },
+  ]);
+  const ftState = initializeModularOrchestrationState(ftDraft);
+  const downgradedStep = stepModularStageTransition({
+    state: ftState,
+    currentStage: 'proposal',
+    feedbackDelta: {},
+    hasVerifiers: false,
+  });
+  const pureFuncCorrect =
+    downgradedStep.nextGameStage === 'challenge' &&
+    downgradedStep.posteriorAction === 'ESCALATE_TO_RED_TEAM';
+
+  // 2. 静态语法块扫描：定位提案阶段 stepModularStageTransition 调用是否传入 hasVerifiers
   const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  const proposalCallMatch = appSource.match(/stepModularStageTransition\s*\(\s*\{[\s\S]*?currentStage:\s*['"]proposal['"][\s\S]*?\}\s*\)/);
+  const proposalCallBlock = proposalCallMatch ? proposalCallMatch[0] : '';
+  const proposalChecksVerifier = /hasVerifiers\s*[:,\n]/.test(proposalCallBlock);
 
-  // 提案完成后的模块分流块：定位 stepModularStageTransition(currentStage: 'proposal') 调用附近的窗口
-  const proposalCallIdx = appSource.lastIndexOf("currentStage: 'proposal'");
-  const proposalBlock = proposalCallIdx > 0 ? appSource.slice(proposalCallIdx - 200, proposalCallIdx + 900) : '';
-  // 红队完成后的阶段分流块：定位 nextStageTarget 计算附近的窗口
-  const challengeAnchorIdx = appSource.indexOf('const nextStageTarget');
-  const challengeBlock = challengeAnchorIdx > 0 ? appSource.slice(challengeAnchorIdx - 700, challengeAnchorIdx + 700) : '';
-
-  const proposalChecksVerifier = /hasVerifiers|verifiers/.test(proposalBlock);
-  const challengeChecksVerifier = /hasVerifiers|verifiers/.test(challengeBlock);
-
-  console.log(
-    `    提案完成分流块校验验证官: ${proposalChecksVerifier}（窗口 ${proposalBlock.length} 字符）; 红队完成分流块校验验证官: ${challengeChecksVerifier}（窗口 ${challengeBlock.length} 字符）`
+  // 定位红队完成后的分流处理
+  const challengeChecksVerifier = /hasVerifiers/.test(
+    appSource.slice(Math.max(0, appSource.indexOf('const nextStageTarget') - 300), appSource.indexOf('const nextStageTarget') + 300)
   );
 
-  if (proposalBlock && challengeBlock && !proposalChecksVerifier && challengeChecksVerifier) {
+  console.log(
+    `    纯函数缺少验证官安全降级: ${pureFuncCorrect}; App 提案调用传入 hasVerifiers: ${proposalChecksVerifier}; 红队分流校验验证官: ${challengeChecksVerifier}`
+  );
+
+  if (pureFuncCorrect && proposalChecksVerifier && challengeChecksVerifier) {
+    pass('N10', 'fast_track 分流与红队分流均校验验证官可用性，纯函数状态机安全降级已自证');
+  } else if (!proposalChecksVerifier) {
     warn(
       'N10',
       `fast_track 分流未校验验证官可用性：提案完成后直接把 fast_track 模块推进到 verification，` +
         `未像红队完成分支那样检查 verifier 是否指派/在线。若议题未指派验证官，验证接力将命中「接地验证者缺席」分支并改跳 defense，` +
         `使 fast_track 模块多消耗一轮答辩，且不给用户任何「快速通道因缺少验证官而降级」的提示。`
     );
-  } else if (proposalChecksVerifier && challengeChecksVerifier) {
-    pass('N10', 'fast_track 分流与红队分流均校验验证官可用性');
   } else {
-    warn('N10', `静态窗口判定不确定（提案块=${proposalBlock.length} 字符 / 红队块=${challengeBlock.length} 字符），建议运行期复核`);
+    warn('N10', '静态窗口判定不确定，建议运行期复核');
   }
 }
 
