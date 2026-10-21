@@ -188,12 +188,13 @@ export function parseAndValidateMemoryBundle(rawJson: string): {
       };
     }
 
-    // 2. 版本兼容性检查
-    const formatVersion = data.manifest.format_version || '1.0.0';
-    if (formatVersion.startsWith('2.') || formatVersion.startsWith('3.')) {
+    // 2. 版本兼容性检查 (严格白名单：当前仅支持 v1.x 规范，拒绝其它主版本)
+    const formatVersion = String(data.manifest.format_version || '1.0.0').trim();
+    const majorVersion = parseInt(formatVersion.split('.')[0], 10);
+    if (isNaN(majorVersion) || majorVersion !== 1) {
       return {
         success: false,
-        error: `此记忆卡带版本为 v${formatVersion}，当前 Shadow Crew 仅支持最高 v1.x，请升级客户端`,
+        error: `此记忆卡带版本为 v${formatVersion}，当前 Shadow Crew 仅支持 v1.x 规范，请升级客户端`,
       };
     }
 

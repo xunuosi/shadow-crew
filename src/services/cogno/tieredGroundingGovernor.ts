@@ -248,9 +248,9 @@ class TieredGroundingGovernor {
       return evidences;
     }
 
-    // 3. 兜底解析：提炼文本核心反事实测试判定
-    const isPass = /(PASS|TRUE|通过|证实|符合预期|测试通过|成立)/i.test(verifierText) &&
-      !/(FAIL|未通过|证伪|失败|存在缺陷|严重异常)/i.test(verifierText);
+    // 3. 兜底解析：提炼文本核心反事实测试判定（防反义词包含误伤，如“不支持”排除）
+    const isPass = /(PASS|TRUE|通过|证实|符合预期|测试通过|成立|(?<![不未无])支持)/i.test(verifierText) &&
+      !/(FAIL|未通过|证伪|失败|存在缺陷|严重异常|不支持)/i.test(verifierText);
     const tier = /sandbox|沙箱|执行|run|test|bash/i.test(verifierText) ? 'T2' : 'T1';
     const detectedTool = tier === 'T2' ? 'code_sandbox' : 'static_analyzer';
 
@@ -398,6 +398,39 @@ class TieredGroundingGovernor {
       updatedCommittedStates,
     };
   }
+
+  /**
+   * 从验证官输出文本中提取接地实证真值率 (0.05 ~ 0.95)
+   * 采用反事实证据链加权解析，避免朴素关键词包含导致的反义词假阳性（如“不支持”误判为“支持”）
+   */
+  public extractGroundedTrueRatio(verificationText: string): number {
+    if (!verificationText || !verificationText.trim()) return 0.50;
+
+    const evidences = this.parseVerifierOutput(verificationText);
+    if (evidences.length > 0) {
+      let totalWeight = 0;
+      let weightedTrueSum = 0;
+      for (const ev of evidences) {
+        const weight = this.clampEvidenceWeight(ev.tier, ev.confidence ?? 0.8);
+        totalWeight += weight;
+        if (ev.truthValue) {
+          weightedTrueSum += weight;
+        }
+      }
+      if (totalWeight > 0) {
+        return Math.max(0.05, Math.min(0.95, Math.round((weightedTrueSum / totalWeight) * 100) / 100));
+      }
+    }
+
+    // 兜底正则排查：增加否定词前瞻与显式排除，杜绝词内包含误伤
+    const hasFail = /(FAIL|REFUTED|FALSE|未通过|证伪|不成立|失败|冲突|严重异常|存在缺陷|驳回|不支持)/i.test(verificationText);
+    const hasPass = /(PASS|VERIFIED|TRUE|符合预期|测试通过|成立|证实|有效|(?<![不未无])支持)/i.test(verificationText);
+
+    if (hasPass && !hasFail) return 0.85;
+    if (hasFail && !hasPass) return 0.15;
+    if (hasPass && hasFail) return 0.40;
+    return 0.50;
+  }
 }
 
 export interface ProcessVerifierEvidenceChainOptions {
@@ -425,4 +458,8 @@ export function processVerifierEvidenceChain(
   options: ProcessVerifierEvidenceChainOptions
 ): ProcessVerifierEvidenceChainResult {
   return tieredGroundingGovernor.processVerifierEvidenceChain(options);
+}
+
+export function extractGroundedTrueRatio(verifierText: string): number {
+  return tieredGroundingGovernor.extractGroundedTrueRatio(verifierText);
 }

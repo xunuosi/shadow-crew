@@ -696,17 +696,9 @@ export default function App() {
   // 记录各阶段 Self-Refine 重试次数 (硬门禁: 上限为 STAGE_CONTRACT_MAX_RETRIES)
   const stageRefineRetriesRef = useRef<Record<string, number>>({});
 
-  // 提取接地实证真值率 (0.0~1.0)
+  // 提取接地实证真值率 (0.05~0.95，委托给 TieredGroundingGovernor 进行结构化/加权反事实解析)
   const extractGroundedTrueRatio = (verificationText: string): number => {
-    if (!verificationText) return 0.5;
-    const passTokens = ['[PASS]', '[VERIFIED]', '[TRUE]', '通过', '证实', '成立', '符合预期', '有效', '支持'];
-    const failTokens = ['[FAIL]', '[REFUTED]', '[FALSE]', '未通过', '失败', '证伪', '不成立', '冲突', '异常', '驳回'];
-    let passCount = 0;
-    let failCount = 0;
-    passTokens.forEach((t) => { if (verificationText.includes(t)) passCount++; });
-    failTokens.forEach((t) => { if (verificationText.includes(t)) failCount++; });
-    if (passCount === 0 && failCount === 0) return 0.5;
-    return Math.max(0.05, Math.min(0.95, Math.round((passCount / (passCount + failCount)) * 100) / 100));
+    return tieredGroundingGovernor.extractGroundedTrueRatio(verificationText);
   };
 
   const currentUserId = 'user-norris';
