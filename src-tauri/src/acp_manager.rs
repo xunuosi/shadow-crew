@@ -832,6 +832,31 @@ impl RunningAgent {
             let _ = self.stdin_tx.send(close_req.to_string()).await;
         }
     }
+}
+
+/// 规范化用于 ACP 会话人设比对的系统提示词：
+/// 团队协同公约花名册 (Crew Roster) 会在冷启动第 1 轮动态挂载，
+/// 从第 2 轮起变为 warm-session 则遵循 Buzz 规范不再重复挂载花名册。
+/// 此处在比对前剥离动态花名册与协同公约块，确保真实 warm-session 不会被误判为人设变更而导致意外重建与上下文丢失。
+fn normalize_system_prompt_for_sync(prompt: &str) -> String {
+    let mut clean = prompt.to_string();
+    if let Some(start) = clean.find("[🛡️ Shadow Crew 平台智能体协同公约") {
+        if let Some(end) = clean[start..].find("[当前") {
+            clean = format!("{}{}", clean[..start].trim_end(), &clean[start + end..]);
+        } else {
+            clean = clean[..start].trim_end().to_string();
+        }
+    } else if let Some(start) = clean.find("[👥 可用协同团队成员列表]:") {
+        if let Some(end) = clean[start..].find("[当前") {
+            clean = format!("{}{}", clean[..start].trim_end(), &clean[start + end..]);
+        } else {
+            clean = clean[..start].trim_end().to_string();
+        }
+    }
+    clean.trim().to_string()
+}
+
+impl RunningAgent {
 
     /// 发送 Prompt 请求并等待当前 Agent 返回 (符合标准 ACP 规范)
     /// 内部持有 self.prompt_lock，保证对同一 Agent 的指令按序下发，杜绝 stdio 管道竞态；
@@ -965,16 +990,18 @@ impl RunningAgent {
         };
 
         // 3. 确保当前会话绑定了有效的 ACP sessionId (通过 session/new 创建，并将 cwd 绑定至对应独立工作区)
-        // 关键状态同步治理：比对当前 systemPrompt 是否发生演进变更 (模式切换/阶段流转/人设更新)
+        // 关键状态同步治理：比对当前基础人设是否发生演进变更 (模式切换/人设更新)
+        // 剥离冷启动首轮动态挂载的团队花名册 (Roster Guidance)，确保第 2 轮起的 warm-session 不会被误判为变更而意外重建导致上下文丢失
+        let normalized_sp = normalize_system_prompt_for_sync(&enriched_sp);
         let mut session_id = {
             let map = agent.session_ids.lock().await;
             let prompts_map = agent.session_prompts.lock().await;
             if let Some(existing_sp) = prompts_map.get(&session_key) {
-                if existing_sp == &enriched_sp {
+                if existing_sp == &normalized_sp {
                     map.get(&session_key).cloned()
                 } else {
                     tracing::info!(
-                        "[Agent {}] System prompt changed for session_key {}. Refreshing session to sync updated persona/mode.",
+                        "[Agent {}] Persona/environment prompt changed for session_key {}. Refreshing session to sync updated persona/mode.",
                         agent_id, session_key
                     );
                     None
@@ -1015,6 +1042,7 @@ impl RunningAgent {
             let mut params = serde_json::json!({
                 "cwd": &workspace_cwd,
                 "mcpServers": [],
+                "sessionKey": &session_key,
             });
             if is_dm {
                 params["agentId"] = serde_json::Value::String(agent_id.to_string());
@@ -1055,13 +1083,13 @@ impl RunningAgent {
                 workspace_cwd
             );
             agent.session_ids.lock().await.insert(session_key.clone(), sid.clone());
-            agent.session_prompts.lock().await.insert(session_key.clone(), enriched_sp.clone());
+            agent.session_prompts.lock().await.insert(session_key.clone(), normalized_sp.clone());
             session_id = Some(sid);
         }
 
         let current_session_id = session_id.unwrap_or_else(|| format!("session-{}", session_key));
 
-        // 4. 构造标准 ACP session/prompt 请求 (携带独立工作区 cwd 与 channelId/agentId)
+        // 4. 构造标准 ACP session/prompt 请求 (携带独立工作区 cwd 与 channelId/agentId/sessionKey)
         let req_id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1077,6 +1105,7 @@ impl RunningAgent {
 
         let mut prompt_params = serde_json::json!({
             "sessionId": current_session_id,
+            "sessionKey": &session_key,
             "cwd": &workspace_cwd,
             "prompt": [
                 {

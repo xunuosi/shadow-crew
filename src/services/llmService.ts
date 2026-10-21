@@ -1371,12 +1371,66 @@ export function isValidMicroAgentSummary(text: string): boolean {
 }
 
 /**
- * 内存级会话摘要缓存：以历史消息指纹为 key，避免相同历史轮次重复调用微型 Agent 产生 4s 延迟与费用
+ * 双路 64-bit FNV-1a 消息哈希与指纹计算
+ * 全量拼接每一条历史消息的 role 与完整正文，结合 model / provider / baseUrl / sessionScope，
+ * 杜绝前缀截断造成的指纹碰撞与不同 Agent 间的缓存串用
  */
-const microSummaryCache = new Map<string, string>();
+export function computeHistoryFingerprint(
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+  model: string,
+  provider?: string,
+  baseUrl?: string,
+  scope?: string
+): string {
+  let fullPayload = `${scope || ''}#${provider || ''}#${baseUrl || ''}#${model}#`;
+  for (let i = 0; i < messages.length; i++) {
+    fullPayload += `[${messages[i].role}:${messages[i].content.length}:${messages[i].content}]`;
+  }
+  let h1 = 0x811c9dc5;
+  let h2 = 0xcbf29ce4;
+  for (let i = 0; i < fullPayload.length; i++) {
+    const code = fullPayload.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 16777619);
+    h2 = Math.imul(h2 ^ (code + i), 1099511627);
+  }
+  return `${(h1 >>> 0).toString(16).padStart(8, '0')}${(h2 >>> 0).toString(16).padStart(8, '0')}`;
+}
 
-export function clearMicroSummaryCache(): void {
-  microSummaryCache.clear();
+const MAX_MICRO_SUMMARY_CACHE_SIZE = 200;
+
+interface MicroSummaryCacheEntry {
+  summary: string;
+  scope?: string;
+  timestamp: number;
+}
+
+/**
+ * 内存级会话摘要缓存：以全量历史消息哈希与作用域为 key，
+ * 采用严格 LRU 淘汰（上限 200 项），避免相同历史轮次重复调用微型 Agent 产生 4s 延迟与费用
+ */
+const microSummaryCache = new Map<string, MicroSummaryCacheEntry>();
+
+export function getMicroSummaryCacheSize(): number {
+  return microSummaryCache.size;
+}
+
+export function clearMicroSummaryCache(scope?: string): void {
+  if (!scope) {
+    microSummaryCache.clear();
+    return;
+  }
+  const targetScope = scope.trim();
+  for (const [key, entry] of Array.from(microSummaryCache.entries())) {
+    if (
+      entry.scope === targetScope ||
+      key.startsWith(`${targetScope}:`) ||
+      key.includes(`:${targetScope}:`) ||
+      key.endsWith(`:${targetScope}`) ||
+      (entry.scope && entry.scope.includes(targetScope))
+    ) {
+      microSummaryCache.delete(key);
+    }
+  }
 }
 
 /**
@@ -1387,7 +1441,8 @@ export function clearMicroSummaryCache(): void {
  */
 export async function summarizeHistoryWithMicroAgent(
   olderMessages: Array<{ role: 'user' | 'assistant'; content: string }>,
-  config?: AgentModelConfig
+  config?: AgentModelConfig,
+  scope?: string
 ): Promise<string | null> {
   if (!config || olderMessages.length === 0) {
     return null;
@@ -1399,15 +1454,23 @@ export async function summarizeHistoryWithMicroAgent(
     return null;
   }
 
-  // 1. 缓存快速命中：计算历史消息指纹，命中时 0ms 返回，杜绝重复调用
+  // 1. 缓存快速命中：计算全量历史消息指纹与作用域，命中时 0ms 返回，杜绝重复调用与缓存碰撞
   const targetModel = resolveMicroSummaryModel(config);
-  const cacheKey = `${targetModel}:${olderMessages
-    .map((m) => `${m.role}:${m.content.length}:${m.content.slice(0, 30)}`)
-    .join('|')}`;
+  const fingerprint = computeHistoryFingerprint(
+    olderMessages,
+    targetModel,
+    config.provider,
+    rawBaseUrl,
+    scope
+  );
+  const cacheKey = scope ? `${scope}:${fingerprint}` : fingerprint;
 
   const cached = microSummaryCache.get(cacheKey);
   if (cached) {
-    return cached;
+    // LRU 命中：刷新至末尾
+    microSummaryCache.delete(cacheKey);
+    microSummaryCache.set(cacheKey, { ...cached, timestamp: Date.now() });
+    return cached.summary;
   }
 
   // 2. 整理待总结的上下文片段：双端采样（前 250 字符背景 + 后 200 字符结论），保证长消息末尾的关键架构结论不丢失
@@ -1461,7 +1524,11 @@ ${dialogText}
       if (res.ok && res.data?.content?.[0]?.text) {
         const rawText = res.data.content[0].text.trim();
         if (isValidMicroAgentSummary(rawText)) {
-          microSummaryCache.set(cacheKey, rawText);
+          if (microSummaryCache.size >= MAX_MICRO_SUMMARY_CACHE_SIZE) {
+            const oldestKey = microSummaryCache.keys().next().value;
+            if (oldestKey) microSummaryCache.delete(oldestKey);
+          }
+          microSummaryCache.set(cacheKey, { summary: rawText, scope, timestamp: Date.now() });
           return rawText;
         }
         console.warn('[Micro Summarizer Agent] 响应未通过结构质量校验，降级回退规则提取:', rawText.slice(0, 60));
@@ -1489,7 +1556,11 @@ ${dialogText}
       if (res.ok && res.data?.choices?.[0]?.message?.content) {
         const rawText = res.data.choices[0].message.content.trim();
         if (isValidMicroAgentSummary(rawText)) {
-          microSummaryCache.set(cacheKey, rawText);
+          if (microSummaryCache.size >= MAX_MICRO_SUMMARY_CACHE_SIZE) {
+            const oldestKey = microSummaryCache.keys().next().value;
+            if (oldestKey) microSummaryCache.delete(oldestKey);
+          }
+          microSummaryCache.set(cacheKey, { summary: rawText, scope, timestamp: Date.now() });
           return rawText;
         }
         console.warn('[Micro Summarizer Agent] 响应未通过结构质量校验，降级回退规则提取:', rawText.slice(0, 60));
@@ -1550,13 +1621,8 @@ export function buildFoldedSummaryTurn(
       ? '[系统微型 Agent 智能提炼 Memory 摘要 · 早期关键决策已语义归纳]:'
       : '[系统自适应历史折叠 Memory 摘要 · 早期关键要点已结构化提取]:';
 
-  // 防语义边界破坏与标签逃逸：对摘要正文转义任何破坏性的 XML 标签
-  const sanitizedContent = summaryContent
-    .replace(/<\/compacted-summary>/gi, '&lt;/compacted-summary&gt;')
-    .replace(/<compacted-summary(?:\s+[^>]*)?>/gi, '&lt;compacted-summary&gt;')
-    .replace(/<\/?(?:system-reminder|delta-events|history-data)>/gi, (match) =>
-      match.replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    );
+  // 防语义边界破坏与标签逃逸：对摘要正文进行全局通用实体转义，彻底阻断任何伪闭合标签或标签变体注入
+  const sanitizedContent = escapeSemanticText(summaryContent);
 
   const summaryUserText = `<compacted-summary mode="${summaryMode}" folded-turns="${olderMessages.length}" estimated-saved-tokens="${olderEstimatedTokens}">
 ${titlePrefix}
@@ -1742,7 +1808,8 @@ export async function compactConversationHistoryAsync(
   history: Array<{ role: 'user' | 'assistant'; content: string }>,
   historyTokenBudget: number,
   keepRecentMessages: number = 4,
-  config?: AgentModelConfig
+  config?: AgentModelConfig,
+  sessionScope?: string
 ): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
   if (history.length === 0) {
     return [];
@@ -1767,7 +1834,7 @@ export async function compactConversationHistoryAsync(
   const allowAgent = config?.enableMicroAgentSummary !== false;
 
   if (allowAgent && olderMessages.length > 0 && config && (config.apiKey || config.provider === 'ollama')) {
-    agentSummaryText = await summarizeHistoryWithMicroAgent(olderMessages, config);
+    agentSummaryText = await summarizeHistoryWithMicroAgent(olderMessages, config, sessionScope);
   }
 
   return enforceHistoryBudgetConstraints(olderMessages, recentMessages, historyTokenBudget, agentSummaryText);
@@ -1813,6 +1880,7 @@ export function clearLlmSessionHistory(agentIdOrSessionKey?: string): void {
     clearMicroSummaryCache();
     return;
   }
+  clearMicroSummaryCache(agentIdOrSessionKey);
   for (const key of Array.from(llmSessionHistoryMap.keys())) {
     if (
       key === agentIdOrSessionKey ||
@@ -1878,7 +1946,8 @@ export async function callLlmModel(
     rawHistory,
     effectiveHistoryBudget,
     4,
-    config
+    config,
+    sessionKey
   );
 
   const conversationTurns: Array<{ role: 'user' | 'assistant'; content: string }> = [

@@ -5,8 +5,22 @@ mod memory;
 use anyhow::Result;
 use memory::AgentMemoryStore;
 use shadow_crew_protocol::{AcpPromptResult, MemoryTrace};
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
+
+struct SessionState {
+    #[allow(dead_code)]
+    session_id: String,
+    #[allow(dead_code)]
+    session_key: String,
+    #[allow(dead_code)]
+    channel_id: String,
+    workspace_dir: PathBuf,
+    system_prompt: Option<String>,
+    mcp_client: Option<mcp_client::SharedMcpClient>,
+}
 
 /// 解析用户级全局 Shadow Crew 根目录 (~/.shadow-crew)
 fn get_shadow_crew_home_dir() -> std::path::PathBuf {
@@ -101,6 +115,7 @@ async fn main() -> Result<()> {
     let mut mcp_client: Option<mcp_client::SharedMcpClient> = None;
     let mut mcp_client_channel: Option<String> = None;
     let mut session_channel_id = "chan-default".to_string();
+    let mut active_sessions: HashMap<String, SessionState> = HashMap::new();
 
     // 持续监听来自 Tauri 宿主或父进程的 stdio JSON-RPC 2.0 请求
     for line in reader.lines() {
@@ -134,17 +149,40 @@ async fn main() -> Result<()> {
                     out.flush()?;
                 }
             } else if method == "session/new" {
+                let session_key = params.get("sessionKey").and_then(|v| v.as_str()).map(|s| s.to_string());
                 if let Some(cid) = params.get("channelId").and_then(|v| v.as_str()) {
                     if !cid.trim().is_empty() {
                         session_channel_id = cid.trim().to_string();
                     }
                 }
 
-                let channel_dir = get_channel_dir(&session_channel_id);
-                let channel_cwd_str = channel_dir.to_string_lossy().to_string();
-                let _ = std::env::set_current_dir(&channel_dir);
+                let env_agent_id = std::env::var("SHADOW_CREW_AGENT_ID").ok();
+                let maybe_agent_id = params
+                    .get("agentId")
+                    .and_then(|v| v.as_str())
+                    .or(env_agent_id.as_deref());
 
-                let meta_file = channel_dir.join("meta.json");
+                let is_dm = maybe_agent_id.is_some()
+                    || session_channel_id.starts_with("dm-")
+                    || session_channel_id == "direct-messages";
+
+                let target_workspace_dir = if let Some(cwd) = params.get("cwd").and_then(|v| v.as_str()) {
+                    let p = PathBuf::from(cwd);
+                    if p.is_relative() { shadow_crew_home.join(p) } else { p }
+                } else if is_dm {
+                    let aid = maybe_agent_id.unwrap_or("agent-default");
+                    get_agent_dir(aid)
+                } else {
+                    get_channel_dir(&session_channel_id)
+                };
+
+                let channel_cwd_str = target_workspace_dir.to_string_lossy().to_string();
+                let _ = std::fs::create_dir_all(&target_workspace_dir);
+                let _ = std::fs::create_dir_all(target_workspace_dir.join("artifacts"));
+                let _ = std::fs::create_dir_all(target_workspace_dir.join("scratch"));
+                let _ = std::env::set_current_dir(&target_workspace_dir);
+
+                let meta_file = target_workspace_dir.join("meta.json");
                 let now_secs = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -154,8 +192,8 @@ async fn main() -> Result<()> {
                     "createdAt": now_secs,
                     "lastActive": now_secs,
                     "workspaceDir": channel_cwd_str,
-                    "artifactsDir": channel_dir.join("artifacts").to_string_lossy(),
-                    "scratchDir": channel_dir.join("scratch").to_string_lossy(),
+                    "artifactsDir": target_workspace_dir.join("artifacts").to_string_lossy(),
+                    "scratchDir": target_workspace_dir.join("scratch").to_string_lossy(),
                 });
                 let _ = std::fs::write(&meta_file, meta_obj.to_string());
 
@@ -165,8 +203,16 @@ async fn main() -> Result<()> {
                     .map(|s| s.to_string());
 
                 // 连接或切换 Shinobi 原生内置 MCP 工具服务 (shinobi-dev-mcp)，将其工作目录严格锚定在当前频道独立工作空间
-                if mcp_client.is_none() || mcp_client_channel.as_deref() != Some(session_channel_id.as_str()) {
-                    match mcp_client::NativeMcpClient::spawn_and_connect(Some(&channel_cwd_str), Some(&session_channel_id)).await {
+                let mcp_key = if is_dm {
+                    let aid = maybe_agent_id.unwrap_or("agent-default");
+                    format!("agent:{}", aid)
+                } else {
+                    session_channel_id.clone()
+                };
+
+                if mcp_client.is_none() || mcp_client_channel.as_deref() != Some(mcp_key.as_str()) {
+                    let chan_param = if is_dm { None } else { Some(session_channel_id.as_str()) };
+                    match mcp_client::NativeMcpClient::spawn_and_connect(Some(&channel_cwd_str), chan_param).await {
                         Ok(client) => {
                             let tool_names: Vec<String> = client
                                 .get_tools()
@@ -174,13 +220,13 @@ async fn main() -> Result<()> {
                                 .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
                                 .collect();
                             eprintln!(
-                                "[Shinobi Agent] 原生内置 MCP (shinobi-dev-mcp) 挂载成功 (channel={}, cwd={})，可用工具: {:?}",
-                                session_channel_id,
+                                "[Shinobi Agent] 原生内置 MCP (shinobi-dev-mcp) 挂载成功 (key={}, cwd={})，可用工具: {:?}",
+                                mcp_key,
                                 channel_cwd_str,
                                 tool_names
                             );
                             mcp_client = Some(Arc::new(tokio::sync::Mutex::new(client)));
-                            mcp_client_channel = Some(session_channel_id.clone());
+                            mcp_client_channel = Some(mcp_key);
                         }
                         Err(e) => {
                             eprintln!(
@@ -191,11 +237,48 @@ async fn main() -> Result<()> {
                     }
                 }
 
+                let effective_key = session_key.unwrap_or_else(|| {
+                    if is_dm {
+                        let aid = maybe_agent_id.unwrap_or("agent-default");
+                        format!("dm:{}:thread", aid)
+                    } else {
+                        format!("topic:{}:chan:standard", session_channel_id)
+                    }
+                });
+                let unique_session_id = format!("shinobi-session-{}", effective_key);
+
+                active_sessions.insert(
+                    unique_session_id.clone(),
+                    SessionState {
+                        session_id: unique_session_id.clone(),
+                        session_key: effective_key,
+                        channel_id: session_channel_id.clone(),
+                        workspace_dir: target_workspace_dir,
+                        system_prompt: session_system_prompt.clone(),
+                        mcp_client: mcp_client.clone(),
+                    },
+                );
+
                 let resp = serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": {
-                        "sessionId": format!("shinobi-session-{}", session_channel_id)
+                        "sessionId": unique_session_id
+                    }
+                });
+                if let Ok(mut out) = stdout_shared.lock() {
+                    writeln!(out, "{}", resp.to_string())?;
+                    out.flush()?;
+                }
+            } else if method == "session/close" {
+                if let Some(close_sid) = params.get("sessionId").and_then(|v| v.as_str()) {
+                    active_sessions.remove(close_sid);
+                }
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "closed": true
                     }
                 });
                 if let Ok(mut out) = stdout_shared.lock() {
@@ -227,17 +310,20 @@ async fn main() -> Result<()> {
                         .unwrap_or_default()
                 };
 
+                let prompt_sid = params.get("sessionId").and_then(|v| v.as_str()).unwrap_or("shinobi-session-default");
                 let prompt_channel_id = params
                     .get("channelId")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.trim().is_empty())
                     .map(|s| s.trim().to_string())
                     .unwrap_or_else(|| session_channel_id.clone());
-                session_channel_id = prompt_channel_id.clone();
 
                 if let Some(prompt_sp) = params.get("systemPrompt").and_then(|v| v.as_str()) {
                     if !prompt_sp.trim().is_empty() {
                         session_system_prompt = Some(prompt_sp.to_string());
+                        if let Some(st) = active_sessions.get_mut(prompt_sid) {
+                            st.system_prompt = Some(prompt_sp.to_string());
+                        }
                     }
                 }
 
@@ -252,7 +338,9 @@ async fn main() -> Result<()> {
                     || prompt_channel_id == "direct-messages"
                     || prompt_channel_id.is_empty();
 
-                let (current_workspace_dir, is_dm_session, current_agent_id) = if is_dm {
+                let (current_workspace_dir, is_dm_session, current_agent_id) = if let Some(st) = active_sessions.get(prompt_sid) {
+                    (st.workspace_dir.clone(), is_dm, maybe_agent_id.unwrap_or("agent-default").to_string())
+                } else if is_dm {
                     let agent_id = maybe_agent_id.unwrap_or_else(|| {
                         if prompt_channel_id.starts_with("dm-") {
                             prompt_channel_id.trim_start_matches("dm-")
@@ -284,14 +372,23 @@ async fn main() -> Result<()> {
                 }
 
                 // 若此前未能启动 MCP 或切换了活跃工作区，重新绑定当前专属工作空间
-                let mcp_key = if is_dm_session { format!("agent:{}", current_agent_id) } else { prompt_channel_id.clone() };
-                if mcp_client.is_none() || mcp_client_channel.as_deref() != Some(mcp_key.as_str()) {
-                    let chan_param = if is_dm_session { None } else { Some(prompt_channel_id.as_str()) };
-                    if let Ok(client) = mcp_client::NativeMcpClient::spawn_and_connect(Some(&current_workspace_cwd), chan_param).await {
-                        mcp_client = Some(Arc::new(tokio::sync::Mutex::new(client)));
-                        mcp_client_channel = Some(mcp_key);
+                let current_mcp_client = if let Some(st) = active_sessions.get(prompt_sid) {
+                    if st.mcp_client.is_some() {
+                        st.mcp_client.clone()
+                    } else {
+                        mcp_client.clone()
                     }
-                }
+                } else {
+                    let mcp_key = if is_dm_session { format!("agent:{}", current_agent_id) } else { prompt_channel_id.clone() };
+                    if mcp_client.is_none() || mcp_client_channel.as_deref() != Some(mcp_key.as_str()) {
+                        let chan_param = if is_dm_session { None } else { Some(prompt_channel_id.as_str()) };
+                        if let Ok(client) = mcp_client::NativeMcpClient::spawn_and_connect(Some(&current_workspace_cwd), chan_param).await {
+                            mcp_client = Some(Arc::new(tokio::sync::Mutex::new(client)));
+                            mcp_client_channel = Some(mcp_key);
+                        }
+                    }
+                    mcp_client.clone()
+                };
                 
                 // 1. 从私有记忆库召回关键知识 (全局核心认知 + 本地私有知识)
                 let mut recalled = memory_store.recall_relevant(query).unwrap_or_default();
@@ -312,7 +409,8 @@ async fn main() -> Result<()> {
                 }
 
                 // 2. 以人设 + 召回记忆为上下文，调用底座模型进行真实推演与 MCP 工具执行
-                let mut system_prompt = session_system_prompt.clone().unwrap_or_else(|| {
+                let active_sp = active_sessions.get(prompt_sid).and_then(|s| s.system_prompt.clone()).or_else(|| session_system_prompt.clone());
+                let mut system_prompt = active_sp.unwrap_or_else(|| {
                     "你是 Shinobi，用户的 AI 影替身，代表主人参与技术架构推演与代码审查。请给出专业、严谨、可落地的回答。".to_string()
                 });
                 if !recalled.is_empty() {
@@ -376,7 +474,7 @@ async fn main() -> Result<()> {
                             }
                         };
 
-                        match llm::complete_with_tools(cfg, &system_prompt, query, mcp_client.clone(), on_tool_step).await {
+                        match llm::complete_with_tools(cfg, &system_prompt, query, current_mcp_client.clone(), on_tool_step).await {
                             Ok(res) => res,
                             Err(e) => llm::LlmExecutionResult {
                                 text_response: format!("⚠️ Shinobi 底座模型推演失败：{:#}", e),

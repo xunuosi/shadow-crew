@@ -29,7 +29,7 @@ interface StorageSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   messages: Message[];
-  onMessagesCleared?: () => void;
+  onMessagesCleared?: () => void | Promise<void>;
   onOpenMemoryExport?: () => void;
 }
 
@@ -101,7 +101,7 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
     try {
       await clearAllMessagesFromDb();
       if (onMessagesCleared) {
-        onMessagesCleared();
+        await onMessagesCleared();
       }
       showToast('已清空所有历史对话记录，核心记忆已完好保留');
       setConfirmClearMessages(false);
