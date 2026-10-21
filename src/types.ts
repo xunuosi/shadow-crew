@@ -97,6 +97,11 @@ export interface AgentMemoryBank {
 
 export type ModelProviderType = 'openai_compatible' | 'deepseek' | 'anthropic' | 'ollama' | 'custom';
 
+export interface ReasoningLevelItem {
+  level: string; // 如 'off' | 'low' | 'medium' | 'high' 或自定义
+  apiValue: string; // 传给 API 的具体参数值
+}
+
 export interface AgentModelConfig {
   provider: ModelProviderType;
   modelId: string;
@@ -112,6 +117,15 @@ export interface AgentModelConfig {
   lastLatencyMs?: number;
   isHealthy?: boolean;
   lastError?: string;
+
+  // 1. 输入能力类型（文本 / 多模态图片支持）
+  inputTypes?: Array<'text' | 'image'>;
+  supportsImage?: boolean;
+
+  // 2. 思考强度配置（Reasoning Levels & Effort）
+  enableReasoning?: boolean; // 是否启用思考强度控制
+  reasoningEffort?: 'off' | 'low' | 'medium' | 'high' | string; // 当前生效的思考强度（提供默认选项）
+  reasoningLevels?: ReasoningLevelItem[]; // 思考级别与 API 参数映射表
 }
 
 export interface AgentWorkspaceConfig {

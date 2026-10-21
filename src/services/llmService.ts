@@ -1431,6 +1431,29 @@ export function clearLlmSessionHistory(agentIdOrSessionKey?: string): void {
 }
 
 /**
+ * 判断指定模型配置是否具备 Vision 多模态图片输入能力
+ * 优先读取用户显式配置 supportsImage / inputTypes，缺省根据模型 ID 特征推导
+ */
+export function isModelVisionCapable(config: AgentModelConfig): boolean {
+  if (typeof config.supportsImage === 'boolean') {
+    return config.supportsImage;
+  }
+  if (Array.isArray(config.inputTypes)) {
+    return config.inputTypes.includes('image');
+  }
+  const mid = (config.modelId || '').toLowerCase();
+  return (
+    mid.includes('vl') ||
+    mid.includes('vision') ||
+    mid.includes('4o') ||
+    mid.includes('gemini') ||
+    mid.includes('claude-3') ||
+    mid.includes('claude-sonnet') ||
+    mid.includes('glm-4v')
+  );
+}
+
+/**
  * 调用大模型生成推演回答
  */
 export async function callLlmModel(
@@ -1484,13 +1507,28 @@ export async function callLlmModel(
       'content-type': 'application/json',
       'anthropic-dangerous-direct-browser-access': 'true',
     };
-    const body = {
+    const body: Record<string, any> = {
       model: config.modelId || 'claude-3-7-sonnet-20250219',
       system: systemPrompt || undefined,
       messages: conversationTurns,
       max_tokens: config.maxTokens || 4096,
       temperature: config.temperature ?? 0.7,
     };
+
+    // 思考强度支持 (Anthropic Extended Thinking)
+    if (config.enableReasoning && config.reasoningEffort && config.reasoningEffort !== 'off') {
+      const budgetMap: Record<string, number> = {
+        low: 2048,
+        medium: 8192,
+        high: 16384,
+      };
+      const budgetTokens = budgetMap[config.reasoningEffort] || 4096;
+      body.thinking = {
+        type: 'enabled',
+        budget_tokens: budgetTokens,
+      };
+      body.temperature = 1.0; // Anthropic extended thinking 规范要求 temperature 锁定为 1.0
+    }
 
     const res = await postJsonUniversal(endpoint, headers, body, 60000);
     if (!res.ok) {
@@ -1516,12 +1554,21 @@ export async function callLlmModel(
     }
     messages.push(...conversationTurns);
 
-    const body = {
+    const body: Record<string, any> = {
       model: config.modelId || 'deepseek-chat',
       messages,
       max_tokens: config.maxTokens || 4096,
       temperature: config.temperature ?? 0.7,
     };
+
+    // 思考强度支持 (OpenAI / DeepSeek reasoning_effort)
+    if (config.enableReasoning && config.reasoningEffort && config.reasoningEffort !== 'off') {
+      const levelItem = (config.reasoningLevels || []).find((l) => l.level === config.reasoningEffort);
+      const apiEffort = levelItem?.apiValue || config.reasoningEffort;
+      if (apiEffort && apiEffort !== 'off') {
+        body.reasoning_effort = apiEffort;
+      }
+    }
 
     const res = await postJsonUniversal(endpoint, headers, body, 60000);
     if (!res.ok) {

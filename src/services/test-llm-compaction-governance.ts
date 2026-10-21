@@ -10,10 +10,14 @@ import {
   clearLlmSessionHistory,
   foldMessageContentToTokenBudget,
   extractStructuredMemoryKeyPoints,
+  isModelVisionCapable,
 } from './llmService';
 import {
   parseTokenInputWithUnits,
   formatTokensHumanReadable,
+  formatTokenUnitOnly,
+  DEFAULT_REASONING_LEVELS,
+  REASONING_EFFORT_OPTIONS,
 } from '../components/ModelContextConfigPanel';
 import { buildUnifiedSessionKey } from './acpClient';
 
@@ -340,6 +344,62 @@ console.log('\n7️⃣ 测试统一 Session Key 协议规范与模式物理隔�
     channelId: 'chan-arch',
   });
   assert(chanKey === 'channel:chan-arch:chan-arch:agent-carol', `频道主流 key 符合预期: ${chanKey}`);
+}
+
+// 8. 测试直接紧凑单位格式化 (formatTokenUnitOnly: 1M, 2M, 128K, 384K 等)
+console.log('\n8️⃣ 测试直接紧凑单位格式化 (formatTokenUnitOnly)');
+{
+  assert(formatTokenUnitOnly(1_000_000) === '1M', '1,000,000 成功格式化为紧凑 "1M"');
+  assert(formatTokenUnitOnly(2_000_000) === '2M', '2,000,000 成功格式化为紧凑 "2M"');
+  assert(formatTokenUnitOnly(131_072) === '128K', '131,072 成功格式化为紧凑 "128K"');
+  assert(formatTokenUnitOnly(393_216) === '384K', '393,216 成功格式化为紧凑 "384K"');
+  assert(formatTokenUnitOnly(65_536) === '64K', '65,536 成功格式化为紧凑 "64K"');
+  assert(formatTokenUnitOnly(8_192) === '8K', '8,192 成功格式化为紧凑 "8K"');
+  assert(formatTokenUnitOnly(4_096) === '4K', '4,096 成功格式化为紧凑 "4K"');
+  assert(formatTokenUnitOnly(undefined) === '', 'undefined 返回空字符串');
+}
+
+// 9. 测试模型图片输入模态配置 (supportsImage / inputTypes)
+console.log('\n9️⃣ 测试多模态图片输入支持 (supportsImage & inputTypes)');
+{
+  // 9.1 用户显式允许图片
+  const configWithImage = {
+    provider: 'openai_compatible' as const,
+    modelId: 'glm-5.2',
+    supportsImage: true,
+    inputTypes: ['text' as const, 'image' as const],
+  };
+  assert(isModelVisionCapable(configWithImage) === true, '用户显式启用图片时 isModelVisionCapable 返回 true');
+
+  // 9.2 用户显式禁用图片
+  const configNoImage = {
+    provider: 'openai_compatible' as const,
+    modelId: 'glm-5.2',
+    supportsImage: false,
+    inputTypes: ['text' as const],
+  };
+  assert(isModelVisionCapable(configNoImage) === false, '用户显式禁用图片时 isModelVisionCapable 返回 false');
+
+  // 9.3 缺省智能推导 Vision 视觉模型
+  const autoVisionConfig = {
+    provider: 'openai_compatible' as const,
+    modelId: 'qwen-vl-max',
+  };
+  assert(isModelVisionCapable(autoVisionConfig) === true, '模型包含 vl 自动推断支持图片');
+}
+
+// 🔟 测试思考强度配置与默认选项 (Reasoning levels & default effort)
+console.log('\n🔟 测试思考强度配置与默认选项 (Reasoning levels & default effort)');
+{
+  assert(DEFAULT_REASONING_LEVELS.length === 4, '默认包含 4 级基础映射 (off, low, medium, high)');
+  assert(DEFAULT_REASONING_LEVELS[0].level === 'off', '第 1 级为 off');
+  assert(DEFAULT_REASONING_LEVELS[1].level === 'low' && DEFAULT_REASONING_LEVELS[1].apiValue === 'low', '第 2 级为 low -> low');
+  assert(DEFAULT_REASONING_LEVELS[2].level === 'medium' && DEFAULT_REASONING_LEVELS[2].apiValue === 'medium', '第 3 级为 medium -> medium');
+  assert(DEFAULT_REASONING_LEVELS[3].level === 'high' && DEFAULT_REASONING_LEVELS[3].apiValue === 'high', '第 4 级为 high -> high');
+
+  const defaultOption = REASONING_EFFORT_OPTIONS.find((o) => o.value === 'medium');
+  assert(Boolean(defaultOption), '存在 medium 作为默认选项');
+  assert(defaultOption?.label.includes('默认'), 'medium 选项标明了默认标识');
 }
 
 console.log('\n===================================================================');
