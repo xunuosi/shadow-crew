@@ -105,6 +105,8 @@ export interface AgentModelConfig {
   baseUrl?: string;
   temperature?: number;
   maxTokens?: number;
+  contextWindowTokens?: number;
+  customContextBudget?: number;
   useGlobalDefault?: boolean;
   lastTestedAt?: number;
   lastLatencyMs?: number;

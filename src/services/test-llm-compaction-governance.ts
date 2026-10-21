@@ -46,22 +46,80 @@ console.log('1️⃣ 测试轻量级加权 Token 估算器 (estimateTokenCount)'
   assert(mixedTokens > 20 && mixedTokens < 50, `混合文本 Token 估算合理 (tokens: ${mixedTokens})`);
 }
 
-// 2. 测试模型安全预算分配
-console.log('\n2️⃣ 测试不同模型的上下文安全预算分配 (getModelSafeContextBudget)');
+// 2. 测试 2026 主流前沿模型与经典基座的安全预算分配
+console.log('\n2️⃣ 测试 2026 主流大模型的上下文规格解析与安全预算 (getModelSafeContextBudget)');
 {
+  // 2.1 智谱 GLM-5.3 (1M 原生上下文，放宽输出)
+  const glmBudget = getModelSafeContextBudget({
+    provider: 'openai_compatible',
+    modelId: 'glm-5.3',
+  });
+  assert(glmBudget.maxContextTokens === 1_000_000, '智谱 GLM-5.3 成功解析 1M 原生上下文 (1,000,000)');
+  assert(glmBudget.reservedForOutput === 65536, '智谱 GLM-5.3 默认预留 64K 输出空间');
+  assert(glmBudget.historyTokenBudget === 512000, '智谱 GLM-5.3 桌面稳态预算达到 512K Tokens');
+
+  // 2.2 月之暗面 Kimi K3 (2M 原生上下文)
+  const kimiBudget = getModelSafeContextBudget({
+    provider: 'openai_compatible',
+    modelId: 'kimi-k3-max',
+  });
+  assert(kimiBudget.maxContextTokens === 2_000_000, 'Kimi K3 Max 成功解析 2M 原生上下文 (2,000,000)');
+  assert(kimiBudget.historyTokenBudget === 512000, 'Kimi K3 Max 桌面稳态预算受控在 512K Tokens 安全线');
+
+  // 2.3 阿里通义千问 Qwen 3.8 (1M 原生上下文)
+  const qwenBudget = getModelSafeContextBudget({
+    provider: 'openai_compatible',
+    modelId: 'qwen3.8-2.4t-a95b',
+  });
+  assert(qwenBudget.maxContextTokens === 1_000_000, 'Qwen 3.8 万亿 MoE 成功解析 1M 上下文');
+
+  // 2.4 DeepSeek V4.1 Flash (1M 原生上下文)
+  const dsBudget = getModelSafeContextBudget({
+    provider: 'deepseek',
+    modelId: 'deepseek-v4.1-flash',
+  });
+  assert(dsBudget.maxContextTokens === 1_000_000, 'DeepSeek V4.1 Flash 成功解析 1M 原生上下文');
+  assert(dsBudget.reservedForOutput >= 65536, 'DeepSeek V4 预留充裕生成空间');
+
+  // 2.5 Anthropic Claude 5.5 (1M 原生上下文，128K 输出)
+  const claudeBudget = getModelSafeContextBudget({
+    provider: 'anthropic',
+    modelId: 'claude-sonnet-5-5-2026',
+  });
+  assert(claudeBudget.maxContextTokens === 1_000_000, 'Claude Sonnet 5.5 成功解析 1M 原生上下文');
+  assert(claudeBudget.reservedForOutput === 131072, 'Claude Sonnet 5.5 默认预留 128K 输出空间');
+
+  // 2.6 Google Gemini 4 Argon (2M 原生上下文)
+  const geminiBudget = getModelSafeContextBudget({
+    provider: 'openai_compatible',
+    modelId: 'gemini-4-argon',
+  });
+  assert(geminiBudget.maxContextTokens === 2_000_000, 'Gemini 4 Argon 成功解析 2M 原生上下文');
+
+  // 2.7 OpenAI GPT-5.6 Sol (1M 原生上下文)
+  const gpt5Budget = getModelSafeContextBudget({
+    provider: 'openai_compatible',
+    modelId: 'gpt-5.6-sol',
+  });
+  assert(gpt5Budget.maxContextTokens === 1_000_000, 'GPT-5.6 Sol 成功解析 1M 原生上下文');
+
+  // 2.8 本地轻量级模型 (Ollama: 8K 严格小窗口)
   const ollamaBudget = getModelSafeContextBudget({
     provider: 'ollama',
     modelId: 'llama3.3',
   });
   assert(ollamaBudget.maxContextTokens === 8192, 'Ollama 模型默认分配较小的上下文上限 (8192)');
-  assert(ollamaBudget.historyTokenBudget <= 4096, 'Ollama 历史预算严格受控在安全线以下');
+  assert(ollamaBudget.historyTokenBudget <= 4096, 'Ollama 历史预算严格受控在安全线以下 (2867)');
 
-  const claudeBudget = getModelSafeContextBudget({
-    provider: 'anthropic',
-    modelId: 'claude-3-7-sonnet-20250219',
+  // 2.9 用户显式指定 contextWindowTokens / customContextBudget 优先级最高
+  const customBudget = getModelSafeContextBudget({
+    provider: 'custom',
+    modelId: 'custom-private-model',
+    contextWindowTokens: 500_000,
+    customContextBudget: 300_000,
   });
-  assert(claudeBudget.maxContextTokens === 128000, 'Claude 3.7 模型分配大上下文上限 (128000)');
-  assert(claudeBudget.historyTokenBudget > 50000, 'Claude 历史预算充裕');
+  assert(customBudget.maxContextTokens === 500_000, '用户显式指定的 contextWindowTokens 生效');
+  assert(customBudget.historyTokenBudget === 300_000, '用户显式指定的 customContextBudget 生效');
 }
 
 // 3. 测试上下文紧缩算法 (compactConversationHistory)

@@ -19,6 +19,18 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultBaseUrl: 'https://api.deepseek.com/v1',
     models: [
       {
+        id: 'deepseek-v4.1-flash',
+        name: 'DeepSeek V4.1 Flash',
+        label: 'DeepSeek V4.1 Flash (2026 旗舰 · 1M 上下文)',
+        description: '第四代 Engram 稀疏记忆架构，吞吐与代码推演全面超越 V4 Pro',
+      },
+      {
+        id: 'deepseek-v4',
+        name: 'DeepSeek V4',
+        label: 'DeepSeek V4 (1M 上下文 · 384K 输出)',
+        description: '第四代旗舰基座，超大输出配额与极低单价普及前缀缓存',
+      },
+      {
         id: 'deepseek-chat',
         name: 'DeepSeek V3',
         label: 'DeepSeek V3 (通用全栈推理 · 推荐)',
@@ -41,10 +53,22 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultBaseUrl: 'https://api.anthropic.com',
     models: [
       {
+        id: 'claude-sonnet-5-5-2026',
+        name: 'Claude Sonnet 5.5',
+        label: 'Claude Sonnet 5.5 (2026 旗舰代码架构 · 1M 上下文)',
+        description: 'Anthropic 旗舰自主 Agent 引擎，输出速度提升 30%，最高支持 128K 单次输出',
+      },
+      {
+        id: 'claude-opus-5-5-2026',
+        name: 'Claude Opus 5.5',
+        label: 'Claude Opus 5.5 (2026 自适应思考 · 1M 上下文)',
+        description: '前沿复杂企业级架构推演，分级自适应思考与高可信控制',
+      },
+      {
         id: 'claude-3-7-sonnet-20250219',
         name: 'Claude 3.7 Sonnet',
         label: 'Claude 3.7 Sonnet (旗舰混合推理)',
-        description: 'Anthropic 旗舰代码架构推演与混合推理',
+        description: 'Anthropic 经典代码架构推演与混合推理',
       },
       {
         id: 'claude-3-5-sonnet-20241022',
@@ -69,6 +93,18 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultBaseUrl: 'https://api.openai.com/v1',
     models: [
       {
+        id: 'gpt-5.6-sol',
+        name: 'GPT-5.6 Sol',
+        label: 'GPT-5.6 Sol (2026 企业智能体主力 · 1M 上下文)',
+        description: '第五代最高代码模型，Token 编码效率提升 54%，原生多智能体协同',
+      },
+      {
+        id: 'gpt-5.6-cyber',
+        name: 'GPT-5.6 Cyber',
+        label: 'GPT-5.6 Cyber (网安与防御分析专攻)',
+        description: '针对漏洞审计、契约攻防与沙箱验证定制',
+      },
+      {
         id: 'gpt-4o',
         name: 'GPT-4o',
         label: 'GPT-4o (全能多模态旗舰)',
@@ -89,6 +125,130 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     ],
     apiKeyPlaceholder: 'sk-proj-...',
     apiKeyHelpUrl: 'https://platform.openai.com/api-keys',
+  },
+  {
+    id: 'zhipu',
+    name: '智谱 AI (Zhipu GLM)',
+    provider: 'openai_compatible',
+    defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    models: [
+      {
+        id: 'glm-5.3',
+        name: 'GLM-5.3',
+        label: 'GLM-5.3 (2026 旗舰代码 Agent · 1M 上下文)',
+        description: '编程能力较 5.2 提升 50%，长程系统工程闭环，输出放宽至 32K~64K',
+      },
+      {
+        id: 'glm-5.3-flash',
+        name: 'GLM-5.3 Flash',
+        label: 'GLM-5.3 Flash (MoE 极速 · 1M 上下文)',
+        description: '线性与稀疏注意力混合 MoE (总参320B/激活18B)，极致吞吐',
+      },
+      {
+        id: 'glm-5-turbo',
+        name: 'GLM-5 Turbo',
+        label: 'GLM-5 Turbo (OpenClaw 工具链优化)',
+        description: '针对自主工具链调用与多 Agent 接地做深度对齐优化',
+      },
+      {
+        id: 'glm-4-flash',
+        name: 'GLM-4-Flash',
+        label: 'GLM-4-Flash (免费高速)',
+        description: '智谱高并发极速模型，适合日常推演与代码执行',
+      },
+      {
+        id: 'glm-4-plus',
+        name: 'GLM-4-Plus',
+        label: 'GLM-4-Plus (高精度基座)',
+        description: '智谱全栈大模型，复杂逻辑与长上下文能力出众',
+      },
+    ],
+    apiKeyPlaceholder: '智谱 API Key (来自 open.bigmodel.cn)',
+    apiKeyHelpUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
+  },
+  {
+    id: 'moonshot',
+    name: '月之暗面 (Moonshot / Kimi)',
+    provider: 'openai_compatible',
+    defaultBaseUrl: 'https://api.moonshot.cn/v1',
+    models: [
+      {
+        id: 'kimi-k3-max',
+        name: 'Kimi K3 Max',
+        label: 'Kimi K3 Max (2.8T 巨规推理 · 2M 原生上下文)',
+        description: '刷新全球开源规模纪录，GPU 内核级优化，超长上下文深度检索召回',
+      },
+      {
+        id: 'kimi-k3',
+        name: 'Kimi K3',
+        label: 'Kimi K3 (2026 旗舰推理 · 1M 上下文)',
+        description: '前沿闭源推理引擎，长文本与代码架构深度推理',
+      },
+      {
+        id: 'kimi-k2.6',
+        name: 'Kimi K2.6',
+        label: 'Kimi K2.6 (经典长文本增强)',
+        description: '稳定高效的百万级长文本与文献工程推演',
+      },
+    ],
+    apiKeyPlaceholder: 'sk-... (来自 platform.moonshot.cn)',
+    apiKeyHelpUrl: 'https://platform.moonshot.cn/console/api-keys',
+  },
+  {
+    id: 'google',
+    name: 'Google Gemini',
+    provider: 'openai_compatible',
+    defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    models: [
+      {
+        id: 'gemini-4-argon',
+        name: 'Gemini 4 Argon',
+        label: 'Gemini 4 Argon (2026 旗舰突破 · 2M 上下文)',
+        description: '自回归生成输出突破至 1,000,000 Token，主攻千万行代码重构与网安',
+      },
+      {
+        id: 'gemini-3.8-flash',
+        name: 'Gemini 3.8 Flash',
+        label: 'Gemini 3.8 Flash (极速混合推理 · 1M 上下文)',
+        description: '高频极速前沿推理模型，兼具超低延迟与 1M 原生窗口',
+      },
+      {
+        id: 'gemini-3.1-pro',
+        name: 'Gemini 3.1 Pro',
+        label: 'Gemini 3.1 Pro (前沿多模态 · 1M 上下文)',
+        description: '全域多模态理解与深度逻辑推演',
+      },
+    ],
+    apiKeyPlaceholder: 'AIzaSy... (来自 aistudio.google.com)',
+    apiKeyHelpUrl: 'https://aistudio.google.com/app/apikey',
+  },
+  {
+    id: 'qwen',
+    name: '通义千问 (Alibaba Qwen)',
+    provider: 'openai_compatible',
+    defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    models: [
+      {
+        id: 'qwen3.8-2.4t-a95b',
+        name: 'Qwen 3.8 2.4T',
+        label: 'Qwen3.8-2.4T-A95B (万亿稀疏 MoE · 1M 上下文)',
+        description: '总参 2.4T / 激活 95B，全域思考 (All-field Thinking) 统一图文码推理',
+      },
+      {
+        id: 'qwen3.7-max',
+        name: 'Qwen 3.7 Max',
+        label: 'Qwen 3.7 Max (全域思考旗舰 · 1M 上下文)',
+        description: 'Agentic Coding 标杆，支持长序列稠密检索',
+      },
+      {
+        id: 'qwen2.5-coder-32b-instruct',
+        name: 'Qwen 2.5 Coder 32B',
+        label: 'Qwen 2.5 Coder 32B (经典代码)',
+        description: '成熟稳定的专业代码编程模型',
+      },
+    ],
+    apiKeyPlaceholder: 'sk-... (来自 bailian.console.aliyun.com)',
+    apiKeyHelpUrl: 'https://bailian.console.aliyun.com/',
   },
   {
     id: 'ollama',
@@ -145,34 +305,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     ],
     apiKeyPlaceholder: 'sk-... (来自 siliconflow.cn)',
     apiKeyHelpUrl: 'https://cloud.siliconflow.cn/account/ak',
-  },
-  {
-    id: 'zhipu',
-    name: '智谱 AI (Zhipu GLM)',
-    provider: 'openai_compatible',
-    defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    models: [
-      {
-        id: 'glm-4-flash',
-        name: 'GLM-4-Flash',
-        label: 'GLM-4-Flash (免费高速 · 推荐)',
-        description: '智谱高并发极速模型，适合日常推演与代码执行',
-      },
-      {
-        id: 'glm-4-plus',
-        name: 'GLM-4-Plus',
-        label: 'GLM-4-Plus (高精度旗舰)',
-        description: '智谱旗舰级全栈大模型，复杂逻辑与长上下文能力出众',
-      },
-      {
-        id: 'glm-4-air',
-        name: 'GLM-4-Air',
-        label: 'GLM-4-Air (极致性价比)',
-        description: '轻量低延迟代码与任务执行大模型',
-      },
-    ],
-    apiKeyPlaceholder: '智谱 API Key (来自 open.bigmodel.cn)',
-    apiKeyHelpUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
   },
   {
     id: 'custom',
@@ -803,31 +935,157 @@ export function estimateTokenCount(text: string): number {
   return Math.ceil(cjkCount * 1.0 + otherCount / 3.8);
 }
 
+export interface ModelContextSpec {
+  maxContextTokens: number;
+  defaultMaxOutput: number;
+  family: string;
+}
+
+/**
+ * 2026 主流前沿大模型与经典基座上下文规格解析器
+ * 适配智谱 GLM-5 系列、月之暗面 Kimi K3 系列、阿里通义千问 Qwen3 系列、
+ * DeepSeek-V4 系列、Anthropic Claude 5 系列、Google Gemini 4/3 系列与 OpenAI GPT-5.6 系列
+ */
+export function resolveModelContextSpec(modelIdOrName: string, provider?: string): ModelContextSpec {
+  const norm = (modelIdOrName || '').toLowerCase().trim();
+
+  // 1. Google Gemini 系列 (Gemini 4 Argon: 原生 1M~2M 上下文，超大输出; Gemini 3.8/3.7/3.6/3.5 Flash/Pro)
+  if (norm.includes('gemini-4') || norm.includes('gemini 4') || norm.includes('argon')) {
+    return { maxContextTokens: 2_000_000, defaultMaxOutput: 131_072, family: 'Gemini 4 Argon' };
+  }
+  if (norm.includes('gemini-3') || norm.includes('gemini 3') || norm.includes('gemini-2') || norm.includes('gemini')) {
+    return { maxContextTokens: 1_000_000, defaultMaxOutput: 65_536, family: 'Gemini 3' };
+  }
+
+  // 2. 月之暗面 Moonshot / Kimi 系列 (Kimi K3 / K3 Max: 原生 1M~2M 上下文; K2.6, K2.5)
+  if (norm.includes('k3') || norm.includes('k3-max') || norm.includes('k3_max')) {
+    return { maxContextTokens: 2_000_000, defaultMaxOutput: 65_536, family: 'Kimi K3' };
+  }
+  if (norm.includes('kimi') || norm.includes('moonshot') || norm.includes('k2.6') || norm.includes('k2.5')) {
+    return { maxContextTokens: 1_000_000, defaultMaxOutput: 32_768, family: 'Kimi K2' };
+  }
+
+  // 3. 智谱 AI (GLM-5.3 / 5.3-Flash, GLM-5.2/5.1/5.0, GLM-5-Turbo, GLM-4.7)
+  if (norm.includes('glm-5') || norm.includes('glm 5') || norm.includes('glm-4.7') || norm.includes('glm4.7')) {
+    return { maxContextTokens: 1_000_000, defaultMaxOutput: 65_536, family: 'GLM-5' };
+  }
+  if (norm.includes('glm-4-plus') || norm.includes('glm-4-air') || norm.includes('glm-4-flash') || norm.includes('glm-4')) {
+    return { maxContextTokens: 128_000, defaultMaxOutput: 16_384, family: 'GLM-4' };
+  }
+
+  // 4. 通义千问 Alibaba Qwen 系列 (Qwen3.8-2.4T-A95B, Qwen3.7-Max/Plus, Qwen3.6, Qwen3)
+  if (norm.includes('qwen3') || norm.includes('qwen-3') || norm.includes('qwen 3')) {
+    return { maxContextTokens: 1_000_000, defaultMaxOutput: 32_768, family: 'Qwen 3' };
+  }
+  if (norm.includes('qwen2.5') || norm.includes('qwen-2.5')) {
+    return { maxContextTokens: 128_000, defaultMaxOutput: 8_192, family: 'Qwen 2.5' };
+  }
+
+  // 5. DeepSeek 深度求索 (DeepSeek-V4.1-Flash, DeepSeek-V4 Flash/Pro, V4-Flash-Vision-Exp)
+  if (norm.includes('deepseek-v4') || norm.includes('deepseek v4') || norm.includes('v4.1') || norm.includes('v4-flash') || norm.includes('v4-pro')) {
+    return { maxContextTokens: 1_000_000, defaultMaxOutput: 131_072, family: 'DeepSeek V4' };
+  }
+  if (norm.includes('r1') || norm.includes('deepseek-chat') || norm.includes('deepseek-v3') || norm.includes('deepseek')) {
+    return { maxContextTokens: 64_000, defaultMaxOutput: 8_192, family: 'DeepSeek V3/R1' };
+  }
+
+  // 6. Anthropic Claude (Claude Opus 5.5/5.0, Claude Sonnet 5.5/5.0, Claude Fable 5.1/5.0, Claude Mythos 5.1)
+  if (
+    norm.includes('opus 5') ||
+    norm.includes('opus-5') ||
+    norm.includes('sonnet 5') ||
+    norm.includes('sonnet-5') ||
+    norm.includes('claude-5') ||
+    norm.includes('claude 5') ||
+    norm.includes('fable') ||
+    norm.includes('mythos')
+  ) {
+    return { maxContextTokens: 1_000_000, defaultMaxOutput: 131_072, family: 'Claude 5' };
+  }
+  if (norm.includes('claude-3-7') || norm.includes('claude 3.7') || norm.includes('claude-3-5') || norm.includes('claude 3.5')) {
+    return { maxContextTokens: 200_000, defaultMaxOutput: 65_536, family: 'Claude 3.5/3.7' };
+  }
+  if (norm.includes('claude-3-haiku') || norm.includes('haiku')) {
+    return { maxContextTokens: 200_000, defaultMaxOutput: 8_192, family: 'Claude Haiku' };
+  }
+
+  // 7. OpenAI (GPT-5.6 Sol/Terra/Luna, GPT-5.6-Cyber, GPT-5.5, GPT-5)
+  if (
+    norm.includes('gpt-5') ||
+    norm.includes('gpt 5') ||
+    norm.includes('sol') ||
+    norm.includes('terra') ||
+    norm.includes('luna') ||
+    norm.includes('cyber')
+  ) {
+    return { maxContextTokens: 1_000_000, defaultMaxOutput: 131_072, family: 'GPT-5' };
+  }
+  if (norm.includes('gpt-4o') || norm.includes('gpt-4') || norm.includes('o3-mini') || norm.includes('o1')) {
+    return { maxContextTokens: 128_000, defaultMaxOutput: 16_384, family: 'GPT-4o/o3' };
+  }
+
+  // 8. 本地轻量级部署 (Ollama / Local Engine)
+  if (provider === 'ollama' || norm.includes('ollama') || norm.includes('local') || norm.includes('shinobi-engine')) {
+    if (norm.includes('32k')) {
+      return { maxContextTokens: 32_768, defaultMaxOutput: 4_096, family: 'Local 32K' };
+    }
+    if (norm.includes('16k')) {
+      return { maxContextTokens: 16_384, defaultMaxOutput: 4_096, family: 'Local 16K' };
+    }
+    return { maxContextTokens: 8_192, defaultMaxOutput: 4_096, family: 'Local Default' };
+  }
+
+  // 默认兜底规格 (中大型通用 64K ~ 128K)
+  return { maxContextTokens: 64_000, defaultMaxOutput: 4_096, family: 'Standard' };
+}
+
 /**
  * 根据大模型配置获取上下文安全预算（Tokens）
+ * 全面适配 2026 年主流大模型（GLM-5.3、Kimi K3、Qwen3.8、DeepSeek-V4、Claude 5.5、Gemini 4、GPT-5.6 等原生 1M~2M 窗口）
  */
 export function getModelSafeContextBudget(config: AgentModelConfig): {
   maxContextTokens: number;
   historyTokenBudget: number;
+  reservedForOutput: number;
+  modelFamily: string;
 } {
-  const modelId = (config.modelId || '').toLowerCase();
-  const provider = config.provider;
+  const spec = resolveModelContextSpec(config.modelId || config.modelName || '', config.provider);
+  const maxContext =
+    config.contextWindowTokens && config.contextWindowTokens > 0
+      ? config.contextWindowTokens
+      : spec.maxContextTokens;
 
-  let maxContext = 64_000;
-  if (provider === 'ollama') {
-    maxContext = 8_192;
-  } else if (modelId.includes('r1') || modelId.includes('deepseek-chat') || modelId.includes('deepseek-v3')) {
-    maxContext = 64_000;
-  } else if (modelId.includes('claude-3-5') || modelId.includes('claude-3-7') || modelId.includes('gpt-4o')) {
-    maxContext = 128_000;
-  } else if (modelId.includes('haiku') || modelId.includes('4o-mini') || modelId.includes('o3-mini')) {
-    maxContext = 64_000;
+  const reservedForOutput =
+    config.maxTokens && config.maxTokens > 0 ? config.maxTokens : spec.defaultMaxOutput;
+
+  if (config.customContextBudget && config.customContextBudget > 0) {
+    return {
+      maxContextTokens: maxContext,
+      historyTokenBudget: config.customContextBudget,
+      reservedForOutput,
+      modelFamily: spec.family,
+    };
   }
 
-  const reservedForOutput = config.maxTokens || 4096;
-  const historyTokenBudget = Math.max(2048, Math.floor((maxContext - reservedForOutput) * 0.7));
+  // 预留输出空间与系统提示词空间后，按 70% 作为历史上下文安全水位
+  const usableTokens = Math.max(2048, maxContext - reservedForOutput);
+  let computedBudget = Math.floor(usableTokens * 0.7);
 
-  return { maxContextTokens: maxContext, historyTokenBudget };
+  // 工程稳态守卫：在 1M~2M 超大窗口场景下，将桌面多 Agent 协同历史稳态预算设定在 512,000 Tokens 上限，
+  // 兼顾海量长代码 Diff 深度推演与桌面端 JSON 传输/内存稳定性；小模型（8k~32k）则精准贴合其物理上限。
+  const MAX_DESKTOP_STEADY_BUDGET = 512_000;
+  if (computedBudget > MAX_DESKTOP_STEADY_BUDGET) {
+    computedBudget = MAX_DESKTOP_STEADY_BUDGET;
+  }
+
+  const historyTokenBudget = Math.max(2048, computedBudget);
+
+  return {
+    maxContextTokens: maxContext,
+    historyTokenBudget,
+    reservedForOutput,
+    modelFamily: spec.family,
+  };
 }
 
 /**
