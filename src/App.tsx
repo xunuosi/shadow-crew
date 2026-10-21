@@ -68,6 +68,7 @@ import {
   sendPromptToAcpAgent,
   clearAcpAgentSessions,
   buildUnifiedSessionKey,
+  buildAgentSessionKey,
   probeRemoteAcpConnection,
   buildAgentLaunchEnv,
   buildThinkingProcessFromAcp,
@@ -2172,7 +2173,7 @@ export default function App() {
         const { targetAgent, invokingAgents, sourceMessageIds, combinedReplies } = item;
         const primaryInvoker = invokingAgents[0] || effectiveTurnOutputs[0].agent;
         const execKey = isTopic && topicId ? `${topicId}:${targetAgent.id}` : `${roomId}:${targetAgent.id}`;
-        const sessionKey = buildUnifiedSessionKey({
+        const sessionKey = buildAgentSessionKey({
           agentId: targetAgent.id,
           roomId,
           channelId: targetChannelId,
@@ -5180,7 +5181,7 @@ export default function App() {
 
     const agentTurnPromises = onlineAgents.map((agent) => {
       const execKey = `${topicId}:${agent.id}`;
-      const sessionKey = buildUnifiedSessionKey({
+      const sessionKey = buildAgentSessionKey({
         agentId: agent.id,
         roomId: topicId,
         channelId: topicChannel?.id || activeTopicData?.channelId,
@@ -6677,7 +6678,7 @@ export default function App() {
 
     // Hop 1 并发 Fan-out：所有在线 Agent 同时推演，并在 Turn Barrier 汇合
     const hop1Promises = onlineAgents.map((targetAgent, idx) => {
-      const sessionKey = buildUnifiedSessionKey({
+      const sessionKey = buildAgentSessionKey({
         agentId: targetAgent.id,
         roomId: currentThreadId,
         channelId: isDmThread ? undefined : activeChannel?.id,

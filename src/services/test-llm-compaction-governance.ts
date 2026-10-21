@@ -19,7 +19,7 @@ import {
   DEFAULT_REASONING_LEVELS,
   REASONING_EFFORT_OPTIONS,
 } from '../components/ModelContextConfigPanel';
-import { buildUnifiedSessionKey } from './acpClient';
+import { buildUnifiedSessionKey, buildAgentSessionKey } from './acpClient';
 
 let passed = 0;
 let failed = 0;
@@ -305,8 +305,8 @@ console.log('\n6️⃣ 测试结构化 Memory 关键要点提取器 (extractStru
   assert(summaryMsg.includes('【重要执行结果】'), '生成的折叠摘要包含【重要执行结果】');
 }
 
-// 7. 测试统一 Session Key 协议与模式物理隔离 (buildUnifiedSessionKey)
-console.log('\n7️⃣ 测试统一 Session Key 协议规范与模式物理隔离 (buildUnifiedSessionKey)');
+// 7. 测试统一 Session Key 协议与模式物理隔离 (buildUnifiedSessionKey & buildAgentSessionKey)
+console.log('\n7️⃣ 测试统一 Session Key 协议规范与模式物理隔离 (buildUnifiedSessionKey & buildAgentSessionKey)');
 {
   // 7.1 私聊规范: dm:{agentId}:{threadId}
   const dmKey = buildUnifiedSessionKey({
@@ -316,34 +316,40 @@ console.log('\n7️⃣ 测试统一 Session Key 协议规范与模式物理隔�
   });
   assert(dmKey === 'dm:agent-alice:thread-dm-101', `私聊 key 规范符合预期: ${dmKey}`);
 
-  // 7.2 议题标准模式规范: topic:{channelId}:{topicId}:standard:{agentId}
+  // 7.2 议题标准模式规范: topic:{channelId}:{topicId}:standard (严格对齐原始字符串规范，单 Agent 内部不冗余 agentId)
   const topicStdKey = buildUnifiedSessionKey({
+    roomId: 'topic-99',
+    channelId: 'chan-arch',
+    discussionMode: 'standard',
+  });
+  assert(topicStdKey === 'topic:chan-arch:topic-99:standard', `Rust 底层议题标准模式 key 符合原始字符串规范: ${topicStdKey}`);
+
+  // 7.3 议题博弈模式规范: topic:{channelId}:{topicId}:game_theoretic
+  const topicGameKey = buildUnifiedSessionKey({
+    roomId: 'topic-99',
+    channelId: 'chan-arch',
+    discussionMode: 'game_theoretic',
+  });
+  assert(topicGameKey === 'topic:chan-arch:topic-99:game_theoretic', `Rust 底层议题博弈模式 key 符合原始字符串规范: ${topicGameKey}`);
+
+  // 7.4 验证模式切换物理隔离性：同一议题不同模式下生成的 sessionKey 完全不相等
+  assert(topicStdKey !== topicGameKey, '同一议题标准模式与博弈模式的 sessionKey 严格正交隔离，杜绝继承污染');
+
+  // 7.5 频道主消息流规范: channel:{channelId}:{threadId}
+  const chanKey = buildUnifiedSessionKey({
+    roomId: 'chan-arch',
+    channelId: 'chan-arch',
+  });
+  assert(chanKey === 'channel:chan-arch:chan-arch', `Rust 底层频道主流 key 符合原始字符串规范: ${chanKey}`);
+
+  // 7.6 前端多 Agent 水位线与直连单例 LLM 缓存复合键: buildAgentSessionKey
+  const agentTopicStdKey = buildAgentSessionKey({
     agentId: 'agent-bob',
     roomId: 'topic-99',
     channelId: 'chan-arch',
     discussionMode: 'standard',
   });
-  assert(topicStdKey === 'topic:chan-arch:topic-99:standard:agent-bob', `议题标准模式 key 符合预期: ${topicStdKey}`);
-
-  // 7.3 议题博弈模式规范: topic:{channelId}:{topicId}:game_theoretic:{agentId}
-  const topicGameKey = buildUnifiedSessionKey({
-    agentId: 'agent-bob',
-    roomId: 'topic-99',
-    channelId: 'chan-arch',
-    discussionMode: 'game_theoretic',
-  });
-  assert(topicGameKey === 'topic:chan-arch:topic-99:game_theoretic:agent-bob', `议题博弈模式 key 符合预期: ${topicGameKey}`);
-
-  // 7.4 验证模式切换物理隔离性：同一议题不同模式下生成的 sessionKey 完全不相等
-  assert(topicStdKey !== topicGameKey, '同一议题标准模式与博弈模式的 sessionKey 严格正交隔离，杜绝继承污染');
-
-  // 7.5 频道主消息流规范: channel:{channelId}:{threadId}:{agentId}
-  const chanKey = buildUnifiedSessionKey({
-    agentId: 'agent-carol',
-    roomId: 'chan-arch',
-    channelId: 'chan-arch',
-  });
-  assert(chanKey === 'channel:chan-arch:chan-arch:agent-carol', `频道主流 key 符合预期: ${chanKey}`);
+  assert(agentTopicStdKey === 'topic:chan-arch:topic-99:standard:agent-bob', `前端 Agent 专属复合键符合预期: ${agentTopicStdKey}`);
 }
 
 // 8. 测试直接紧凑单位格式化 (formatTokenUnitOnly: 1M, 2M, 128K, 384K 等)

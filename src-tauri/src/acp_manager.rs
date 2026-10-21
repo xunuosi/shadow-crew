@@ -937,13 +937,13 @@ impl RunningAgent {
             let chan_dir = crate::db_manager::get_channel_dir(effective_chan_id);
             let chan_cwd = chan_dir.to_string_lossy().to_string();
             let is_topic = room_id != effective_chan_id && !room_id.starts_with("chan-");
-            // 规范统一协议: 议题 topic:{channel_id}:{topic_id}:{discussion_mode}:{agent_id}，频道 channel:{channel_id}:{thread_id}:{agent_id}
+            // 规范统一协议: 议题 topic:{channel_id}:{topic_id}:{discussion_mode}，频道 channel:{channel_id}:{thread_id}
             let key = if is_topic {
                 let mode = discussion_mode.unwrap_or("standard").trim();
                 let effective_mode = if mode.is_empty() { "standard" } else { mode };
-                format!("topic:{}:{}:{}:{}", effective_chan_id, room_id, effective_mode, agent_id)
+                format!("topic:{}:{}:{}", effective_chan_id, room_id, effective_mode)
             } else {
-                format!("channel:{}:{}:{}", effective_chan_id, room_id, agent_id)
+                format!("channel:{}:{}", effective_chan_id, room_id)
             };
             let notice = format!(
                 "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}/artifacts\n- 临时调试目录 (Scratch): {}/scratch",

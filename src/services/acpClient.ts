@@ -15,16 +15,16 @@ export interface AcpSendPromptOptions {
 }
 
 /**
- * 统一多模式 Session Key 命名空间构造器
- * 严格对齐 Rust 底层 session_key 与前端水位线隔离契约：
+ * 统一多模式会话 Key 命名空间构造器
+ * 严格对齐 Rust 底层 session_key 与 ACP 会话沙箱契约（原始规范字符串）：
  * 1. 1-on-1 私聊: `dm:{agentId}:{threadId}`
- * 2. 议题研讨(区分 standard / game_theoretic): `topic:{channelId}:{topicId}:{discussionMode}:{agentId}`
- * 3. 频道主消息流: `channel:{channelId}:{threadId}:{agentId}`
+ * 2. 议题研讨(区分 standard / game_theoretic): `topic:{channelId}:{topicId}:{discussionMode}`
+ * 3. 频道主消息流: `channel:{channelId}:{threadId}`
  */
 export function buildUnifiedSessionKey(options: {
-  agentId: string;
   roomId: string;
   channelId?: string;
+  agentId?: string;
   isDm?: boolean;
   discussionMode?: string;
 }): string {
@@ -38,7 +38,8 @@ export function buildUnifiedSessionKey(options: {
     ));
 
   if (isDm) {
-    return `dm:${options.agentId}:${options.roomId}`;
+    const aid = options.agentId || 'default';
+    return `dm:${aid}:${options.roomId}`;
   }
 
   const effectiveChanId = (options.channelId && options.channelId.trim()) || options.roomId;
@@ -46,10 +47,29 @@ export function buildUnifiedSessionKey(options: {
 
   if (isTopic) {
     const rawMode = (options.discussionMode && options.discussionMode.trim()) || 'standard';
-    return `topic:${effectiveChanId}:${options.roomId}:${rawMode}:${options.agentId}`;
+    return `topic:${effectiveChanId}:${options.roomId}:${rawMode}`;
   } else {
-    return `channel:${effectiveChanId}:${options.roomId}:${options.agentId}`;
+    return `channel:${effectiveChanId}:${options.roomId}`;
   }
+}
+
+/**
+ * 针对前端全局状态（水位线与立足上下文交付）或直连单例 LLM 缓存的专属 Agent 会话复合键
+ * 确保同一议题下多个不同 Agent 拥有正交独立的水位线与交付状态
+ */
+export function buildAgentSessionKey(options: {
+  agentId: string;
+  roomId: string;
+  channelId?: string;
+  isDm?: boolean;
+  discussionMode?: string;
+}): string {
+  const baseKey = buildUnifiedSessionKey(options);
+  // 私聊 baseKey 已经包含 agentId (dm:{agentId}:{threadId})，无需重复追加
+  if (baseKey.startsWith('dm:')) {
+    return baseKey;
+  }
+  return `${baseKey}:${options.agentId}`;
 }
 
 export interface AcpAgentResponse {
@@ -920,7 +940,7 @@ export async function sendPromptToAcpAgent(
   if (isModelConfigReady(modelConfig)) {
     try {
       console.log(`[ACP Client] Invoking direct LLM runtime for ${agent.name} with model: ${modelConfig.modelName || modelConfig.modelId}`);
-      const sessionKey = buildUnifiedSessionKey({
+      const sessionKey = buildAgentSessionKey({
         agentId: agent.id,
         roomId,
         channelId: options.channelId,
