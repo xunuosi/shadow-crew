@@ -211,6 +211,12 @@ export const ModelContextConfigPanel: React.FC<ModelContextConfigPanelProps> = (
     onChange({ reasoningLevels: nextLevels });
   };
 
+  // 微型总结 Agent 智能归纳配置 (默认开启双模架构，异常/离线自动无缝回退规则提取)
+  const isMicroAgentEnabled = modelConfig.enableMicroAgentSummary !== false;
+  const handleToggleMicroAgent = (enabled: boolean) => {
+    onChange({ enableMicroAgentSummary: enabled });
+  };
+
   const handleDeleteLevel = (index: number) => {
     const nextLevels = reasoningLevels.filter((_, i) => i !== index);
     onChange({ reasoningLevels: nextLevels });
@@ -628,6 +634,58 @@ export const ModelContextConfigPanel: React.FC<ModelContextConfigPanelProps> = (
             </div>
           </div>
         )}
+      </div>
+
+      {/* 维度 4: Micro Summarizer Agent (微型智能总结 Agent 双模架构) */}
+      <div className="pt-2 border-t border-border/60 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <Sparkles className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+            <span className={`text-[11px] font-semibold ${labelColor}`}>
+              Micro Summarizer Agent (微型总结 Agent)
+            </span>
+            <div className="relative group cursor-help">
+              <HelpCircle className="w-3 h-3 text-fg-muted" />
+              <div className="absolute left-0 bottom-full mb-1.5 hidden group-hover:block w-72 p-2 bg-popover text-popover-fg text-[10px] rounded-lg shadow-lg border border-border z-20">
+                历史超限时，由微型 Agent 自动提炼高质量因果架构记忆；若离线或异常自动无缝降级为规则提取保底。
+              </div>
+            </div>
+          </div>
+
+          {/* iOS 风格平滑切换 Toggle 开关 */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={isMicroAgentEnabled}
+            onClick={() => handleToggleMicroAgent(!isMicroAgentEnabled)}
+            className={`w-9 h-5 flex items-center rounded-full p-0.5 transition-colors cursor-pointer ${
+              isMicroAgentEnabled ? 'bg-amber-500 dark:bg-amber-400' : 'bg-gray-300 dark:bg-gray-700'
+            }`}
+          >
+            <div
+              className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                isMicroAgentEnabled ? 'translate-x-4' : 'translate-x-0'
+              }`}
+            />
+          </button>
+        </div>
+
+        <div className="text-[10px] text-fg-muted flex items-start gap-1.5 bg-surface-subtle p-2 rounded-lg border border-border/50">
+          <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 mt-0.5 shrink-0" />
+          <span>
+            {isMicroAgentEnabled ? (
+              <>
+                <strong className="text-fg font-medium">智能语义归纳已开启：</strong>
+                历史超限时，由微型 Agent 自动提炼高质量因果架构记忆；若离线或异常自动无缝降级为规则提取保底。
+              </>
+            ) : (
+              <>
+                <strong className="text-fg font-medium">仅本地规则提取：</strong>
+                跳过微型 Agent 调用，纯本地 0ms 提取 Memory 关键词与决策要点，提供零开销硬数学兜底。
+              </>
+            )}
+          </span>
+        </div>
       </div>
 
       {/* 换算指南提示 */}

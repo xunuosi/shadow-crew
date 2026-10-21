@@ -126,6 +126,9 @@ export interface AgentModelConfig {
   enableReasoning?: boolean; // 是否启用思考强度控制
   reasoningEffort?: 'off' | 'low' | 'medium' | 'high' | string; // 当前生效的思考强度（提供默认选项）
   reasoningLevels?: ReasoningLevelItem[]; // 思考级别与 API 参数映射表
+
+  // 3. 上下文压缩双模架构配置
+  enableMicroAgentSummary?: boolean; // 是否启用微型总结 Agent 智能语义归纳 (默认启用，异常/离线时自动回退规则提取保底)
 }
 
 export interface AgentWorkspaceConfig {

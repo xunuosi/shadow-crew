@@ -1099,6 +1099,41 @@ export function foldMessageContentToTokenBudget(content: string, maxTokens: numb
     return content;
   }
 
+  // 特殊保护：若为 <compacted-summary> 摘要块，提取 mode 属性并保持 XML 标签完整性与合法性
+  const summaryTagMatch = content.match(
+    /^([\s\S]*?<compacted-summary(?:\s+[^>]*)?>)([\s\S]*?)(<\/compacted-summary>[\s\S]*)$/
+  );
+  if (summaryTagMatch) {
+    const openTag = summaryTagMatch[1].trim();
+    const innerContent = summaryTagMatch[2].trim();
+    const closeTag = summaryTagMatch[3].trim();
+    const openTokens = estimateTokenCount(openTag);
+    const closeTokens = estimateTokenCount(closeTag);
+    const envelopeCost = openTokens + closeTokens;
+
+    if (maxTokens >= envelopeCost + 8) {
+      const foldedInner = foldMessageContentToTokenBudget(innerContent, maxTokens - envelopeCost - 2);
+      let candidate = `${openTag}\n${foldedInner}\n${closeTag}`;
+      while (estimateTokenCount(candidate) > maxTokens && candidate.length > 20) {
+        const innerCandidate = foldMessageContentToTokenBudget(innerContent, maxTokens - envelopeCost - 6);
+        candidate = `${openTag}\n${innerCandidate}\n${closeTag}`;
+        break;
+      }
+      return candidate;
+    }
+
+    const modeMatch = openTag.match(/mode="([^"]+)"/);
+    const modeAttr = modeMatch ? ` mode="${modeMatch[1]}"` : '';
+    const compactOpen = `<compacted-summary${modeAttr}>`;
+    const compactClose = `</compacted-summary>`;
+    const minEnvelope = estimateTokenCount(compactOpen) + estimateTokenCount(compactClose);
+    if (maxTokens >= minEnvelope + 4) {
+      const allowInner = maxTokens - minEnvelope - 2;
+      const foldedInner = foldMessageContentToTokenBudget(innerContent, allowInner);
+      return `${compactOpen}\n${foldedInner}\n${compactClose}`;
+    }
+  }
+
   // 极端微型配额保护 (maxTokens <= 20): 极简占位符，严格按字数反推
   if (maxTokens <= 20) {
     const placeholder = '..[折叠]';
@@ -1249,67 +1284,120 @@ export function extractStructuredMemoryKeyPoints(
 }
 
 /**
- * 会话历史上下文紧缩算法（Context Compaction）
- * 当历史消息总 Token 超过安全预算（或总消息条数过多）时：
- * 1. 结构化提炼早期被淘汰消息为高信息密度的 Memory 决策要点；
- * 2. 对超长保留工作消息进行行内核折叠，形成严格数学预算兜底保证（总 Tokens 必须 <= historyTokenBudget）；
- * 3. 严格遵循 user / assistant 严格交替契约，杜绝 Anthropic 等 API 校验失败。
+ * 微型总结 Agent（Micro Summarizer Agent）
+ * 使用轻量小模型、极低温（0.1）与小 Token 预算（max_tokens: 220），
+ * 对早期对话历史进行高密度的因果逻辑与架构决策语义归纳。
+ * 设定 4000ms 快速超时，杜绝阻塞主对话链路。
  */
-export function compactConversationHistory(
-  history: Array<{ role: 'user' | 'assistant'; content: string }>,
+export async function summarizeHistoryWithMicroAgent(
+  olderMessages: Array<{ role: 'user' | 'assistant'; content: string }>,
+  config?: AgentModelConfig
+): Promise<string | null> {
+  if (!config || olderMessages.length === 0) {
+    return null;
+  }
+
+  const rawBaseUrl = (config.baseUrl || '').trim();
+  const apiKey = (config.apiKey || '').trim();
+  if (config.provider !== 'ollama' && !apiKey) {
+    return null;
+  }
+
+  // 整理待总结的上下文片段（单条截取 400 字避免送入过大内容）
+  const dialogText = olderMessages
+    .map((m) => {
+      const clean = m.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      const snippet = clean.length > 400 ? `${clean.slice(0, 400)}...` : clean;
+      return `[${m.role === 'user' ? '用户/协作方' : '智能体'}]: ${snippet}`;
+    })
+    .join('\n\n');
+
+  const microPrompt = `请阅读以下前序多智能体工程协同对话，深度提炼出高密度的关键决议记忆（Memory），绝不输出任何客套话与引言，直接按以下结构输出：
+• 【架构与技术决议】: (最终定案的技术选型、接口契约与方案演进)
+• 【关键参数与约束】: (涉及的端口、路径、Token 预算、环境变量等硬性参数)
+• 【未决争议与待办】: (遗留的潜在风险、死锁待办或红队挑战)
+• 【重要执行结果】: (已落地合入的文件或阶段成果)
+
+前序对话内容：
+${dialogText}`;
+
+  const microSystemPrompt =
+    '你是一个专业的工程架构与多智能体协同上下文精炼总结专家（Micro Summarizer Agent）。请专注于提取事实与决策，保持极端客观精炼。';
+
+  try {
+    const timeoutMs = 4000; // 4 秒快速硬超时
+
+    if (config.provider === 'anthropic') {
+      const endpoint = buildAnthropicMessagesUrl(rawBaseUrl);
+      const headers = {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      };
+      const body = {
+        model: config.modelId || 'claude-3-5-haiku-20241022',
+        system: microSystemPrompt,
+        messages: [{ role: 'user', content: microPrompt }],
+        max_tokens: 220,
+        temperature: 0.1,
+      };
+
+      const res = await postJsonUniversal(endpoint, headers, body, timeoutMs);
+      if (res.ok && res.data?.content?.[0]?.text) {
+        return res.data.content[0].text.trim();
+      }
+    } else {
+      // OpenAI Compatible (DeepSeek, OpenAI, Ollama, SiliconFlow 等)
+      const endpoint = buildChatCompletionsUrl(rawBaseUrl);
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+      const body = {
+        model: config.modelId || 'deepseek-chat',
+        messages: [
+          { role: 'system', content: microSystemPrompt },
+          { role: 'user', content: microPrompt },
+        ],
+        max_tokens: 220,
+        temperature: 0.1,
+      };
+
+      const res = await postJsonUniversal(endpoint, headers, body, timeoutMs);
+      if (res.ok && res.data?.choices?.[0]?.message?.content) {
+        return res.data.choices[0].message.content.trim();
+      }
+    }
+  } catch (err) {
+    console.warn('[Micro Summarizer Agent] 智能总结调用失败或超时，无缝回退至规则提取器:', err);
+  }
+
+  return null;
+}
+
+/**
+ * 组装折叠摘要消息对（双模支持：若传入 Agent 总结则使用 Agent 模式，否则使用本地规则提取）
+ */
+export function buildFoldedSummaryTurn(
+  olderMessages: Array<{ role: 'user' | 'assistant'; content: string }>,
   historyTokenBudget: number,
-  keepRecentMessages: number = 4
+  agentSummaryText?: string | null
 ): Array<{ role: 'user' | 'assistant'; content: string }> {
-  if (history.length === 0) {
-    return [];
-  }
+  if (olderMessages.length === 0) return [];
 
-  const initialTotalTokens = history.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
-  if (
-    initialTotalTokens <= historyTokenBudget &&
-    history.length <= keepRecentMessages &&
-    history.length <= MAX_SESSION_HISTORY_MESSAGES
-  ) {
-    return history;
-  }
+  const olderEstimatedTokens = olderMessages.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
 
-  // 1. 动态自适应活跃窗口大小：
-  // 当预算极其紧凑（< 400 tokens）时，自适应收缩活跃窗口至 2 条（1 轮），
-  // 杜绝 4 条 recent 消息加上 2 条摘要消息（共 6 条）的基底结构载荷直接击穿极小预算。
-  const effectiveKeepRecent =
-    historyTokenBudget < 250 ? 2 : historyTokenBudget < 400 ? Math.min(2, keepRecentMessages) : keepRecentMessages;
+  let summaryContent = '';
+  let summaryMode = 'rule_based';
 
-  let splitIdx = Math.max(0, history.length - effectiveKeepRecent);
-  while (splitIdx < history.length && history[splitIdx].role !== 'user') {
-    splitIdx++;
-  }
-  if (splitIdx >= history.length) {
-    splitIdx = Math.max(0, history.length - 2);
-    while (splitIdx > 0 && history[splitIdx].role !== 'user') {
-      splitIdx--;
-    }
-  }
-
-  // 若历史条数本来就很少（例如 2 条超长大消息导致 splitIdx 仍为 0），强制将第 1 条作为 older 折叠，第 2 条留作 recent
-  let olderMessages = history.slice(0, splitIdx);
-  let recentMessages = history.slice(splitIdx);
-
-  if (olderMessages.length === 0 && history.length >= 2) {
-    olderMessages = [history[0]];
-    recentMessages = history.slice(1);
-    // 保证 recentMessages 满足 user 开头契约
-    if (recentMessages[0].role !== 'user') {
-      recentMessages = history;
-      olderMessages = [];
-    }
-  }
-
-  let compactedTurn: Array<{ role: 'user' | 'assistant'; content: string }> = [];
-
-  if (olderMessages.length > 0) {
-    const olderEstimatedTokens = olderMessages.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+  if (agentSummaryText && agentSummaryText.trim().length > 10) {
+    summaryContent = agentSummaryText.trim();
+    summaryMode = 'micro_agent';
+  } else {
     const memory = extractStructuredMemoryKeyPoints(olderMessages);
-
     const summaryLines: string[] = [];
     if (memory.decisions.length > 0) {
       summaryLines.push(`• 【架构与技术决议】: ${memory.decisions.slice(-3).join('；')}`);
@@ -1329,44 +1417,57 @@ export function compactConversationHistory(
     if (summaryLines.length === 0) {
       summaryLines.push(`• 早期 ${olderMessages.length} 轮对话已安全压缩，核心状态已同步。`);
     }
-
-    const summaryUserText = `<compacted-summary folded-turns="${olderMessages.length}" estimated-saved-tokens="${olderEstimatedTokens}">
-[系统自适应历史折叠 Memory 摘要 · 早期关键要点已结构化提取]:
-${summaryLines.join('\n')}
-</compacted-summary>`;
-
-    // 助手确认句在小预算下使用紧凑版本，避免自身挤占 36+ Tokens
-    const assistantAckText =
-      historyTokenBudget < 250
-        ? '已对齐早期要点，专注当前任务。'
-        : '已对齐上述早期折叠历史与关键决议要点，正基于当前最新上下文专注推进任务。';
-
-    compactedTurn = [
-      { role: 'user', content: summaryUserText },
-      {
-        role: 'assistant',
-        content: assistantAckText,
-      },
-    ];
+    summaryContent = summaryLines.join('\n');
+    summaryMode = 'rule_based';
   }
 
+  const titlePrefix =
+    summaryMode === 'micro_agent'
+      ? '[系统微型 Agent 智能提炼 Memory 摘要 · 早期关键决策已语义归纳]:'
+      : '[系统自适应历史折叠 Memory 摘要 · 早期关键要点已结构化提取]:';
+
+  const summaryUserText = `<compacted-summary mode="${summaryMode}" folded-turns="${olderMessages.length}" estimated-saved-tokens="${olderEstimatedTokens}">
+${titlePrefix}
+${summaryContent}
+</compacted-summary>`;
+
+  const assistantAckText =
+    historyTokenBudget < 250
+      ? '已对齐早期要点，专注当前任务。'
+      : '已对齐上述早期折叠历史与关键决议要点，正基于当前最新上下文专注推进任务。';
+
+  return [
+    { role: 'user', content: summaryUserText },
+    { role: 'assistant', content: assistantAckText },
+  ];
+}
+
+/**
+ * 内部核心流水线：将 older/recent 消息序列严格收敛到 Token 预算约束内
+ */
+export function enforceHistoryBudgetConstraints(
+  olderMessages: Array<{ role: 'user' | 'assistant'; content: string }>,
+  recentMessages: Array<{ role: 'user' | 'assistant'; content: string }>,
+  historyTokenBudget: number,
+  agentSummaryText?: string | null
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  let compactedTurn = buildFoldedSummaryTurn(olderMessages, historyTokenBudget, agentSummaryText);
   let candidate = [...compactedTurn, ...recentMessages];
 
-  // 2. 检查 candidate 总 Token 是否满足硬预算上限
+  // 1. 检查 candidate 总 Token 是否满足硬预算上限
   let currentTotalTokens = candidate.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
   if (currentTotalTokens <= historyTokenBudget) {
     return ensureAlternatingRoles(candidate);
   }
 
-  // 3. 硬预算数学兜底执行（Hard Budget Enforcement）
-  // 当候选序列依然超预算时，扣除助手应答占位后进行动态预算再分配与行内核折叠
+  // 2. 硬预算数学兜底执行（Hard Budget Enforcement）
   const ackCost = compactedTurn.length > 1 ? estimateTokenCount(compactedTurn[1].content) : 0;
   const netBudget = Math.max(20, historyTokenBudget - ackCost);
 
   const budgetForSummary = compactedTurn.length > 0 ? Math.max(12, Math.min(80, Math.floor(netBudget * 0.35))) : 0;
   const remainingBudgetForRecent = Math.max(12, netBudget - budgetForSummary);
 
-  // 3.1 折叠 summary 消息至其安全配额
+  // 2.1 折叠 summary 消息至其安全配额
   if (compactedTurn.length > 0) {
     const summaryTokens = estimateTokenCount(compactedTurn[0].content);
     if (summaryTokens > budgetForSummary) {
@@ -1374,7 +1475,7 @@ ${summaryLines.join('\n')}
     }
   }
 
-  // 3.2 将剩余预算均分给 recentMessages 中的每一条消息
+  // 2.2 将剩余预算均分给 recentMessages 中的每一条消息
   if (recentMessages.length > 0) {
     const perMessageBudget = Math.max(8, Math.floor(remainingBudgetForRecent / recentMessages.length));
     recentMessages = recentMessages.map((msg) => {
@@ -1391,7 +1492,7 @@ ${summaryLines.join('\n')}
 
   let bounded = [...compactedTurn, ...recentMessages];
 
-  // 3.3 极端硬数学不变量保证：逐条自底向上精确收敛
+  // 2.3 极端硬数学不变量保证：逐条自底向上精确收敛
   let finalTokens = bounded.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
   if (finalTokens > historyTokenBudget) {
     for (let loop = 0; loop < 5 && finalTokens > historyTokenBudget; loop++) {
@@ -1410,7 +1511,7 @@ ${summaryLines.join('\n')}
       finalTokens = bounded.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
     }
 
-    // 终极安全钳制（微字符截断）：绝对保证 100% <= historyTokenBudget，消除任何字符估算微小公差
+    // 终极安全钳制（微字符截断）：绝对保证 100% <= historyTokenBudget
     while (finalTokens > historyTokenBudget) {
       let longestIdx = 0;
       let longestLen = 0;
@@ -1427,8 +1528,117 @@ ${summaryLines.join('\n')}
   }
 
   return ensureAlternatingRoles(bounded);
+}
 
-  return ensureAlternatingRoles(bounded);
+/**
+ * 切分历史消息为 olderMessages 与 recentMessages 的辅助函数
+ */
+function splitHistoryIntoOlderAndRecent(
+  history: Array<{ role: 'user' | 'assistant'; content: string }>,
+  historyTokenBudget: number,
+  keepRecentMessages: number = 4
+): {
+  olderMessages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  recentMessages: Array<{ role: 'user' | 'assistant'; content: string }>;
+} {
+  const effectiveKeepRecent =
+    historyTokenBudget < 250 ? 2 : historyTokenBudget < 400 ? Math.min(2, keepRecentMessages) : keepRecentMessages;
+
+  let splitIdx = Math.max(0, history.length - effectiveKeepRecent);
+  while (splitIdx < history.length && history[splitIdx].role !== 'user') {
+    splitIdx++;
+  }
+  if (splitIdx >= history.length) {
+    splitIdx = Math.max(0, history.length - 2);
+    while (splitIdx > 0 && history[splitIdx].role !== 'user') {
+      splitIdx--;
+    }
+  }
+
+  let olderMessages = history.slice(0, splitIdx);
+  let recentMessages = history.slice(splitIdx);
+
+  if (olderMessages.length === 0 && history.length >= 2) {
+    olderMessages = [history[0]];
+    recentMessages = history.slice(1);
+    if (recentMessages[0].role !== 'user') {
+      recentMessages = history;
+      olderMessages = [];
+    }
+  }
+
+  return { olderMessages, recentMessages };
+}
+
+/**
+ * 会话历史上下文紧缩算法（Context Compaction · 规则提取同步通道）
+ * 适用于离线运行、单测套件以及不需要异步调用的极速本地提取场景
+ */
+export function compactConversationHistory(
+  history: Array<{ role: 'user' | 'assistant'; content: string }>,
+  historyTokenBudget: number,
+  keepRecentMessages: number = 4
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  if (history.length === 0) {
+    return [];
+  }
+
+  const initialTotalTokens = history.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+  if (
+    initialTotalTokens <= historyTokenBudget &&
+    history.length <= keepRecentMessages &&
+    history.length <= MAX_SESSION_HISTORY_MESSAGES
+  ) {
+    return history;
+  }
+
+  const { olderMessages, recentMessages } = splitHistoryIntoOlderAndRecent(
+    history,
+    historyTokenBudget,
+    keepRecentMessages
+  );
+
+  return enforceHistoryBudgetConstraints(olderMessages, recentMessages, historyTokenBudget, null);
+}
+
+/**
+ * 会话历史上下文紧缩算法（Context Compaction · 双模自适应异步通道）
+ * 优先调用微型总结 Agent 提取深度因果与架构决策；
+ * 当未配置 API Key、离线或超时（4s）时，0 毫秒无缝回退至本地规则提取器。
+ */
+export async function compactConversationHistoryAsync(
+  history: Array<{ role: 'user' | 'assistant'; content: string }>,
+  historyTokenBudget: number,
+  keepRecentMessages: number = 4,
+  config?: AgentModelConfig
+): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
+  if (history.length === 0) {
+    return [];
+  }
+
+  const initialTotalTokens = history.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+  if (
+    initialTotalTokens <= historyTokenBudget &&
+    history.length <= keepRecentMessages &&
+    history.length <= MAX_SESSION_HISTORY_MESSAGES
+  ) {
+    return history;
+  }
+
+  const { olderMessages, recentMessages } = splitHistoryIntoOlderAndRecent(
+    history,
+    historyTokenBudget,
+    keepRecentMessages
+  );
+
+  let agentSummaryText: string | null = null;
+  const allowAgent = config?.enableMicroAgentSummary !== false;
+
+  if (allowAgent && olderMessages.length > 0 && config && (config.apiKey || config.provider === 'ollama')) {
+    agentSummaryText = await summarizeHistoryWithMicroAgent(olderMessages, config);
+  }
+
+  return enforceHistoryBudgetConstraints(olderMessages, recentMessages, historyTokenBudget, agentSummaryText);
 }
 
 /**
@@ -1531,7 +1741,12 @@ export async function callLlmModel(
   const effectiveHistoryBudget = Math.max(64, budget.historyTokenBudget - systemTokens - promptTokens);
 
   const rawHistory = sessionKey ? llmSessionHistoryMap.get(sessionKey) || [] : [];
-  const compactedHistory = compactConversationHistory(rawHistory, effectiveHistoryBudget);
+  const compactedHistory = await compactConversationHistoryAsync(
+    rawHistory,
+    effectiveHistoryBudget,
+    4,
+    config
+  );
 
   const conversationTurns: Array<{ role: 'user' | 'assistant'; content: string }> = [
     ...compactedHistory,

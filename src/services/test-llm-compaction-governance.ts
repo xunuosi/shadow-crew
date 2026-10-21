@@ -7,6 +7,10 @@ import {
   estimateTokenCount,
   getModelSafeContextBudget,
   compactConversationHistory,
+  compactConversationHistoryAsync,
+  buildFoldedSummaryTurn,
+  enforceHistoryBudgetConstraints,
+  summarizeHistoryWithMicroAgent,
   clearLlmSessionHistory,
   foldMessageContentToTokenBudget,
   extractStructuredMemoryKeyPoints,
@@ -429,6 +433,79 @@ console.log('\n🔟 测试思考强度配置与默认选项 (Reasoning levels & 
   const defaultOption = REASONING_EFFORT_OPTIONS.find((o) => o.value === 'medium');
   assert(Boolean(defaultOption), '存在 medium 作为默认选项');
   assert(defaultOption?.label.includes('默认'), 'medium 选项标明了默认标识');
+}
+
+// 1️⃣1️⃣ 测试双模架构：微型智能总结 Agent 与本地规则提取保底 (compactConversationHistoryAsync & Dual-Mode)
+console.log('\n1️⃣1️⃣ 测试上下文压缩双模架构 (compactConversationHistoryAsync & Micro Summarizer Agent)');
+{
+  const sampleHistory = [
+    { role: 'user' as const, content: '我们需要选型 2026 年的主力代码基座，要求在 Rust 与 TypeScript 场景下支持 1M 上下文。' },
+    { role: 'assistant' as const, content: '经过评测，建议选型 DeepSeek V4.1 或 GLM-5.3，单轮支持超长上下文并普及前缀缓存。' },
+    { role: 'user' as const, content: '环境变量中需要配置哪些参数？' },
+    { role: 'assistant' as const, content: '端口保持 8080，超时阈值设为 4000ms，Token 预算严格控制在 512K。' },
+    { role: 'user' as const, content: '方案有没有什么潜在风险？' },
+    { role: 'assistant' as const, content: '风险是网络抖动可能导致微型 Agent 超时，需要设计 0ms 本地规则提取无缝降级保底。' },
+    { role: 'user' as const, content: '当前任务进展如何？' },
+    { role: 'assistant' as const, content: '已完成双模管道构建并测试通过，正在执行回归测试。' },
+  ];
+
+  // 11.1 无可用配置或离线时，异步双模通道自动无缝降级为规则提取保底 (mode="rule_based")
+  const fallbackResult = await compactConversationHistoryAsync(sampleHistory, 250, 2);
+  assert(fallbackResult.length > 0, '无配置时异步双模通道顺利完成压缩');
+  const fallbackSummary = fallbackResult.find((m) => m.content.includes('<compacted-summary'));
+  assert(Boolean(fallbackSummary), '生成了折叠摘要');
+  assert(fallbackSummary!.content.includes('mode="rule_based"'), '无 Agent 配置时标签为 mode="rule_based"');
+  const fallbackTotalTokens = fallbackResult.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+  assert(fallbackTotalTokens <= 250, `降级规则压缩后总 Tokens (${fallbackTotalTokens}) 严格 <= 预算 (250)`);
+
+  // 11.2 用户显式关闭微型 Agent (enableMicroAgentSummary: false)
+  const disabledAgentResult = await compactConversationHistoryAsync(sampleHistory, 250, 2, {
+    provider: 'openai_compatible',
+    modelId: 'glm-5.3',
+    apiKey: 'sk-test-key-mock',
+    enableMicroAgentSummary: false,
+  });
+  const disabledSummary = disabledAgentResult.find((m) => m.content.includes('<compacted-summary'));
+  assert(disabledSummary!.content.includes('mode="rule_based"'), '显式关闭微型 Agent 时强制使用 mode="rule_based"');
+
+  // 11.3 验证微型 Agent 成功生成摘要时的组装表现 (mode="micro_agent")
+  const mockAgentSummary = `• 【架构与技术决议】: 最终选型 DeepSeek V4.1 Flash，支持 1M 原生上下文与前缀缓存。
+• 【关键参数与约束】: 超时 4000ms，端口 8080，预算 512K。
+• 【未决争议与待办】: 离线时需 0ms 回退规则提取。
+• 【重要执行结果】: 双模压缩管道已落地。`;
+
+  const agentSummaryTurn = buildFoldedSummaryTurn(sampleHistory.slice(0, 4), 300, mockAgentSummary);
+  assert(agentSummaryTurn.length === 2, '组装生成包含 user 摘要与 assistant 应答的 2 轮结构');
+  assert(agentSummaryTurn[0].content.includes('mode="micro_agent"'), '摘要块带有 mode="micro_agent" 模式标记');
+  assert(agentSummaryTurn[0].content.includes('DeepSeek V4.1 Flash'), '正确内嵌了微型 Agent 归纳的高密度架构决策');
+  assert(agentSummaryTurn[0].role === 'user' && agentSummaryTurn[1].role === 'assistant', '严格保证 user/assistant 角色契约');
+
+  // 11.4 验证微型 Agent 生成超长摘要时，enforceHistoryBudgetConstraints 的硬预算强钳制
+  const bloatedAgentSummary = `• 【架构决策】: ${'超长架构因果记忆深度归纳 '.repeat(60)}
+• 【参数约束】: ${'Token 预算 100 行内核截断折叠 '.repeat(40)}`;
+  const boundedResult = enforceHistoryBudgetConstraints(
+    sampleHistory.slice(0, 6),
+    sampleHistory.slice(6),
+    120, // 极小预算 120 Tokens
+    bloatedAgentSummary
+  );
+  const boundedTokens = boundedResult.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+  assert(boundedTokens <= 120, `超长 Agent 摘要在 120 预算下被硬数学钳制收敛 (实测: ${boundedTokens} <= 120)`);
+  assert(boundedResult[0].role === 'user', '首条依然为 user');
+  for (let i = 0; i < boundedResult.length - 1; i++) {
+    assert(boundedResult[i].role !== boundedResult[i + 1].role, `第 ${i} 与 ${i + 1} 轮角色严格交替`);
+  }
+
+  // 11.5 验证网络异常/不可达地址时，summarizeHistoryWithMicroAgent 安全捕获异常并返回 null
+  const unreachableConfig = {
+    provider: 'openai_compatible' as const,
+    modelId: 'glm-5.3',
+    apiKey: 'sk-mock-key',
+    baseUrl: 'http://127.0.0.1:59999/unreachable', // 不存在的无效端口
+    enableMicroAgentSummary: true,
+  };
+  const agentSafeFailResult = await summarizeHistoryWithMicroAgent(sampleHistory.slice(0, 4), unreachableConfig);
+  assert(agentSafeFailResult === null, '网络失败时 summarizeHistoryWithMicroAgent 安全返回 null，绝不抛出阻断异常');
 }
 
 console.log('\n===================================================================');
