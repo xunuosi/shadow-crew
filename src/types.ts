@@ -96,6 +96,7 @@ export interface AgentMemoryBank {
 }
 
 export type ModelProviderType = 'openai_compatible' | 'deepseek' | 'anthropic' | 'ollama' | 'custom';
+export type ModelFamily = 'anthropic' | 'openai' | 'deepseek' | 'google' | 'meta' | 'qwen' | 'local_other';
 
 export interface ReasoningLevelItem {
   level: string; // 如 'off' | 'low' | 'medium' | 'high' 或自定义
@@ -104,6 +105,7 @@ export interface ReasoningLevelItem {
 
 export interface AgentModelConfig {
   provider: ModelProviderType;
+  family?: ModelFamily;
   modelId: string;
   modelName?: string;
   apiKey?: string;
@@ -164,6 +166,8 @@ export interface Agent {
   isModelHealthy?: boolean;
   isManagedByYou?: boolean;
   baselineSycophancyScore?: number; // BSS 静态历史附和分 (0.0~1.0, P0-4)
+  runtimeKind?: 'shinobi_native' | 'acp_custom' | 'claude_code';
+  defaultGameRole?: GameRoleType;
   
   // ACP Protocol Config
   acpTransport: AcpTransport;
@@ -761,12 +765,15 @@ export interface CartridgeCitation {
   items: Array<{ key: string; content: string }>;
 }
 
+export type MessageKind = 'normal' | 'system_control' | 'rollup' | 'guard' | 'error';
+
 export interface Message {
   id: string;
   threadId: string;
   projectId?: string;
   channelId?: string;
   type?: 'normal' | 'topic';
+  kind?: MessageKind;
   topicData?: TopicMessageData;
   consensusSummary?: string;
   authorId: string;

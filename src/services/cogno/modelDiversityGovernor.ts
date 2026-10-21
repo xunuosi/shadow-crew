@@ -8,36 +8,56 @@
  * - Chen, J., et al. (2023). ReConcile: Round-Table Conference Improves Reasoning via Consensus among Diverse LLMs.
  */
 
-import { Agent, GameRolesConfig, ModelDiversityEvaluation, GroundingEvidence, ArgumentNode, SycophancyEvaluation } from '../../types';
+import { Agent, GameRolesConfig, ModelDiversityEvaluation, GroundingEvidence, ArgumentNode, SycophancyEvaluation, ModelFamily } from '../../types';
 
-export type ModelFamily = 'anthropic' | 'openai' | 'deepseek' | 'google' | 'meta' | 'qwen' | 'local_other';
+export type { ModelFamily };
+
+const FAMILY_DISPLAY_NAMES: Record<ModelFamily, string> = {
+  anthropic: 'Claude 家族',
+  openai: 'OpenAI 家族',
+  deepseek: 'DeepSeek 家族',
+  google: 'Gemini 家族',
+  meta: 'Llama 家族',
+  qwen: 'Qwen 家族',
+  local_other: 'Local/Custom',
+};
 
 /**
- * 识别 Agent 所绑定的模型所属大模型家族
+ * 识别/解析模型家族（优先读取配置显式 family，缺失时由元数据推断并归一化）
+ */
+export function inferModelFamilyFromMetadata(meta: {
+  modelId?: string;
+  modelName?: string;
+  provider?: string;
+  modelBadge?: string;
+}): ModelFamily {
+  const identifier = `${meta.modelBadge || ''} ${meta.modelId || ''} ${meta.modelName || ''} ${meta.provider || ''}`.toLowerCase();
+  if (identifier.includes('claude') || identifier.includes('anthropic')) return 'anthropic';
+  if (identifier.includes('gpt') || identifier.includes('openai') || identifier.includes('o1') || identifier.includes('o3') || identifier.includes('o4')) return 'openai';
+  if (identifier.includes('deepseek')) return 'deepseek';
+  if (identifier.includes('gemini') || identifier.includes('google')) return 'google';
+  if (identifier.includes('llama') || identifier.includes('meta')) return 'meta';
+  if (identifier.includes('qwen') || identifier.includes('通义')) return 'qwen';
+  return 'local_other';
+}
+
+/**
+ * 识别 Agent 所绑定的模型所属大模型家族（优先显式字段，杜绝运行期反复模糊猜测）
  */
 export function detectModelFamily(agent: Agent): { family: ModelFamily; displayName: string } {
-  const identifier = `${agent.modelBadge || ''} ${agent.modelConfig?.modelId || ''} ${agent.modelConfig?.modelName || ''} ${agent.modelConfig?.provider || ''}`.toLowerCase();
-
-  if (identifier.includes('claude') || identifier.includes('anthropic')) {
-    return { family: 'anthropic', displayName: 'Claude 家族' };
-  }
-  if (identifier.includes('gpt') || identifier.includes('openai') || identifier.includes('o1') || identifier.includes('o3')) {
-    return { family: 'openai', displayName: 'OpenAI 家族' };
-  }
-  if (identifier.includes('deepseek')) {
-    return { family: 'deepseek', displayName: 'DeepSeek 家族' };
-  }
-  if (identifier.includes('gemini') || identifier.includes('google')) {
-    return { family: 'google', displayName: 'Gemini 家族' };
-  }
-  if (identifier.includes('llama') || identifier.includes('meta')) {
-    return { family: 'meta', displayName: 'Llama 家族' };
-  }
-  if (identifier.includes('qwen') || identifier.includes('通义')) {
-    return { family: 'qwen', displayName: 'Qwen 家族' };
+  if (agent.modelConfig?.family) {
+    const f = agent.modelConfig.family;
+    return { family: f, displayName: FAMILY_DISPLAY_NAMES[f] || agent.modelBadge || f };
   }
 
-  return { family: 'local_other', displayName: agent.modelBadge || 'Local/Custom' };
+  const family = inferModelFamilyFromMetadata({
+    modelId: agent.modelConfig?.modelId,
+    modelName: agent.modelConfig?.modelName,
+    provider: agent.modelConfig?.provider,
+    modelBadge: agent.modelBadge,
+  });
+
+  return { family, displayName: FAMILY_DISPLAY_NAMES[family] || agent.modelBadge || 'Local/Custom' };
 }
 
 /**

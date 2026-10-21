@@ -16,6 +16,7 @@ import {
   ModularOrchestrationState,
   TaskModuleSlice,
   SharedInterfaceContract,
+  MessageKind,
 } from '../types';
 import {
   solveDeterministicBwm,
@@ -859,6 +860,7 @@ export interface RoomTranscriptEntry {
   timestamp?: string;
   isPending?: boolean;
   agentBadge?: string;
+  kind?: MessageKind;
 }
 
 export interface DeltaBatchResult {
@@ -874,9 +876,15 @@ export interface DeltaBatchResult {
  * 判断一条房间消息是否为平台守卫/熔断等系统控制卡片（不应作为业务上下文注入给 Agent）
  */
 function isSystemControlMessage(msg: RoomTranscriptEntry): boolean {
+  // 1. 优先根据显式消息类型判断
+  if (msg.kind === 'system_control' || msg.kind === 'guard' || msg.kind === 'rollup' || msg.kind === 'error') {
+    return true;
+  }
   if (msg.authorId === 'system') return true;
   if (msg.isPending) return true;
   if (!msg.content || !msg.content.trim()) return true;
+
+  // 2. 兜底判断历史遗留或第三方未标明 kind 的系统卡片
   if (
     msg.agentBadge &&
     (msg.agentBadge.includes('Guard') ||

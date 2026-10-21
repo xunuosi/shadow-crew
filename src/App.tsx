@@ -69,6 +69,7 @@ import {
   clearAcpAgentSessions,
   buildUnifiedSessionKey,
   buildAgentSessionKey,
+  matchesSessionScope,
   probeRemoteAcpConnection,
   buildAgentLaunchEnv,
   buildThinkingProcessFromAcp,
@@ -411,6 +412,8 @@ export default function App() {
               parsed[k] = (parsed[k] || []).filter((m: Message) => {
                 if (
                   m.type === 'topic' ||
+                  m.kind === 'rollup' ||
+                  m.kind === 'guard' ||
                   m.agentBadge === 'Consensus Rollup' ||
                   m.agentBadge === 'Channel Guard' ||
                   (m.channelId && m.channelId !== 'direct-messages' && !m.channelId.startsWith('dm-') && !m.channelId.startsWith('agent-') && m.channelId.trim() !== '')
@@ -1012,12 +1015,12 @@ export default function App() {
         if (payload.status === 'stopped') {
           // Agent 停止或重启后，清空该 Agent 在各房间的交付缓存与消息水位线，确保新拉起后重新注入 session/new
           deliveredStandingContextRef.current.forEach((key) => {
-            if (key.endsWith(`:${payload.agent_id}`)) {
+            if (matchesSessionScope(key, { agentId: payload.agent_id })) {
               deliveredStandingContextRef.current.delete(key);
             }
           });
           Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
-            if (key.endsWith(`:${payload.agent_id}`)) {
+            if (matchesSessionScope(key, { agentId: payload.agent_id })) {
               sessionWatermarksRef.current.delete(key);
             }
           });
@@ -1473,24 +1476,12 @@ export default function App() {
 
     // 清理该频道的会话水位线、交付缓存以及底层 ACP 进程中对应的 session_ids
     deliveredStandingContextRef.current.forEach((key) => {
-      if (
-        key.includes(`:${channelId}:`) ||
-        key.startsWith(`channel:${channelId}:`) ||
-        key.startsWith(`topic:${channelId}:`) ||
-        key.startsWith(`${channelId}:`) ||
-        deletedThreads.some((thId) => key.includes(`:${thId}:`) || key.endsWith(`:${thId}`) || key.startsWith(`${thId}:`))
-      ) {
+      if (matchesSessionScope(key, { channelId, deletedThreadIds: deletedThreads })) {
         deliveredStandingContextRef.current.delete(key);
       }
     });
     Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
-      if (
-        key.includes(`:${channelId}:`) ||
-        key.startsWith(`channel:${channelId}:`) ||
-        key.startsWith(`topic:${channelId}:`) ||
-        key.startsWith(`${channelId}:`) ||
-        deletedThreads.some((thId) => key.includes(`:${thId}:`) || key.endsWith(`:${thId}`) || key.startsWith(`${thId}:`))
-      ) {
+      if (matchesSessionScope(key, { channelId, deletedThreadIds: deletedThreads })) {
         sessionWatermarksRef.current.delete(key);
       }
     });
@@ -1972,6 +1963,7 @@ export default function App() {
         authorHandle: '@channel-guard',
         authorAvatar: '🔒',
         isAgent: true,
+        kind: 'guard',
         agentBadge: 'Channel Guard',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         content: `🔒 **频道准入拦截**：${u.invokingAgent.name} 尝试点名了 ${u.uninvitedAgents.map((a) => `@${a.name} (${a.handle})`).join('、')}，但该 Agent **未加入当前频道**。\n\n根据受邀准入原则，未受邀成员无法跨频道接收协同调度。如需其参与推演，请点击右上角「成员管理」邀请入驻。`,
@@ -2016,6 +2008,7 @@ export default function App() {
           authorHandle: '@connection-guard',
           authorAvatar: '🔌',
           isAgent: true,
+          kind: 'system_control',
           agentBadge: 'Communication Required',
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           content: `🔌 **Agent 通信尚未开启**：协同目标 **${targetAgent.name}** 当前处于离线/未连接状态，无法接力推演。需先在左侧控制面板点击【Start】开启通信。`,
@@ -2041,6 +2034,7 @@ export default function App() {
             authorHandle: '@loop-guard',
             authorAvatar: '🛡️',
             isAgent: true,
+            kind: 'guard',
             agentBadge: 'Circuit Breaker',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             content: `⚡ **多智能体协同已停止**：${loopCheck.reason}`,
@@ -5108,6 +5102,9 @@ export default function App() {
       .filter(
         (m) =>
           m.authorId !== 'system' &&
+          m.kind !== 'system_control' &&
+          m.kind !== 'guard' &&
+          m.kind !== 'rollup' &&
           !m.agentBadge?.includes('Guard') &&
           (!scopedMsgIdSet || scopedMsgIdSet.has(m.id))
       )
@@ -6161,6 +6158,7 @@ export default function App() {
         authorHandle: decision.rulingRecord ? '@arbiter-gavel' : '@consensus-engine',
         authorAvatar: '⚖️',
         isAgent: true,
+        kind: 'rollup',
         agentBadge: decision.rulingRecord ? 'Arbiter Ruling' : 'Consensus Rollup',
         timestamp: resolvedAt,
         relatedTopicId: topicId,
@@ -6168,7 +6166,7 @@ export default function App() {
       };
 
       const hasExistingRollup = updatedChannelMsgs.some(
-        (m) => m.relatedTopicId === topicId && m.id.startsWith('msg-rollup-')
+        (m) => m.relatedTopicId === topicId && (m.kind === 'rollup' || m.id.startsWith('msg-rollup-'))
       );
       const finalChannelMsgs = hasExistingRollup
         ? updatedChannelMsgs.map((m) =>

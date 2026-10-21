@@ -72,6 +72,105 @@ export function buildAgentSessionKey(options: {
   return `${baseKey}:${options.agentId}`;
 }
 
+export interface ParsedSessionKey {
+  type: 'dm' | 'topic' | 'channel' | 'legacy';
+  agentId?: string;
+  channelId?: string;
+  roomId?: string;
+  discussionMode?: string;
+}
+
+export function parseSessionKey(key: string): ParsedSessionKey {
+  if (!key) return { type: 'legacy' };
+  const parts = key.split(':');
+  if (parts[0] === 'dm') {
+    return {
+      type: 'dm',
+      agentId: parts[1],
+      roomId: parts[2],
+    };
+  }
+  if (parts[0] === 'topic') {
+    return {
+      type: 'topic',
+      channelId: parts[1],
+      roomId: parts[2],
+      discussionMode: parts[3],
+      agentId: parts[4],
+    };
+  }
+  if (parts[0] === 'channel') {
+    return {
+      type: 'channel',
+      channelId: parts[1],
+      roomId: parts[2],
+      agentId: parts[3],
+    };
+  }
+  return { type: 'legacy' };
+}
+
+/**
+ * 判断某个复合 Session Key 是否匹配给定的过滤范围 (Scope Filter)
+ * 集中收拢并取代散落的 startsWith/includes/endsWith 字符串通配
+ */
+export function matchesSessionScope(
+  key: string,
+  filter: {
+    agentId?: string;
+    channelId?: string;
+    roomId?: string;
+    deletedThreadIds?: string[];
+  }
+): boolean {
+  if (!key) return false;
+
+  // 1. 按 Agent ID 过滤（如 agent 停止时清空相关会话与交付缓存）
+  if (filter.agentId) {
+    if (key.endsWith(`:${filter.agentId}`) || key.startsWith(`dm:${filter.agentId}:`)) {
+      return true;
+    }
+  }
+
+  // 2. 按 Channel ID 过滤（如删除频道时批量清理关联议题与频道会话）
+  if (filter.channelId) {
+    if (
+      key.startsWith(`channel:${filter.channelId}:`) ||
+      key.startsWith(`topic:${filter.channelId}:`) ||
+      key.startsWith(`${filter.channelId}:`) ||
+      key.includes(`:${filter.channelId}:`)
+    ) {
+      return true;
+    }
+  }
+
+  // 3. 按 Thread/Room ID 过滤
+  if (filter.roomId) {
+    if (
+      key.endsWith(`:${filter.roomId}`) ||
+      key.includes(`:${filter.roomId}:`) ||
+      key.startsWith(`${filter.roomId}:`)
+    ) {
+      return true;
+    }
+  }
+
+  // 4. 批量 Thread IDs 过滤
+  if (filter.deletedThreadIds && filter.deletedThreadIds.length > 0) {
+    for (const thId of filter.deletedThreadIds) {
+      if (
+        key.endsWith(`:${thId}`) ||
+        key.includes(`:${thId}:`) ||
+        key.startsWith(`${thId}:`)
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 export interface AcpAgentResponse {
   textResponse: string;
   memoryActions?: Array<{ action: string; key: string; detail: string }>;

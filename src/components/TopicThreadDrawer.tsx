@@ -1658,7 +1658,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             .filter((msg) => activeModuleFilterId === 'ALL' || !msg.moduleId || msg.moduleId === activeModuleFilterId)
             .map((msg, msgIdx, visibleMsgs) => {
             const isThinkingOpen = expandedThinking[msg.id] ?? true;
-            const isAgent = msg.agentBadge || msg.authorName.includes('Agent') || msg.authorName.includes('Reviewer');
+            const isAgent = typeof msg.isAgent === 'boolean'
+              ? msg.isAgent
+              : Boolean(msg.agentBadge || msg.authorName.includes('Agent') || msg.authorName.includes('Reviewer'));
             const gameRoleBadge = getGameRoleBadge(msg);
             const authorAgent = msg.authorId
               ? agents.find(
