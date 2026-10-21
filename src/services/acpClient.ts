@@ -14,6 +14,44 @@ export interface AcpSendPromptOptions {
   discussionMode?: 'standard' | 'game_theoretic';
 }
 
+/**
+ * 统一多模式 Session Key 命名空间构造器
+ * 严格对齐 Rust 底层 session_key 与前端水位线隔离契约：
+ * 1. 1-on-1 私聊: `dm:{agentId}:{threadId}`
+ * 2. 议题研讨(区分 standard / game_theoretic): `topic:{channelId}:{topicId}:{discussionMode}:{agentId}`
+ * 3. 频道主消息流: `channel:{channelId}:{threadId}:{agentId}`
+ */
+export function buildUnifiedSessionKey(options: {
+  agentId: string;
+  roomId: string;
+  channelId?: string;
+  isDm?: boolean;
+  discussionMode?: string;
+}): string {
+  const isDm =
+    options.isDm ??
+    (Boolean(
+      !options.channelId ||
+      options.channelId === 'direct-messages' ||
+      options.channelId.startsWith('dm-') ||
+      options.roomId.startsWith('thread-dm-')
+    ));
+
+  if (isDm) {
+    return `dm:${options.agentId}:${options.roomId}`;
+  }
+
+  const effectiveChanId = (options.channelId && options.channelId.trim()) || options.roomId;
+  const isTopic = options.roomId !== effectiveChanId && !options.roomId.startsWith('chan-');
+
+  if (isTopic) {
+    const rawMode = (options.discussionMode && options.discussionMode.trim()) || 'standard';
+    return `topic:${effectiveChanId}:${options.roomId}:${rawMode}:${options.agentId}`;
+  } else {
+    return `channel:${effectiveChanId}:${options.roomId}:${options.agentId}`;
+  }
+}
+
 export interface AcpAgentResponse {
   textResponse: string;
   memoryActions?: Array<{ action: string; key: string; detail: string }>;
@@ -882,10 +920,13 @@ export async function sendPromptToAcpAgent(
   if (isModelConfigReady(modelConfig)) {
     try {
       console.log(`[ACP Client] Invoking direct LLM runtime for ${agent.name} with model: ${modelConfig.modelName || modelConfig.modelId}`);
-      const isDm = options.isDm ?? (Boolean(!options.channelId || options.channelId === 'direct-messages' || options.channelId.startsWith('dm-') || roomId.startsWith('thread-dm-')));
-      const effectiveChannel = isDm ? 'dm' : (options.channelId || roomId);
-      const modeSuffix = options.discussionMode ? `:${options.discussionMode}` : '';
-      const sessionKey = `${effectiveChannel}:${roomId}:${agent.id}${modeSuffix}`;
+      const sessionKey = buildUnifiedSessionKey({
+        agentId: agent.id,
+        roomId,
+        channelId: options.channelId,
+        isDm: options.isDm,
+        discussionMode: options.discussionMode,
+      });
       const llmResult = await callLlmModel(modelConfig, enhancedPrompt, resolvedSystemPrompt, sessionKey);
       const durationMs = Date.now() - startTime;
       const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(llmResult.textResponse);

@@ -784,13 +784,45 @@ impl AcpProcessManager {
 }
 
 impl RunningAgent {
-    /// 清空当前 Agent 内部指定前缀（或全部）的 session_ids 缓存映射
-    pub async fn clear_sessions(&self, prefix: Option<&str>) {
+    /// 清空当前 Agent 内部指定 key/前缀（或全部）的 session_ids 缓存映射，
+    /// 并在移除前向 Agent 进程发送 ACP `session/close` 标准请求释放底层沙箱与上下文内存
+    pub async fn clear_sessions(&self, key_or_prefix: Option<&str>) {
         let mut map = self.session_ids.lock().await;
-        if let Some(p) = prefix {
-            map.retain(|k, _| !k.starts_with(p) && !k.contains(p));
+        let mut removed_sessions: Vec<String> = Vec::new();
+
+        if let Some(target) = key_or_prefix {
+            let t = target.trim();
+            // 精确 key 匹配或冒号前缀边界匹配 (如 "topic:c1:" 或 "channel:c1:")，杜绝 contains 模糊误删相邻键
+            let colon_prefix = if t.ends_with(':') { t.to_string() } else { format!("{}:", t) };
+            let mut keys_to_remove = Vec::new();
+
+            for (k, sid) in map.iter() {
+                if k == t || k.starts_with(&colon_prefix) {
+                    keys_to_remove.push(k.clone());
+                    removed_sessions.push(sid.clone());
+                }
+            }
+
+            for k in keys_to_remove {
+                map.remove(&k);
+            }
         } else {
+            removed_sessions.extend(map.values().cloned());
             map.clear();
+        }
+
+        drop(map);
+
+        // 异步向底层 ACP 进程发送 session/close，使 Agent 进程释放底层会话资源
+        for sid in removed_sessions {
+            let close_req = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "session/close",
+                "params": {
+                    "sessionId": sid
+                }
+            });
+            let _ = self.stdin_tx.send(close_req.to_string()).await;
         }
     }
 
@@ -892,8 +924,8 @@ impl RunningAgent {
             // Agent 个人专属私有空间：~/.shadow-crew/agents/<agent_id>/
             let agent_dir = crate::db_manager::get_agent_dir(agent_id);
             let agent_cwd = agent_dir.to_string_lossy().to_string();
-            // 包含 room_id，实现独立私聊会话沙箱物理隔离
-            let key = format!("agent:{}:dm:{}", agent_id, room_id);
+            // 规范统一协议: dm:{agent_id}:{thread_id}
+            let key = format!("dm:{}:{}", agent_id, room_id);
             let notice = format!(
                 "\n\n[当前 Agent 个人专属独立工作空间环境]:\n- Agent ID: {}\n- Agent 独立工作区根目录 (Working Directory / cwd): {}\n- 专属落地产物目录 (Artifacts): {}/artifacts\n- 专属临时调试目录 (Scratch): {}/scratch\n提示: 您当前处于与用户的 1-on-1 私聊中，沉淀的技术推演文档、方案或代码 Patch 将安全保存至您个人的专属产物目录中，与频道(channels)业务及其他 Agent 物理隔离。",
                 agent_id, agent_cwd, agent_cwd, agent_cwd
@@ -904,10 +936,14 @@ impl RunningAgent {
             let effective_chan_id = channel_id.map(|c| c.trim()).filter(|c| !c.is_empty()).unwrap_or(room_id);
             let chan_dir = crate::db_manager::get_channel_dir(effective_chan_id);
             let chan_cwd = chan_dir.to_string_lossy().to_string();
-            // 引入 discussion_mode 命名空间，将普通增量协同与 CognoNexus 4+1 博弈裁决的 session 物理隔离
-            let key = match discussion_mode {
-                Some(m) if !m.trim().is_empty() => format!("{}:{}:{}", effective_chan_id, room_id, m.trim()),
-                _ => format!("{}:{}", effective_chan_id, room_id),
+            let is_topic = room_id != effective_chan_id && !room_id.starts_with("chan-");
+            // 规范统一协议: 议题 topic:{channel_id}:{topic_id}:{discussion_mode}:{agent_id}，频道 channel:{channel_id}:{thread_id}:{agent_id}
+            let key = if is_topic {
+                let mode = discussion_mode.unwrap_or("standard").trim();
+                let effective_mode = if mode.is_empty() { "standard" } else { mode };
+                format!("topic:{}:{}:{}:{}", effective_chan_id, room_id, effective_mode, agent_id)
+            } else {
+                format!("channel:{}:{}:{}", effective_chan_id, room_id, agent_id)
             };
             let notice = format!(
                 "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}/artifacts\n- 临时调试目录 (Scratch): {}/scratch",

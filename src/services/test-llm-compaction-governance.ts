@@ -8,11 +8,14 @@ import {
   getModelSafeContextBudget,
   compactConversationHistory,
   clearLlmSessionHistory,
+  foldMessageContentToTokenBudget,
+  extractStructuredMemoryKeyPoints,
 } from './llmService';
 import {
   parseTokenInputWithUnits,
   formatTokensHumanReadable,
 } from '../components/ModelContextConfigPanel';
+import { buildUnifiedSessionKey } from './acpClient';
 
 let passed = 0;
 let failed = 0;
@@ -207,6 +210,136 @@ console.log('\n4️⃣ 测试带单位输入解析与人性化换算 (如 384K, 
 
   const f1m = formatTokensHumanReadable(1000000);
   assert(f1m.includes('1M'), `1,000,000 Tokens 成功格式化为带 "1M" 标签 (实测: ${f1m})`);
+}
+
+// 5. 测试极端超长消息在极小预算下的硬数学兜底保证 (Hard Budget Invariant)
+console.log('\n5️⃣ 测试极端超长消息在小预算下的硬预算兜底与行内核折叠');
+{
+  // 构造用户指出的极端场景：预算 100 tokens，2 条各 5000 字的超长消息
+  const hugeUserMsg = '【系统超长需求分析】' + '甲'.repeat(5000);
+  const hugeAssistantMsg = '【架构超长推演响应】' + '乙'.repeat(5000);
+  const extremeHistory = [
+    { role: 'user' as const, content: hugeUserMsg },
+    { role: 'assistant' as const, content: hugeAssistantMsg },
+  ];
+
+  const initialTokens = extremeHistory.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+  assert(initialTokens > 9000, `原始超长消息 Token 巨大 (实测: ${initialTokens} Tokens)`);
+
+  const hardBudget = 100;
+  const compactedExtreme = compactConversationHistory(extremeHistory, hardBudget, 4);
+
+  const finalTokens = compactedExtreme.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+  assert(
+    finalTokens <= hardBudget,
+    `硬预算断言通过: 压缩后最终 Tokens (${finalTokens}) 严格 <= 预算上限 (${hardBudget})`
+  );
+  assert(compactedExtreme.length >= 2, `压缩后依然保持有效的多轮上下文交替结构 (条数: ${compactedExtreme.length})`);
+  assert(
+    compactedExtreme[0].role === 'user' && compactedExtreme[1].role === 'assistant',
+    '极端压缩后严格保证 user / assistant 交替'
+  );
+  const hasFoldingNotice = compactedExtreme.some((m) => m.content.includes('已折叠'));
+  assert(hasFoldingNotice, '内容过长时触发了行内核折叠说明');
+
+  // 单条消息折叠函数单测
+  const folded = foldMessageContentToTokenBudget('张三李四'.repeat(200), 50);
+  const foldedTokens = estimateTokenCount(folded);
+  assert(foldedTokens <= 50, `foldMessageContentToTokenBudget 保证单条输出严格 <= 预算 (实测: ${foldedTokens} <= 50)`);
+}
+
+// 6. 测试结构化 Memory 关键要点提炼与保留 (而非简单掐头去尾截断)
+console.log('\n6️⃣ 测试结构化 Memory 关键要点提取器 (extractStructuredMemoryKeyPoints)');
+{
+  const richOlderHistory = [
+    {
+      role: 'user' as const,
+      content: '针对本次分布式高并发网关，团队已确定选用 SQLite WAL 模式与 BWM 运筹求解，作为核心架构决议。',
+    },
+    {
+      role: 'assistant' as const,
+      content: '收到。关于关键参数与约束限制：历史稳态 Token 预算上限设为 512K，端口限制 8080，超时阈值设为 30 秒。',
+    },
+    {
+      role: 'user' as const,
+      content: '请注意未决争议与待办：必须排查死锁风险与并发水位线越界隐患，存在状态机竞争风险。',
+    },
+    {
+      role: 'assistant' as const,
+      content: '已完成 10 篇核心论文与源码映射矩阵落地，工程补丁已成功合入。',
+    },
+  ];
+
+  const extracted = extractStructuredMemoryKeyPoints(richOlderHistory);
+  assert(extracted.decisions.length > 0, `成功提取架构与技术决议 (${extracted.decisions.length} 条)`);
+  assert(extracted.decisions.some((d) => d.includes('确定选用') || d.includes('架构')), '决议内容准确保留');
+
+  assert(extracted.constraints.length > 0, `成功提取核心参数与工程约束 (${extracted.constraints.length} 条)`);
+  assert(extracted.constraints.some((c) => c.includes('预算') || c.includes('端口')), '参数与约束准确保留');
+
+  assert(extracted.risksAndTodos.length > 0, `成功提取未决争议与待办 (${extracted.risksAndTodos.length} 条)`);
+  assert(extracted.risksAndTodos.some((r) => r.includes('死锁') || r.includes('风险')), '风险与待办准确保留');
+
+  assert(extracted.deliverables.length > 0, `成功提取重要执行成果 (${extracted.deliverables.length} 条)`);
+  assert(extracted.deliverables.some((d) => d.includes('已完成') || d.includes('合入')), '成果要点准确保留');
+
+  // 将此历史经过 compactConversationHistory 折叠，验证生成的 <compacted-summary> 包含了这些结构化维度
+  const compacted = compactConversationHistory(
+    [
+      ...richOlderHistory,
+      { role: 'user', content: '现在请进入新一轮推演' },
+      { role: 'assistant', content: '好的，请给出指令' },
+    ],
+    400,
+    2
+  );
+
+  const summaryMsg = compacted[0].content;
+  assert(summaryMsg.includes('【架构与技术决议】'), '生成的折叠摘要包含【架构与技术决议】');
+  assert(summaryMsg.includes('【关键参数与约束】'), '生成的折叠摘要包含【关键参数与约束】');
+  assert(summaryMsg.includes('【未决争议与待办】'), '生成的折叠摘要包含【未决争议与待办】');
+  assert(summaryMsg.includes('【重要执行结果】'), '生成的折叠摘要包含【重要执行结果】');
+}
+
+// 7. 测试统一 Session Key 协议与模式物理隔离 (buildUnifiedSessionKey)
+console.log('\n7️⃣ 测试统一 Session Key 协议规范与模式物理隔离 (buildUnifiedSessionKey)');
+{
+  // 7.1 私聊规范: dm:{agentId}:{threadId}
+  const dmKey = buildUnifiedSessionKey({
+    agentId: 'agent-alice',
+    roomId: 'thread-dm-101',
+    isDm: true,
+  });
+  assert(dmKey === 'dm:agent-alice:thread-dm-101', `私聊 key 规范符合预期: ${dmKey}`);
+
+  // 7.2 议题标准模式规范: topic:{channelId}:{topicId}:standard:{agentId}
+  const topicStdKey = buildUnifiedSessionKey({
+    agentId: 'agent-bob',
+    roomId: 'topic-99',
+    channelId: 'chan-arch',
+    discussionMode: 'standard',
+  });
+  assert(topicStdKey === 'topic:chan-arch:topic-99:standard:agent-bob', `议题标准模式 key 符合预期: ${topicStdKey}`);
+
+  // 7.3 议题博弈模式规范: topic:{channelId}:{topicId}:game_theoretic:{agentId}
+  const topicGameKey = buildUnifiedSessionKey({
+    agentId: 'agent-bob',
+    roomId: 'topic-99',
+    channelId: 'chan-arch',
+    discussionMode: 'game_theoretic',
+  });
+  assert(topicGameKey === 'topic:chan-arch:topic-99:game_theoretic:agent-bob', `议题博弈模式 key 符合预期: ${topicGameKey}`);
+
+  // 7.4 验证模式切换物理隔离性：同一议题不同模式下生成的 sessionKey 完全不相等
+  assert(topicStdKey !== topicGameKey, '同一议题标准模式与博弈模式的 sessionKey 严格正交隔离，杜绝继承污染');
+
+  // 7.5 频道主消息流规范: channel:{channelId}:{threadId}:{agentId}
+  const chanKey = buildUnifiedSessionKey({
+    agentId: 'agent-carol',
+    roomId: 'chan-arch',
+    channelId: 'chan-arch',
+  });
+  assert(chanKey === 'channel:chan-arch:chan-arch:agent-carol', `频道主流 key 符合预期: ${chanKey}`);
 }
 
 console.log('\n===================================================================');

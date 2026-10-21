@@ -67,6 +67,7 @@ import { MemoryImportModal } from './components/MemoryImportModal';
 import {
   sendPromptToAcpAgent,
   clearAcpAgentSessions,
+  buildUnifiedSessionKey,
   probeRemoteAcpConnection,
   buildAgentLaunchEnv,
   buildThinkingProcessFromAcp,
@@ -1479,16 +1480,29 @@ export default function App() {
 
     // 清理该频道的会话水位线、交付缓存以及底层 ACP 进程中对应的 session_ids
     deliveredStandingContextRef.current.forEach((key) => {
-      if (key.startsWith(`${channelId}:`) || deletedThreads.some((thId) => key.startsWith(`${thId}:`))) {
+      if (
+        key.includes(`:${channelId}:`) ||
+        key.startsWith(`channel:${channelId}:`) ||
+        key.startsWith(`topic:${channelId}:`) ||
+        key.startsWith(`${channelId}:`) ||
+        deletedThreads.some((thId) => key.includes(`:${thId}:`) || key.endsWith(`:${thId}`) || key.startsWith(`${thId}:`))
+      ) {
         deliveredStandingContextRef.current.delete(key);
       }
     });
     Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
-      if (key.startsWith(`${channelId}:`) || deletedThreads.some((thId) => key.startsWith(`${thId}:`))) {
+      if (
+        key.includes(`:${channelId}:`) ||
+        key.startsWith(`channel:${channelId}:`) ||
+        key.startsWith(`topic:${channelId}:`) ||
+        key.startsWith(`${channelId}:`) ||
+        deletedThreads.some((thId) => key.includes(`:${thId}:`) || key.endsWith(`:${thId}`) || key.startsWith(`${thId}:`))
+      ) {
         sessionWatermarksRef.current.delete(key);
       }
     });
-    clearAcpAgentSessions(undefined, channelId);
+    clearAcpAgentSessions(undefined, `channel:${channelId}`);
+    clearAcpAgentSessions(undefined, `topic:${channelId}`);
 
     if (activeTopicData && activeTopicData.channelId === channelId) {
       setActiveTopicId(null);
@@ -2158,7 +2172,13 @@ export default function App() {
         const { targetAgent, invokingAgents, sourceMessageIds, combinedReplies } = item;
         const primaryInvoker = invokingAgents[0] || effectiveTurnOutputs[0].agent;
         const execKey = isTopic && topicId ? `${topicId}:${targetAgent.id}` : `${roomId}:${targetAgent.id}`;
-        const sessionKey = `${roomId}:${targetAgent.id}`;
+        const sessionKey = buildUnifiedSessionKey({
+          agentId: targetAgent.id,
+          roomId,
+          channelId: targetChannelId,
+          isDm: activeThread?.type === 'dm',
+          discussionMode: currentTopicObj?.discussionMode,
+        });
 
         const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
         const systemPrompt = buildCompositeSystemPrompt({
@@ -5160,7 +5180,13 @@ export default function App() {
 
     const agentTurnPromises = onlineAgents.map((agent) => {
       const execKey = `${topicId}:${agent.id}`;
-      const sessionKey = `${topicId}:${agent.id}`;
+      const sessionKey = buildUnifiedSessionKey({
+        agentId: agent.id,
+        roomId: topicId,
+        channelId: topicChannel?.id || activeTopicData?.channelId,
+        isDm: false,
+        discussionMode: isGameTheoretic ? 'game_theoretic' : 'standard',
+      });
       const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
       const systemPrompt = buildCompositeSystemPrompt({
         agent,
@@ -6651,7 +6677,12 @@ export default function App() {
 
     // Hop 1 并发 Fan-out：所有在线 Agent 同时推演，并在 Turn Barrier 汇合
     const hop1Promises = onlineAgents.map((targetAgent, idx) => {
-      const sessionKey = `${currentThreadId}:${targetAgent.id}`;
+      const sessionKey = buildUnifiedSessionKey({
+        agentId: targetAgent.id,
+        roomId: currentThreadId,
+        channelId: isDmThread ? undefined : activeChannel?.id,
+        isDm: isDmThread,
+      });
       const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
 
       // 对标 Buzz: 组合 Agent 自身专精人设与频道级花名册公约
@@ -7351,8 +7382,12 @@ export default function App() {
         isOpen={isStorageSettingsModalOpen}
         onClose={() => setIsStorageSettingsModalOpen(false)}
         messages={Object.values(messages).flat()}
-        onMessagesCleared={() => {
+        onMessagesCleared={async () => {
           setMessages({});
+          messagesRef.current = {};
+          deliveredStandingContextRef.current.clear();
+          sessionWatermarksRef.current.clear();
+          await clearAcpAgentSessions();
         }}
         onOpenMemoryExport={() => {
           setExportingAgent(agents[0] || null);

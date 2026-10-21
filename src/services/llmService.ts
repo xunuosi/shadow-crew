@@ -1089,10 +1089,149 @@ export function getModelSafeContextBudget(config: AgentModelConfig): {
 }
 
 /**
+ * 单条超长消息的安全行内核折叠（Inline Core Folding）
+ * 当某单条历史消息极大（如数千字甚至上万字）时，保留其开头关键背景与末尾结论，
+ * 中间安全折叠为省略占位符，确保其 Token 严格控制在指定的单条上限内。
+ */
+export function foldMessageContentToTokenBudget(content: string, maxTokens: number): string {
+  const currentTokens = estimateTokenCount(content);
+  if (currentTokens <= maxTokens) {
+    return content;
+  }
+
+  // 极端小配额保护 (小于 32 tokens 直接返回紧凑说明)
+  if (maxTokens <= 32) {
+    const brief = content.slice(0, 40).replace(/\s+/g, ' ').trim();
+    return `${brief}... [已折叠超限上下文]`;
+  }
+
+  // 根据 Token 估算反推允许的保留字符总数（中文约 1 字=1 token，英文约 4 字符=1 token，按最保守 1:1 预留）
+  // 占位符大约需要 20 tokens
+  const usableTokens = Math.max(20, maxTokens - 20);
+  const halfChars = Math.max(15, Math.floor(usableTokens * 0.45));
+
+  const head = content.slice(0, halfChars).trim();
+  const tail = content.slice(-halfChars).trim();
+  const foldedChars = Math.max(0, content.length - head.length - tail.length);
+
+  const foldedText = `${head}\n\n[...已折叠 ${foldedChars} 字符以严格满足模型硬 Token 预算上限 (${maxTokens} Tokens)...]\n\n${tail}`;
+  
+  // 若因换行符等微小偏差仍超限，做二次严格截断
+  if (estimateTokenCount(foldedText) > maxTokens) {
+    const ultraSafeChars = Math.max(10, Math.floor(maxTokens * 0.4));
+    return `${content.slice(0, ultraSafeChars)}... [已折叠超限历史] ...${content.slice(-ultraSafeChars)}`;
+  }
+  return foldedText;
+}
+
+/**
+ * 结构化 Memory 要点提炼器（Rule-based Memory Extractor / Summarizer）
+ * 从被淘汰的早期会话历史中提取核心技术要点，包含：
+ * 1. 【架构与技术决议】(决策/选型/契约/方案)
+ * 2. 【核心参数与工程约束】(Token/路径/端口/状态机/配额/环境变量)
+ * 3. 【未决争议与红队待办】(风险/待定/挑战/驳回/隐患)
+ * 4. 【重要落地成果与交付】(已合入/已实现/文件改动)
+ */
+export function extractStructuredMemoryKeyPoints(
+  olderMessages: Array<{ role: 'user' | 'assistant'; content: string }>
+): {
+  decisions: string[];
+  constraints: string[];
+  risksAndTodos: string[];
+  deliverables: string[];
+  rawSnippets: string[];
+} {
+  const decisions: string[] = [];
+  const constraints: string[] = [];
+  const risksAndTodos: string[] = [];
+  const deliverables: string[] = [];
+  const rawSnippets: string[] = [];
+
+  for (const msg of olderMessages) {
+    // 若原消息已包含早期折叠摘要，解析出已有要点以防递归丢失
+    if (msg.content.includes('<compacted-summary')) {
+      const innerMatch = msg.content.match(/<compacted-summary[^>]*>([\s\S]*?)<\/compacted-summary>/i);
+      if (innerMatch && innerMatch[1]) {
+        const lines = innerMatch[1].split('\n').map((l) => l.trim()).filter(Boolean);
+        for (const line of lines) {
+          if (line.includes('【核心架构决策】') || line.includes('【架构与技术决议】')) {
+            decisions.push(line.replace(/^•\s*/, ''));
+          } else if (line.includes('【关键参数与约束】') || line.includes('【核心参数与工程约束】')) {
+            constraints.push(line.replace(/^•\s*/, ''));
+          } else if (line.includes('【未决挑战与待办】') || line.includes('【未决争议与红队待办】')) {
+            risksAndTodos.push(line.replace(/^•\s*/, ''));
+          } else if (line.includes('【重要落地成果】') || line.includes('【重要执行结果】')) {
+            deliverables.push(line.replace(/^•\s*/, ''));
+          } else if (line.startsWith('•')) {
+            rawSnippets.push(line.replace(/^•\s*/, ''));
+          }
+        }
+        continue;
+      }
+    }
+
+    // 清理标签并按句子切分分析
+    const cleaned = msg.content
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!cleaned) continue;
+
+    const sentences = cleaned.split(/(?<=[。！？.!?\n])/).map((s) => s.trim()).filter((s) => s.length > 5);
+
+    let categorized = false;
+    for (const sent of sentences) {
+      if (
+        /(?:风险|待定|挑战|驳回|反例|隐患|注意|TODO|未决|死锁|排查|缺陷)/i.test(sent) &&
+        risksAndTodos.length < 4
+      ) {
+        risksAndTodos.push(`[${msg.role}] ${sent.length > 90 ? `${sent.slice(0, 90)}...` : sent}`);
+        categorized = true;
+      } else if (
+        /(?:架构|方案|决策|确定|采用|选型|定案|裁决|规范|契约|接口|重构|算法|选定|决议)/i.test(sent) &&
+        decisions.length < 4
+      ) {
+        decisions.push(`[${msg.role}] ${sent.length > 90 ? `${sent.slice(0, 90)}...` : sent}`);
+        categorized = true;
+      } else if (
+        /(?:参数|端口|路径|Token|超时|阈值|限制|配额|状态机|目录|env|API|上限|水位)/i.test(sent) &&
+        constraints.length < 4
+      ) {
+        constraints.push(`[${msg.role}] ${sent.length > 90 ? `${sent.slice(0, 90)}...` : sent}`);
+        categorized = true;
+      } else if (
+        /(?:已完成|已实现|已合入|已交付|已测试|通过|落地|生成)/i.test(sent) &&
+        deliverables.length < 4
+      ) {
+        deliverables.push(`[${msg.role}] ${sent.length > 90 ? `${sent.slice(0, 90)}...` : sent}`);
+        categorized = true;
+      }
+    }
+
+    // 若未命中任何特定类别，则取首句作为上下文线索保留
+    if (!categorized && sentences.length > 0 && rawSnippets.length < 4) {
+      const first = sentences[0];
+      rawSnippets.push(`[${msg.role}]: ${first.length > 80 ? `${first.slice(0, 80)}...` : first}`);
+    }
+  }
+
+  // 去重
+  const dedup = (arr: string[]) => Array.from(new Set(arr));
+  return {
+    decisions: dedup(decisions),
+    constraints: dedup(constraints),
+    risksAndTodos: dedup(risksAndTodos),
+    deliverables: dedup(deliverables),
+    rawSnippets: dedup(rawSnippets),
+  };
+}
+
+/**
  * 会话历史上下文紧缩算法（Context Compaction）
  * 当历史消息总 Token 超过安全预算（或总消息条数过多）时：
- * 1. 保留最近的活跃工作窗口（默认最近 2 轮，即 4 条消息）；
- * 2. 将早期被淘汰的消息浓缩提炼为单一的 <compacted-summary> 结构；
+ * 1. 结构化提炼早期被淘汰消息为高信息密度的 Memory 决策要点；
+ * 2. 对超长保留工作消息进行行内核折叠，形成严格数学预算兜底保证（总 Tokens 必须 <= historyTokenBudget）；
  * 3. 严格遵循 user / assistant 严格交替契约，杜绝 Anthropic 等 API 校验失败。
  */
 export function compactConversationHistory(
@@ -1100,19 +1239,20 @@ export function compactConversationHistory(
   historyTokenBudget: number,
   keepRecentMessages: number = 4
 ): Array<{ role: 'user' | 'assistant'; content: string }> {
-  if (history.length <= keepRecentMessages) {
-    const totalTokens = history.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
-    if (totalTokens <= historyTokenBudget) {
-      return history;
-    }
+  if (history.length === 0) {
+    return [];
   }
 
-  const totalTokens = history.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
-  if (totalTokens <= historyTokenBudget && history.length <= MAX_SESSION_HISTORY_MESSAGES) {
+  const initialTotalTokens = history.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+  if (
+    initialTotalTokens <= historyTokenBudget &&
+    history.length <= keepRecentMessages &&
+    history.length <= MAX_SESSION_HISTORY_MESSAGES
+  ) {
     return history;
   }
 
-  // 必须保证切片切在 user 消息起点，确保后续 recentMessages 始终以 user 开头
+  // 1. 尝试按活跃窗口切分早期消息与近期消息（切片必须切在 user 消息起点，保持 recent 以 user 开头）
   let splitIdx = Math.max(0, history.length - keepRecentMessages);
   while (splitIdx < history.length && history[splitIdx].role !== 'user') {
     splitIdx++;
@@ -1124,50 +1264,153 @@ export function compactConversationHistory(
     }
   }
 
-  const olderMessages = history.slice(0, splitIdx);
-  const recentMessages = history.slice(splitIdx);
+  // 若历史条数本来就很少（例如 2 条超长大消息导致 splitIdx 仍为 0），强制将第 1 条作为 older 折叠，第 2 条留作 recent
+  let olderMessages = history.slice(0, splitIdx);
+  let recentMessages = history.slice(splitIdx);
 
-  if (olderMessages.length === 0) {
-    return recentMessages;
-  }
-
-  const summaries: string[] = [];
-  let olderEstimatedTokens = 0;
-
-  for (const msg of olderMessages) {
-    olderEstimatedTokens += estimateTokenCount(msg.content);
-    if (msg.content.includes('<compacted-summary')) {
-      const innerMatch = msg.content.match(/<compacted-summary[^>]*>([\s\S]*?)<\/compacted-summary>/i);
-      if (innerMatch && innerMatch[1]) {
-        summaries.push(innerMatch[1].trim());
-        continue;
-      }
-    }
-
-    const cleaned = msg.content
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const snippet = cleaned.length > 140 ? `${cleaned.slice(0, 140)}...` : cleaned;
-    if (snippet) {
-      summaries.push(`• [${msg.role}]: ${snippet}`);
+  if (olderMessages.length === 0 && history.length >= 2) {
+    olderMessages = [history[0]];
+    recentMessages = history.slice(1);
+    // 保证 recentMessages 满足 user 开头契约
+    if (recentMessages[0].role !== 'user') {
+      recentMessages = history;
+      olderMessages = [];
     }
   }
 
-  const summaryUserText = `<compacted-summary folded-turns="${olderMessages.length}" estimated-saved-tokens="${olderEstimatedTokens}">
-[系统自适应历史折叠摘要 · 早期上下文已安全压缩]:
-${summaries.slice(-8).join('\n')}
+  let compactedTurn: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+
+  if (olderMessages.length > 0) {
+    const olderEstimatedTokens = olderMessages.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+    const memory = extractStructuredMemoryKeyPoints(olderMessages);
+
+    const summaryLines: string[] = [];
+    if (memory.decisions.length > 0) {
+      summaryLines.push(`• 【架构与技术决议】: ${memory.decisions.slice(-3).join('；')}`);
+    }
+    if (memory.constraints.length > 0) {
+      summaryLines.push(`• 【关键参数与约束】: ${memory.constraints.slice(-3).join('；')}`);
+    }
+    if (memory.risksAndTodos.length > 0) {
+      summaryLines.push(`• 【未决争议与待办】: ${memory.risksAndTodos.slice(-2).join('；')}`);
+    }
+    if (memory.deliverables.length > 0) {
+      summaryLines.push(`• 【重要执行结果】: ${memory.deliverables.slice(-2).join('；')}`);
+    }
+    if (summaryLines.length === 0 && memory.rawSnippets.length > 0) {
+      summaryLines.push(...memory.rawSnippets.slice(-4).map((s) => `• ${s}`));
+    }
+    if (summaryLines.length === 0) {
+      summaryLines.push(`• 早期 ${olderMessages.length} 轮对话已安全压缩，核心状态已同步。`);
+    }
+
+    const summaryUserText = `<compacted-summary folded-turns="${olderMessages.length}" estimated-saved-tokens="${olderEstimatedTokens}">
+[系统自适应历史折叠 Memory 摘要 · 早期关键要点已结构化提取]:
+${summaryLines.join('\n')}
 </compacted-summary>`;
 
-  const compactedTurn: Array<{ role: 'user' | 'assistant'; content: string }> = [
-    { role: 'user', content: summaryUserText },
-    {
-      role: 'assistant',
-      content: '已对齐上述早期折叠历史与关键决议要点，正基于当前最新上下文专注推进任务。',
-    },
-  ];
+    compactedTurn = [
+      { role: 'user', content: summaryUserText },
+      {
+        role: 'assistant',
+        content: '已对齐上述早期折叠历史与关键决议要点，正基于当前最新上下文专注推进任务。',
+      },
+    ];
+  }
 
-  return [...compactedTurn, ...recentMessages];
+  let candidate = [...compactedTurn, ...recentMessages];
+
+  // 2. 检查 candidate 总 Token 是否满足硬预算上限
+  let currentTotalTokens = candidate.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+  if (currentTotalTokens <= historyTokenBudget) {
+    return ensureAlternatingRoles(candidate);
+  }
+
+  // 3. 硬预算数学兜底执行（Hard Budget Enforcement）
+  // 当候选序列（哪怕只剩最近 1~2 条超长消息或极小预算）依然超预算时，进行动态预算再分配与行内核折叠
+  const budgetForSummary = compactedTurn.length > 0 ? Math.min(120, Math.floor(historyTokenBudget * 0.35)) : 0;
+  const remainingBudgetForRecent = Math.max(30, historyTokenBudget - budgetForSummary);
+
+  // 3.1 若 summary 自身超出其配额，折叠 summary
+  if (compactedTurn.length > 0) {
+    const summaryTokens = estimateTokenCount(compactedTurn[0].content);
+    if (summaryTokens > budgetForSummary) {
+      compactedTurn[0].content = foldMessageContentToTokenBudget(compactedTurn[0].content, budgetForSummary);
+    }
+  }
+
+  // 3.2 将剩余预算均分给 recentMessages 中的每一条超大消息
+  if (recentMessages.length > 0) {
+    const perMessageBudget = Math.max(20, Math.floor(remainingBudgetForRecent / recentMessages.length));
+    recentMessages = recentMessages.map((msg) => {
+      const msgTokens = estimateTokenCount(msg.content);
+      if (msgTokens > perMessageBudget) {
+        return {
+          role: msg.role,
+          content: foldMessageContentToTokenBudget(msg.content, perMessageBudget),
+        };
+      }
+      return msg;
+    });
+  }
+
+  let bounded = [...compactedTurn, ...recentMessages];
+
+  // 3.3 极端硬保险：若总 Token 仍大于 historyTokenBudget，自底向上逐条深度收缩
+  let finalTokens = bounded.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+  if (finalTokens > historyTokenBudget) {
+    // 优先压缩中间最长的一条消息
+    for (let loop = 0; loop < 3 && finalTokens > historyTokenBudget; loop++) {
+      let maxIdx = 0;
+      let maxLen = 0;
+      for (let i = 0; i < bounded.length; i++) {
+        const t = estimateTokenCount(bounded[i].content);
+        if (t > maxLen) {
+          maxLen = t;
+          maxIdx = i;
+        }
+      }
+      const targetTokens = Math.max(16, maxLen - (finalTokens - historyTokenBudget) - 4);
+      bounded[maxIdx].content = foldMessageContentToTokenBudget(bounded[maxIdx].content, targetTokens);
+      finalTokens = bounded.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+    }
+  }
+
+  return ensureAlternatingRoles(bounded);
+}
+
+/**
+ * 辅助函数：严格确保消息序列的 user / assistant 交替约束与开头 user 约束
+ */
+function ensureAlternatingRoles(
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  if (messages.length === 0) return [];
+
+  const result: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+
+  for (let i = 0; i < messages.length; i++) {
+    const current = messages[i];
+    if (result.length === 0) {
+      if (current.role === 'user') {
+        result.push(current);
+      } else {
+        // 首条必须是 user，若首条为 assistant，自动补充占位对齐
+        result.push({ role: 'user', content: '[上下文对齐指令 · 首轮开启]' });
+        result.push(current);
+      }
+    } else {
+      const last = result[result.length - 1];
+      if (last.role === current.role) {
+        // 同角色连续，合并内容避免断开
+        last.content = `${last.content}\n\n${current.content}`;
+      } else {
+        result.push(current);
+      }
+    }
+  }
+
+  return result;
 }
 
 export function clearLlmSessionHistory(agentIdOrSessionKey?: string): void {
@@ -1176,7 +1419,12 @@ export function clearLlmSessionHistory(agentIdOrSessionKey?: string): void {
     return;
   }
   for (const key of Array.from(llmSessionHistoryMap.keys())) {
-    if (key === agentIdOrSessionKey || key.endsWith(`:${agentIdOrSessionKey}`) || key.startsWith(`${agentIdOrSessionKey}:`) || key.includes(`:${agentIdOrSessionKey}:`)) {
+    if (
+      key === agentIdOrSessionKey ||
+      key.endsWith(`:${agentIdOrSessionKey}`) ||
+      key.startsWith(`${agentIdOrSessionKey}:`) ||
+      key.includes(`:${agentIdOrSessionKey}:`)
+    ) {
       llmSessionHistoryMap.delete(key);
     }
   }
@@ -1200,8 +1448,15 @@ export async function callLlmModel(
   }
 
   const budget = getModelSafeContextBudget(config);
+
+  // 硬预算闭环：必须将 systemPrompt 与当前 prompt 消耗从 historyTokenBudget 中扣除，
+  // 确保 (systemPrompt + prompt + compactedHistory + reservedForOutput) 绝对不超出物理上下文总上限！
+  const systemTokens = systemPrompt ? estimateTokenCount(systemPrompt) : 0;
+  const promptTokens = estimateTokenCount(prompt);
+  const effectiveHistoryBudget = Math.max(64, budget.historyTokenBudget - systemTokens - promptTokens);
+
   const rawHistory = sessionKey ? llmSessionHistoryMap.get(sessionKey) || [] : [];
-  const compactedHistory = compactConversationHistory(rawHistory, budget.historyTokenBudget);
+  const compactedHistory = compactConversationHistory(rawHistory, effectiveHistoryBudget);
 
   const conversationTurns: Array<{ role: 'user' | 'assistant'; content: string }> = [
     ...compactedHistory,
@@ -1215,7 +1470,9 @@ export async function callLlmModel(
       { role: 'user' as const, content: prompt },
       { role: 'assistant' as const, content: assistantReply },
     ];
-    const bounded = compactConversationHistory(nextHistory, budget.historyTokenBudget);
+    // 下一轮存储时预留系统提示词后的历史预算
+    const nextHistoryBudget = Math.max(64, budget.historyTokenBudget - systemTokens);
+    const bounded = compactConversationHistory(nextHistory, nextHistoryBudget);
     llmSessionHistoryMap.set(sessionKey, bounded);
   };
 
