@@ -9,6 +9,10 @@ import {
   compactConversationHistory,
   clearLlmSessionHistory,
 } from './llmService';
+import {
+  parseTokenInputWithUnits,
+  formatTokensHumanReadable,
+} from '../components/ModelContextConfigPanel';
 
 let passed = 0;
 let failed = 0;
@@ -173,6 +177,36 @@ console.log('\n3️⃣ 测试上下文紧缩算法与角色交替不变量');
   const recompacted = compactConversationHistory(compacted, 600, 2);
   const nestedCount = (recompacted[0].content.match(/<compacted-summary/g) || []).length;
   assert(nestedCount === 1, '多次连续压缩时，旧的摘要被平铺合并，不发生嵌套标签失控');
+}
+
+// 4. 测试带单位输入解析与人类可读换算 (parseTokenInputWithUnits / formatTokensHumanReadable)
+console.log('\n4️⃣ 测试带单位输入解析与人性化换算 (如 384K, 1M, 2M)');
+{
+  // 4.1 换算解析
+  const p384k = parseTokenInputWithUnits('384k');
+  assert(p384k === 393216, '正确解析 "384k" -> 393,216 Tokens');
+
+  const p384KUpper = parseTokenInputWithUnits('384K');
+  assert(p384KUpper === 393216, '正确解析大写 "384K" -> 393,216 Tokens');
+
+  const p1m = parseTokenInputWithUnits('1m');
+  assert(p1m === 1000000, '正确解析 "1m" -> 1,000,000 Tokens');
+
+  const p2m = parseTokenInputWithUnits('2M');
+  assert(p2m === 2000000, '正确解析 "2M" -> 2,000,000 Tokens');
+
+  const pNum = parseTokenInputWithUnits('384000');
+  assert(pNum === 384000, '正确解析纯数值 "384000" -> 384,000 Tokens');
+
+  const pEmpty = parseTokenInputWithUnits('');
+  assert(pEmpty === undefined, '空字符串输入返回 undefined');
+
+  // 4.2 人性化显示
+  const f384k = formatTokensHumanReadable(393216);
+  assert(f384k.includes('384K'), `393,216 Tokens 成功格式化为带 "384K" 标签 (实测: ${f384k})`);
+
+  const f1m = formatTokensHumanReadable(1000000);
+  assert(f1m.includes('1M'), `1,000,000 Tokens 成功格式化为带 "1M" 标签 (实测: ${f1m})`);
 }
 
 console.log('\n===================================================================');

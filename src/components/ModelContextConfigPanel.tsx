@@ -1,5 +1,5 @@
-import React from 'react';
-import { Sliders, Cpu, ShieldCheck, Sparkles, Check, Info } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Sliders, Cpu, ShieldCheck, Sparkles, Check, Calculator, ArrowRight } from 'lucide-react';
 import { AgentModelConfig } from '../types';
 import { getModelSafeContextBudget } from '../services/llmService';
 
@@ -9,23 +9,85 @@ export interface ModelContextConfigPanelProps {
   isLightMode?: boolean;
 }
 
+/**
+ * 将 Token 数量人性化换算为直观文本（如 384K / 39.3万 Tokens，1M / 100万 Tokens）
+ */
+export function formatTokensHumanReadable(tokens: number | undefined): string {
+  if (!tokens || tokens <= 0) return '';
+  if (tokens >= 1_000_000) {
+    const m = (tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 2);
+    const wan = (tokens / 10_000).toFixed(0);
+    return `${m}M (${wan}万 Tokens)`;
+  }
+  if (tokens >= 1_000) {
+    const k = (tokens / 1024).toFixed(tokens % 1024 === 0 ? 0 : 1);
+    const wan = (tokens / 10_000).toFixed(1).replace(/\.0$/, '');
+    return `${k}K (${wan}万 Tokens)`;
+  }
+  return `${tokens} Tokens`;
+}
+
+/**
+ * 智能解析带单位的输入字符串（支持 384k, 384K, 1m, 1M, 1.5m, 100w, 384000 等任意形式）
+ */
+export function parseTokenInputWithUnits(raw: string): number | undefined {
+  if (!raw) return undefined;
+  const clean = raw.trim().toLowerCase().replace(/,/g, '').replace(/tokens?/g, '').trim();
+  if (!clean) return undefined;
+
+  // 匹配形如 384k, 128k, 64k
+  const kMatch = clean.match(/^([0-9]+(?:\.[0-9]+)?)\s*k$/);
+  if (kMatch && kMatch[1]) {
+    const num = parseFloat(kMatch[1]);
+    return Math.round(num * 1024);
+  }
+
+  // 匹配形如 1m, 2m, 1.5m
+  const mMatch = clean.match(/^([0-9]+(?:\.[0-9]+)?)\s*m$/);
+  if (mMatch && mMatch[1]) {
+    const num = parseFloat(mMatch[1]);
+    return Math.round(num * 1_000_000);
+  }
+
+  // 匹配形如 100w, 10w (万)
+  const wMatch = clean.match(/^([0-9]+(?:\.[0-9]+)?)\s*(?:w|万)$/);
+  if (wMatch && wMatch[1]) {
+    const num = parseFloat(wMatch[1]);
+    return Math.round(num * 10_000);
+  }
+
+  // 纯数字匹配
+  const val = parseFloat(clean);
+  if (!isNaN(val) && val > 0) {
+    return Math.round(val);
+  }
+
+  return undefined;
+}
+
+// 严格按容量从小到大（升序）排列，保证视觉与认知逻辑递进
 const PRESET_CONTEXT_WINDOWS = [
   { label: '自动推算', value: undefined, desc: '根据模型ID自动匹配原生规格' },
+  { label: '8K', value: 8_192, desc: '轻量级离线/小型模型' },
+  { label: '16K', value: 16_384, desc: '小型本地模型' },
+  { label: '32K', value: 32_768, desc: '中等本地模型 / 嵌入式' },
+  { label: '64K', value: 65_536, desc: '标准中长文本窗口' },
   { label: '128K', value: 131_072, desc: '经典长文本标准窗口' },
   { label: '200K', value: 204_800, desc: 'Claude 3.5/3.7 标准' },
   { label: '1M (100万)', value: 1_000_000, desc: '2026 前沿旗舰原生窗口' },
   { label: '2M (200万)', value: 2_000_000, desc: 'Kimi K3 / Gemini 4 超长窗口' },
-  { label: '32K', value: 32_768, desc: '适合本地中等模型' },
-  { label: '8K', value: 8_192, desc: '轻量级离线/小型模型' },
 ];
 
+// 严格按输出配额从小到大升序排列，并纳入 2026 前沿 384K 级输出
 const PRESET_OUTPUT_LIMITS = [
   { label: '默认自适应', value: undefined },
   { label: '4K', value: 4_096 },
+  { label: '8K', value: 8_192 },
   { label: '16K', value: 16_384 },
   { label: '32K', value: 32_768 },
   { label: '64K', value: 65_536 },
   { label: '128K', value: 131_072 },
+  { label: '384K (DeepSeek V4)', value: 393_216 },
 ];
 
 export const ModelContextConfigPanel: React.FC<ModelContextConfigPanelProps> = ({
@@ -37,13 +99,29 @@ export const ModelContextConfigPanel: React.FC<ModelContextConfigPanelProps> = (
   const isCustomContext = Boolean(modelConfig.contextWindowTokens && modelConfig.contextWindowTokens > 0);
   const isCustomOutput = Boolean(modelConfig.maxTokens && modelConfig.maxTokens > 0);
 
+  // 本地文本输入缓存，允许用户临时敲入 "384k"、"1m"
+  const [rawContextInput, setRawContextInput] = useState<string>(
+    modelConfig.contextWindowTokens ? String(modelConfig.contextWindowTokens) : ''
+  );
+  const [rawOutputInput, setRawOutputInput] = useState<string>(
+    modelConfig.maxTokens ? String(modelConfig.maxTokens) : ''
+  );
+
+  useEffect(() => {
+    setRawContextInput(modelConfig.contextWindowTokens ? String(modelConfig.contextWindowTokens) : '');
+  }, [modelConfig.contextWindowTokens]);
+
+  useEffect(() => {
+    setRawOutputInput(modelConfig.maxTokens ? String(modelConfig.maxTokens) : '');
+  }, [modelConfig.maxTokens]);
+
   const containerBg = isLightMode
     ? 'bg-slate-50/80 border-slate-200'
     : 'bg-[#0f172a]/40 border-slate-800/80';
 
   const inputBg = isLightMode
-    ? 'bg-white border-gray-300 text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-200'
-    : 'bg-[#151c2b] border-[#27354d] text-gray-100 placeholder-gray-500 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30';
+    ? 'bg-white border-gray-300 text-gray-900 placeholder-gray-400 focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-200'
+    : 'bg-[#151c2b] border-[#27354d] text-gray-100 placeholder-gray-500 focus-within:border-cyan-500 focus-within:ring-1 focus-within:ring-cyan-500/30';
 
   const labelColor = isLightMode ? 'text-gray-700' : 'text-gray-300';
 
@@ -83,15 +161,15 @@ export const ModelContextConfigPanel: React.FC<ModelContextConfigPanelProps> = (
               {isCustomContext ? '🟢 当前生效：用户显式自定义上下文' : `🔵 当前生效：根据模型 [${budget.modelFamily}] 智能推导规格`}
             </span>
             <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-black/5 dark:bg-white/10">
-              上限: {budget.maxContextTokens.toLocaleString()} Tokens
+              上限: {formatTokensHumanReadable(budget.maxContextTokens)}
             </span>
             <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-black/5 dark:bg-white/10">
-              预留输出: {budget.reservedForOutput.toLocaleString()} Tokens
+              预留输出: {formatTokensHumanReadable(budget.reservedForOutput)}
             </span>
           </div>
           <div className="text-[10px] opacity-80">
             多 Agent 协同历史安全工作水位线已设为{' '}
-            <strong className="font-semibold">{budget.historyTokenBudget.toLocaleString()} Tokens</strong>
+            <strong className="font-semibold">{formatTokensHumanReadable(budget.historyTokenBudget)}</strong>
             （超过将自动折叠为摘要，杜绝超限阻断）。
           </div>
         </div>
@@ -111,19 +189,19 @@ export const ModelContextConfigPanel: React.FC<ModelContextConfigPanelProps> = (
         />
       </div>
 
-      {/* 维度 1: 上下文窗口限制 (Context Window Tokens) */}
+      {/* 维度 1: 上下文窗口限制 (从小到大升序排序) */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <label className={`text-[11px] font-semibold flex items-center gap-1 ${labelColor}`}>
             <Cpu className="w-3 h-3 text-cyan-500" />
             <span>物理上下文窗口上限 (Context Window Tokens)</span>
           </label>
-          <span className="text-[10px] text-fg-muted font-mono">
-            {modelConfig.contextWindowTokens ? `${modelConfig.contextWindowTokens.toLocaleString()} Tokens` : '自动匹配'}
+          <span className="text-[10px] text-fg-muted font-mono font-medium">
+            {modelConfig.contextWindowTokens ? formatTokensHumanReadable(modelConfig.contextWindowTokens) : '自动智能匹配'}
           </span>
         </div>
 
-        {/* 快捷选择芯片 */}
+        {/* 快捷选择芯片：从小到大严格升序 */}
         <div className="flex flex-wrap gap-1">
           {PRESET_CONTEXT_WINDOWS.map((preset, idx) => {
             const isSelected =
@@ -135,13 +213,16 @@ export const ModelContextConfigPanel: React.FC<ModelContextConfigPanelProps> = (
               <button
                 key={idx}
                 type="button"
-                onClick={() => onChange({ contextWindowTokens: preset.value })}
+                onClick={() => {
+                  onChange({ contextWindowTokens: preset.value });
+                  setRawContextInput(preset.value ? String(preset.value) : '');
+                }}
                 title={preset.desc}
-                className={`px-2 py-1 rounded-lg text-[10px] font-mono border transition-all flex items-center gap-1 ${
+                className={`px-2 py-1 rounded-lg text-[10px] font-mono border transition-all flex items-center gap-1 cursor-pointer ${
                   isSelected
                     ? isLightMode
-                      ? 'bg-blue-600 border-blue-600 text-white font-bold shadow-sm'
-                      : 'bg-cyan-600 border-cyan-500 text-white font-bold shadow-sm'
+                      ? 'bg-blue-600 border-blue-600 text-white font-bold shadow-xs'
+                      : 'bg-cyan-600 border-cyan-500 text-white font-bold shadow-xs'
                     : isLightMode
                     ? 'bg-white border-gray-200 text-gray-700 hover:border-blue-400 hover:bg-blue-50/50'
                     : 'bg-[#151c2a] border-[#27354d] text-gray-300 hover:border-cyan-500 hover:bg-cyan-950/30'
@@ -154,35 +235,44 @@ export const ModelContextConfigPanel: React.FC<ModelContextConfigPanelProps> = (
           })}
         </div>
 
-        {/* 自定义精确 Token 数字输入 */}
-        <div className="pt-0.5">
+        {/* 带单位智能换算输入框 */}
+        <div className="relative flex items-center">
           <input
-            type="number"
-            min={1024}
-            step={1024}
-            value={modelConfig.contextWindowTokens || ''}
+            type="text"
+            value={rawContextInput}
             onChange={(e) => {
-              const val = e.target.value ? parseInt(e.target.value, 10) : undefined;
-              onChange({ contextWindowTokens: val && !isNaN(val) && val > 0 ? val : undefined });
+              const text = e.target.value;
+              setRawContextInput(text);
+              const parsed = parseTokenInputWithUnits(text);
+              onChange({ contextWindowTokens: parsed });
             }}
-            placeholder="自定义上下文上限 (留空则根据模型ID自动匹配，如 1000000)"
-            className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
+            placeholder="支持直接输入单位，如 1M、2M、128K、64K 或具体数值"
+            className={`w-full rounded-xl pl-3 pr-28 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
           />
+          <div className="absolute right-2 flex items-center gap-1.5 pointer-events-none">
+            {modelConfig.contextWindowTokens ? (
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-blue-500/10 dark:bg-cyan-500/15 text-blue-600 dark:text-cyan-300 font-bold border border-blue-500/20">
+                ≈ {formatTokensHumanReadable(modelConfig.contextWindowTokens)}
+              </span>
+            ) : (
+              <span className="text-[10px] font-mono text-fg-muted">Tokens</span>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* 维度 2: 单轮最大生成输出限制 (Max Output Tokens) */}
+      {/* 维度 2: 单轮最大生成输出限制 (从小到大升序排序 + 384K 预设) */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
           <label className={`text-[11px] font-semibold flex items-center gap-1 ${labelColor}`}>
             <span>单轮最大输出配额 (Max Output Tokens)</span>
           </label>
-          <span className="text-[10px] text-fg-muted font-mono">
-            {modelConfig.maxTokens ? `${modelConfig.maxTokens.toLocaleString()} Tokens` : '模型默认'}
+          <span className="text-[10px] text-fg-muted font-mono font-medium">
+            {modelConfig.maxTokens ? formatTokensHumanReadable(modelConfig.maxTokens) : '模型默认推荐'}
           </span>
         </div>
 
-        {/* 快捷选择芯片 */}
+        {/* 快捷选择芯片：从小到大升序，包含 384K */}
         <div className="flex flex-wrap gap-1">
           {PRESET_OUTPUT_LIMITS.map((preset, idx) => {
             const isSelected =
@@ -194,8 +284,11 @@ export const ModelContextConfigPanel: React.FC<ModelContextConfigPanelProps> = (
               <button
                 key={idx}
                 type="button"
-                onClick={() => onChange({ maxTokens: preset.value })}
-                className={`px-2 py-0.5 rounded-lg text-[10px] font-mono border transition-all flex items-center gap-1 ${
+                onClick={() => {
+                  onChange({ maxTokens: preset.value });
+                  setRawOutputInput(preset.value ? String(preset.value) : '');
+                }}
+                className={`px-2 py-0.5 rounded-lg text-[10px] font-mono border transition-all flex items-center gap-1 cursor-pointer ${
                   isSelected
                     ? isLightMode
                       ? 'bg-blue-600 border-blue-600 text-white font-bold'
@@ -212,20 +305,37 @@ export const ModelContextConfigPanel: React.FC<ModelContextConfigPanelProps> = (
           })}
         </div>
 
-        {/* 自定义精确输出输入 */}
-        <div className="pt-0.5">
+        {/* 带单位智能换算输入框 */}
+        <div className="relative flex items-center">
           <input
-            type="number"
-            min={512}
-            step={512}
-            value={modelConfig.maxTokens || ''}
+            type="text"
+            value={rawOutputInput}
             onChange={(e) => {
-              const val = e.target.value ? parseInt(e.target.value, 10) : undefined;
-              onChange({ maxTokens: val && !isNaN(val) && val > 0 ? val : undefined });
+              const text = e.target.value;
+              setRawOutputInput(text);
+              const parsed = parseTokenInputWithUnits(text);
+              onChange({ maxTokens: parsed });
             }}
-            placeholder="自定义最大单轮生成输出 (留空则使用模型推荐值，如 65536)"
-            className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
+            placeholder="支持输入 384K、128K、64K、32K 或数值 (留空为模型默认)"
+            className={`w-full rounded-xl pl-3 pr-28 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
           />
+          <div className="absolute right-2 flex items-center gap-1.5 pointer-events-none">
+            {modelConfig.maxTokens ? (
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-blue-500/10 dark:bg-cyan-500/15 text-blue-600 dark:text-cyan-300 font-bold border border-blue-500/20">
+                ≈ {formatTokensHumanReadable(modelConfig.maxTokens)}
+              </span>
+            ) : (
+              <span className="text-[10px] font-mono text-fg-muted">Tokens</span>
+            )}
+          </div>
+        </div>
+
+        {/* 贴心辅助提示 */}
+        <div className="text-[10px] text-fg-muted flex items-center gap-1 pt-0.5">
+          <Calculator className="w-3 h-3 text-fg-muted shrink-0" />
+          <span>
+            换算指南：1K = 1,024 Tokens，1M = 1,000,000 Tokens。您可以直接输入 <strong>"384k"</strong>、<strong>"1m"</strong> 或具体数值，系统自动换算。
+          </span>
         </div>
       </div>
     </div>
