@@ -82,14 +82,20 @@ pub async fn str_replace(path: &str, old_str: &str, new_str: &str) -> Result<Str
         .await
         .map_err(|e| anyhow!("读取文件失败 [{}]: {}", path, e))?;
 
-    if !content.contains(old_str) {
+    let count = content.matches(old_str).count();
+    if count == 0 {
         return Err(anyhow!(
             "在文件 [{}] 中未找到匹配的目标字符串 old_str，请先读取文件核对内容",
             path
         ));
     }
+    if count > 1 {
+        return Err(anyhow!(
+            "在文件 [{}] 中匹配到 {} 处目标字符串 old_str，不满足唯一性要求。请提供包含更多上下文的 old_str 以确保唯一定位",
+            path, count
+        ));
+    }
 
-    let count = content.matches(old_str).count();
     let replaced = content.replacen(old_str, new_str, 1);
 
     fs::write(p, replaced.as_bytes())
@@ -97,8 +103,8 @@ pub async fn str_replace(path: &str, old_str: &str, new_str: &str) -> Result<Str
         .map_err(|e| anyhow!("写入替换内容失败 [{}]: {}", path, e))?;
 
     Ok(format!(
-        "字符串替换成功 [{}]: 替换了 1 处匹配 (原匹配出现次数: {})",
-        path, count
+        "字符串替换成功 [{}]: 替换了 1 处匹配",
+        path
     ))
 }
 
@@ -370,12 +376,19 @@ mod tests {
         assert!(read_res.contains("line2"));
         assert!(read_res.contains("hello shinobi"));
 
-        // 3. str_replace
+        // 3. str_replace 成功场景
         let replace_res = str_replace(path_str, "hello shinobi", "hello world").await;
         assert!(replace_res.is_ok());
 
         let read_after = read_file(path_str, None, None).await.unwrap();
         assert!(read_after.contains("hello world"));
+
+        // 4. str_replace 目标非唯一拒绝场景
+        let _ = write_file(path_str, "duplicate\nmiddle\nduplicate").await;
+        let dup_replace_res = str_replace(path_str, "duplicate", "single").await;
+        assert!(dup_replace_res.is_err());
+        let err_msg = dup_replace_res.unwrap_err().to_string();
+        assert!(err_msg.contains("不满足唯一性要求"));
 
         let _ = fs::remove_file(test_file).await;
     }
