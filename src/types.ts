@@ -131,6 +131,7 @@ export interface AgentModelConfig {
 
   // 3. 上下文压缩双模架构配置
   enableMicroAgentSummary?: boolean; // 是否启用微型总结 Agent 智能语义归纳 (默认启用，异常/离线时自动回退规则提取保底)
+  microSummaryModelId?: string; // 微型总结 Agent 专属轻量小模型 ID (未配置时根据 provider 智能推导低延迟 Flash/Mini 模型)
 }
 
 export interface AgentWorkspaceConfig {

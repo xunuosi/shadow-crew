@@ -94,6 +94,7 @@ pub struct RunningAgent {
     pub auth_state: Arc<TokioMutex<String>>,
     pub status_detail: Arc<TokioMutex<Option<String>>>,
     pub session_ids: Arc<TokioMutex<HashMap<String, String>>>,
+    pub session_prompts: Arc<TokioMutex<HashMap<String, String>>>,
     #[allow(dead_code)]
     pub cwd: String,
     pub app_handle: AppHandle,
@@ -399,6 +400,7 @@ impl AcpProcessManager {
         let auth_state = Arc::new(TokioMutex::new("ok".to_string()));
         let status_detail = Arc::new(TokioMutex::new(None::<String>));
         let session_ids = Arc::new(TokioMutex::new(HashMap::new()));
+        let session_prompts = Arc::new(TokioMutex::new(HashMap::new()));
         let now_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -658,6 +660,7 @@ impl AcpProcessManager {
                 auth_state: auth_state.clone(),
                 status_detail: status_detail.clone(),
                 session_ids,
+                session_prompts,
                 cwd: shadow_crew_home_str,
                 app_handle: app_handle.clone(),
                 last_activity: last_activity.clone(),
@@ -788,6 +791,7 @@ impl RunningAgent {
     /// 并在移除前向 Agent 进程发送 ACP `session/close` 标准请求释放底层沙箱与上下文内存
     pub async fn clear_sessions(&self, key_or_prefix: Option<&str>) {
         let mut map = self.session_ids.lock().await;
+        let mut prompts_map = self.session_prompts.lock().await;
         let mut removed_sessions: Vec<String> = Vec::new();
 
         if let Some(target) = key_or_prefix {
@@ -805,13 +809,16 @@ impl RunningAgent {
 
             for k in keys_to_remove {
                 map.remove(&k);
+                prompts_map.remove(&k);
             }
         } else {
             removed_sessions.extend(map.values().cloned());
             map.clear();
+            prompts_map.clear();
         }
 
         drop(map);
+        drop(prompts_map);
 
         // 异步向底层 ACP 进程发送 session/close，使 Agent 进程释放底层会话资源
         for sid in removed_sessions {
@@ -952,14 +959,50 @@ impl RunningAgent {
             (chan_dir, key, notice)
         };
         let workspace_cwd = target_workspace_dir.to_string_lossy().to_string();
+        let enriched_sp = match system_prompt {
+            Some(sp) if !sp.trim().is_empty() => format!("{}{}", sp, workspace_notice),
+            _ => workspace_notice,
+        };
 
         // 3. 确保当前会话绑定了有效的 ACP sessionId (通过 session/new 创建，并将 cwd 绑定至对应独立工作区)
+        // 关键状态同步治理：比对当前 systemPrompt 是否发生演进变更 (模式切换/阶段流转/人设更新)
         let mut session_id = {
             let map = agent.session_ids.lock().await;
-            map.get(&session_key).cloned()
+            let prompts_map = agent.session_prompts.lock().await;
+            if let Some(existing_sp) = prompts_map.get(&session_key) {
+                if existing_sp == &enriched_sp {
+                    map.get(&session_key).cloned()
+                } else {
+                    tracing::info!(
+                        "[Agent {}] System prompt changed for session_key {}. Refreshing session to sync updated persona/mode.",
+                        agent_id, session_key
+                    );
+                    None
+                }
+            } else {
+                map.get(&session_key).cloned()
+            }
         };
 
         if session_id.is_none() {
+            // 若原先已存在旧 sessionId，先发送 session/close 关闭释放旧会话资源
+            let old_sid = {
+                let mut map = agent.session_ids.lock().await;
+                let mut prompts_map = agent.session_prompts.lock().await;
+                prompts_map.remove(&session_key);
+                map.remove(&session_key)
+            };
+            if let Some(old_id) = old_sid {
+                let close_req = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/close",
+                    "params": {
+                        "sessionId": old_id
+                    }
+                });
+                let _ = agent.stdin_tx.send(close_req.to_string()).await;
+            }
+
             let new_sess_id = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -978,14 +1021,10 @@ impl RunningAgent {
             } else if let Some(c) = channel_id {
                 params["channelId"] = serde_json::Value::String(c.to_string());
             }
-            let enriched_sp = match system_prompt {
-                Some(sp) if !sp.trim().is_empty() => format!("{}{}", sp, workspace_notice),
-                _ => workspace_notice,
-            };
             params["systemPrompt"] = serde_json::Value::String(enriched_sp.clone());
             params["_meta"] = serde_json::json!({
                 "systemPrompt": {
-                    "append": enriched_sp
+                    "append": enriched_sp.clone()
                 }
             });
             let new_req = serde_json::json!({
@@ -1016,6 +1055,7 @@ impl RunningAgent {
                 workspace_cwd
             );
             agent.session_ids.lock().await.insert(session_key.clone(), sid.clone());
+            agent.session_prompts.lock().await.insert(session_key.clone(), enriched_sp.clone());
             session_id = Some(sid);
         }
 
@@ -1166,6 +1206,7 @@ impl RunningAgent {
                 if let Some(err) = resp.get("error") {
                     let mut map = agent.session_ids.lock().await;
                     map.remove(&session_key);
+                    agent.session_prompts.lock().await.remove(&session_key);
 
                     let err_msg = err.get("message").and_then(|m| m.as_str()).unwrap_or_default();
                     if err_msg.contains("Authentication required") || err_msg.to_lowercase().contains("authentication") {

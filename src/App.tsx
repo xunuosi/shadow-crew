@@ -7378,6 +7378,7 @@ export default function App() {
           messagesRef.current = {};
           deliveredStandingContextRef.current.clear();
           sessionWatermarksRef.current.clear();
+          clearLlmSessionHistory();
           await clearAcpAgentSessions();
         }}
         onOpenMemoryExport={() => {
