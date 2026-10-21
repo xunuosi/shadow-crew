@@ -1,5 +1,5 @@
 import { Agent, CartridgeCitation, MemoryCartridgeItem, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem, TopicExecutionUiMeta, ModuleDecompositionDraft, ModuleComplexityLevel } from '../types';
-import { resolveAgentModelConfig, isModelConfigReady, callLlmModel } from './llmService';
+import { resolveAgentModelConfig, isModelConfigReady, callLlmModel, clearLlmSessionHistory } from './llmService';
 import { isAgentOffline } from '../utils/agentRuntime';
 import { buildAgentPersonaPrompt } from './agentCollaboration';
 
@@ -11,6 +11,7 @@ export interface AcpSendPromptOptions {
   channelId?: string;
   systemPrompt?: string;
   isDm?: boolean;
+  discussionMode?: 'standard' | 'game_theoretic';
 }
 
 export interface AcpAgentResponse {
@@ -788,6 +789,7 @@ export async function sendPromptToAcpAgent(
         cwd: targetCwd,
         envVars: launchEnvVars,
         systemPrompt: resolvedSystemPrompt,
+        discussionMode: options.discussionMode,
       });
 
       const durationMs = Date.now() - startTime;
@@ -880,7 +882,10 @@ export async function sendPromptToAcpAgent(
   if (isModelConfigReady(modelConfig)) {
     try {
       console.log(`[ACP Client] Invoking direct LLM runtime for ${agent.name} with model: ${modelConfig.modelName || modelConfig.modelId}`);
-      const sessionKey = `${roomId}:${agent.id}`;
+      const isDm = options.isDm ?? (Boolean(!options.channelId || options.channelId === 'direct-messages' || options.channelId.startsWith('dm-') || roomId.startsWith('thread-dm-')));
+      const effectiveChannel = isDm ? 'dm' : (options.channelId || roomId);
+      const modeSuffix = options.discussionMode ? `:${options.discussionMode}` : '';
+      const sessionKey = `${effectiveChannel}:${roomId}:${agent.id}${modeSuffix}`;
       const llmResult = await callLlmModel(modelConfig, enhancedPrompt, resolvedSystemPrompt, sessionKey);
       const durationMs = Date.now() - startTime;
       const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(llmResult.textResponse);
@@ -1228,5 +1233,31 @@ export async function applyTopicPatchToWorkspace(
     appliedFiles,
     summary: `已成功合入并归档 ${appliedFiles.length} 个工程文件补丁`,
   };
+}
+
+/**
+ * 清除指定 Agent 或全量 Agent 在底座与直连大模型运行时的会话缓存
+ * 保持前后端水位线、历史消息与底层 ACP 进程 session_id 彻底同步重置
+ */
+export async function clearAcpAgentSessions(agentId?: string, sessionKeyPrefix?: string): Promise<void> {
+  clearLlmSessionHistory(agentId || sessionKeyPrefix);
+
+  const tauriInvoke =
+    typeof window !== 'undefined'
+      ? (window as any).__TAURI_INTERNALS__?.invoke ||
+        (window as any).__TAURI__?.core?.invoke
+      : null;
+
+  if (tauriInvoke) {
+    try {
+      await tauriInvoke('clear_agent_sessions', {
+        agentId: agentId || null,
+        sessionKeyPrefix: sessionKeyPrefix || null,
+      });
+      console.log(`[ACP Client] Cleared ACP process session_ids (agentId: ${agentId}, prefix: ${sessionKeyPrefix})`);
+    } catch (e) {
+      console.warn('[ACP Client] Failed to invoke clear_agent_sessions in Tauri:', e);
+    }
+  }
 }
 

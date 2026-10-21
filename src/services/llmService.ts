@@ -771,12 +771,146 @@ export async function testModelConnection(config: AgentModelConfig): Promise<Mod
 }
 
 /**
- * 直连大模型运行时的会话级多轮对话缓存 (Key: `${roomId}:${agentId}`)
+ * 直连大模型运行时的会话级多轮对话缓存 (Key: 完整命名空间命名格式)
  * 确保在 Web 预览或直连 HTTP API 模式下，增量 `<delta-events>` 批次与本地 ACP 有状态 Session 行为完全一致，
- * 并保持严格只增不改的前缀序列以最大化大模型 Prefix KV Cache 命中率。
+ * 并通过 Token 自适应紧缩（Compaction）与 Prefix Caching 友好的折叠摘要，杜绝多 Agent 协同上下文超限。
  */
 const MAX_SESSION_HISTORY_MESSAGES = 24;
 const llmSessionHistoryMap = new Map<string, Array<{ role: 'user' | 'assistant'; content: string }>>();
+
+/**
+ * 轻量级字符-Token 启发式加权估算器
+ * - 中文/CJK 字符标点：每个字符约 0.85 ~ 1.0 Token
+ * - 英文单词与代码符号：约每 3.8 ~ 4 字符 1 Token
+ */
+export function estimateTokenCount(text: string): number {
+  if (!text) return 0;
+  let cjkCount = 0;
+  let otherCount = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0x3000 && code <= 0x303f) ||
+      (code >= 0xff00 && code <= 0xffef)
+    ) {
+      cjkCount++;
+    } else {
+      otherCount++;
+    }
+  }
+  return Math.ceil(cjkCount * 1.0 + otherCount / 3.8);
+}
+
+/**
+ * 根据大模型配置获取上下文安全预算（Tokens）
+ */
+export function getModelSafeContextBudget(config: AgentModelConfig): {
+  maxContextTokens: number;
+  historyTokenBudget: number;
+} {
+  const modelId = (config.modelId || '').toLowerCase();
+  const provider = config.provider;
+
+  let maxContext = 64_000;
+  if (provider === 'ollama') {
+    maxContext = 8_192;
+  } else if (modelId.includes('r1') || modelId.includes('deepseek-chat') || modelId.includes('deepseek-v3')) {
+    maxContext = 64_000;
+  } else if (modelId.includes('claude-3-5') || modelId.includes('claude-3-7') || modelId.includes('gpt-4o')) {
+    maxContext = 128_000;
+  } else if (modelId.includes('haiku') || modelId.includes('4o-mini') || modelId.includes('o3-mini')) {
+    maxContext = 64_000;
+  }
+
+  const reservedForOutput = config.maxTokens || 4096;
+  const historyTokenBudget = Math.max(2048, Math.floor((maxContext - reservedForOutput) * 0.7));
+
+  return { maxContextTokens: maxContext, historyTokenBudget };
+}
+
+/**
+ * 会话历史上下文紧缩算法（Context Compaction）
+ * 当历史消息总 Token 超过安全预算（或总消息条数过多）时：
+ * 1. 保留最近的活跃工作窗口（默认最近 2 轮，即 4 条消息）；
+ * 2. 将早期被淘汰的消息浓缩提炼为单一的 <compacted-summary> 结构；
+ * 3. 严格遵循 user / assistant 严格交替契约，杜绝 Anthropic 等 API 校验失败。
+ */
+export function compactConversationHistory(
+  history: Array<{ role: 'user' | 'assistant'; content: string }>,
+  historyTokenBudget: number,
+  keepRecentMessages: number = 4
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  if (history.length <= keepRecentMessages) {
+    const totalTokens = history.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+    if (totalTokens <= historyTokenBudget) {
+      return history;
+    }
+  }
+
+  const totalTokens = history.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+  if (totalTokens <= historyTokenBudget && history.length <= MAX_SESSION_HISTORY_MESSAGES) {
+    return history;
+  }
+
+  // 必须保证切片切在 user 消息起点，确保后续 recentMessages 始终以 user 开头
+  let splitIdx = Math.max(0, history.length - keepRecentMessages);
+  while (splitIdx < history.length && history[splitIdx].role !== 'user') {
+    splitIdx++;
+  }
+  if (splitIdx >= history.length) {
+    splitIdx = Math.max(0, history.length - 2);
+    while (splitIdx > 0 && history[splitIdx].role !== 'user') {
+      splitIdx--;
+    }
+  }
+
+  const olderMessages = history.slice(0, splitIdx);
+  const recentMessages = history.slice(splitIdx);
+
+  if (olderMessages.length === 0) {
+    return recentMessages;
+  }
+
+  const summaries: string[] = [];
+  let olderEstimatedTokens = 0;
+
+  for (const msg of olderMessages) {
+    olderEstimatedTokens += estimateTokenCount(msg.content);
+    if (msg.content.includes('<compacted-summary')) {
+      const innerMatch = msg.content.match(/<compacted-summary[^>]*>([\s\S]*?)<\/compacted-summary>/i);
+      if (innerMatch && innerMatch[1]) {
+        summaries.push(innerMatch[1].trim());
+        continue;
+      }
+    }
+
+    const cleaned = msg.content
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const snippet = cleaned.length > 140 ? `${cleaned.slice(0, 140)}...` : cleaned;
+    if (snippet) {
+      summaries.push(`• [${msg.role}]: ${snippet}`);
+    }
+  }
+
+  const summaryUserText = `<compacted-summary folded-turns="${olderMessages.length}" estimated-saved-tokens="${olderEstimatedTokens}">
+[系统自适应历史折叠摘要 · 早期上下文已安全压缩]:
+${summaries.slice(-8).join('\n')}
+</compacted-summary>`;
+
+  const compactedTurn: Array<{ role: 'user' | 'assistant'; content: string }> = [
+    { role: 'user', content: summaryUserText },
+    {
+      role: 'assistant',
+      content: '已对齐上述早期折叠历史与关键决议要点，正基于当前最新上下文专注推进任务。',
+    },
+  ];
+
+  return [...compactedTurn, ...recentMessages];
+}
 
 export function clearLlmSessionHistory(agentIdOrSessionKey?: string): void {
   if (!agentIdOrSessionKey) {
@@ -784,7 +918,7 @@ export function clearLlmSessionHistory(agentIdOrSessionKey?: string): void {
     return;
   }
   for (const key of Array.from(llmSessionHistoryMap.keys())) {
-    if (key === agentIdOrSessionKey || key.endsWith(`:${agentIdOrSessionKey}`) || key.startsWith(`${agentIdOrSessionKey}:`)) {
+    if (key === agentIdOrSessionKey || key.endsWith(`:${agentIdOrSessionKey}`) || key.startsWith(`${agentIdOrSessionKey}:`) || key.includes(`:${agentIdOrSessionKey}:`)) {
       llmSessionHistoryMap.delete(key);
     }
   }
@@ -807,22 +941,23 @@ export async function callLlmModel(
     throw new Error('未配置 API Key，请先进入配置面板填写大模型密钥');
   }
 
-  const history = sessionKey ? llmSessionHistoryMap.get(sessionKey) || [] : [];
+  const budget = getModelSafeContextBudget(config);
+  const rawHistory = sessionKey ? llmSessionHistoryMap.get(sessionKey) || [] : [];
+  const compactedHistory = compactConversationHistory(rawHistory, budget.historyTokenBudget);
+
   const conversationTurns: Array<{ role: 'user' | 'assistant'; content: string }> = [
-    ...history,
+    ...compactedHistory,
     { role: 'user', content: prompt },
   ];
 
   const recordTurnSuccess = (assistantReply: string) => {
     if (!sessionKey || !assistantReply.trim()) return;
     const nextHistory = [
-      ...conversationTurns,
+      ...compactedHistory,
+      { role: 'user' as const, content: prompt },
       { role: 'assistant' as const, content: assistantReply },
     ];
-    const bounded =
-      nextHistory.length > MAX_SESSION_HISTORY_MESSAGES
-        ? nextHistory.slice(nextHistory.length - MAX_SESSION_HISTORY_MESSAGES)
-        : nextHistory;
+    const bounded = compactConversationHistory(nextHistory, budget.historyTokenBudget);
     llmSessionHistoryMap.set(sessionKey, bounded);
   };
 
