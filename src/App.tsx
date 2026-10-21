@@ -66,6 +66,7 @@ import { MemoryExportModal } from './components/MemoryExportModal';
 import { MemoryImportModal } from './components/MemoryImportModal';
 import {
   sendPromptToAcpAgent,
+  clearAcpAgentSessions,
   probeRemoteAcpConnection,
   buildAgentLaunchEnv,
   buildThinkingProcessFromAcp,
@@ -1026,7 +1027,7 @@ export default function App() {
               sessionWatermarksRef.current.delete(key);
             }
           });
-          clearLlmSessionHistory(payload.agent_id);
+          clearAcpAgentSessions(payload.agent_id);
         }
         setAgents((prev) =>
           prev.map((a) => {
@@ -1475,6 +1476,19 @@ export default function App() {
       }
       return nextMsgs;
     });
+
+    // 清理该频道的会话水位线、交付缓存以及底层 ACP 进程中对应的 session_ids
+    deliveredStandingContextRef.current.forEach((key) => {
+      if (key.startsWith(`${channelId}:`) || deletedThreads.some((thId) => key.startsWith(`${thId}:`))) {
+        deliveredStandingContextRef.current.delete(key);
+      }
+    });
+    Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
+      if (key.startsWith(`${channelId}:`) || deletedThreads.some((thId) => key.startsWith(`${thId}:`))) {
+        sessionWatermarksRef.current.delete(key);
+      }
+    });
+    clearAcpAgentSessions(undefined, channelId);
 
     if (activeTopicData && activeTopicData.channelId === channelId) {
       setActiveTopicId(null);
@@ -2196,6 +2210,7 @@ export default function App() {
             projectId: activeProjectId,
             channelId: targetChannelId,
             systemPrompt,
+            discussionMode: currentTopicObj?.discussionMode,
           });
 
           setActiveExecutions((prev) => {
@@ -2511,6 +2526,7 @@ export default function App() {
             availableAgents: candidateAgents,
             includeRoster: true,
           }),
+          discussionMode: 'game_theoretic',
         });
 
         setActiveExecutions((prev) => {
@@ -2831,6 +2847,7 @@ export default function App() {
             availableAgents: candidateAgents,
             includeRoster: true,
           }),
+          discussionMode: 'game_theoretic',
         });
 
         setActiveExecutions((prev) => {
@@ -3352,6 +3369,7 @@ export default function App() {
             availableAgents: candidateAgents,
             includeRoster: true,
           }),
+          discussionMode: 'game_theoretic',
         });
 
         setActiveExecutions((prev) => {
@@ -3895,6 +3913,7 @@ export default function App() {
             availableAgents: candidateAgents,
             includeRoster: true,
           }),
+          discussionMode: 'game_theoretic',
         });
 
         setActiveExecutions((prev) => {
@@ -4540,6 +4559,7 @@ export default function App() {
               availableAgents: candidateAgents,
               includeRoster: true,
             }),
+            discussionMode: 'game_theoretic',
           });
 
           setActiveExecutions((prev) => {
@@ -5272,6 +5292,7 @@ export default function App() {
         projectId: activeProjectId,
         channelId: topicChannel?.id,
         systemPrompt,
+        discussionMode: activeTopicData?.discussionMode,
       })
         .then((acpResp) => {
           setActiveExecutions((prev) => {
@@ -5876,6 +5897,7 @@ export default function App() {
         projectId: activeProjectId,
         channelId: topicChannel?.id,
         systemPrompt: buildAgentPersonaPrompt(executorAgent),
+        discussionMode: 'game_theoretic',
       });
 
       setActiveExecutions((prev) => {
@@ -7399,7 +7421,7 @@ export default function App() {
           // 清空已交付公约、花名册缓存与水位线，确保后续全会话即时重装最新的人设与团队花名册
           deliveredStandingContextRef.current.clear();
           sessionWatermarksRef.current.clear();
-          clearLlmSessionHistory(agentId);
+          clearAcpAgentSessions(agentId);
 
           const existingAgent = agents.find((a) => a.id === agentId);
           const wasOnline =

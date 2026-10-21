@@ -164,6 +164,19 @@ impl AcpProcessManager {
         statuses
     }
 
+    /// 清空指定 Agent 或指定前缀的所有会话 sessionId 映射，重置底层 ACP 会话沙箱
+    pub async fn clear_agent_sessions(&self, agent_id: Option<&str>, session_key_prefix: Option<&str>) {
+        if let Some(aid) = agent_id {
+            if let Some(agent) = self.agents.get(aid) {
+                agent.clear_sessions(session_key_prefix).await;
+            }
+        } else {
+            for agent in self.agents.values() {
+                agent.clear_sessions(session_key_prefix).await;
+            }
+        }
+    }
+
     /// 终止指定 Agent 进程并释放资源
     pub async fn stop_agent(&mut self, agent_id: &str) -> Result<()> {
         if let Some(agent) = self.agents.remove(agent_id) {
@@ -759,17 +772,28 @@ impl AcpProcessManager {
         channel_id: Option<&str>,
         prompt: &str,
         system_prompt: Option<&str>,
+        discussion_mode: Option<&str>,
     ) -> Result<serde_json::Value> {
         let agent = self
             .get_agent(agent_id)
             .with_context(|| format!("Agent {} not running", agent_id))?;
         agent
-            .send_session_prompt(agent_id, room_id, channel_id, prompt, system_prompt)
+            .send_session_prompt(agent_id, room_id, channel_id, prompt, system_prompt, discussion_mode)
             .await
     }
 }
 
 impl RunningAgent {
+    /// 清空当前 Agent 内部指定前缀（或全部）的 session_ids 缓存映射
+    pub async fn clear_sessions(&self, prefix: Option<&str>) {
+        let mut map = self.session_ids.lock().await;
+        if let Some(p) = prefix {
+            map.retain(|k, _| !k.starts_with(p) && !k.contains(p));
+        } else {
+            map.clear();
+        }
+    }
+
     /// 发送 Prompt 请求并等待当前 Agent 返回 (符合标准 ACP 规范)
     /// 内部持有 self.prompt_lock，保证对同一 Agent 的指令按序下发，杜绝 stdio 管道竞态；
     /// 不同 Agent 拥有独立的 RunningAgent 实例与子进程，完全并发、互不阻塞！
@@ -780,6 +804,7 @@ impl RunningAgent {
         channel_id: Option<&str>,
         prompt: &str,
         system_prompt: Option<&str>,
+        discussion_mode: Option<&str>,
     ) -> Result<serde_json::Value> {
         let _prompt_guard = self.prompt_lock.lock().await;
         let agent = self;
@@ -867,7 +892,8 @@ impl RunningAgent {
             // Agent 个人专属私有空间：~/.shadow-crew/agents/<agent_id>/
             let agent_dir = crate::db_manager::get_agent_dir(agent_id);
             let agent_cwd = agent_dir.to_string_lossy().to_string();
-            let key = format!("agent:{}:dm", agent_id);
+            // 包含 room_id，实现独立私聊会话沙箱物理隔离
+            let key = format!("agent:{}:dm:{}", agent_id, room_id);
             let notice = format!(
                 "\n\n[当前 Agent 个人专属独立工作空间环境]:\n- Agent ID: {}\n- Agent 独立工作区根目录 (Working Directory / cwd): {}\n- 专属落地产物目录 (Artifacts): {}/artifacts\n- 专属临时调试目录 (Scratch): {}/scratch\n提示: 您当前处于与用户的 1-on-1 私聊中，沉淀的技术推演文档、方案或代码 Patch 将安全保存至您个人的专属产物目录中，与频道(channels)业务及其他 Agent 物理隔离。",
                 agent_id, agent_cwd, agent_cwd, agent_cwd
@@ -878,7 +904,11 @@ impl RunningAgent {
             let effective_chan_id = channel_id.map(|c| c.trim()).filter(|c| !c.is_empty()).unwrap_or(room_id);
             let chan_dir = crate::db_manager::get_channel_dir(effective_chan_id);
             let chan_cwd = chan_dir.to_string_lossy().to_string();
-            let key = format!("{}:{}", effective_chan_id, room_id);
+            // 引入 discussion_mode 命名空间，将普通增量协同与 CognoNexus 4+1 博弈裁决的 session 物理隔离
+            let key = match discussion_mode {
+                Some(m) if !m.trim().is_empty() => format!("{}:{}:{}", effective_chan_id, room_id, m.trim()),
+                _ => format!("{}:{}", effective_chan_id, room_id),
+            };
             let notice = format!(
                 "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}/artifacts\n- 临时调试目录 (Scratch): {}/scratch",
                 effective_chan_id, chan_cwd, chan_cwd, chan_cwd
@@ -983,17 +1013,6 @@ impl RunningAgent {
             prompt_params["agentId"] = serde_json::Value::String(agent_id.to_string());
         } else if let Some(c) = channel_id {
             prompt_params["channelId"] = serde_json::Value::String(c.to_string());
-        }
-
-        if let Some(sp) = system_prompt {
-            if !sp.trim().is_empty() {
-                prompt_params["systemPrompt"] = serde_json::Value::String(sp.to_string());
-                prompt_params["_meta"] = serde_json::json!({
-                    "systemPrompt": {
-                        "append": sp
-                    }
-                });
-            }
         }
 
         let request = serde_json::json!({

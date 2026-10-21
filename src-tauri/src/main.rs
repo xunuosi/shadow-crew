@@ -93,6 +93,7 @@ async fn send_prompt_to_agent(
     _cwd: Option<String>,
     _env_vars: Option<Vec<acp_manager::AcpEnvVar>>,
     system_prompt: Option<String>,
+    discussion_mode: Option<String>,
     _app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
@@ -121,11 +122,26 @@ async fn send_prompt_to_agent(
             channel_id.as_deref(),
             &prompt,
             system_prompt.as_deref(),
+            discussion_mode.as_deref(),
         )
         .await
         .map_err(|e| format!("ACP Prompt Error: {}", e))?;
         
     Ok(response)
+}
+
+/// Tauri Command: 清除指定 Agent 或指定会话前缀的 ACP sessionId 映射与底层沙箱状态
+#[tauri::command]
+async fn clear_agent_sessions(
+    agent_id: Option<String>,
+    session_key_prefix: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let manager = state.acp_manager.lock().await;
+    manager
+        .clear_agent_sessions(agent_id.as_deref(), session_key_prefix.as_deref())
+        .await;
+    Ok(())
 }
 
 /// Tauri Command: 安全沙盒文件读取
@@ -712,6 +728,7 @@ async fn main() {
             get_running_agent_ids,
             get_agents_runtime_status,
             send_prompt_to_agent,
+            clear_agent_sessions,
             read_workspace_file_sandboxed,
             apply_workspace_patch,
             get_acp_log_path,
