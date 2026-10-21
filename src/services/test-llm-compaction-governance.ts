@@ -250,6 +250,29 @@ console.log('\n5️⃣ 测试极端超长消息在小预算下的硬预算兜底
   const folded = foldMessageContentToTokenBudget('张三李四'.repeat(200), 50);
   const foldedTokens = estimateTokenCount(folded);
   assert(foldedTokens <= 50, `foldMessageContentToTokenBudget 保证单条输出严格 <= 预算 (实测: ${foldedTokens} <= 50)`);
+
+  // 边界强化测试: 8 条超长中文消息在 33 ~ 200 极小预算区间的硬数学不变量验证
+  const eightMessagesHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  for (let i = 1; i <= 4; i++) {
+    eightMessagesHistory.push({
+      role: 'user',
+      content: `这是用户关于高并发分布式架构的复杂需求详细描述与接口规范 ${i} ` + '测'.repeat(500),
+    });
+    eightMessagesHistory.push({
+      role: 'assistant',
+      content: `这是助手关于架构方案推演与落地代码实现补丁生成的长文本回复 ${i} ` + '试'.repeat(500),
+    });
+  }
+
+  const testBudgets = [33, 50, 80, 100, 150, 200];
+  for (const b of testBudgets) {
+    const compacted = compactConversationHistory(eightMessagesHistory, b, 4);
+    const actualTokens = compacted.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+    assert(
+      actualTokens <= b,
+      `8条超长消息极小预算边界断言通过: 预算 ${b} Tokens -> 实测 ${actualTokens} Tokens (严格 <= ${b})`
+    );
+  }
 }
 
 // 6. 测试结构化 Memory 关键要点提炼与保留 (而非简单掐头去尾截断)

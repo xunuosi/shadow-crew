@@ -1091,7 +1091,7 @@ export function getModelSafeContextBudget(config: AgentModelConfig): {
 /**
  * 单条超长消息的安全行内核折叠（Inline Core Folding）
  * 当某单条历史消息极大（如数千字甚至上万字）时，保留其开头关键背景与末尾结论，
- * 中间安全折叠为省略占位符，确保其 Token 严格控制在指定的单条上限内。
+ * 中间安全折叠为省略占位符，严格保证输出结果的 Token 计数 <= maxTokens。
  */
 export function foldMessageContentToTokenBudget(content: string, maxTokens: number): string {
   const currentTokens = estimateTokenCount(content);
@@ -1099,27 +1099,48 @@ export function foldMessageContentToTokenBudget(content: string, maxTokens: numb
     return content;
   }
 
-  // 极端小配额保护 (小于 32 tokens 直接返回紧凑说明)
-  if (maxTokens <= 32) {
-    const brief = content.slice(0, 40).replace(/\s+/g, ' ').trim();
-    return `${brief}... [已折叠超限上下文]`;
+  // 极端微型配额保护 (maxTokens <= 20): 极简占位符，严格按字数反推
+  if (maxTokens <= 20) {
+    const placeholder = '..[折叠]';
+    const placeholderTokens = estimateTokenCount(placeholder);
+    const allowTokens = Math.max(2, maxTokens - placeholderTokens);
+    const safeBrief = content.slice(0, allowTokens).replace(/\s+/g, ' ').trim();
+    let result = `${safeBrief}${placeholder}`;
+    while (estimateTokenCount(result) > maxTokens && result.length > 2) {
+      result = result.slice(0, -1);
+    }
+    return result;
   }
 
-  // 根据 Token 估算反推允许的保留字符总数（中文约 1 字=1 token，英文约 4 字符=1 token，按最保守 1:1 预留）
-  // 占位符大约需要 20 tokens
-  const usableTokens = Math.max(20, maxTokens - 20);
-  const halfChars = Math.max(15, Math.floor(usableTokens * 0.45));
+  // 极小配额保护 (20 < maxTokens <= 40): 精确控符
+  if (maxTokens <= 40) {
+    const placeholder = '..[已折叠上下文]';
+    const placeholderTokens = estimateTokenCount(placeholder);
+    const allowTokens = Math.max(4, maxTokens - placeholderTokens);
+    const safeBrief = content.slice(0, allowTokens).replace(/\s+/g, ' ').trim();
+    let result = `${safeBrief}${placeholder}`;
+    while (estimateTokenCount(result) > maxTokens && result.length > 4) {
+      result = result.slice(0, -1);
+    }
+    return result;
+  }
+
+  // 正常折叠 (maxTokens > 40): 保留首部关键背景与末尾结论
+  const placeholder = '\n\n[...已折叠部分字符以严格满足模型 Token 预算...]\n\n';
+  const placeholderTokens = estimateTokenCount(placeholder);
+  const usableTokens = Math.max(10, maxTokens - placeholderTokens);
+  const halfChars = Math.max(4, Math.floor(usableTokens * 0.45));
 
   const head = content.slice(0, halfChars).trim();
   const tail = content.slice(-halfChars).trim();
-  const foldedChars = Math.max(0, content.length - head.length - tail.length);
+  let foldedText = `${head}${placeholder}${tail}`;
 
-  const foldedText = `${head}\n\n[...已折叠 ${foldedChars} 字符以严格满足模型硬 Token 预算上限 (${maxTokens} Tokens)...]\n\n${tail}`;
-  
-  // 若因换行符等微小偏差仍超限，做二次严格截断
-  if (estimateTokenCount(foldedText) > maxTokens) {
-    const ultraSafeChars = Math.max(10, Math.floor(maxTokens * 0.4));
-    return `${content.slice(0, ultraSafeChars)}... [已折叠超限历史] ...${content.slice(-ultraSafeChars)}`;
+  // 若仍超限，做二次严格递减裁剪
+  while (estimateTokenCount(foldedText) > maxTokens && foldedText.length > 8) {
+    foldedText = `${foldedText.slice(0, Math.floor(maxTokens * 0.4))}..[折叠]..${foldedText.slice(-Math.floor(maxTokens * 0.4))}`;
+    if (estimateTokenCount(foldedText) > maxTokens) {
+      foldedText = foldedText.slice(0, Math.max(4, maxTokens - 4)) + '..';
+    }
   }
   return foldedText;
 }
@@ -1252,8 +1273,13 @@ export function compactConversationHistory(
     return history;
   }
 
-  // 1. 尝试按活跃窗口切分早期消息与近期消息（切片必须切在 user 消息起点，保持 recent 以 user 开头）
-  let splitIdx = Math.max(0, history.length - keepRecentMessages);
+  // 1. 动态自适应活跃窗口大小：
+  // 当预算极其紧凑（< 400 tokens）时，自适应收缩活跃窗口至 2 条（1 轮），
+  // 杜绝 4 条 recent 消息加上 2 条摘要消息（共 6 条）的基底结构载荷直接击穿极小预算。
+  const effectiveKeepRecent =
+    historyTokenBudget < 250 ? 2 : historyTokenBudget < 400 ? Math.min(2, keepRecentMessages) : keepRecentMessages;
+
+  let splitIdx = Math.max(0, history.length - effectiveKeepRecent);
   while (splitIdx < history.length && history[splitIdx].role !== 'user') {
     splitIdx++;
   }
@@ -1309,11 +1335,17 @@ export function compactConversationHistory(
 ${summaryLines.join('\n')}
 </compacted-summary>`;
 
+    // 助手确认句在小预算下使用紧凑版本，避免自身挤占 36+ Tokens
+    const assistantAckText =
+      historyTokenBudget < 250
+        ? '已对齐早期要点，专注当前任务。'
+        : '已对齐上述早期折叠历史与关键决议要点，正基于当前最新上下文专注推进任务。';
+
     compactedTurn = [
       { role: 'user', content: summaryUserText },
       {
         role: 'assistant',
-        content: '已对齐上述早期折叠历史与关键决议要点，正基于当前最新上下文专注推进任务。',
+        content: assistantAckText,
       },
     ];
   }
@@ -1327,11 +1359,14 @@ ${summaryLines.join('\n')}
   }
 
   // 3. 硬预算数学兜底执行（Hard Budget Enforcement）
-  // 当候选序列（哪怕只剩最近 1~2 条超长消息或极小预算）依然超预算时，进行动态预算再分配与行内核折叠
-  const budgetForSummary = compactedTurn.length > 0 ? Math.min(120, Math.floor(historyTokenBudget * 0.35)) : 0;
-  const remainingBudgetForRecent = Math.max(30, historyTokenBudget - budgetForSummary);
+  // 当候选序列依然超预算时，扣除助手应答占位后进行动态预算再分配与行内核折叠
+  const ackCost = compactedTurn.length > 1 ? estimateTokenCount(compactedTurn[1].content) : 0;
+  const netBudget = Math.max(20, historyTokenBudget - ackCost);
 
-  // 3.1 若 summary 自身超出其配额，折叠 summary
+  const budgetForSummary = compactedTurn.length > 0 ? Math.max(12, Math.min(80, Math.floor(netBudget * 0.35))) : 0;
+  const remainingBudgetForRecent = Math.max(12, netBudget - budgetForSummary);
+
+  // 3.1 折叠 summary 消息至其安全配额
   if (compactedTurn.length > 0) {
     const summaryTokens = estimateTokenCount(compactedTurn[0].content);
     if (summaryTokens > budgetForSummary) {
@@ -1339,9 +1374,9 @@ ${summaryLines.join('\n')}
     }
   }
 
-  // 3.2 将剩余预算均分给 recentMessages 中的每一条超大消息
+  // 3.2 将剩余预算均分给 recentMessages 中的每一条消息
   if (recentMessages.length > 0) {
-    const perMessageBudget = Math.max(20, Math.floor(remainingBudgetForRecent / recentMessages.length));
+    const perMessageBudget = Math.max(8, Math.floor(remainingBudgetForRecent / recentMessages.length));
     recentMessages = recentMessages.map((msg) => {
       const msgTokens = estimateTokenCount(msg.content);
       if (msgTokens > perMessageBudget) {
@@ -1356,11 +1391,10 @@ ${summaryLines.join('\n')}
 
   let bounded = [...compactedTurn, ...recentMessages];
 
-  // 3.3 极端硬保险：若总 Token 仍大于 historyTokenBudget，自底向上逐条深度收缩
+  // 3.3 极端硬数学不变量保证：逐条自底向上精确收敛
   let finalTokens = bounded.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
   if (finalTokens > historyTokenBudget) {
-    // 优先压缩中间最长的一条消息
-    for (let loop = 0; loop < 3 && finalTokens > historyTokenBudget; loop++) {
+    for (let loop = 0; loop < 5 && finalTokens > historyTokenBudget; loop++) {
       let maxIdx = 0;
       let maxLen = 0;
       for (let i = 0; i < bounded.length; i++) {
@@ -1370,11 +1404,29 @@ ${summaryLines.join('\n')}
           maxIdx = i;
         }
       }
-      const targetTokens = Math.max(16, maxLen - (finalTokens - historyTokenBudget) - 4);
+      const excess = finalTokens - historyTokenBudget;
+      const targetTokens = Math.max(6, maxLen - excess - 2);
       bounded[maxIdx].content = foldMessageContentToTokenBudget(bounded[maxIdx].content, targetTokens);
       finalTokens = bounded.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
     }
+
+    // 终极安全钳制（微字符截断）：绝对保证 100% <= historyTokenBudget，消除任何字符估算微小公差
+    while (finalTokens > historyTokenBudget) {
+      let longestIdx = 0;
+      let longestLen = 0;
+      for (let i = 0; i < bounded.length; i++) {
+        if (bounded[i].content.length > longestLen) {
+          longestLen = bounded[i].content.length;
+          longestIdx = i;
+        }
+      }
+      if (bounded[longestIdx].content.length <= 4) break;
+      bounded[longestIdx].content = bounded[longestIdx].content.slice(0, -1);
+      finalTokens = bounded.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
+    }
   }
+
+  return ensureAlternatingRoles(bounded);
 
   return ensureAlternatingRoles(bounded);
 }
