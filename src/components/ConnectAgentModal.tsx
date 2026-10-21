@@ -30,6 +30,7 @@ import { DEFAULT_MODEL_NAME } from '../config/models';
 import { PROVIDER_PRESETS, getGlobalModelConfig, getActiveProviderPreset, testModelConnection } from '../services/llmService';
 import { normalizeAgentHandle } from '../services/agentCollaboration';
 import { ModelSelectorCombobox } from './ModelSelectorCombobox';
+import { ModelContextConfigPanel } from './ModelContextConfigPanel';
 import { AgentRuntimeStatus } from '../types';
 
 interface ConnectAgentModalProps {
@@ -996,6 +997,13 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                     className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
                   />
                 </div>
+
+                {/* 上下文窗口与 Token 预算参数配置 */}
+                <ModelContextConfigPanel
+                  modelConfig={modelConfig}
+                  onChange={(updated) => setModelConfig((prev) => ({ ...prev, ...updated }))}
+                  isLightMode={isLightMode}
+                />
 
               </div>
             )}

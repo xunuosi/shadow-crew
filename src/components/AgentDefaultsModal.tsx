@@ -33,6 +33,7 @@ import {
   ModelProbeResult,
 } from '../services/llmService';
 import { ModelSelectorCombobox } from './ModelSelectorCombobox';
+import { ModelContextConfigPanel } from './ModelContextConfigPanel';
 import { AgentModelConfig, ModelProviderType } from '../types';
 
 interface AgentDefaultsModalProps {
@@ -297,6 +298,13 @@ export const AgentDefaultsModal: React.FC<AgentDefaultsModalProps> = ({
                 className="w-full bg-surface border border-border focus:border-accent rounded-xl px-3 py-1.5 font-mono text-[11px] text-fg focus:outline-none"
               />
             </div>
+
+            {/* 上下文窗口与 Token 预算配置面板 */}
+            <ModelContextConfigPanel
+              modelConfig={modelConfig}
+              onChange={(updated) => setModelConfigState((prev) => ({ ...prev, ...updated }))}
+              isLightMode={typeof document !== 'undefined' && !document.documentElement.classList.contains('dark') && document.documentElement.getAttribute('data-theme') !== 'dark'}
+            />
 
             <div className="pt-2 space-y-2">
               <div className="flex items-center gap-2 flex-wrap">
