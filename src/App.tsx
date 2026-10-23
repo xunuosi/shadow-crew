@@ -3,7 +3,7 @@
  * Fusing Block Buzz, Codex, and Google Antigravity
  */
 
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from 'react';
 import { 
   Project,
   Agent, 
@@ -46,24 +46,26 @@ import { Sidebar } from './components/Sidebar';
 import { ThreadList } from './components/ThreadList';
 import { ChatTimeline } from './components/ChatTimeline';
 import { MessageInput } from './components/MessageInput';
-import { SubThreadDrawer } from './components/SubThreadDrawer';
-import { TopicThreadDrawer } from './components/TopicThreadDrawer';
-import { NewTopicModal } from './components/NewTopicModal';
-import { EditTopicModal } from './components/EditTopicModal';
-import { CodexDiffViewer } from './components/CodexDiffViewer';
-import { AcpInspector } from './components/AcpInspector';
-import { AgentTeamsModal } from './components/AgentTeamsModal';
-import { CreateChannelModal } from './components/CreateChannelModal';
-import { ChannelMembersModal } from './components/ChannelMembersModal';
-import { DeleteChannelModal } from './components/DeleteChannelModal';
-import { ConnectAgentModal } from './components/ConnectAgentModal';
-import { CreateTeamModal } from './components/CreateTeamModal';
-import { AgentDefaultsModal } from './components/AgentDefaultsModal';
-import { StorageSettingsModal } from './components/StorageSettingsModal';
-import { RustTauriArchitectureHub } from './components/RustTauriArchitectureHub';
-import { AgentDashboard } from './components/AgentDashboard';
-import { MemoryExportModal } from './components/MemoryExportModal';
-import { MemoryImportModal } from './components/MemoryImportModal';
+
+// 按需异步加载高体积分支抽屉与低频弹窗组件，从首屏关键渲染路径剥离
+const SubThreadDrawer = lazy(() => import('./components/SubThreadDrawer').then((m) => ({ default: m.SubThreadDrawer })));
+const TopicThreadDrawer = lazy(() => import('./components/TopicThreadDrawer').then((m) => ({ default: m.TopicThreadDrawer })));
+const NewTopicModal = lazy(() => import('./components/NewTopicModal').then((m) => ({ default: m.NewTopicModal })));
+const EditTopicModal = lazy(() => import('./components/EditTopicModal').then((m) => ({ default: m.EditTopicModal })));
+const CodexDiffViewer = lazy(() => import('./components/CodexDiffViewer').then((m) => ({ default: m.CodexDiffViewer })));
+const AcpInspector = lazy(() => import('./components/AcpInspector').then((m) => ({ default: m.AcpInspector })));
+const AgentTeamsModal = lazy(() => import('./components/AgentTeamsModal').then((m) => ({ default: m.AgentTeamsModal })));
+const CreateChannelModal = lazy(() => import('./components/CreateChannelModal').then((m) => ({ default: m.CreateChannelModal })));
+const ChannelMembersModal = lazy(() => import('./components/ChannelMembersModal').then((m) => ({ default: m.ChannelMembersModal })));
+const DeleteChannelModal = lazy(() => import('./components/DeleteChannelModal').then((m) => ({ default: m.DeleteChannelModal })));
+const ConnectAgentModal = lazy(() => import('./components/ConnectAgentModal').then((m) => ({ default: m.ConnectAgentModal })));
+const CreateTeamModal = lazy(() => import('./components/CreateTeamModal').then((m) => ({ default: m.CreateTeamModal })));
+const AgentDefaultsModal = lazy(() => import('./components/AgentDefaultsModal').then((m) => ({ default: m.AgentDefaultsModal })));
+const StorageSettingsModal = lazy(() => import('./components/StorageSettingsModal').then((m) => ({ default: m.StorageSettingsModal })));
+const RustTauriArchitectureHub = lazy(() => import('./components/RustTauriArchitectureHub').then((m) => ({ default: m.RustTauriArchitectureHub })));
+const AgentDashboard = lazy(() => import('./components/AgentDashboard').then((m) => ({ default: m.AgentDashboard })));
+const MemoryExportModal = lazy(() => import('./components/MemoryExportModal').then((m) => ({ default: m.MemoryExportModal })));
+const MemoryImportModal = lazy(() => import('./components/MemoryImportModal').then((m) => ({ default: m.MemoryImportModal })));
 import {
   sendPromptToAcpAgent,
   clearAcpAgentSessions,
@@ -6982,7 +6984,8 @@ export default function App() {
 
       {/* Main View Switcher: Agents & Teams Dashboard vs Topic Chat Stream */}
       {mainView === 'agents' ? (
-        <AgentDashboard
+        <Suspense fallback={<div className="flex-1 flex items-center justify-center text-fg-muted">加载仪表盘...</div>}>
+          <AgentDashboard
           agents={agents}
           teams={teams}
           channels={channels}
@@ -7132,6 +7135,7 @@ export default function App() {
             setTeams((prev) => prev.filter((t) => t.id !== teamId));
           }}
         />
+        </Suspense>
       ) : (
         <>
           {/* 2. Middle Column: Channel Main Timeline & Composer (PRD Column 2) */}
@@ -7223,77 +7227,86 @@ export default function App() {
           </main>
 
           {/* 3. Right Column: Topic Thread Drawer (PRD Column 3) */}
-          <TopicThreadDrawer
-            isOpen={Boolean(activeTopicId && activeTopicData)}
-            topic={activeTopicData}
-            messages={activeTopicMessages}
-            agents={currentChannelAgents}
-            activeExecutions={activeTopicId ? Object.values(activeExecutions).filter((e: any) => e.threadId === activeTopicId || e.topicId === activeTopicId) : []}
-            allActiveExecutions={Object.values(activeExecutions)}
-            onAbortAgent={(agentId) => activeTopicId && handleAbortAgent(agentId, activeTopicId)}
-            onAbortAll={() => activeTopicId && handleAbortAll(activeTopicId)}
-            onClose={() => setActiveTopicId(null)}
-            onSendMessage={handleSendTopicMessage}
-            onResolveTopic={handleResolveTopic}
-            onReopenTopic={handleReopenTopic}
-            onExecuteTopicPatch={handleExecuteTopicPatch}
-            onApplyTopicPatch={(tid) => handleApplyTopicPatch(tid)}
-            overlappingFiles={(() => {
-              if (!activeTopicData || activeTopicData.gameTheoreticState?.executionStatus === 'applied') return [];
-              const myFiles = new Set(
-                [
-                  ...(activeTopicData.rulingRecord?.impactedFiles || []),
-                  ...(activeTopicData.decisionRecord?.impactedFiles || []),
-                  ...(activeTopicData.gameTheoreticState?.executionDiffs?.map((d) => d.filename) || []),
-                ]
-                  .map((f) => f.trim().replace(/^\.\//, ''))
-                  .filter(Boolean)
-              );
-              if (myFiles.size === 0) return [];
-              const otherFiles = new Set<string>();
-              for (const m of activeMessages) {
-                if (m.type === 'topic' && m.topicData && m.topicData.id !== activeTopicData.id) {
-                  if (m.topicData.gameTheoreticState?.executionStatus === 'applied') continue;
-                  const tFiles = [
-                    ...(m.topicData.rulingRecord?.impactedFiles || []),
-                    ...(m.topicData.decisionRecord?.impactedFiles || []),
-                    ...(m.topicData.gameTheoreticState?.executionDiffs?.map((d) => d.filename) || []),
-                  ];
-                  for (const tf of tFiles) {
-                    const clean = tf.trim().replace(/^\.\//, '');
-                    if (clean && myFiles.has(clean)) otherFiles.add(clean);
+          {Boolean(activeTopicId && activeTopicData) && (
+            <Suspense fallback={null}>
+              <TopicThreadDrawer
+                isOpen={Boolean(activeTopicId && activeTopicData)}
+                topic={activeTopicData}
+                messages={activeTopicMessages}
+                agents={currentChannelAgents}
+                activeExecutions={activeTopicId ? Object.values(activeExecutions).filter((e: any) => e.threadId === activeTopicId || e.topicId === activeTopicId) : []}
+                allActiveExecutions={Object.values(activeExecutions)}
+                onAbortAgent={(agentId) => activeTopicId && handleAbortAgent(agentId, activeTopicId)}
+                onAbortAll={() => activeTopicId && handleAbortAll(activeTopicId)}
+                onClose={() => setActiveTopicId(null)}
+                onSendMessage={handleSendTopicMessage}
+                onResolveTopic={handleResolveTopic}
+                onReopenTopic={handleReopenTopic}
+                onExecuteTopicPatch={handleExecuteTopicPatch}
+                onApplyTopicPatch={(tid) => handleApplyTopicPatch(tid)}
+                overlappingFiles={(() => {
+                  if (!activeTopicData || activeTopicData.gameTheoreticState?.executionStatus === 'applied') return [];
+                  const myFiles = new Set(
+                    [
+                      ...(activeTopicData.rulingRecord?.impactedFiles || []),
+                      ...(activeTopicData.decisionRecord?.impactedFiles || []),
+                      ...(activeTopicData.gameTheoreticState?.executionDiffs?.map((d) => d.filename) || []),
+                    ]
+                      .map((f) => f.trim().replace(/^\.\//, ''))
+                      .filter(Boolean)
+                  );
+                  if (myFiles.size === 0) return [];
+                  const otherFiles = new Set<string>();
+                  for (const m of activeMessages) {
+                    if (m.type === 'topic' && m.topicData && m.topicData.id !== activeTopicData.id) {
+                      if (m.topicData.gameTheoreticState?.executionStatus === 'applied') continue;
+                      const tFiles = [
+                        ...(m.topicData.rulingRecord?.impactedFiles || []),
+                        ...(m.topicData.decisionRecord?.impactedFiles || []),
+                        ...(m.topicData.gameTheoreticState?.executionDiffs?.map((d) => d.filename) || []),
+                      ];
+                      for (const tf of tFiles) {
+                        const clean = tf.trim().replace(/^\.\//, '');
+                        if (clean && myFiles.has(clean)) otherFiles.add(clean);
+                      }
+                    }
                   }
-                }
-              }
-              return Array.from(otherFiles);
-            })()}
-            onOpenCodexDiff={(diff) => {
-              setActiveDiff(diff);
-              setIsCodexDiffOpen(true);
-            }}
-            onEditTopic={() => setEditingTopic(activeTopicData)}
-          />
+                  return Array.from(otherFiles);
+                })()}
+                onOpenCodexDiff={(diff) => {
+                  setActiveDiff(diff);
+                  setIsCodexDiffOpen(true);
+                }}
+                onEditTopic={() => setEditingTopic(activeTopicData)}
+              />
+            </Suspense>
+          )}
         </>
       )}
 
-      {/* 4. Sub-Thread Nested Discussion Drawer */}
-      <SubThreadDrawer
-        isOpen={Boolean(activeSubThreadId && activeSubThread)}
-        subThread={activeSubThread}
-        agents={agents}
-        onClose={() => setActiveSubThreadId(null)}
-        onSendSubMessage={handleSendSubMessage}
-        onSyncBackToMainThread={handleSyncBackToMainThread}
-      />
+      <Suspense fallback={null}>
+        {/* 4. Sub-Thread Nested Discussion Drawer */}
+        {Boolean(activeSubThreadId && activeSubThread) && (
+          <SubThreadDrawer
+            isOpen={Boolean(activeSubThreadId && activeSubThread)}
+            subThread={activeSubThread}
+            agents={agents}
+            onClose={() => setActiveSubThreadId(null)}
+            onSendSubMessage={handleSendSubMessage}
+            onSyncBackToMainThread={handleSyncBackToMainThread}
+          />
+        )}
 
-      {/* 5. Codex Diff Inspection Drawer */}
-      <CodexDiffViewer
-        isOpen={isCodexDiffOpen}
-        onClose={() => setIsCodexDiffOpen(false)}
-        activeDiff={activeDiff}
-        workspaceFiles={workspaceFiles}
-        onApplyDiff={handleApplyTopicPatch}
-      />
+        {/* 5. Codex Diff Inspection Drawer */}
+        {isCodexDiffOpen && (
+          <CodexDiffViewer
+            isOpen={isCodexDiffOpen}
+            onClose={() => setIsCodexDiffOpen(false)}
+            activeDiff={activeDiff}
+            workspaceFiles={workspaceFiles}
+            onApplyDiff={handleApplyTopicPatch}
+          />
+        )}
 
       {/* 6. Antigravity ACP Protocol & Telemetry Inspector Drawer */}
       {isAcpInspectorOpen && selectedAgent && (
@@ -7345,74 +7358,84 @@ export default function App() {
       )}
 
       {/* 7. Modals: Agent Teams Management */}
-      <AgentTeamsModal
-        isOpen={isAgentTeamsModalOpen}
-        onClose={() => setIsAgentTeamsModalOpen(false)}
-        agents={agents}
-        teams={teams}
-        onCreateTeam={(newTeam) => {
-          const created: AgentTeam = { ...newTeam, id: `team-${Date.now()}` };
-          setTeams((prev) => [...prev, created]);
-        }}
-        onOpenConnectModal={() => {
-          setEditingAgent(null);
-          setDuplicatingAgent(null);
-          setIsConnectModalOpen(true);
-        }}
-      />
+      {isAgentTeamsModalOpen && (
+        <AgentTeamsModal
+          isOpen={isAgentTeamsModalOpen}
+          onClose={() => setIsAgentTeamsModalOpen(false)}
+          agents={agents}
+          teams={teams}
+          onCreateTeam={(newTeam) => {
+            const created: AgentTeam = { ...newTeam, id: `team-${Date.now()}` };
+            setTeams((prev) => [...prev, created]);
+          }}
+          onOpenConnectModal={() => {
+            setEditingAgent(null);
+            setDuplicatingAgent(null);
+            setIsConnectModalOpen(true);
+          }}
+        />
+      )}
 
       {/* 7.1 Modal: Create Team Popup */}
-      <CreateTeamModal
-        isOpen={isCreateTeamModalOpen}
-        onClose={() => setIsCreateTeamModalOpen(false)}
-        agents={agents}
-        onCreateTeam={(newTeam) => {
-          const created: AgentTeam = { ...newTeam, id: `team-${Date.now()}` };
-          setTeams((prev) => [...prev, created]);
-        }}
-      />
+      {isCreateTeamModalOpen && (
+        <CreateTeamModal
+          isOpen={isCreateTeamModalOpen}
+          onClose={() => setIsCreateTeamModalOpen(false)}
+          agents={agents}
+          onCreateTeam={(newTeam) => {
+            const created: AgentTeam = { ...newTeam, id: `team-${Date.now()}` };
+            setTeams((prev) => [...prev, created]);
+          }}
+        />
+      )}
 
       {/* 7.2 Modal: Agent Defaults */}
-      <AgentDefaultsModal
-        isOpen={isAgentDefaultsModalOpen}
-        onClose={() => setIsAgentDefaultsModalOpen(false)}
-        onOpenStorageSettings={() => setIsStorageSettingsModalOpen(true)}
-      />
+      {isAgentDefaultsModalOpen && (
+        <AgentDefaultsModal
+          isOpen={isAgentDefaultsModalOpen}
+          onClose={() => setIsAgentDefaultsModalOpen(false)}
+          onOpenStorageSettings={() => setIsStorageSettingsModalOpen(true)}
+        />
+      )}
 
       {/* 7.3 Modal: Storage Architecture & Cache Management (Option 3: SQLite) */}
-      <StorageSettingsModal
-        isOpen={isStorageSettingsModalOpen}
-        onClose={() => setIsStorageSettingsModalOpen(false)}
-        messages={Object.values(messages).flat()}
-        onMessagesCleared={async () => {
-          generationEpochRef.current++;
-          handleAbortAll();
-          setMessages({});
-          messagesRef.current = {};
-          deliveredStandingContextRef.current.clear();
-          sessionWatermarksRef.current.clear();
-          clearLlmSessionHistory();
-          await clearAcpAgentSessions();
-        }}
-        onOpenMemoryExport={() => {
-          setExportingAgent(agents[0] || null);
-          setIsMemoryExportModalOpen(true);
-        }}
-      />
+      {isStorageSettingsModalOpen && (
+        <StorageSettingsModal
+          isOpen={isStorageSettingsModalOpen}
+          onClose={() => setIsStorageSettingsModalOpen(false)}
+          messages={Object.values(messages).flat()}
+          onMessagesCleared={async () => {
+            generationEpochRef.current++;
+            handleAbortAll();
+            setMessages({});
+            messagesRef.current = {};
+            deliveredStandingContextRef.current.clear();
+            sessionWatermarksRef.current.clear();
+            clearLlmSessionHistory();
+            await clearAcpAgentSessions();
+          }}
+          onOpenMemoryExport={() => {
+            setExportingAgent(agents[0] || null);
+            setIsMemoryExportModalOpen(true);
+          }}
+        />
+      )}
 
       {/* 8. Modals: Create Topic / Channel */}
-      <CreateChannelModal
-        isOpen={isCreateChannelOpen}
-        onClose={() => setIsCreateChannelOpen(false)}
-        activeProjectId={activeProjectId}
-        currentUserId={currentUserId}
-        teams={teams}
-        agents={agents}
-        onCreateChannel={handleCreateChannel}
-      />
+      {isCreateChannelOpen && (
+        <CreateChannelModal
+          isOpen={isCreateChannelOpen}
+          onClose={() => setIsCreateChannelOpen(false)}
+          activeProjectId={activeProjectId}
+          currentUserId={currentUserId}
+          teams={teams}
+          agents={agents}
+          onCreateChannel={handleCreateChannel}
+        />
+      )}
 
       {/* 8.1 Modal: Channel Members & Invites */}
-      {targetModalChannel && (
+      {targetModalChannel && isChannelMembersModalOpen && (
         <ChannelMembersModal
           isOpen={isChannelMembersModalOpen}
           onClose={() => {
@@ -7427,7 +7450,7 @@ export default function App() {
       )}
 
       {/* 8.2 Modal: Delete Channel Confirmation */}
-      {targetModalChannel && (
+      {targetModalChannel && isDeleteChannelModalOpen && (
         <DeleteChannelModal
           isOpen={isDeleteChannelModalOpen}
           onClose={() => {
@@ -7441,8 +7464,9 @@ export default function App() {
       )}
 
       {/* 9. Connect / Edit ACP Agent Modal */}
-      <ConnectAgentModal
-        isOpen={isConnectModalOpen}
+      {isConnectModalOpen && (
+        <ConnectAgentModal
+          isOpen={isConnectModalOpen}
         onClose={() => {
           setIsConnectModalOpen(false);
           setEditingAgent(null);
@@ -7648,31 +7672,38 @@ export default function App() {
           setDuplicatingAgent(null);
         }}
       />
+      )}
 
       {/* 9.1 Modal: Create New Topic */}
-      <NewTopicModal
-        isOpen={isNewTopicModalOpen}
-        onClose={() => setIsNewTopicModalOpen(false)}
-        channel={activeChannel}
-        agents={currentChannelAgents}
-        onCreateTopic={handleCreateTopic}
-      />
+      {isNewTopicModalOpen && (
+        <NewTopicModal
+          isOpen={isNewTopicModalOpen}
+          onClose={() => setIsNewTopicModalOpen(false)}
+          channel={activeChannel}
+          agents={currentChannelAgents}
+          onCreateTopic={handleCreateTopic}
+        />
+      )}
 
       {/* 9.1.1 Modal: Edit Topic */}
-      <EditTopicModal
-        isOpen={Boolean(editingTopic)}
-        topic={editingTopic}
-        channel={editingTopicChannel}
-        agents={editingTopicAgents}
-        onClose={() => setEditingTopic(null)}
-        onUpdateTopic={handleUpdateTopic}
-      />
+      {Boolean(editingTopic) && (
+        <EditTopicModal
+          isOpen={Boolean(editingTopic)}
+          topic={editingTopic}
+          channel={editingTopicChannel}
+          agents={editingTopicAgents}
+          onClose={() => setEditingTopic(null)}
+          onUpdateTopic={handleUpdateTopic}
+        />
+      )}
 
       {/* 10. Rust + Tauri Architecture & Source Code Hub */}
-      <RustTauriArchitectureHub
-        isOpen={isRustTauriHubOpen}
-        onClose={() => setIsRustTauriHubOpen(false)}
-      />
+      {isRustTauriHubOpen && (
+        <RustTauriArchitectureHub
+          isOpen={isRustTauriHubOpen}
+          onClose={() => setIsRustTauriHubOpen(false)}
+        />
+      )}
 
       {/* 11. Memory Export & Import Modals */}
       {isMemoryExportModalOpen && exportingAgent && (
@@ -7686,15 +7717,18 @@ export default function App() {
         />
       )}
 
-      <MemoryImportModal
-        isOpen={isMemoryImportModalOpen}
-        agents={agents}
-        defaultAgentId={selectedAgentId || undefined}
-        defaultWorkspaceRoot={activeProject?.localWorkspaceRoot || '~/.shadow-crew'}
-        onClose={() => setIsMemoryImportModalOpen(false)}
-        onMountCartridge={handleMountCartridge}
-        onCloneGuestAgent={handleCloneGuestAgent}
-      />
+      {isMemoryImportModalOpen && (
+        <MemoryImportModal
+          isOpen={isMemoryImportModalOpen}
+          agents={agents}
+          defaultAgentId={selectedAgentId || undefined}
+          defaultWorkspaceRoot={activeProject?.localWorkspaceRoot || '~/.shadow-crew'}
+          onClose={() => setIsMemoryImportModalOpen(false)}
+          onMountCartridge={handleMountCartridge}
+          onCloneGuestAgent={handleCloneGuestAgent}
+        />
+      )}
+      </Suspense>
     </div>
   );
 }

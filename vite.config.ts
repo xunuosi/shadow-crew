@@ -430,6 +430,37 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (
+                id.includes('/react/') ||
+                id.includes('/react-dom/') ||
+                id.includes('/scheduler/')
+              ) {
+                return 'vendor-react';
+              }
+              if (
+                id.includes('/react-markdown/') ||
+                id.includes('/remark-gfm/') ||
+                id.includes('/prismjs/') ||
+                id.includes('/unified/') ||
+                id.includes('/micromark/') ||
+                id.includes('/mdast-') ||
+                id.includes('/unist-')
+              ) {
+                return 'vendor-markdown';
+              }
+              if (id.includes('/lucide-react/') || id.includes('/motion/')) {
+                return 'vendor-ui';
+              }
+            }
+          },
+        },
+      },
+    },
     server: {
       port: 3033,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
