@@ -137,6 +137,14 @@ import {
   buildDefaultDecompositionFromTopic,
   advanceModularOrchestration,
   stepModularStageTransition,
+  TurnEpochSnapshot,
+  createTurnEpochTracker,
+  captureTurnEpochSnapshot,
+  isTurnEpochStale,
+  bumpGlobalEpoch,
+  bumpRoomEpoch,
+  bumpChannelEpoch,
+  bumpAgentExecutionEpoch,
 } from './services/agentCollaboration';
 
 export default function App() {
@@ -672,6 +680,19 @@ export default function App() {
   const activeExecutionsRef = useRef(activeExecutions);
   activeExecutionsRef.current = activeExecutions;
   const generationEpochRef = useRef<number>(0);
+  const turnEpochTrackerRef = useRef(createTurnEpochTracker());
+
+  const captureTurnEpoch = useCallback(
+    (roomId: string, channelId?: string, agentId?: string): TurnEpochSnapshot =>
+      captureTurnEpochSnapshot(turnEpochTrackerRef.current, { roomId, channelId, agentId }),
+    []
+  );
+
+  const isTurnStale = useCallback(
+    (snapshot: TurnEpochSnapshot): boolean =>
+      isTurnEpochStale(turnEpochTrackerRef.current, snapshot),
+    []
+  );
 
   /**
    * 统一封装带异常捕获与用户可见提示的 ACP 会话清理调用，杜绝 fire-and-forget 未捕获 Promise rejection
@@ -1440,9 +1461,29 @@ export default function App() {
   };
 
   // Handle Channel Members Update (Invite / Remove Agent or Human)
-  const handleUpdateChannelMembers = (channelId: string, updatedMemberIds: string[]) => {
+  const handleUpdateChannelMembers = async (channelId: string, updatedMemberIds: string[]) => {
     const updatedAgentIds = updatedMemberIds.filter((id) => agents.some((a) => a.id === id));
     const channelThreadIds = threads.filter((t) => t.channelId === channelId).map((t) => t.id);
+    const channelTopicIds: string[] = [];
+    for (const msgList of Object.values(messagesRef.current) as Message[][]) {
+      for (const m of msgList) {
+        if (m.type === 'topic' && m.topicData?.channelId === channelId) {
+          channelTopicIds.push(m.topicData.id);
+        }
+      }
+    }
+    const affectedRoomIds = Array.from(new Set([...channelThreadIds, ...channelTopicIds]));
+
+    // 1. 立即递增频道与所属房间/议题的代际 Epoch 并终止在途旧轮次推演，防止旧花名册上下文在成员变更后继续回写
+    bumpChannelEpoch(turnEpochTrackerRef.current, channelId, affectedRoomIds);
+    affectedRoomIds.forEach((rid) => {
+      const hasActive = Object.values(activeExecutionsRef.current).some(
+        (e) => e.threadId === rid || e.topicId === rid
+      );
+      if (hasActive) {
+        handleAbortAll(rid);
+      }
+    });
 
     setChannels((prev) =>
       prev.map((c) =>
@@ -1464,26 +1505,26 @@ export default function App() {
       )
     );
 
-    // 成员增删后清理该频道及下属议题的 standing context、会话水位线与底层 ACP Session，
-    // 确保已有 Agent 在下一轮对话时强制刷新最新的团队成员花名册 (Crew Roster)
+    // 2. 清理该频道及下属议题的 standing context、会话水位线与底层 ACP Session，并等待清理完成
+    // 同时 sendPromptToAcpAgent 内部也会通过 waitForPendingAcpSessionClears 门禁等待清理完成，彻底杜绝新消息复用旧 Session
     deliveredStandingContextRef.current.forEach((key) => {
-      if (matchesSessionScope(key, { channelId, deletedThreadIds: channelThreadIds })) {
+      if (matchesSessionScope(key, { channelId, deletedThreadIds: affectedRoomIds })) {
         deliveredStandingContextRef.current.delete(key);
       }
     });
     Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
-      if (matchesSessionScope(key, { channelId, deletedThreadIds: channelThreadIds })) {
+      if (matchesSessionScope(key, { channelId, deletedThreadIds: affectedRoomIds })) {
         sessionWatermarksRef.current.delete(key);
       }
     });
-    void Promise.all([
+    await Promise.all([
       safelyClearAcpSessions(undefined, `channel:${channelId}`, '更新频道成员'),
       safelyClearAcpSessions(undefined, `topic:${channelId}`, '更新频道成员'),
     ]);
   };
 
   // Handle Channel Deletion (Cascading Teardown)
-  const handleDeleteChannel = (channelId: string) => {
+  const handleDeleteChannel = async (channelId: string) => {
     const remaining = channels.filter((c) => c.id !== channelId);
     setChannels(remaining);
 
@@ -1507,6 +1548,7 @@ export default function App() {
 
     // Clean up channel topics and threads
     const deletedThreads = threads.filter((t) => t.channelId === channelId).map((t) => t.id);
+    bumpChannelEpoch(turnEpochTrackerRef.current, channelId, deletedThreads);
     setThreads((prev) => prev.filter((t) => t.channelId !== channelId));
     setMessages((prev) => {
       const nextMsgs = { ...prev };
@@ -1527,15 +1569,14 @@ export default function App() {
         sessionWatermarksRef.current.delete(key);
       }
     });
-    void Promise.all([
-      safelyClearAcpSessions(undefined, `channel:${channelId}`, '删除频道'),
-      safelyClearAcpSessions(undefined, `topic:${channelId}`, '删除频道'),
-    ]);
-
     if (activeTopicData && activeTopicData.channelId === channelId) {
       setActiveTopicId(null);
     }
     setIsDeleteChannelModalOpen(false);
+    await Promise.all([
+      safelyClearAcpSessions(undefined, `channel:${channelId}`, '删除频道'),
+      safelyClearAcpSessions(undefined, `topic:${channelId}`, '删除频道'),
+    ]);
   };
 
   // External Memory Cartridge & Guest Alter-Ego Handlers (Non-Invasive Import)
@@ -1904,7 +1945,14 @@ export default function App() {
       return next;
     });
 
-    // 议题协作成员或模式变更后，清理该议题对应的 standing context、水位线与底层 ACP Session，确保花名册即时同步
+    // 议题协作成员或模式变更后，递增该议题的代际 Epoch、中止在途旧轮次推演，并清理 standing context、水位线与底层 ACP Session，确保花名册即时同步
+    bumpRoomEpoch(turnEpochTrackerRef.current, topicId);
+    const hasTopicActiveExec = Object.values(activeExecutionsRef.current).some(
+      (e) => e.threadId === topicId || e.topicId === topicId
+    );
+    if (hasTopicActiveExec) {
+      handleAbortAll(topicId);
+    }
     deliveredStandingContextRef.current.forEach((key) => {
       if (matchesSessionScope(key, { roomId: topicId })) {
         deliveredStandingContextRef.current.delete(key);
@@ -1916,6 +1964,7 @@ export default function App() {
       }
     });
     const targetTopicChanId = editingTopicChannel?.id || activeChannel?.id;
+    setEditingTopic(null);
     if (targetTopicChanId) {
       void safelyClearAcpSessions(
         undefined,
@@ -1923,8 +1972,6 @@ export default function App() {
         '更新议题成员'
       );
     }
-
-    setEditingTopic(null);
   };
 
   // 多智能体跨 Agent 互相 @ 与自主级联调度器 (Turn Barrier + Mention Deduplication + Watermark Delta Dispatcher)
@@ -1952,7 +1999,6 @@ export default function App() {
     } = options;
     const cascade = activeCascadesRef.current[cascadeId];
     if (!cascade || cascade.isAborted) return;
-    const turnEpoch = generationEpochRef.current;
 
     const effectiveTurnOutputs: TurnAgentOutput[] =
       turnOutputs && turnOutputs.length > 0
@@ -2218,10 +2264,12 @@ export default function App() {
 
     // 4. 并行派发本跳所有去重后的目标 Agent，并在全部完成后进入下一道 Turn Barrier
     const hopOutputs: TurnAgentOutput[] = [];
+    const cascadeTurnSnapshot = captureTurnEpoch(roomId, targetChannelId);
 
     await Promise.allSettled(
       allowedTargets.map(async (item) => {
         const { targetAgent, invokingAgents, sourceMessageIds, combinedReplies } = item;
+        const agentSnapshot = captureTurnEpoch(roomId, targetChannelId, targetAgent.id);
         const primaryInvoker = invokingAgents[0] || effectiveTurnOutputs[0].agent;
         const execKey = isTopic && topicId ? `${topicId}:${targetAgent.id}` : `${roomId}:${targetAgent.id}`;
         const sessionKey = buildAgentSessionKey({
@@ -2292,7 +2340,7 @@ export default function App() {
             return next;
           });
 
-          if (turnEpoch !== generationEpochRef.current || activeCascadesRef.current[cascadeId]?.isAborted) {
+          if (isTurnStale(agentSnapshot) || activeCascadesRef.current[cascadeId]?.isAborted) {
             console.log('[App] Dropping cascading agent reply because history was cleared or cascade aborted');
             return;
           }
@@ -2390,7 +2438,7 @@ export default function App() {
             return next;
           });
 
-          if (turnEpoch !== generationEpochRef.current || activeCascadesRef.current[cascadeId]?.isAborted) {
+          if (isTurnStale(agentSnapshot) || activeCascadesRef.current[cascadeId]?.isAborted) {
             console.log('[App] Dropping cascading agent error because history was cleared or cascade aborted');
             return;
           }
@@ -2424,7 +2472,7 @@ export default function App() {
     );
 
     // 5. 本跳同步屏障 (Turn Barrier) 汇合完成后，进入下一跳评估
-    if (turnEpoch !== generationEpochRef.current || activeCascadesRef.current[cascadeId]?.isAborted) {
+    if (isTurnStale(cascadeTurnSnapshot) || activeCascadesRef.current[cascadeId]?.isAborted) {
       setActiveCascades((prev) => {
         const next = { ...prev };
         delete next[cascadeId];
@@ -2504,9 +2552,9 @@ export default function App() {
     targetDefenseText?: string;
   }) => {
     const { topicId, nextStage, targetProposalText, targetChallengeText, targetVerificationText, targetDefenseText } = options;
-    const turnEpoch = generationEpochRef.current;
     const currentTopic = getTopicData(topicId);
     if (!currentTopic || currentTopic.status === 'resolved') return;
+    const turnSnapshot = captureTurnEpoch(topicId, currentTopic.channelId || activeChannel?.id);
 
     const handoverKey = `${topicId}:${nextStage}`;
     if (inFlightHandoverRef.current.has(handoverKey)) {
@@ -2628,9 +2676,9 @@ export default function App() {
           return next;
         });
 
-        if (turnEpoch !== generationEpochRef.current) {
+        if (isTurnStale(turnSnapshot)) {
           inFlightHandoverRef.current.delete(handoverKey);
-          console.log('[App] Dropping modular proposal reply because history was cleared');
+          console.log('[App] Dropping modular proposal reply because turn was aborted or invalidated');
           return;
         }
 
@@ -2781,7 +2829,7 @@ export default function App() {
           if (Object.keys(next).length === 0) setIsGenerating(false);
           return next;
         });
-        if (turnEpoch !== generationEpochRef.current) {
+        if (isTurnStale(turnSnapshot)) {
           inFlightHandoverRef.current.delete(handoverKey);
           return;
         }
@@ -2959,9 +3007,9 @@ export default function App() {
           return next;
         });
 
-        if (turnEpoch !== generationEpochRef.current) {
+        if (isTurnStale(turnSnapshot)) {
           inFlightHandoverRef.current.delete(handoverKey);
-          console.log('[App] Dropping modular proposal reply because history was cleared');
+          console.log('[App] Dropping modular proposal reply because turn was aborted or invalidated');
           return;
         }
 
@@ -3288,8 +3336,8 @@ export default function App() {
           return next;
         });
 
-        if (turnEpoch !== generationEpochRef.current) {
-          console.log('[App] Dropping challenge error because history was cleared');
+        if (isTurnStale(turnSnapshot)) {
+          console.log('[App] Dropping challenge error because turn was aborted or invalidated');
           return;
         }
 
@@ -3492,9 +3540,9 @@ export default function App() {
           return next;
         });
 
-        if (turnEpoch !== generationEpochRef.current) {
+        if (isTurnStale(turnSnapshot)) {
           inFlightHandoverRef.current.delete(handoverKey);
-          console.log('[App] Dropping modular proposal reply because history was cleared');
+          console.log('[App] Dropping modular proposal reply because turn was aborted or invalidated');
           return;
         }
 
@@ -3844,8 +3892,8 @@ export default function App() {
           return next;
         });
 
-        if (turnEpoch !== generationEpochRef.current) {
-          console.log('[App] Dropping verification error because history was cleared');
+        if (isTurnStale(turnSnapshot)) {
+          console.log('[App] Dropping verification error because turn was aborted or invalidated');
           return;
         }
 
@@ -4047,9 +4095,9 @@ export default function App() {
           return next;
         });
 
-        if (turnEpoch !== generationEpochRef.current) {
+        if (isTurnStale(turnSnapshot)) {
           inFlightHandoverRef.current.delete(handoverKey);
-          console.log('[App] Dropping modular proposal reply because history was cleared');
+          console.log('[App] Dropping modular proposal reply because turn was aborted or invalidated');
           return;
         }
 
@@ -4544,8 +4592,8 @@ export default function App() {
           return next;
         });
 
-        if (turnEpoch !== generationEpochRef.current) {
-          console.log('[App] Dropping defense error because history was cleared');
+        if (isTurnStale(turnSnapshot)) {
+          console.log('[App] Dropping defense error because turn was aborted or invalidated');
           return;
         }
 
@@ -4704,8 +4752,8 @@ export default function App() {
             return next;
           });
 
-          if (turnEpoch !== generationEpochRef.current) {
-            console.log('[App] Dropping arbitration reply because history was cleared');
+          if (isTurnStale(turnSnapshot)) {
+            console.log('[App] Dropping arbitration reply because turn was aborted or invalidated');
             return;
           }
 
@@ -4854,8 +4902,8 @@ export default function App() {
             if (Object.keys(next).length === 0) setIsGenerating(false);
             return next;
           });
-          if (turnEpoch !== generationEpochRef.current) {
-            console.log('[App] Dropping arbitration error because history was cleared');
+          if (isTurnStale(turnSnapshot)) {
+            console.log('[App] Dropping arbitration error because turn was aborted or invalidated');
             return;
           }
           console.error('AI Arbiter execution failed:', err);
@@ -5304,7 +5352,7 @@ export default function App() {
     }
 
     const standardTurnOutputs: TurnAgentOutput[] = [];
-    const topicTurnEpoch = generationEpochRef.current;
+    const topicTurnSnapshot = captureTurnEpoch(topicId, topicChannel?.id || activeTopicData?.channelId);
 
     const agentTurnPromises = onlineAgents.map((agent) => {
       const execKey = `${topicId}:${agent.id}`;
@@ -5439,7 +5487,7 @@ export default function App() {
         };
       });
 
-      const turnEpoch = generationEpochRef.current;
+      const turnSnapshot = captureTurnEpoch(topicId, topicChannel?.id || activeTopicData?.channelId, agent.id);
       return sendPromptToAcpAgent({
         agent,
         roomId: topicId,
@@ -5456,8 +5504,8 @@ export default function App() {
             if (Object.keys(next).length === 0) setIsGenerating(false);
             return next;
           });
-          if (turnEpoch !== generationEpochRef.current) {
-            console.log('[App] Dropping topic prompt reply because history was cleared');
+          if (isTurnStale(turnSnapshot)) {
+            console.log('[App] Dropping topic prompt reply because turn was aborted or invalidated');
             return null;
           }
 
@@ -5773,8 +5821,8 @@ export default function App() {
             return next;
           });
           syncRunningAgentsWithBackend();
-          if (turnEpoch !== generationEpochRef.current) {
-            console.log('[App] Dropping topic prompt error because history was cleared');
+          if (isTurnStale(turnSnapshot)) {
+            console.log('[App] Dropping topic prompt error because turn was aborted or invalidated');
             return null;
           }
           console.error('Failed to send topic prompt to agent:', err);
@@ -5827,7 +5875,7 @@ export default function App() {
     // 标准讨论模式：Turn Barrier 同步屏障 —— 等待首轮所有并发 Agent 全部执行完毕后，统一聚合去重 @mention 唤醒下一跳
     if (!isGameTheoretic && agentTurnPromises.length > 0) {
       Promise.allSettled(agentTurnPromises).then(() => {
-        if (topicTurnEpoch !== generationEpochRef.current) return;
+        if (isTurnStale(topicTurnSnapshot)) return;
         if (standardTurnOutputs.length > 0) {
           dispatchCascadingAgentResponse({
             cascadeId: sharedStandardCascadeId,
@@ -5852,9 +5900,9 @@ export default function App() {
     };
   }) => {
     const { topicId, executorId, decision } = options;
-    const turnEpoch = generationEpochRef.current;
     const currentTopic = getTopicData(topicId);
     if (!currentTopic) return;
+    const turnSnapshot = captureTurnEpoch(topicId, currentTopic.channelId || activeChannel?.id, executorId);
 
     const executorAgent = agentsRef.current.find((a) => a.id === executorId);
     if (!executorAgent) {
@@ -5926,11 +5974,11 @@ export default function App() {
 
       let waitLoops = 0;
       while (isBusyElsewhere() && waitLoops < 150) {
-        if (turnEpoch !== generationEpochRef.current) return;
+        if (isTurnStale(turnSnapshot)) return;
         await new Promise((r) => setTimeout(r, 800));
         waitLoops++;
       }
-      if (turnEpoch !== generationEpochRef.current) return;
+      if (isTurnStale(turnSnapshot)) return;
     }
 
     const startTimeMs = Date.now();
@@ -6074,8 +6122,8 @@ export default function App() {
         return next;
       });
 
-      if (turnEpoch !== generationEpochRef.current) {
-        console.log('[App] Dropping topic execution reply because history was cleared');
+      if (isTurnStale(turnSnapshot)) {
+        console.log('[App] Dropping topic execution reply because turn was aborted or invalidated');
         return;
       }
 
@@ -6185,8 +6233,8 @@ export default function App() {
         return next;
       });
 
-      if (turnEpoch !== generationEpochRef.current) {
-        console.log('[App] Dropping topic execution error because history was cleared');
+      if (isTurnStale(turnSnapshot)) {
+        console.log('[App] Dropping topic execution error because turn was aborted or invalidated');
         return;
       }
 
@@ -6525,6 +6573,27 @@ export default function App() {
       return next;
     });
 
+    if (threadId) {
+      const isGameTopic = getTopicData(threadId)?.discussionMode === 'game_theoretic';
+      bumpAgentExecutionEpoch(
+        turnEpochTrackerRef.current,
+        threadId,
+        agentId,
+        Boolean(isGameTopic || remainingInThread === 0)
+      );
+      if (isGameTopic || remainingInThread === 0) {
+        inFlightHandoverRef.current.forEach((key) => {
+          if (key.startsWith(`${threadId}:`)) {
+            inFlightHandoverRef.current.delete(key);
+          }
+        });
+      }
+    } else {
+      generationEpochRef.current++;
+      bumpGlobalEpoch(turnEpochTrackerRef.current);
+      inFlightHandoverRef.current.clear();
+    }
+
     if (!threadId || remainingInThread === 0) {
       setActiveCascades((prev) => {
         const next: Record<string, CollaborationCascade> = {};
@@ -6568,6 +6637,36 @@ export default function App() {
   };
 
   const handleAbortAll = (threadId?: string) => {
+    if (threadId) {
+      bumpRoomEpoch(turnEpochTrackerRef.current, threadId);
+      inFlightHandoverRef.current.forEach((key) => {
+        if (key.startsWith(`${threadId}:`)) {
+          inFlightHandoverRef.current.delete(key);
+        }
+      });
+      setMessages((prev) => {
+        const list = prev[threadId];
+        if (!list || !list.some((m) => m.isPending)) return prev;
+        return {
+          ...prev,
+          [threadId]: list.map((m) =>
+            m.isPending
+              ? {
+                  ...m,
+                  isPending: false,
+                  agentBadge: '已终止',
+                  content: (m.content || '') + '\n\n*(已由用户手动终止推演)*',
+                }
+              : m
+          ),
+        };
+      });
+    } else {
+      generationEpochRef.current++;
+      bumpGlobalEpoch(turnEpochTrackerRef.current);
+      inFlightHandoverRef.current.clear();
+    }
+
     setActiveCascades((prev) => {
       const next: Record<string, CollaborationCascade> = {};
       (Object.entries(prev) as [string, CollaborationCascade][]).forEach(([k, v]) => {
@@ -6695,6 +6794,7 @@ export default function App() {
           );
 
           // 频道自动邀请新成员入驻时，同步失效已有会话花名册缓存与底层 Session，使已有成员立即获知新成员
+          bumpChannelEpoch(turnEpochTrackerRef.current, activeChannel.id, [currentThreadId]);
           deliveredStandingContextRef.current.forEach((key) => {
             if (matchesSessionScope(key, { channelId: activeChannel.id, deletedThreadIds: [currentThreadId] })) {
               deliveredStandingContextRef.current.delete(key);
@@ -6842,7 +6942,7 @@ export default function App() {
     }));
 
     const turnOutputs: TurnAgentOutput[] = [];
-    const threadTurnEpoch = generationEpochRef.current;
+    const threadTurnSnapshot = captureTurnEpoch(currentThreadId, targetChannelId);
 
     // Hop 1 并发 Fan-out：所有在线 Agent 同时推演，并在 Turn Barrier 汇合
     const hop1Promises = onlineAgents.map((targetAgent, idx) => {
@@ -6903,7 +7003,7 @@ export default function App() {
         },
       });
 
-      const turnEpoch = generationEpochRef.current;
+      const turnSnapshot = captureTurnEpoch(currentThreadId, targetChannelId, targetAgent.id);
       return sendPromptToAcpAgent({
         agent: targetAgent,
         roomId: currentThreadId,
@@ -6920,8 +7020,8 @@ export default function App() {
             if (Object.keys(next).length === 0) setIsGenerating(false);
             return next;
           });
-          if (turnEpoch !== generationEpochRef.current) {
-            console.log('[App] Dropping thread prompt reply because history was cleared');
+          if (isTurnStale(turnSnapshot)) {
+            console.log('[App] Dropping thread prompt reply because turn was aborted or invalidated');
             return null;
           }
 
@@ -6997,8 +7097,8 @@ export default function App() {
             return next;
           });
 
-          if (turnEpoch !== generationEpochRef.current) {
-            console.log('[App] Dropping thread prompt error because history was cleared');
+          if (isTurnStale(turnSnapshot)) {
+            console.log('[App] Dropping thread prompt error because turn was aborted or invalidated');
             return null;
           }
 
@@ -7034,7 +7134,7 @@ export default function App() {
     // Turn Barrier 同步屏障：仅在非 DM (即频道多 Agent 协同) 场景下，等待首轮所有并发 Agent 全部执行完毕后统一去重触发下一跳
     if (!isDmThread && hop1Promises.length > 0) {
       Promise.allSettled(hop1Promises).then(() => {
-        if (threadTurnEpoch !== generationEpochRef.current) return;
+        if (isTurnStale(threadTurnSnapshot)) return;
         if (turnOutputs.length > 0) {
           dispatchCascadingAgentResponse({
             cascadeId,
@@ -7582,6 +7682,7 @@ export default function App() {
           messages={Object.values(messages).flat()}
           onMessagesCleared={async () => {
             generationEpochRef.current++;
+            bumpGlobalEpoch(turnEpochTrackerRef.current);
             inFlightHandoverRef.current.clear();
             stageRefineRetriesRef.current = {};
             handleAbortAll();

@@ -8,23 +8,30 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
-/// 自动定位内置的 shadow-crew-dev-mcp (兼容 shinobi-dev-mcp) 二进制路径
+/// 自动定位内置的 shadow-crew-dev-mcp (兼容 shinobi-dev-mcp) 二进制路径（始终返回绝对路径，防止 current_dir 切换后相对路径失效）
 pub fn resolve_dev_mcp_path() -> PathBuf {
     // 1. 显式环境变量 (可由宿主注入或开发覆盖)
     if let Ok(path) = std::env::var("SHADOW_CREW_DEV_MCP_PATH").or_else(|_| std::env::var("SHINOBI_DEV_MCP_PATH")) {
         let p = PathBuf::from(path.trim());
         if p.exists() {
-            return p;
+            return std::fs::canonicalize(&p).unwrap_or(p);
         }
     }
 
-    // 2. 与当前运行中的 agent 位于同一目录 (release/debug/Tauri sidecar)
+    // 2. 与当前运行中的 agent 位于同一目录或上级目录 (release/debug/deps/Tauri sidecar)
     if let Ok(current) = std::env::current_exe() {
+        let mut search_dirs = Vec::new();
         if let Some(parent) = current.parent() {
+            search_dirs.push(parent.to_path_buf());
+            if let Some(grandparent) = parent.parent() {
+                search_dirs.push(grandparent.to_path_buf());
+            }
+        }
+        for dir in search_dirs {
             for name in &["shadow-crew-dev-mcp", "shadow-crew-dev-mcp.exe", "shinobi-dev-mcp", "shinobi-dev-mcp.exe"] {
-                let candidate = parent.join(name);
+                let candidate = dir.join(name);
                 if candidate.exists() {
-                    return candidate;
+                    return std::fs::canonicalize(&candidate).unwrap_or(candidate);
                 }
             }
         }
@@ -45,7 +52,7 @@ pub fn resolve_dev_mcp_path() -> PathBuf {
     ];
     for c in candidates {
         if c.exists() {
-            return c;
+            return std::fs::canonicalize(&c).unwrap_or(c);
         }
     }
 

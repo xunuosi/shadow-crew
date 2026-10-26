@@ -13,9 +13,22 @@ import {
   buildCascadePrompt,
   buildCompositeSystemPrompt,
   MAX_DELTA_BATCH_EVENTS,
+  createTurnEpochTracker,
+  captureTurnEpochSnapshot,
+  isTurnEpochStale,
+  bumpGlobalEpoch,
+  bumpRoomEpoch,
+  bumpChannelEpoch,
+  bumpAgentExecutionEpoch,
   type RoomTranscriptEntry,
 } from './agentCollaboration';
-import { buildAgentSessionKey, matchesSessionScope } from './acpClient';
+import {
+  buildAgentSessionKey,
+  matchesSessionScope,
+  clearAcpAgentSessions,
+  waitForPendingAcpSessionClears,
+  getPendingAcpSessionClearCount,
+} from './acpClient';
 import type { Agent } from '../types';
 
 function createMockAgent(partial: {
@@ -710,10 +723,95 @@ console.log('\n6️⃣ 测试频道成员增删时已有 Session 花名册缓存
   );
 }
 
-console.log('\n===================================================================');
-console.log(`🎯 测试汇总: ${passed} passed, ${failed} failed`);
-console.log('===================================================================');
+// ---------------------------------------------------------------------------
+// 7. 手动“停止”与成员更新期间的 Epoch 取消屏障测试 (Manual Abort & Member Update Epoch Guards)
+// ---------------------------------------------------------------------------
+console.log('\n7️⃣ 测试手动“停止” (handleAbortAll/handleAbortAgent) 与成员更新期间的 Epoch 回调阻断');
+async function runEpochAndBarrierTests() {
+  const tracker = createTurnEpochTracker();
 
-if (failed > 0) {
-  process.exit(1);
+  // 7.1 博弈阶段进行中点击手动“停止” (handleAbortAll(topicId)) -> 递增 roomEpoch，阻断在途阶段回调推进 FSM
+  const gameStageSnapTopic1 = captureTurnEpochSnapshot(tracker, {
+    roomId: 'topic-game-1',
+    channelId: 'ch-1',
+  });
+  const gameStageSnapTopic2 = captureTurnEpochSnapshot(tracker, {
+    roomId: 'topic-game-2',
+    channelId: 'ch-2',
+  });
+  assert(!isTurnEpochStale(tracker, gameStageSnapTopic1), '停止前：topic-game-1 阶段快照有效');
+
+  // 用户在 topic-game-1 点击“停止”
+  bumpRoomEpoch(tracker, 'topic-game-1');
+  assert(
+    isTurnEpochStale(tracker, gameStageSnapTopic1),
+    '手动停止后：topic-game-1 在途 sendPromptToAcpAgent 返回时立即被 isTurnEpochStale 拦截，不写消息、不推进 FSM'
+  );
+  assert(
+    !isTurnEpochStale(tracker, gameStageSnapTopic2),
+    '精准隔离：停止 topic-game-1 不影响其他议题 topic-game-2 的正常推演'
+  );
+
+  // 7.2 单个 Agent 停止 (handleAbortAgent) 在多 Agent 并发及博弈议题下的精确拦截
+  const snapAgentA = captureTurnEpochSnapshot(tracker, {
+    roomId: 'thread-ch-1',
+    channelId: 'ch-1',
+    agentId: mockAgentA.id,
+  });
+  const snapAgentB = captureTurnEpochSnapshot(tracker, {
+    roomId: 'thread-ch-1',
+    channelId: 'ch-1',
+    agentId: mockAgentB.id,
+  });
+  bumpAgentExecutionEpoch(tracker, 'thread-ch-1', mockAgentA.id, false);
+  assert(
+    isTurnEpochStale(tracker, snapAgentA) && !isTurnEpochStale(tracker, snapAgentB),
+    '单 Agent 停止（同线程仍有队友在跑）：仅拦截被停止的 Agent A 回调，队友 Agent B 正常完成'
+  );
+
+  // 7.3 频道成员变更在途拦截 + Session 删除屏障 (bumpChannelEpoch + waitForPendingAcpSessionClears)
+  const inFlightChannelSnap = captureTurnEpochSnapshot(tracker, {
+    roomId: 'thread-ch-1',
+    channelId: 'ch-1',
+    agentId: mockAgentB.id,
+  });
+  const inFlightTopicInCh1Snap = captureTurnEpochSnapshot(tracker, {
+    roomId: 'topic-in-ch-1',
+    channelId: 'ch-1',
+  });
+  bumpChannelEpoch(tracker, 'ch-1', ['thread-ch-1', 'topic-in-ch-1']);
+  assert(
+    isTurnEpochStale(tracker, inFlightChannelSnap) && isTurnEpochStale(tracker, inFlightTopicInCh1Snap),
+    '频道成员更新后：该频道主线程与下属 Topic 的在途旧轮次回调全部失效，防止将旧花名册上下文写回'
+  );
+
+  // 验证 clearAcpAgentSessions 与 waitForPendingAcpSessionClears 同步屏障
+  const clearPromise = clearAcpAgentSessions(undefined, 'channel:ch-1');
+  await waitForPendingAcpSessionClears();
+  await clearPromise;
+  assert(
+    getPendingAcpSessionClearCount() === 0,
+    'Session 清理屏障：waitForPendingAcpSessionClears 确保所有在途 Session 删除完成后才放行新请求'
+  );
+
+  // 7.4 全局清空历史 (bumpGlobalEpoch) 使所有房间与频道快照统一失效
+  const snapAfter = captureTurnEpochSnapshot(tracker, {
+    roomId: 'topic-game-2',
+    channelId: 'ch-2',
+  });
+  bumpGlobalEpoch(tracker);
+  assert(
+    isTurnEpochStale(tracker, snapAfter),
+    '全局清空或全局终止 (bumpGlobalEpoch) 后，所有在途快照一律失效'
+  );
 }
+
+runEpochAndBarrierTests().then(() => {
+  console.log('\n===================================================================');
+  console.log(`🎯 测试汇总: ${passed} passed, ${failed} failed`);
+  console.log('===================================================================');
+
+  if (failed > 0) {
+    process.exit(1);
+  }
+});

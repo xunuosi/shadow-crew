@@ -868,6 +868,10 @@ export async function sendPromptToAcpAgent(
   const startTime = Date.now();
   const { agent, roomId, prompt } = options;
 
+  // 0.0 等待任何在途的 ACP Session 清理任务（如频道成员变更、议题成员变更、Agent 重置）彻底完成，
+  // 杜绝新消息在旧 ACP Session 尚未删除完毕前抢跑复用旧 Session 与旧花名册
+  await waitForPendingAcpSessionClears();
+
   // 0. 统一解析并注入 Agent 自身专属专精人设与行为硬性约束
   const personaPrompt = buildAgentPersonaPrompt(agent);
   const resolvedSystemPrompt = options.systemPrompt
@@ -1396,29 +1400,55 @@ export async function applyTopicPatchToWorkspace(
 }
 
 /**
+ * 追踪当前正在执行中的 ACP Session 清理 Promise 集合，
+ * 确保后续 sendPromptToAcpAgent 严格等待前序清理完成后再派发
+ */
+const pendingSessionClearPromises = new Set<Promise<void>>();
+
+export async function waitForPendingAcpSessionClears(): Promise<void> {
+  while (pendingSessionClearPromises.size > 0) {
+    await Promise.allSettled(Array.from(pendingSessionClearPromises));
+  }
+}
+
+export function getPendingAcpSessionClearCount(): number {
+  return pendingSessionClearPromises.size;
+}
+
+/**
  * 清除指定 Agent 或全量 Agent 在底座与直连大模型运行时的会话缓存
  * 保持前后端水位线、历史消息与底层 ACP 进程 session_id 彻底同步重置
  */
 export async function clearAcpAgentSessions(agentId?: string, sessionKeyPrefix?: string): Promise<void> {
-  clearLlmSessionHistory(agentId || sessionKeyPrefix);
+  const runClear = async () => {
+    clearLlmSessionHistory(agentId || sessionKeyPrefix);
 
-  const tauriInvoke =
-    typeof window !== 'undefined'
-      ? (window as any).__TAURI_INTERNALS__?.invoke ||
-        (window as any).__TAURI__?.core?.invoke
-      : null;
+    const tauriInvoke =
+      typeof window !== 'undefined'
+        ? (window as any).__TAURI_INTERNALS__?.invoke ||
+          (window as any).__TAURI__?.core?.invoke
+        : null;
 
-  if (tauriInvoke) {
-    try {
-      await tauriInvoke('clear_agent_sessions', {
-        agentId: agentId || null,
-        sessionKeyPrefix: sessionKeyPrefix || null,
-      });
-      console.log(`[ACP Client] Cleared ACP process session_ids (agentId: ${agentId}, prefix: ${sessionKeyPrefix})`);
-    } catch (e) {
-      console.warn('[ACP Client] Failed to invoke clear_agent_sessions in Tauri:', e);
-      throw e;
+    if (tauriInvoke) {
+      try {
+        await tauriInvoke('clear_agent_sessions', {
+          agentId: agentId || null,
+          sessionKeyPrefix: sessionKeyPrefix || null,
+        });
+        console.log(`[ACP Client] Cleared ACP process session_ids (agentId: ${agentId}, prefix: ${sessionKeyPrefix})`);
+      } catch (e) {
+        console.warn('[ACP Client] Failed to invoke clear_agent_sessions in Tauri:', e);
+        throw e;
+      }
     }
+  };
+
+  const trackedPromise = runClear();
+  pendingSessionClearPromises.add(trackedPromise);
+  try {
+    await trackedPromise;
+  } finally {
+    pendingSessionClearPromises.delete(trackedPromise);
   }
 }
 

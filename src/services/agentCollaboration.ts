@@ -1700,6 +1700,123 @@ export function extractOrCompileMinorityReport(options: {
   });
 }
 
+/**
+ * ---------------------------------------------------------------------------
+ * 异步推演代际与停止信号守卫 (Turn Epoch & Abort Guard)
+ * 覆盖全局清空历史、单房间/议题手动“停止”、单 Agent 终止以及频道成员变更时的旧轮次失效
+ * ---------------------------------------------------------------------------
+ */
+export interface TurnEpochTracker {
+  globalEpoch: number;
+  roomEpochs: Map<string, number>;
+  channelEpochs: Map<string, number>;
+  agentExecutionEpochs: Map<string, number>;
+}
+
+export interface TurnEpochSnapshot {
+  globalEpoch: number;
+  roomId: string;
+  roomEpoch: number;
+  channelId?: string;
+  channelEpoch: number;
+  agentId?: string;
+  agentExecEpoch: number;
+}
+
+export function createTurnEpochTracker(): TurnEpochTracker {
+  return {
+    globalEpoch: 0,
+    roomEpochs: new Map<string, number>(),
+    channelEpochs: new Map<string, number>(),
+    agentExecutionEpochs: new Map<string, number>(),
+  };
+}
+
+export function captureTurnEpochSnapshot(
+  tracker: TurnEpochTracker,
+  options: {
+    roomId: string;
+    channelId?: string;
+    agentId?: string;
+  }
+): TurnEpochSnapshot {
+  const { roomId, channelId, agentId } = options;
+  const execKey = agentId ? `${roomId}:${agentId}` : '';
+  return {
+    globalEpoch: tracker.globalEpoch,
+    roomId,
+    roomEpoch: tracker.roomEpochs.get(roomId) || 0,
+    channelId,
+    channelEpoch: channelId ? tracker.channelEpochs.get(channelId) || 0 : 0,
+    agentId,
+    agentExecEpoch: execKey ? tracker.agentExecutionEpochs.get(execKey) || 0 : 0,
+  };
+}
+
+export function isTurnEpochStale(
+  tracker: TurnEpochTracker,
+  snapshot: TurnEpochSnapshot
+): boolean {
+  if (snapshot.globalEpoch !== tracker.globalEpoch) {
+    return true;
+  }
+  if ((tracker.roomEpochs.get(snapshot.roomId) || 0) !== snapshot.roomEpoch) {
+    return true;
+  }
+  if (
+    snapshot.channelId &&
+    (tracker.channelEpochs.get(snapshot.channelId) || 0) !== snapshot.channelEpoch
+  ) {
+    return true;
+  }
+  if (snapshot.agentId) {
+    const execKey = `${snapshot.roomId}:${snapshot.agentId}`;
+    if ((tracker.agentExecutionEpochs.get(execKey) || 0) !== snapshot.agentExecEpoch) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function bumpGlobalEpoch(tracker: TurnEpochTracker): number {
+  tracker.globalEpoch += 1;
+  return tracker.globalEpoch;
+}
+
+export function bumpRoomEpoch(tracker: TurnEpochTracker, roomId: string): number {
+  const next = (tracker.roomEpochs.get(roomId) || 0) + 1;
+  tracker.roomEpochs.set(roomId, next);
+  return next;
+}
+
+export function bumpChannelEpoch(
+  tracker: TurnEpochTracker,
+  channelId: string,
+  relatedRoomIds: string[] = []
+): number {
+  const next = (tracker.channelEpochs.get(channelId) || 0) + 1;
+  tracker.channelEpochs.set(channelId, next);
+  for (const roomId of relatedRoomIds) {
+    bumpRoomEpoch(tracker, roomId);
+  }
+  return next;
+}
+
+export function bumpAgentExecutionEpoch(
+  tracker: TurnEpochTracker,
+  roomId: string,
+  agentId: string,
+  alsoBumpRoom = false
+): number {
+  const execKey = `${roomId}:${agentId}`;
+  const next = (tracker.agentExecutionEpochs.get(execKey) || 0) + 1;
+  tracker.agentExecutionEpochs.set(execKey, next);
+  if (alsoBumpRoom) {
+    bumpRoomEpoch(tracker, roomId);
+  }
+  return next;
+}
+
 // 统一重导出 CognoNexus 服务
 export {
   solveDeterministicBwm,

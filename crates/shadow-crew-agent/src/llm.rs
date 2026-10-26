@@ -141,10 +141,14 @@ where
     // 默认走 OpenAI 兼容协议 (DeepSeek, 智谱, SiliconFlow, Ollama, 官方 OpenAI, 企业私有 AI 网关等)
     let url = chat_completions_url(&config.base_url);
 
-    // 1. 获取可用 MCP 工具
+    // 1. 获取可用 MCP 工具（仅当 MCP 子进程存活时挂载）
     let openai_tools: Vec<Value> = if let Some(ref mcp) = mcp_client {
-        let locked = mcp.lock().await;
-        locked.to_openai_tools()
+        let mut locked = mcp.lock().await;
+        if locked.is_alive() {
+            locked.to_openai_tools()
+        } else {
+            Vec::new()
+        }
     } else {
         Vec::new()
     };
@@ -281,8 +285,12 @@ where
     let mut tool_traces = Vec::new();
 
     let anthropic_tools: Vec<Value> = if let Some(ref mcp) = mcp_client {
-        let locked = mcp.lock().await;
-        locked.to_anthropic_tools()
+        let mut locked = mcp.lock().await;
+        if locked.is_alive() {
+            locked.to_anthropic_tools()
+        } else {
+            Vec::new()
+        }
     } else {
         Vec::new()
     };

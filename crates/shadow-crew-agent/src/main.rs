@@ -36,6 +36,8 @@ pub struct McpClientPool {
     entries: HashMap<String, PooledMcpEntry>,
     seq: u64,
     max_size: usize,
+    #[cfg(test)]
+    force_fail_spawn: bool,
 }
 
 impl McpClientPool {
@@ -44,11 +46,31 @@ impl McpClientPool {
             entries: HashMap::new(),
             seq: 0,
             max_size: max_size.max(1),
+            #[cfg(test)]
+            force_fail_spawn: false,
         }
     }
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn contains_alive(&mut self, pool_key: &str) -> bool {
+        if let Some(existing) = self.entries.get_mut(pool_key) {
+            let alive = match existing.client.try_lock() {
+                Ok(mut guard) => guard.is_alive(),
+                Err(_) => true,
+            };
+            if alive {
+                return true;
+            }
+            if let Some(dead) = self.entries.remove(pool_key) {
+                if let Ok(mut guard) = dead.client.try_lock() {
+                    guard.terminate();
+                }
+            }
+        }
+        false
     }
 
     /// 按 (mcp_key, canonical_workspace_dir) 受控获取或启动 MCP 客户端
@@ -71,7 +93,11 @@ impl McpClientPool {
                 existing.last_used_seq = now_seq;
                 return Some(existing.client.clone());
             } else {
-                self.entries.remove(pool_key);
+                if let Some(dead) = self.entries.remove(pool_key) {
+                    if let Ok(mut guard) = dead.client.try_lock() {
+                        guard.terminate();
+                    }
+                }
             }
         }
 
@@ -92,6 +118,12 @@ impl McpClientPool {
             } else {
                 break;
             }
+        }
+
+        #[cfg(test)]
+        if self.force_fail_spawn {
+            eprintln!("[Shinobi Agent] 测试强制模拟 MCP 重连失败 (降级为纯文本推演)");
+            return None;
         }
 
         match mcp_client::NativeMcpClient::spawn_and_connect(workdir, channel_id).await {
@@ -121,7 +153,7 @@ impl McpClientPool {
             }
             Err(e) => {
                 eprintln!(
-                    "[Shinobi Agent] 挂载内置原生 MCP 工具失败 (当前会话降级为纯文本推演，绝不串用其他工作区 MCP): {:#}",
+                    "[Shinobi Agent] 挂载内置原生 MCP 工具失败 (当前会话降级为纯文本推演，绝不串用其他工作区或已终止的 MCP): {:#}",
                     e
                 );
                 None
@@ -135,6 +167,18 @@ impl McpClientPool {
             if let Ok(mut guard) = removed.client.try_lock() {
                 guard.terminate();
             }
+        }
+    }
+}
+
+/// 同步清理所有已被池淘汰或已终止的 Session MCP 引用，防止悬空持有已终止的客户端
+fn prune_dead_session_mcp_refs(
+    active_sessions: &mut HashMap<String, SessionState>,
+    mcp_pool: &mut McpClientPool,
+) {
+    for st in active_sessions.values_mut() {
+        if !mcp_pool.contains_alive(&st.mcp_pool_key) {
+            st.mcp_client = None;
         }
     }
 }
@@ -157,24 +201,40 @@ pub fn normalize_path(path: &std::path::Path) -> PathBuf {
     out
 }
 
-/// 清洗频道 ID 或 Agent ID，剔除任何路径分隔符或 .. 片段，防止构造目录时路径逃逸
-pub fn sanitize_workspace_segment(raw: &str, default_val: &str) -> String {
-    let filtered: String = raw
-        .trim()
-        .chars()
-        .filter(|c| *c != '/' && *c != '\\' && *c != '\0')
-        .collect();
-    let trimmed = filtered.trim_matches('.');
+/// 严格校验工作区单段标识符（Channel ID / Agent ID）：
+/// 严禁静默剥离 `/` 或 `\` 导致 `"a/b"` 与 `"ab"` 发生目录别名碰撞，非法 ID 直接返回 Err 拒绝。
+pub fn validate_workspace_segment(raw: &str) -> std::result::Result<String, String> {
+    let trimmed = raw.trim();
     if trimmed.is_empty() {
-        default_val.to_string()
-    } else {
-        trimmed.to_string()
+        return Err("workspace segment cannot be empty".to_string());
     }
+    if trimmed == "."
+        || trimmed == ".."
+        || trimmed.starts_with('.')
+        || trimmed.ends_with('.')
+        || trimmed.contains("..")
+    {
+        return Err(format!(
+            "invalid workspace segment '{}': relative dot segments are forbidden",
+            raw
+        ));
+    }
+    if trimmed
+        .chars()
+        .any(|c| c == '/' || c == '\\' || c == '\0' || c.is_control())
+    {
+        return Err(format!(
+            "invalid workspace segment '{}': path separators and control characters are forbidden",
+            raw
+        ));
+    }
+    Ok(trimmed.to_string())
 }
 
 /// 严格校验并解析目标工作区路径（词法规范化 + 符号链接穿透 canonicalize 真实路径校验）
 /// 1. 必须在创建任何目录前校验已有祖先路径，防止通过指向沙箱外的 symlink 在外部创建目录
-/// 2. 穿透解析全部已存在祖先的符号链接，确保最终真实物理路径严格位于规范化的 shadow_crew_home 之下
+/// 2. 禁止目标工作区目录本身或其沙箱内父级容器为 symlink
+/// 3. 穿透解析全部已存在祖先的符号链接，确保最终真实物理路径严格位于规范化的 shadow_crew_home 之下
 pub fn validate_and_resolve_workspace_dir(
     candidate: &std::path::Path,
     shadow_crew_home: &std::path::Path,
@@ -189,12 +249,14 @@ pub fn validate_and_resolve_workspace_dir(
         return None;
     }
 
-    // 若目标本身是悬空符号链接 (dangling symlink)，直接拒绝
-    if std::fs::symlink_metadata(&norm_candidate).is_ok() && !norm_candidate.exists() {
-        return None;
+    // 目标工作区目录本身绝不允许是符号链接（无论是有效还是悬空 symlink）
+    if let Ok(meta) = std::fs::symlink_metadata(&norm_candidate) {
+        if meta.file_type().is_symlink() {
+            return None;
+        }
     }
 
-    // 检查从候选路径向上到沙箱根之间的每一级已存在组件是否包含逃逸沙箱的符号链接
+    // 检查从候选路径向上到沙箱根之间的每一级已存在组件是否包含符号链接
     for ancestor in norm_candidate.ancestors() {
         if ancestor == norm_home || ancestor == canonical_home {
             break;
@@ -244,8 +306,20 @@ pub fn validate_and_resolve_workspace_dir(
         return None;
     }
 
+    if let Ok(meta) = std::fs::symlink_metadata(&resolved) {
+        if meta.file_type().is_symlink() {
+            return None;
+        }
+    }
+
     // 通过符号链接与真实路径前置校验后，安全创建目录并二次验证 canonicalize 结果
     if std::fs::create_dir_all(&resolved).is_err() {
+        return None;
+    }
+    if std::fs::symlink_metadata(&resolved)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(true)
+    {
         return None;
     }
     let final_canonical = std::fs::canonicalize(&resolved).ok()?;
@@ -254,6 +328,50 @@ pub fn validate_and_resolve_workspace_dir(
     } else {
         None
     }
+}
+
+/// 安全解析并创建兜底沙箱目录（例如 channels/chan-safe-default 或 agents/agent-safe-default）：
+/// 若兜底路径或其父目录被预先植入了 symlink，先主动拔除恶意 symlink 并强制通过 validate_and_resolve_workspace_dir 校验，
+/// 彻底封堵 fallback 路径跟随 symlink 越界到沙箱外的风险。
+pub fn resolve_safe_fallback_dir(
+    home: &std::path::Path,
+    category: &str,
+    default_name: &str,
+) -> PathBuf {
+    let _ = std::fs::create_dir_all(home);
+    let canonical_home = std::fs::canonicalize(home).unwrap_or_else(|_| normalize_path(home));
+    let cat_dir = canonical_home.join(category);
+    if std::fs::symlink_metadata(&cat_dir)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(&cat_dir);
+        let _ = std::fs::remove_dir(&cat_dir);
+    }
+    let _ = std::fs::create_dir_all(&cat_dir);
+
+    let fallback = cat_dir.join(default_name);
+    if std::fs::symlink_metadata(&fallback)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(&fallback);
+        let _ = std::fs::remove_dir(&fallback);
+    }
+
+    if let Some(verified) = validate_and_resolve_workspace_dir(&fallback, &canonical_home) {
+        return verified;
+    }
+
+    let isolated = cat_dir.join(format!("{}-isolated-{}", default_name, std::process::id()));
+    if std::fs::symlink_metadata(&isolated)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(&isolated);
+        let _ = std::fs::remove_dir(&isolated);
+    }
+    validate_and_resolve_workspace_dir(&isolated, &canonical_home).unwrap_or(canonical_home)
 }
 
 /// 解析用户级全局 Shadow Crew 根目录 (~/.shadow-crew)
@@ -279,33 +397,43 @@ fn get_shadow_crew_home_dir() -> std::path::PathBuf {
 }
 
 /// 解析并创建指定频道的独立私有工作区 (~/.shadow-crew/channels/<channel_id>)
-fn get_channel_dir(channel_id: &str) -> std::path::PathBuf {
-    let home = get_shadow_crew_home_dir();
-    let clean_id = sanitize_workspace_segment(channel_id, "chan-default");
-    let candidate = home.join("channels").join(&clean_id);
-    let safe_dir = validate_and_resolve_workspace_dir(&candidate, &home).unwrap_or_else(|| {
-        let fallback = home.join("channels").join("chan-safe-default");
-        let _ = std::fs::create_dir_all(&fallback);
-        std::fs::canonicalize(&fallback).unwrap_or(fallback)
-    });
+pub fn get_channel_dir_with_home(channel_id: &str, home: &std::path::Path) -> std::path::PathBuf {
+    let safe_dir = match validate_workspace_segment(channel_id) {
+        Ok(valid_id) => {
+            let candidate = home.join("channels").join(&valid_id);
+            validate_and_resolve_workspace_dir(&candidate, home)
+                .unwrap_or_else(|| resolve_safe_fallback_dir(home, "channels", "chan-safe-default"))
+        }
+        Err(_) => resolve_safe_fallback_dir(home, "channels", "chan-safe-default"),
+    };
     let _ = std::fs::create_dir_all(safe_dir.join("artifacts"));
     let _ = std::fs::create_dir_all(safe_dir.join("scratch"));
     safe_dir
 }
 
-/// 解析并创建指定 Agent 的独立私有工作区 (~/.shadow-crew/agents/<agent_id>)
-fn get_agent_dir(agent_id: &str) -> std::path::PathBuf {
+fn get_channel_dir(channel_id: &str) -> std::path::PathBuf {
     let home = get_shadow_crew_home_dir();
-    let clean_id = sanitize_workspace_segment(agent_id, "agent-default");
-    let candidate = home.join("agents").join(&clean_id);
-    let safe_dir = validate_and_resolve_workspace_dir(&candidate, &home).unwrap_or_else(|| {
-        let fallback = home.join("agents").join("agent-safe-default");
-        let _ = std::fs::create_dir_all(&fallback);
-        std::fs::canonicalize(&fallback).unwrap_or(fallback)
-    });
+    get_channel_dir_with_home(channel_id, &home)
+}
+
+/// 解析并创建指定 Agent 的独立私有工作区 (~/.shadow-crew/agents/<agent_id>)
+pub fn get_agent_dir_with_home(agent_id: &str, home: &std::path::Path) -> std::path::PathBuf {
+    let safe_dir = match validate_workspace_segment(agent_id) {
+        Ok(valid_id) => {
+            let candidate = home.join("agents").join(&valid_id);
+            validate_and_resolve_workspace_dir(&candidate, home)
+                .unwrap_or_else(|| resolve_safe_fallback_dir(home, "agents", "agent-safe-default"))
+        }
+        Err(_) => resolve_safe_fallback_dir(home, "agents", "agent-safe-default"),
+    };
     let _ = std::fs::create_dir_all(safe_dir.join("artifacts"));
     let _ = std::fs::create_dir_all(safe_dir.join("scratch"));
     safe_dir
+}
+
+fn get_agent_dir(agent_id: &str) -> std::path::PathBuf {
+    let home = get_shadow_crew_home_dir();
+    get_agent_dir_with_home(agent_id, &home)
 }
 
 #[tokio::main]
@@ -383,14 +511,58 @@ async fn main() -> Result<()> {
                 }
             } else if method == "session/new" {
                 let session_key = params.get("sessionKey").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let cid = params.get("channelId").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_string());
-                let session_channel_id = cid.unwrap_or_else(|| "chan-default".to_string());
+                let raw_cid = params.get("channelId").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+                let session_channel_id = match raw_cid {
+                    Some(c) => match validate_workspace_segment(c) {
+                        Ok(valid) => valid,
+                        Err(err_msg) => {
+                            let err_resp = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {
+                                    "code": -32602,
+                                    "message": format!("Invalid params (channelId): {}", err_msg)
+                                }
+                            });
+                            if let Ok(mut out) = stdout_shared.lock() {
+                                writeln!(out, "{}", err_resp.to_string())?;
+                                out.flush()?;
+                            }
+                            continue;
+                        }
+                    },
+                    None => "chan-default".to_string(),
+                };
 
-                let env_agent_id = std::env::var("SHADOW_CREW_AGENT_ID").ok();
-                let maybe_agent_id = params
+                let env_agent_id = std::env::var("SHADOW_CREW_AGENT_ID")
+                    .ok()
+                    .and_then(|s| validate_workspace_segment(&s).ok());
+                let raw_param_agent_id = params
                     .get("agentId")
                     .and_then(|v| v.as_str())
-                    .or(env_agent_id.as_deref());
+                    .filter(|s| !s.trim().is_empty());
+                let validated_param_agent_id = match raw_param_agent_id {
+                    Some(a) => match validate_workspace_segment(a) {
+                        Ok(valid) => Some(valid),
+                        Err(err_msg) => {
+                            let err_resp = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {
+                                    "code": -32602,
+                                    "message": format!("Invalid params (agentId): {}", err_msg)
+                                }
+                            });
+                            if let Ok(mut out) = stdout_shared.lock() {
+                                writeln!(out, "{}", err_resp.to_string())?;
+                                out.flush()?;
+                            }
+                            continue;
+                        }
+                    },
+                    None => None,
+                };
+                let maybe_agent_id = validated_param_agent_id.as_deref().or(env_agent_id.as_deref());
 
                 let is_dm = maybe_agent_id.is_some()
                     || session_channel_id.starts_with("dm-")
@@ -470,6 +642,7 @@ async fn main() -> Result<()> {
                 let session_mcp = mcp_pool
                     .get_or_spawn(&mcp_pool_key, &mcp_key, Some(&channel_cwd_str), chan_param)
                     .await;
+                prune_dead_session_mcp_refs(&mut active_sessions, &mut mcp_pool);
 
                 let effective_key = session_key.unwrap_or_else(|| {
                     if is_dm {
@@ -617,7 +790,9 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                // 严格工作区物理隔离 + 池化存活自愈：若原 MCP 客户端因池满 LRU 被回收，按原工作区受控重连
+                // 严格工作区物理隔离 + 池化存活自愈：
+                // 若原 MCP 客户端因池满 LRU 被回收并终止，按原工作区受控重连；
+                // 若重连失败，直接降级为 None（纯文本推演），绝不回退到已终止的旧 session_state.mcp_client！
                 let is_dm_session = session_state.session_key.starts_with("dm:") || session_state.channel_id.starts_with("dm-");
                 let chan_param_for_prompt = if is_dm_session { None } else { Some(session_state.channel_id.as_str()) };
                 let current_mcp_client = mcp_pool
@@ -627,8 +802,7 @@ async fn main() -> Result<()> {
                         Some(&current_workspace_cwd),
                         chan_param_for_prompt,
                     )
-                    .await
-                    .or_else(|| session_state.mcp_client.clone());
+                    .await;
                 session_state.mcp_client = current_mcp_client.clone();
                 
                 // 1. 从私有记忆库召回关键知识 (全局核心认知 + 本地私有知识)
@@ -651,6 +825,9 @@ async fn main() -> Result<()> {
 
                 // 2. 以人设 + 召回记忆为上下文，调用底座模型进行真实推演与 MCP 工具执行
                 let active_sp = session_state.system_prompt.clone();
+                let session_key_owned = session_state.session_key.clone();
+                let channel_id_owned = session_state.channel_id.clone();
+                prune_dead_session_mcp_refs(&mut active_sessions, &mut mcp_pool);
                 let mut system_prompt = active_sp.unwrap_or_else(|| {
                     "你是 Shinobi，用户的 AI 影替身，代表主人参与技术架构推演与代码审查。请给出专业、严谨、可落地的回答。".to_string()
                 });
@@ -667,7 +844,7 @@ async fn main() -> Result<()> {
                     if is_dm_session {
                         system_prompt.push_str(&format!(
                             "\n\n[当前 Agent 个人专属独立工作空间环境]:\n- Session Key: {}\n- Agent 独立工作区根目录 (Working Directory / cwd): {}\n- 专属落地产物目录 (Artifacts): {}\n- 专属临时调试目录 (Scratch): {}\n提示: 您当前处于与用户的 1-on-1 私聊中，沉淀的正式技术推演文档、方案或代码 Patch 将安全保存至您个人的专属产物目录中，与频道(channels)业务及其他 Agent 物理隔离。\n",
-                            session_state.session_key,
+                            session_key_owned,
                             current_workspace_cwd,
                             artifacts_dir,
                             scratch_dir
@@ -675,7 +852,7 @@ async fn main() -> Result<()> {
                     } else {
                         system_prompt.push_str(&format!(
                             "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}\n- 临时调试目录 (Scratch): {}\n提示: 如需沉淀正式技术推演文档、ADR 架构决策或代码 Patch，请优先调用 `write_channel_artifact` 工具安全保存至频道专属产物目录。\n",
-                            session_state.channel_id,
+                            channel_id_owned,
                             current_workspace_cwd,
                             artifacts_dir,
                             scratch_dir
@@ -870,6 +1047,125 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_base);
     }
 
+    #[test]
+    fn test_workspace_segment_validation_prevents_collision() {
+        // 合法 ID 通过校验
+        assert_eq!(
+            validate_workspace_segment("ab").expect("合法段 ab 应通过校验"),
+            "ab"
+        );
+        assert_eq!(
+            validate_workspace_segment("chan-alpha_01").expect("合法段应通过校验"),
+            "chan-alpha_01"
+        );
+
+        // 包含路径分隔符、相对点号或空字符串的非法 ID 必须直接报错，严禁被清洗为 "ab" 产生别名碰撞
+        assert!(
+            validate_workspace_segment("a/b").is_err(),
+            "包含 '/' 的非法 ID 必须被拒绝，严禁静默拼接为 'ab'"
+        );
+        assert!(
+            validate_workspace_segment("a\\b").is_err(),
+            "包含 '\\' 的非法 ID 必须被拒绝"
+        );
+        assert!(
+            validate_workspace_segment("../ab").is_err(),
+            "包含 '..' 的非法 ID 必须被拒绝"
+        );
+        assert!(
+            validate_workspace_segment(".ab").is_err(),
+            "以 '.' 开头的 ID 必须被拒绝"
+        );
+        assert!(
+            validate_workspace_segment("").is_err(),
+            "空 ID 必须被拒绝"
+        );
+
+        // 验证 get_channel_dir_with_home("a/b") 与 get_channel_dir_with_home("ab") 绝不会落入同一工作区目录
+        let temp_base = std::env::temp_dir().join(format!(
+            "shadow_crew_collision_test_{}",
+            std::process::id()
+        ));
+        let sandbox_home = temp_base.join(".shadow-crew");
+        let _ = std::fs::remove_dir_all(&temp_base);
+
+        let dir_ab = get_channel_dir_with_home("ab", &sandbox_home);
+        let dir_a_slash_b = get_channel_dir_with_home("a/b", &sandbox_home);
+        assert_ne!(
+            dir_ab, dir_a_slash_b,
+            "\"a/b\" 与 \"ab\" 绝不能碰撞到同一个频道工作区目录"
+        );
+        assert!(dir_ab.ends_with("channels/ab"));
+        assert!(dir_a_slash_b.ends_with("channels/chan-safe-default"));
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn test_fallback_workspace_dir_blocks_symlink_escape() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "shadow_crew_fallback_symlink_test_{}",
+            std::process::id()
+        ));
+        let sandbox_home = temp_base.join(".shadow-crew");
+        let outside_chan_dir = temp_base.join("outside_chan_target");
+        let outside_agent_dir = temp_base.join("outside_agent_target");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(sandbox_home.join("channels")).unwrap();
+        std::fs::create_dir_all(sandbox_home.join("agents")).unwrap();
+        std::fs::create_dir_all(&outside_chan_dir).unwrap();
+        std::fs::create_dir_all(&outside_agent_dir).unwrap();
+
+        #[cfg(unix)]
+        {
+            // 预先将 fallback 目标 chan-safe-default 和 agent-safe-default 替换为指向沙箱外的 symlink
+            let chan_fallback_link = sandbox_home.join("channels/chan-safe-default");
+            let agent_fallback_link = sandbox_home.join("agents/agent-safe-default");
+            std::os::unix::fs::symlink(&outside_chan_dir, &chan_fallback_link).unwrap();
+            std::os::unix::fs::symlink(&outside_agent_dir, &agent_fallback_link).unwrap();
+
+            // 传入非法路径触发 fallback
+            let resolved_chan = get_channel_dir_with_home("../escape", &sandbox_home);
+            let resolved_agent = get_agent_dir_with_home("../escape", &sandbox_home);
+
+            let canonical_home = std::fs::canonicalize(&sandbox_home).unwrap();
+            assert!(
+                resolved_chan.starts_with(&canonical_home),
+                "Channel fallback 真实物理路径必须严格位于沙箱内: {:?}",
+                resolved_chan
+            );
+            assert!(
+                resolved_agent.starts_with(&canonical_home),
+                "Agent fallback 真实物理路径必须严格位于沙箱内: {:?}",
+                resolved_agent
+            );
+            assert!(
+                !std::fs::symlink_metadata(&chan_fallback_link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "chan-safe-default 的恶意 symlink 必须被清除并重建为真实目录"
+            );
+            assert!(
+                !std::fs::symlink_metadata(&agent_fallback_link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "agent-safe-default 的恶意 symlink 必须被清除并重建为真实目录"
+            );
+            assert!(
+                !outside_chan_dir.join("artifacts").exists(),
+                "严禁跟随 chan-safe-default 符号链接在沙箱外创建 artifacts 目录"
+            );
+            assert!(
+                !outside_agent_dir.join("artifacts").exists(),
+                "严禁跟随 agent-safe-default 符号链接在沙箱外创建 artifacts 目录"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
     #[tokio::test]
     async fn test_mcp_client_pool_reuse_and_bounded_eviction() {
         let mut pool = McpClientPool::new(2);
@@ -885,24 +1181,112 @@ mod tests {
         let d2_str = dir2.to_string_lossy().to_string();
         let d3_str = dir3.to_string_lossy().to_string();
 
-        let c1_first = pool.get_or_spawn("chan-1::d1", "chan-1", Some(&d1_str), Some("chan-1")).await;
-        if let Some(c1_a) = c1_first {
-            // 同频道/同工作区的第二个 Topic 会话复用同一个 SharedMcpClient Arc 实例
-            let c1_b = pool.get_or_spawn("chan-1::d1", "chan-1", Some(&d1_str), Some("chan-1")).await.unwrap();
-            assert!(Arc::ptr_eq(&c1_a, &c1_b), "同一频道与工作区的多个 Session 必须复用同一 MCP 客户端实例");
-            assert_eq!(pool.len(), 1, "复用后池大小保持为 1");
+        let c1_a = pool
+            .get_or_spawn("chan-1::d1", "chan-1", Some(&d1_str), Some("chan-1"))
+            .await
+            .expect("测试环境下必须成功拉起内置 MCP 客户端 (shadow-crew-dev-mcp)");
 
-            let _c2 = pool.get_or_spawn("chan-2::d2", "chan-2", Some(&d2_str), Some("chan-2")).await.unwrap();
-            assert_eq!(pool.len(), 2, "新增不同频道后池大小为 2");
+        // 同频道/同工作区的第二个 Topic 会话复用同一个 SharedMcpClient Arc 实例
+        let c1_b = pool
+            .get_or_spawn("chan-1::d1", "chan-1", Some(&d1_str), Some("chan-1"))
+            .await
+            .expect("同工作区复用必须返回存活的 MCP 客户端");
+        assert!(Arc::ptr_eq(&c1_a, &c1_b), "同一频道与工作区的多个 Session 必须复用同一 MCP 客户端实例");
+        assert_eq!(pool.len(), 1, "复用后池大小保持为 1");
 
-            // 第 3 个不同频道进入容量为 2 的池时，自动按 LRU 淘汰最久未使用的 chan-1::d1
-            let _c3 = pool.get_or_spawn("chan-3::d3", "chan-3", Some(&d3_str), Some("chan-3")).await.unwrap();
-            assert_eq!(pool.len(), 2, "超出池上限时触发 LRU 回收，池大小严格受控 <= 2");
+        let _c2 = pool
+            .get_or_spawn("chan-2::d2", "chan-2", Some(&d2_str), Some("chan-2"))
+            .await
+            .expect("第 2 个工作区 MCP 客户端必须拉起成功");
+        assert_eq!(pool.len(), 2, "新增不同频道后池大小为 2");
 
-            pool.remove_and_terminate("chan-2::d2");
-            pool.remove_and_terminate("chan-3::d3");
-            assert_eq!(pool.len(), 0, "主动移除后池清空");
+        // 第 3 个不同频道进入容量为 2 的池时，自动按 LRU 淘汰最久未使用的 chan-1::d1
+        let _c3 = pool
+            .get_or_spawn("chan-3::d3", "chan-3", Some(&d3_str), Some("chan-3"))
+            .await
+            .expect("第 3 个工作区 MCP 客户端必须拉起成功并触发 LRU 淘汰");
+        assert_eq!(pool.len(), 2, "超出池上限时触发 LRU 回收，池大小严格受控 <= 2");
+
+        // 被淘汰的 c1_a 子进程必须已被终止
+        {
+            let mut guard = c1_a.lock().await;
+            assert!(!guard.is_alive(), "被 LRU 回收的旧 MCP 客户端进程必须已终止");
         }
+
+        pool.remove_and_terminate("chan-2::d2");
+        pool.remove_and_terminate("chan-3::d3");
+        assert_eq!(pool.len(), 0, "主动移除后池清空");
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[tokio::test]
+    async fn test_mcp_pool_eviction_clears_session_and_reconnect_failure_does_not_use_dead_client() {
+        let mut pool = McpClientPool::new(1);
+        let mut active_sessions: HashMap<String, SessionState> = HashMap::new();
+        let temp_base = std::env::temp_dir().join(format!(
+            "shadow_crew_mcp_evict_dead_test_{}",
+            std::process::id()
+        ));
+        let dir1 = temp_base.join("chan-1");
+        let dir2 = temp_base.join("chan-2");
+        std::fs::create_dir_all(&dir1).unwrap();
+        std::fs::create_dir_all(&dir2).unwrap();
+        let d1_str = dir1.to_string_lossy().to_string();
+        let d2_str = dir2.to_string_lossy().to_string();
+
+        // 1. Session 1 建立并挂载 MCP 客户端
+        let mcp1 = pool
+            .get_or_spawn("chan-1::d1", "chan-1", Some(&d1_str), Some("chan-1"))
+            .await
+            .expect("Session 1 MCP 启动应成功");
+        active_sessions.insert(
+            "s1".to_string(),
+            SessionState {
+                session_id: "s1".to_string(),
+                session_key: "topic:t1:chan-1:standard".to_string(),
+                channel_id: "chan-1".to_string(),
+                workspace_dir: dir1.clone(),
+                system_prompt: None,
+                mcp_pool_key: "chan-1::d1".to_string(),
+                mcp_client: Some(mcp1.clone()),
+            },
+        );
+
+        // 2. Session 2 进入容量为 1 的池，触发 Session 1 的 MCP 客户端被 LRU 淘汰并终止
+        let _mcp2 = pool
+            .get_or_spawn("chan-2::d2", "chan-2", Some(&d2_str), Some("chan-2"))
+            .await
+            .expect("Session 2 MCP 启动应成功");
+        prune_dead_session_mcp_refs(&mut active_sessions, &mut pool);
+
+        assert!(
+            active_sessions.get("s1").unwrap().mcp_client.is_none(),
+            "被池淘汰的活跃 Session 必须同步清空旧 mcp_client 引用，防止悬空指向已终止客户端"
+        );
+
+        // 3. 模拟 Session 1 再次发起 session/prompt 时重连失败，验证绝不会回退到已终止的旧客户端
+        pool.force_fail_spawn = true;
+        let s1_state = active_sessions.get_mut("s1").unwrap();
+        let current_mcp_client = pool
+            .get_or_spawn(
+                &s1_state.mcp_pool_key,
+                &s1_state.channel_id,
+                Some(&d1_str),
+                Some("chan-1"),
+            )
+            .await;
+        s1_state.mcp_client = current_mcp_client.clone();
+
+        assert!(
+            current_mcp_client.is_none(),
+            "重连失败时必须降级为 None（纯文本推演），绝不能回退到已终止的旧 MCP 客户端"
+        );
+        assert!(
+            s1_state.mcp_client.is_none(),
+            "Session 1 的 mcp_client 必须保持为 None"
+        );
+
+        pool.remove_and_terminate("chan-2::d2");
         let _ = std::fs::remove_dir_all(&temp_base);
     }
 }
