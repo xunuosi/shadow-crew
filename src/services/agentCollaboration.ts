@@ -1817,6 +1817,150 @@ export function bumpAgentExecutionEpoch(
   return next;
 }
 
+export interface AbortableExecutionItem {
+  agentId: string;
+  threadId: string;
+  topicId?: string;
+}
+
+export interface ExecuteAbortAgentOptions<TExec extends AbortableExecutionItem> {
+  agentId: string;
+  threadId?: string;
+  isGameTopic?: boolean;
+  activeExecutionsRef: { current: Record<string, TExec> };
+  activeCascadesRef: { current: Record<string, CollaborationCascade> };
+  turnEpochTracker: TurnEpochTracker;
+  inFlightHandovers: Set<string>;
+  generationEpochRef?: { current: number };
+  setActiveExecutions: (
+    updater:
+      | Record<string, TExec>
+      | ((prev: Record<string, TExec>) => Record<string, TExec>)
+  ) => void;
+  setActiveCascades: (
+    updater:
+      | Record<string, CollaborationCascade>
+      | ((prev: Record<string, CollaborationCascade>) => Record<string, CollaborationCascade>)
+  ) => void;
+  setIsGenerating: (val: boolean) => void;
+}
+
+/**
+ * 同步执行单 Agent 终止编排（不依赖 React 19 自动批处理下延迟执行的 setState updater 副作用）：
+ * 直接基于 activeExecutionsRef.current 同步计算同线程剩余执行数 remainingInThread，
+ * 确保当同线程仍有其他 Agent 在并发执行时，仅递增目标 Agent 的 executionEpoch，绝不误停整条线程或级联。
+ */
+export function executeAbortAgentOrchestration<TExec extends AbortableExecutionItem>(
+  options: ExecuteAbortAgentOptions<TExec>
+): {
+  remainingInThread: number;
+  shouldAbortWholeThread: boolean;
+} {
+  const {
+    agentId,
+    threadId,
+    isGameTopic,
+    activeExecutionsRef,
+    activeCascadesRef,
+    turnEpochTracker,
+    inFlightHandovers,
+    generationEpochRef,
+    setActiveExecutions,
+    setActiveCascades,
+    setIsGenerating,
+  } = options;
+
+  let remainingInThread = 0;
+  const currentExecs = activeExecutionsRef.current || {};
+  const nextExecs: Record<string, TExec> = { ...currentExecs };
+
+  Object.keys(nextExecs).forEach((key) => {
+    const item = nextExecs[key];
+    const matchesThread = !threadId || item.threadId === threadId || item.topicId === threadId;
+    if (item.agentId === agentId && matchesThread) {
+      delete nextExecs[key];
+    } else if (matchesThread) {
+      remainingInThread++;
+    }
+  });
+
+  activeExecutionsRef.current = nextExecs;
+  if (Object.keys(nextExecs).length === 0) {
+    setIsGenerating(false);
+  }
+
+  setActiveExecutions((prev) => {
+    const updated: Record<string, TExec> = { ...prev };
+    Object.keys(updated).forEach((key) => {
+      const item = updated[key];
+      const matchesThread = !threadId || item.threadId === threadId || item.topicId === threadId;
+      if (item.agentId === agentId && matchesThread) {
+        delete updated[key];
+      }
+    });
+    if (Object.keys(updated).length === 0) {
+      setIsGenerating(false);
+    }
+    activeExecutionsRef.current = updated;
+    return updated;
+  });
+
+  const shouldAbortWholeThread = !threadId || Boolean(isGameTopic) || remainingInThread === 0;
+
+  if (threadId) {
+    bumpAgentExecutionEpoch(
+      turnEpochTracker,
+      threadId,
+      agentId,
+      shouldAbortWholeThread
+    );
+    if (shouldAbortWholeThread) {
+      inFlightHandovers.forEach((key) => {
+        if (key.startsWith(`${threadId}:`)) {
+          inFlightHandovers.delete(key);
+        }
+      });
+    }
+  } else {
+    if (generationEpochRef) {
+      generationEpochRef.current++;
+    }
+    bumpGlobalEpoch(turnEpochTracker);
+    inFlightHandovers.clear();
+  }
+
+  if (shouldAbortWholeThread) {
+    const currentCascades = activeCascadesRef.current || {};
+    const nextCascades: Record<string, CollaborationCascade> = {};
+    (Object.entries(currentCascades) as [string, CollaborationCascade][]).forEach(([k, v]) => {
+      if (!threadId || v.roomId === threadId) {
+        nextCascades[k] = { ...v, isAborted: true };
+      } else {
+        nextCascades[k] = v;
+      }
+    });
+    activeCascadesRef.current = nextCascades;
+
+    setActiveCascades((prev) => {
+      const updated: Record<string, CollaborationCascade> = {};
+      (Object.entries(prev) as [string, CollaborationCascade][]).forEach(([k, v]) => {
+        if (!threadId || v.roomId === threadId) {
+          updated[k] = { ...v, isAborted: true };
+        } else {
+          updated[k] = v;
+        }
+      });
+      activeCascadesRef.current = updated;
+      return updated;
+    });
+  }
+
+  return {
+    remainingInThread,
+    shouldAbortWholeThread,
+  };
+}
+
 // 统一重导出 CognoNexus 服务
 export {
   solveDeterministicBwm,

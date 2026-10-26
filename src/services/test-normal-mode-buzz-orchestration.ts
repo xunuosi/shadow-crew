@@ -20,14 +20,19 @@ import {
   bumpRoomEpoch,
   bumpChannelEpoch,
   bumpAgentExecutionEpoch,
+  executeAbortAgentOrchestration,
+  type CollaborationCascade,
   type RoomTranscriptEntry,
 } from './agentCollaboration';
 import {
   buildAgentSessionKey,
   matchesSessionScope,
+  sendPromptToAcpAgent,
   clearAcpAgentSessions,
   waitForPendingAcpSessionClears,
   getPendingAcpSessionClearCount,
+  setAcpSessionClearInvokeForTests,
+  resetAcpSessionClearBarrierState,
 } from './acpClient';
 import type { Agent } from '../types';
 
@@ -752,7 +757,37 @@ async function runEpochAndBarrierTests() {
     '精准隔离：停止 topic-game-1 不影响其他议题 topic-game-2 的正常推演'
   );
 
-  // 7.2 单个 Agent 停止 (handleAbortAgent) 在多 Agent 并发及博弈议题下的精确拦截
+  // 7.2 模拟 React 19 自动批处理（setState updater 延迟执行）下的真实 executeAbortAgentOrchestration 行为
+  const activeExecutionsRef = {
+    current: {
+      [`thread-ch-1:${mockAgentA.id}`]: {
+        agentId: mockAgentA.id,
+        threadId: 'thread-ch-1',
+      },
+      [`thread-ch-1:${mockAgentB.id}`]: {
+        agentId: mockAgentB.id,
+        threadId: 'thread-ch-1',
+      },
+    } as Record<string, { agentId: string; threadId: string }>,
+  };
+  const activeCascadesRef = {
+    current: {
+      'cascade-ch-1': {
+        cascadeId: 'cascade-ch-1',
+        rootMessageId: 'msg-1',
+        roomId: 'thread-ch-1',
+        originalPrompt: 'test',
+        depth: 1,
+        maxDepth: 12,
+        visitedAgentIds: [mockAgentA.id, mockAgentB.id],
+        agentCallCounts: { [mockAgentA.id]: 1, [mockAgentB.id]: 1 },
+        isAborted: false,
+      },
+    } as Record<string, CollaborationCascade>,
+  };
+  const inFlightHandovers = new Set<string>(['thread-ch-1:challenge']);
+  const deferredStateUpdaters: Array<() => void> = [];
+
   const snapAgentA = captureTurnEpochSnapshot(tracker, {
     roomId: 'thread-ch-1',
     channelId: 'ch-1',
@@ -763,10 +798,69 @@ async function runEpochAndBarrierTests() {
     channelId: 'ch-1',
     agentId: mockAgentB.id,
   });
-  bumpAgentExecutionEpoch(tracker, 'thread-ch-1', mockAgentA.id, false);
+  const snapThread = captureTurnEpochSnapshot(tracker, {
+    roomId: 'thread-ch-1',
+    channelId: 'ch-1',
+  });
+
+  // 关键：传入延迟执行的 setState 模拟 React 19 自动批处理（updater 在函数返回后才执行）
+  const abortResA = executeAbortAgentOrchestration({
+    agentId: mockAgentA.id,
+    threadId: 'thread-ch-1',
+    isGameTopic: false,
+    activeExecutionsRef,
+    activeCascadesRef,
+    turnEpochTracker: tracker,
+    inFlightHandovers,
+    setActiveExecutions: (updater) => {
+      deferredStateUpdaters.push(() => {
+        if (typeof updater === 'function') {
+          updater(activeExecutionsRef.current);
+        }
+      });
+    },
+    setActiveCascades: (updater) => {
+      deferredStateUpdaters.push(() => {
+        if (typeof updater === 'function') {
+          updater(activeCascadesRef.current);
+        }
+      });
+    },
+    setIsGenerating: () => {},
+  });
+
   assert(
-    isTurnEpochStale(tracker, snapAgentA) && !isTurnEpochStale(tracker, snapAgentB),
-    '单 Agent 停止（同线程仍有队友在跑）：仅拦截被停止的 Agent A 回调，队友 Agent B 正常完成'
+    abortResA.remainingInThread === 1 && abortResA.shouldAbortWholeThread === false,
+    'React 19 批处理下调用 executeAbortAgentOrchestration 停止 Agent A：同步准确算出 remainingInThread=1，绝不误判为 0'
+  );
+  assert(
+    isTurnEpochStale(tracker, snapAgentA) &&
+      !isTurnEpochStale(tracker, snapAgentB) &&
+      !isTurnEpochStale(tracker, snapThread) &&
+      activeCascadesRef.current['cascade-ch-1'].isAborted === false,
+    'React 19 批处理下停止 Agent A：仅 Agent A 回调失效，队友 Agent B、线程 roomEpoch 与协同级联均保持存活'
+  );
+
+  // 继续停止同线程最后一个在跑的 Agent B -> 此时 remainingInThread === 0，应自动升级终止整条线程与级联
+  const abortResB = executeAbortAgentOrchestration({
+    agentId: mockAgentB.id,
+    threadId: 'thread-ch-1',
+    isGameTopic: false,
+    activeExecutionsRef,
+    activeCascadesRef,
+    turnEpochTracker: tracker,
+    inFlightHandovers,
+    setActiveExecutions: () => {},
+    setActiveCascades: () => {},
+    setIsGenerating: () => {},
+  });
+  assert(
+    abortResB.remainingInThread === 0 &&
+      abortResB.shouldAbortWholeThread === true &&
+      isTurnEpochStale(tracker, snapAgentB) &&
+      isTurnEpochStale(tracker, snapThread) &&
+      activeCascadesRef.current['cascade-ch-1'].isAborted === true,
+    '当同线程最后一个 Agent B 也被停止时 (remainingInThread=0)：同步递增 roomEpoch 并中止线程级联'
   );
 
   // 7.3 频道成员变更在途拦截 + Session 删除屏障 (bumpChannelEpoch + waitForPendingAcpSessionClears)
@@ -785,16 +879,93 @@ async function runEpochAndBarrierTests() {
     '频道成员更新后：该频道主线程与下属 Topic 的在途旧轮次回调全部失效，防止将旧花名册上下文写回'
   );
 
-  // 验证 clearAcpAgentSessions 与 waitForPendingAcpSessionClears 同步屏障
+  // 7.4 验证 clearAcpAgentSessions 正常完成、拒绝时 Fail-Closed 阻断新 Prompt、以及永久挂起时的超时阻断
+  resetAcpSessionClearBarrierState();
   const clearPromise = clearAcpAgentSessions(undefined, 'channel:ch-1');
-  await waitForPendingAcpSessionClears();
+  await waitForPendingAcpSessionClears({ channelId: 'ch-1' });
   await clearPromise;
   assert(
     getPendingAcpSessionClearCount() === 0,
-    'Session 清理屏障：waitForPendingAcpSessionClears 确保所有在途 Session 删除完成后才放行新请求'
+    'Session 清理屏障（正常路径）：waitForPendingAcpSessionClears 确保所有在途 Session 删除完成后才放行新请求'
   );
 
-  // 7.4 全局清空历史 (bumpGlobalEpoch) 使所有房间与频道快照统一失效
+  // 7.4a 模拟底层 Tauri clear_agent_sessions 失败拒绝 -> 屏障必须保持 Fail-Closed，阻止同作用域 sendPromptToAcpAgent
+  setAcpSessionClearInvokeForTests(async () => {
+    throw new Error('Simulated Tauri IPC clear_agent_sessions failure');
+  });
+  let clearRejected = false;
+  try {
+    await clearAcpAgentSessions(undefined, 'channel:ch-fail');
+  } catch {
+    clearRejected = true;
+  }
+  let promptBlockedAfterFailure = false;
+  try {
+    await sendPromptToAcpAgent({
+      agent: mockAgentA,
+      roomId: 'thread-ch-fail',
+      channelId: 'ch-fail',
+      prompt: 'test prompt after failed session clear',
+    });
+  } catch (err) {
+    promptBlockedAfterFailure =
+      err instanceof Error && err.message.includes('Fail-Closed');
+  }
+  assert(
+    clearRejected && promptBlockedAfterFailure,
+    'Session 清理屏障（失败路径 Fail-Closed）：clear_agent_sessions 失败后，拒绝放行同频道后续 sendPromptToAcpAgent，防止复用旧花名册'
+  );
+
+  // 验证其他无关频道 ch-other 不受 ch-fail 失败影响
+  let unrelatedChannelAllowed = true;
+  try {
+    await waitForPendingAcpSessionClears({ channelId: 'ch-other' });
+  } catch {
+    unrelatedChannelAllowed = false;
+  }
+  assert(
+    unrelatedChannelAllowed,
+    'Session 清理屏障作用域隔离：ch-fail 清理失败不影响其他无关频道 ch-other 正常派发'
+  );
+
+  // 当后续重试清理成功时，自动解除 ch-fail 的 Fail-Closed 锁定
+  setAcpSessionClearInvokeForTests(async () => undefined);
+  await clearAcpAgentSessions(undefined, 'channel:ch-fail');
+  let recoveredAfterRetry = true;
+  try {
+    await waitForPendingAcpSessionClears({ channelId: 'ch-fail' });
+  } catch {
+    recoveredAfterRetry = false;
+  }
+  assert(
+    recoveredAfterRetry,
+    'Session 清理屏障自愈恢复：当后续针对该频道的 Session 清理重试成功后，自动解除 Fail-Closed 锁定'
+  );
+
+  // 7.4b 模拟底层清理请求永久挂起 -> 屏障在 timeoutMs 后超时拒绝并转入 Fail-Closed 状态，绝不永久死锁
+  setAcpSessionClearInvokeForTests(
+    () => new Promise(() => {}) // 永久挂起的 Promise
+  );
+  void clearAcpAgentSessions(undefined, 'channel:ch-hang').catch(() => {});
+  let timedOutAsExpected = false;
+  try {
+    await waitForPendingAcpSessionClears({
+      channelId: 'ch-hang',
+      timeoutMs: 45,
+    });
+  } catch (err) {
+    timedOutAsExpected =
+      err instanceof Error &&
+      err.message.includes('超时') &&
+      err.message.includes('Fail-Closed');
+  }
+  assert(
+    timedOutAsExpected && getPendingAcpSessionClearCount() === 0,
+    'Session 清理屏障（挂起超时路径）：清理请求永久挂起时按 timeoutMs 超时中断、清理挂起项并转入 Fail-Closed 状态'
+  );
+  resetAcpSessionClearBarrierState();
+
+  // 7.5 全局清空历史 (bumpGlobalEpoch) 使所有房间与频道快照统一失效
   const snapAfter = captureTurnEpochSnapshot(tracker, {
     roomId: 'topic-game-2',
     channelId: 'ch-2',

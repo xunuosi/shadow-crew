@@ -145,6 +145,7 @@ import {
   bumpRoomEpoch,
   bumpChannelEpoch,
   bumpAgentExecutionEpoch,
+  executeAbortAgentOrchestration,
 } from './services/agentCollaboration';
 
 export default function App() {
@@ -668,8 +669,8 @@ export default function App() {
   const [isMemoryImportModalOpen, setIsMemoryImportModalOpen] = useState<boolean>(false);
   const [isRustTauriHubOpen, setIsRustTauriHubOpen] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
-  const [activeExecutions, setActiveExecutions] = useState<Record<string, ActiveAgentExecution>>({});
-  const [activeCascades, setActiveCascades] = useState<Record<string, CollaborationCascade>>({});
+  const [activeExecutions, setActiveExecutionsState] = useState<Record<string, ActiveAgentExecution>>({});
+  const [activeCascades, setActiveCascadesState] = useState<Record<string, CollaborationCascade>>({});
   const [sessionCleanupNotice, setSessionCleanupNotice] = useState<string | null>(null);
   const activeCascadesRef = useRef<Record<string, CollaborationCascade>>({});
   activeCascadesRef.current = activeCascades;
@@ -679,6 +680,34 @@ export default function App() {
   agentsRef.current = agents;
   const activeExecutionsRef = useRef(activeExecutions);
   activeExecutionsRef.current = activeExecutions;
+
+  const setActiveExecutions = useCallback(
+    (
+      updater:
+        | Record<string, ActiveAgentExecution>
+        | ((prev: Record<string, ActiveAgentExecution>) => Record<string, ActiveAgentExecution>)
+    ) => {
+      const next =
+        typeof updater === 'function' ? updater(activeExecutionsRef.current) : updater;
+      activeExecutionsRef.current = next;
+      setActiveExecutionsState(next);
+    },
+    []
+  );
+
+  const setActiveCascades = useCallback(
+    (
+      updater:
+        | Record<string, CollaborationCascade>
+        | ((prev: Record<string, CollaborationCascade>) => Record<string, CollaborationCascade>)
+    ) => {
+      const next =
+        typeof updater === 'function' ? updater(activeCascadesRef.current) : updater;
+      activeCascadesRef.current = next;
+      setActiveCascadesState(next);
+    },
+    []
+  );
   const generationEpochRef = useRef<number>(0);
   const turnEpochTrackerRef = useRef(createTurnEpochTracker());
 
@@ -6555,59 +6584,23 @@ export default function App() {
 
   // Interrupt / Abort Agent Execution (Individual or Global)
   const handleAbortAgent = (agentId: string, threadId?: string) => {
-    let remainingInThread = 0;
-    setActiveExecutions((prev) => {
-      const next = { ...prev };
-      Object.keys(next).forEach((key) => {
-        const item = next[key];
-        const matchesThread = !threadId || item.threadId === threadId || item.topicId === threadId;
-        if (item.agentId === agentId && matchesThread) {
-          delete next[key];
-        } else if (matchesThread) {
-          remainingInThread++;
-        }
-      });
-      if (Object.keys(next).length === 0) {
-        setIsGenerating(false);
-      }
-      return next;
+    const isGameTopic = threadId
+      ? getTopicData(threadId)?.discussionMode === 'game_theoretic'
+      : false;
+
+    executeAbortAgentOrchestration({
+      agentId,
+      threadId,
+      isGameTopic,
+      activeExecutionsRef,
+      activeCascadesRef,
+      turnEpochTracker: turnEpochTrackerRef.current,
+      inFlightHandovers: inFlightHandoverRef.current,
+      generationEpochRef,
+      setActiveExecutions,
+      setActiveCascades,
+      setIsGenerating,
     });
-
-    if (threadId) {
-      const isGameTopic = getTopicData(threadId)?.discussionMode === 'game_theoretic';
-      bumpAgentExecutionEpoch(
-        turnEpochTrackerRef.current,
-        threadId,
-        agentId,
-        Boolean(isGameTopic || remainingInThread === 0)
-      );
-      if (isGameTopic || remainingInThread === 0) {
-        inFlightHandoverRef.current.forEach((key) => {
-          if (key.startsWith(`${threadId}:`)) {
-            inFlightHandoverRef.current.delete(key);
-          }
-        });
-      }
-    } else {
-      generationEpochRef.current++;
-      bumpGlobalEpoch(turnEpochTrackerRef.current);
-      inFlightHandoverRef.current.clear();
-    }
-
-    if (!threadId || remainingInThread === 0) {
-      setActiveCascades((prev) => {
-        const next: Record<string, CollaborationCascade> = {};
-        (Object.entries(prev) as [string, CollaborationCascade][]).forEach(([k, v]) => {
-          if (!threadId || v.roomId === threadId) {
-            next[k] = { ...v, isAborted: true };
-          } else {
-            next[k] = v;
-          }
-        });
-        activeCascadesRef.current = next;
-        return next;
-      });
-    }
 
     // 重点：在会话状态栏点击「停止」仅中止当前推演轮次，Agent 必须维持在线就绪状态 ('running')，
     // 严禁将其设为 'idle' (离线) 或调用 stop_acp_agent 杀死守护进程，否则后续协同接力会误报离线
@@ -6676,17 +6669,21 @@ export default function App() {
           next[k] = v;
         }
       });
-      activeCascadesRef.current = next;
       return next;
     });
 
     const agentsToReset: string[] = [];
+    Object.values(activeExecutionsRef.current).forEach((item) => {
+      if (!threadId || item.threadId === threadId || item.topicId === threadId) {
+        agentsToReset.push(item.agentId);
+      }
+    });
+
     setActiveExecutions((prev) => {
       const next = { ...prev };
       Object.keys(next).forEach((key) => {
         const item = next[key];
         if (!threadId || item.threadId === threadId || item.topicId === threadId) {
-          agentsToReset.push(item.agentId);
           delete next[key];
         }
       });

@@ -868,9 +868,21 @@ export async function sendPromptToAcpAgent(
   const startTime = Date.now();
   const { agent, roomId, prompt } = options;
 
-  // 0.0 等待任何在途的 ACP Session 清理任务（如频道成员变更、议题成员变更、Agent 重置）彻底完成，
-  // 杜绝新消息在旧 ACP Session 尚未删除完毕前抢跑复用旧 Session 与旧花名册
-  await waitForPendingAcpSessionClears();
+  // 0.0 等待任何在途的 ACP Session 清理任务（如频道成员变更、议题成员变更、Agent 重置）彻底完成；
+  // 若对应作用域的前序 Session 清理失败或超时，按 Fail-Closed 策略直接拒绝派发，杜绝新消息复用旧 Session 与旧花名册
+  const barrierSessionKey = buildAgentSessionKey({
+    agentId: agent.id,
+    roomId,
+    channelId: options.channelId,
+    isDm: options.isDm,
+    discussionMode: options.discussionMode,
+  });
+  await waitForPendingAcpSessionClears({
+    agentId: agent.id,
+    sessionKey: barrierSessionKey,
+    channelId: options.channelId,
+    roomId,
+  });
 
   // 0. 统一解析并注入 Agent 自身专属专精人设与行为硬性约束
   const personaPrompt = buildAgentPersonaPrompt(agent);
@@ -1400,19 +1412,187 @@ export async function applyTopicPatchToWorkspace(
 }
 
 /**
- * 追踪当前正在执行中的 ACP Session 清理 Promise 集合，
- * 确保后续 sendPromptToAcpAgent 严格等待前序清理完成后再派发
+ * 追踪当前正在执行中的 ACP Session 清理任务与按作用域划分的清理失败状态 (Fail-Closed 屏障)
+ * - 当清理在途时：后续同作用域（或全局）的 sendPromptToAcpAgent 必须等待清理完成；
+ * - 当清理超时时：自动移除挂起项并将该作用域标记为清理失败，拒绝放行后续 Prompt；
+ * - 当清理失败时：保持该作用域处于阻断状态 (Fail-Closed)，直到下一次针对该作用域或全局的 Session 清理成功。
  */
-const pendingSessionClearPromises = new Set<Promise<void>>();
+export const DEFAULT_SESSION_CLEAR_BARRIER_TIMEOUT_MS = 5000;
 
-export async function waitForPendingAcpSessionClears(): Promise<void> {
-  while (pendingSessionClearPromises.size > 0) {
-    await Promise.allSettled(Array.from(pendingSessionClearPromises));
+export interface AcpSessionClearBarrierQuery {
+  agentId?: string;
+  sessionKey?: string;
+  channelId?: string;
+  roomId?: string;
+  timeoutMs?: number;
+}
+
+interface PendingSessionClearEntry {
+  id: number;
+  scopeKey: string;
+  settledPromise: Promise<void>;
+}
+
+let nextClearEntryId = 1;
+const pendingSessionClearEntries = new Map<number, PendingSessionClearEntry>();
+const failedSessionClearScopes = new Map<string, string>();
+let customClearInvokeForTests:
+  | ((cmd: string, args: Record<string, unknown>) => Promise<unknown>)
+  | null = null;
+
+export function setAcpSessionClearInvokeForTests(
+  fn: ((cmd: string, args: Record<string, unknown>) => Promise<unknown>) | null
+): void {
+  customClearInvokeForTests = fn;
+}
+
+export function resetAcpSessionClearBarrierState(): void {
+  pendingSessionClearEntries.clear();
+  failedSessionClearScopes.clear();
+  customClearInvokeForTests = null;
+}
+
+export function buildClearBarrierScopeKey(agentId?: string, sessionKeyPrefix?: string): string {
+  const cleanAgent = agentId?.trim();
+  const cleanPrefix = sessionKeyPrefix?.trim();
+  if (cleanAgent && cleanPrefix) {
+    return `agent_prefix:${cleanAgent}:${cleanPrefix}`;
+  }
+  if (cleanAgent) {
+    return `agent:${cleanAgent}`;
+  }
+  if (cleanPrefix) {
+    return `prefix:${cleanPrefix}`;
+  }
+  return '*';
+}
+
+function doesPrefixMatchBarrierQuery(prefix: string, query: AcpSessionClearBarrierQuery): boolean {
+  const colonPrefix = prefix.endsWith(':') ? prefix : `${prefix}:`;
+  if (query.sessionKey) {
+    if (query.sessionKey === prefix || query.sessionKey.startsWith(colonPrefix)) {
+      return true;
+    }
+  }
+  if (query.channelId) {
+    if (
+      prefix === `channel:${query.channelId}` ||
+      prefix === `topic:${query.channelId}` ||
+      prefix.startsWith(`channel:${query.channelId}:`) ||
+      prefix.startsWith(`topic:${query.channelId}:`)
+    ) {
+      return true;
+    }
+  }
+  if (query.roomId) {
+    if (
+      prefix === `topic:${query.roomId}` ||
+      prefix === `channel:${query.roomId}` ||
+      prefix.endsWith(`:${query.roomId}`)
+    ) {
+      return true;
+    }
+  }
+  if (!query.sessionKey && !query.channelId && !query.roomId) {
+    return true;
+  }
+  return false;
+}
+
+export function doesQueryMatchClearScope(
+  scopeKey: string,
+  query?: AcpSessionClearBarrierQuery
+): boolean {
+  if (!query || scopeKey === '*') {
+    return true;
+  }
+  if (scopeKey.startsWith('agent:')) {
+    const targetAgentId = scopeKey.slice('agent:'.length);
+    return !query.agentId || query.agentId === targetAgentId;
+  }
+  if (scopeKey.startsWith('prefix:')) {
+    const prefix = scopeKey.slice('prefix:'.length);
+    return doesPrefixMatchBarrierQuery(prefix, query);
+  }
+  if (scopeKey.startsWith('agent_prefix:')) {
+    const rest = scopeKey.slice('agent_prefix:'.length);
+    const sepIdx = rest.indexOf(':');
+    const targetAgentId = rest.slice(0, sepIdx);
+    const prefix = rest.slice(sepIdx + 1);
+    if (query.agentId && query.agentId !== targetAgentId) {
+      return false;
+    }
+    return doesPrefixMatchBarrierQuery(prefix, query);
+  }
+  return true;
+}
+
+export function getFailedAcpSessionClearReason(query?: AcpSessionClearBarrierQuery): string | null {
+  for (const [scopeKey, reason] of failedSessionClearScopes.entries()) {
+    if (doesQueryMatchClearScope(scopeKey, query)) {
+      return reason;
+    }
+  }
+  return null;
+}
+
+export async function waitForPendingAcpSessionClears(
+  query?: AcpSessionClearBarrierQuery
+): Promise<void> {
+  const timeoutMs = query?.timeoutMs ?? DEFAULT_SESSION_CLEAR_BARRIER_TIMEOUT_MS;
+
+  while (true) {
+    const matchingEntries = Array.from(pendingSessionClearEntries.values()).filter((entry) =>
+      doesQueryMatchClearScope(entry.scopeKey, query)
+    );
+    if (matchingEntries.length === 0) {
+      break;
+    }
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    let timedOut = false;
+
+    const timeoutPromise = new Promise<void>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, timeoutMs);
+    });
+
+    await Promise.race([
+      Promise.all(matchingEntries.map((e) => e.settledPromise)).then(() => undefined),
+      timeoutPromise,
+    ]);
+
+    if (timeoutHandle !== null) {
+      clearTimeout(timeoutHandle);
+    }
+
+    if (timedOut) {
+      const stillPending = matchingEntries.filter((e) => pendingSessionClearEntries.has(e.id));
+      for (const hung of stillPending) {
+        pendingSessionClearEntries.delete(hung.id);
+        failedSessionClearScopes.set(
+          hung.scopeKey,
+          `ACP Session 清理请求超时 (${timeoutMs}ms)`
+        );
+      }
+      throw new Error(
+        `ACP Session 清理屏障等待超时 (${timeoutMs}ms)，已按 Fail-Closed 策略阻断当前作用域派发以防复用旧上下文`
+      );
+    }
+  }
+
+  const failedReason = getFailedAcpSessionClearReason(query);
+  if (failedReason) {
+    throw new Error(
+      `ACP Session 清理未完成或失败 (${failedReason})，已按 Fail-Closed 策略阻止派发新 Prompt，防止复用旧花名册或脏会话`
+    );
   }
 }
 
 export function getPendingAcpSessionClearCount(): number {
-  return pendingSessionClearPromises.size;
+  return pendingSessionClearEntries.size;
 }
 
 /**
@@ -1420,14 +1600,18 @@ export function getPendingAcpSessionClearCount(): number {
  * 保持前后端水位线、历史消息与底层 ACP 进程 session_id 彻底同步重置
  */
 export async function clearAcpAgentSessions(agentId?: string, sessionKeyPrefix?: string): Promise<void> {
+  const scopeKey = buildClearBarrierScopeKey(agentId, sessionKeyPrefix);
+  const entryId = nextClearEntryId++;
+
   const runClear = async () => {
     clearLlmSessionHistory(agentId || sessionKeyPrefix);
 
     const tauriInvoke =
-      typeof window !== 'undefined'
+      customClearInvokeForTests ||
+      (typeof window !== 'undefined'
         ? (window as any).__TAURI_INTERNALS__?.invoke ||
           (window as any).__TAURI__?.core?.invoke
-        : null;
+        : null);
 
     if (tauriInvoke) {
       try {
@@ -1437,18 +1621,38 @@ export async function clearAcpAgentSessions(agentId?: string, sessionKeyPrefix?:
         });
         console.log(`[ACP Client] Cleared ACP process session_ids (agentId: ${agentId}, prefix: ${sessionKeyPrefix})`);
       } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        failedSessionClearScopes.set(scopeKey, errMsg);
         console.warn('[ACP Client] Failed to invoke clear_agent_sessions in Tauri:', e);
         throw e;
       }
     }
+
+    // 清理成功后解除对应作用域（或全局）的 Fail-Closed 锁定状态
+    if (scopeKey === '*') {
+      failedSessionClearScopes.clear();
+    } else {
+      failedSessionClearScopes.delete(scopeKey);
+      failedSessionClearScopes.delete('*');
+    }
   };
 
-  const trackedPromise = runClear();
-  pendingSessionClearPromises.add(trackedPromise);
+  const rawPromise = runClear();
+  const settledPromise = rawPromise.then(
+    () => undefined,
+    () => undefined
+  );
+
+  pendingSessionClearEntries.set(entryId, {
+    id: entryId,
+    scopeKey,
+    settledPromise,
+  });
+
   try {
-    await trackedPromise;
+    await rawPromise;
   } finally {
-    pendingSessionClearPromises.delete(trackedPromise);
+    pendingSessionClearEntries.delete(entryId);
   }
 }
 

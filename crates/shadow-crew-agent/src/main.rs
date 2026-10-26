@@ -249,6 +249,11 @@ pub fn validate_and_resolve_workspace_dir(
         return None;
     }
 
+    // 严禁将沙箱根目录 (~/.shadow-crew) 本身直接作为会话工作区，必须位于独立子目录下
+    if norm_candidate == norm_home || norm_candidate == canonical_home {
+        return None;
+    }
+
     // 目标工作区目录本身绝不允许是符号链接（无论是有效还是悬空 symlink）
     if let Ok(meta) = std::fs::symlink_metadata(&norm_candidate) {
         if meta.file_type().is_symlink() {
@@ -323,7 +328,7 @@ pub fn validate_and_resolve_workspace_dir(
         return None;
     }
     let final_canonical = std::fs::canonicalize(&resolved).ok()?;
-    if final_canonical.starts_with(&canonical_home) {
+    if final_canonical.starts_with(&canonical_home) && final_canonical != canonical_home {
         Some(final_canonical)
     } else {
         None
@@ -331,13 +336,13 @@ pub fn validate_and_resolve_workspace_dir(
 }
 
 /// 安全解析并创建兜底沙箱目录（例如 channels/chan-safe-default 或 agents/agent-safe-default）：
-/// 若兜底路径或其父目录被预先植入了 symlink，先主动拔除恶意 symlink 并强制通过 validate_and_resolve_workspace_dir 校验，
-/// 彻底封堵 fallback 路径跟随 symlink 越界到沙箱外的风险。
+/// 1. 若兜底路径或其父目录被预先植入了 symlink，先主动拔除恶意 symlink 并强制通过 validate_and_resolve_workspace_dir 校验；
+/// 2. 若合法 fallback 与进程隔离 fallback 均创建或校验失败，按 Fail-Closed 策略返回 Err，绝不退回至沙箱根目录 (~/.shadow-crew)。
 pub fn resolve_safe_fallback_dir(
     home: &std::path::Path,
     category: &str,
     default_name: &str,
-) -> PathBuf {
+) -> std::result::Result<PathBuf, String> {
     let _ = std::fs::create_dir_all(home);
     let canonical_home = std::fs::canonicalize(home).unwrap_or_else(|_| normalize_path(home));
     let cat_dir = canonical_home.join(category);
@@ -360,7 +365,7 @@ pub fn resolve_safe_fallback_dir(
     }
 
     if let Some(verified) = validate_and_resolve_workspace_dir(&fallback, &canonical_home) {
-        return verified;
+        return Ok(verified);
     }
 
     let isolated = cat_dir.join(format!("{}-isolated-{}", default_name, std::process::id()));
@@ -371,7 +376,12 @@ pub fn resolve_safe_fallback_dir(
         let _ = std::fs::remove_file(&isolated);
         let _ = std::fs::remove_dir(&isolated);
     }
-    validate_and_resolve_workspace_dir(&isolated, &canonical_home).unwrap_or(canonical_home)
+    validate_and_resolve_workspace_dir(&isolated, &canonical_home).ok_or_else(|| {
+        format!(
+            "Failed to resolve or create safe fallback workspace under {:?}/{} (fail-closed: refusing to fall back to sandbox root)",
+            canonical_home, category
+        )
+    })
 }
 
 /// 解析用户级全局 Shadow Crew 根目录 (~/.shadow-crew)
@@ -396,44 +406,225 @@ fn get_shadow_crew_home_dir() -> std::path::PathBuf {
     }
 }
 
-/// 解析并创建指定频道的独立私有工作区 (~/.shadow-crew/channels/<channel_id>)
-pub fn get_channel_dir_with_home(channel_id: &str, home: &std::path::Path) -> std::path::PathBuf {
+/// 解析并创建指定频道的独立私有工作区 (~/.shadow-crew/channels/<channel_id>)，失败时返回 Err (Fail-Closed)
+pub fn try_get_channel_dir_with_home(
+    channel_id: &str,
+    home: &std::path::Path,
+) -> std::result::Result<PathBuf, String> {
     let safe_dir = match validate_workspace_segment(channel_id) {
         Ok(valid_id) => {
             let candidate = home.join("channels").join(&valid_id);
-            validate_and_resolve_workspace_dir(&candidate, home)
-                .unwrap_or_else(|| resolve_safe_fallback_dir(home, "channels", "chan-safe-default"))
+            match validate_and_resolve_workspace_dir(&candidate, home) {
+                Some(dir) => Ok(dir),
+                None => resolve_safe_fallback_dir(home, "channels", "chan-safe-default"),
+            }
         }
         Err(_) => resolve_safe_fallback_dir(home, "channels", "chan-safe-default"),
-    };
-    let _ = std::fs::create_dir_all(safe_dir.join("artifacts"));
-    let _ = std::fs::create_dir_all(safe_dir.join("scratch"));
-    safe_dir
+    }?;
+    std::fs::create_dir_all(safe_dir.join("artifacts"))
+        .map_err(|e| format!("Failed to create channel artifacts dir: {}", e))?;
+    std::fs::create_dir_all(safe_dir.join("scratch"))
+        .map_err(|e| format!("Failed to create channel scratch dir: {}", e))?;
+    Ok(safe_dir)
 }
 
-fn get_channel_dir(channel_id: &str) -> std::path::PathBuf {
-    let home = get_shadow_crew_home_dir();
-    get_channel_dir_with_home(channel_id, &home)
+#[cfg(test)]
+pub fn get_channel_dir_with_home(channel_id: &str, home: &std::path::Path) -> std::path::PathBuf {
+    try_get_channel_dir_with_home(channel_id, home).expect("get_channel_dir_with_home failed")
 }
 
-/// 解析并创建指定 Agent 的独立私有工作区 (~/.shadow-crew/agents/<agent_id>)
-pub fn get_agent_dir_with_home(agent_id: &str, home: &std::path::Path) -> std::path::PathBuf {
+/// 解析并创建指定 Agent 的独立私有工作区 (~/.shadow-crew/agents/<agent_id>)，失败时返回 Err (Fail-Closed)
+pub fn try_get_agent_dir_with_home(
+    agent_id: &str,
+    home: &std::path::Path,
+) -> std::result::Result<PathBuf, String> {
     let safe_dir = match validate_workspace_segment(agent_id) {
         Ok(valid_id) => {
             let candidate = home.join("agents").join(&valid_id);
-            validate_and_resolve_workspace_dir(&candidate, home)
-                .unwrap_or_else(|| resolve_safe_fallback_dir(home, "agents", "agent-safe-default"))
+            match validate_and_resolve_workspace_dir(&candidate, home) {
+                Some(dir) => Ok(dir),
+                None => resolve_safe_fallback_dir(home, "agents", "agent-safe-default"),
+            }
         }
         Err(_) => resolve_safe_fallback_dir(home, "agents", "agent-safe-default"),
-    };
-    let _ = std::fs::create_dir_all(safe_dir.join("artifacts"));
-    let _ = std::fs::create_dir_all(safe_dir.join("scratch"));
-    safe_dir
+    }?;
+    std::fs::create_dir_all(safe_dir.join("artifacts"))
+        .map_err(|e| format!("Failed to create agent artifacts dir: {}", e))?;
+    std::fs::create_dir_all(safe_dir.join("scratch"))
+        .map_err(|e| format!("Failed to create agent scratch dir: {}", e))?;
+    Ok(safe_dir)
 }
 
-fn get_agent_dir(agent_id: &str) -> std::path::PathBuf {
-    let home = get_shadow_crew_home_dir();
-    get_agent_dir_with_home(agent_id, &home)
+#[cfg(test)]
+pub fn get_agent_dir_with_home(agent_id: &str, home: &std::path::Path) -> std::path::PathBuf {
+    try_get_agent_dir_with_home(agent_id, home).expect("get_agent_dir_with_home failed")
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedNewSessionConfig {
+    pub session_channel_id: String,
+    pub is_dm: bool,
+    pub target_workspace_dir: PathBuf,
+    pub effective_key: String,
+    pub unique_session_id: String,
+    pub mcp_key: String,
+    pub mcp_pool_key: String,
+}
+
+/// 解析并校验 `session/new` 请求参数与隔离工作区（纯函数入口，供主循环与单元测试共用）：
+/// 1. 严格校验 `channelId` / `agentId` 段合法性，非法时返回 `(-32602, ...)`；
+/// 2. 判定 `is_dm` 时严格依据显式 `sessionKey` 前缀 (`dm:` vs `channel:`/`topic:`) 或无 `channelId` 时的显式 `params.agentId`，
+///    绝不因进程环境变量 `SHADOW_CREW_AGENT_ID` 存在而把正常频道会话误判为私聊；
+/// 3. 若主路径与 fallback 隔离路径均无法安全创建，返回 `(-32002, ...)` 拒绝建连，绝不退回至 `~/.shadow-crew` 根目录。
+pub fn resolve_new_session_config(
+    params: &serde_json::Value,
+    shadow_crew_home: &std::path::Path,
+    env_agent_id: Option<&str>,
+) -> std::result::Result<ResolvedNewSessionConfig, (i32, String)> {
+    let session_key = params
+        .get("sessionKey")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let raw_cid = params
+        .get("channelId")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
+    let validated_cid = match raw_cid {
+        Some(c) => match validate_workspace_segment(c) {
+            Ok(valid) => Some(valid),
+            Err(err_msg) => {
+                return Err((-32602, format!("Invalid params (channelId): {}", err_msg)));
+            }
+        },
+        None => None,
+    };
+
+    let session_channel_id = validated_cid
+        .clone()
+        .unwrap_or_else(|| "chan-default".to_string());
+
+    let validated_env_agent_id = env_agent_id.and_then(|s| validate_workspace_segment(s).ok());
+    let raw_param_agent_id = params
+        .get("agentId")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
+    let validated_param_agent_id = match raw_param_agent_id {
+        Some(a) => match validate_workspace_segment(a) {
+            Ok(valid) => Some(valid),
+            Err(err_msg) => {
+                return Err((-32602, format!("Invalid params (agentId): {}", err_msg)));
+            }
+        },
+        None => None,
+    };
+
+    // DM 判定优先级：
+    // 1. 显式 sessionKey 前缀 ("dm:" -> true, "channel:" / "topic:" -> false)
+    // 2. 若显式传入了 channelId：仅当 channelId 为 "dm-*" 或 "direct-messages" 时为 DM，否则一律为频道会话（无视 SHADOW_CREW_AGENT_ID 环境变量）
+    // 3. 未传 channelId 时：仅当请求参数显式带有 agentId 时判定为 DM
+    let is_dm = if let Some(ref sk) = session_key {
+        if sk.starts_with("dm:") {
+            true
+        } else if sk.starts_with("channel:") || sk.starts_with("topic:") {
+            false
+        } else if let Some(ref cid) = validated_cid {
+            cid.starts_with("dm-") || cid == "direct-messages"
+        } else {
+            validated_param_agent_id.is_some()
+        }
+    } else if let Some(ref cid) = validated_cid {
+        cid.starts_with("dm-") || cid == "direct-messages"
+    } else {
+        validated_param_agent_id.is_some()
+    };
+
+    let effective_agent_id = validated_param_agent_id
+        .as_deref()
+        .or(validated_env_agent_id.as_deref())
+        .unwrap_or("agent-default");
+
+    let fallback_workspace_res = || {
+        if is_dm {
+            try_get_agent_dir_with_home(effective_agent_id, shadow_crew_home)
+        } else {
+            try_get_channel_dir_with_home(&session_channel_id, shadow_crew_home)
+        }
+    };
+
+    let target_workspace_dir = if let Some(cwd) = params
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        let expanded = if cwd.starts_with("~/") || cwd == "~" {
+            let user_home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_default();
+            cwd.replacen('~', &user_home, 1)
+        } else {
+            cwd.to_string()
+        };
+        let p = PathBuf::from(expanded);
+        let candidate = if p.is_relative() {
+            shadow_crew_home.join(p)
+        } else {
+            p
+        };
+
+        if let Some(safe_canonical) =
+            validate_and_resolve_workspace_dir(&candidate, shadow_crew_home)
+        {
+            if std::fs::create_dir_all(safe_canonical.join("artifacts")).is_ok()
+                && std::fs::create_dir_all(safe_canonical.join("scratch")).is_ok()
+            {
+                safe_canonical
+            } else {
+                fallback_workspace_res().map_err(|e| (-32002, e))?
+            }
+        } else {
+            eprintln!(
+                "[Shinobi Agent] ⚠️ 检测到非法工作区路径或符号链接越界尝试 (cwd: {:?})，已强制收敛至安全沙箱目录",
+                candidate
+            );
+            fallback_workspace_res().map_err(|e| (-32002, e))?
+        }
+    } else {
+        fallback_workspace_res().map_err(|e| (-32002, e))?
+    };
+
+    let channel_cwd_str = target_workspace_dir.to_string_lossy().to_string();
+    let mcp_key = if is_dm {
+        format!("agent:{}", effective_agent_id)
+    } else {
+        session_channel_id.clone()
+    };
+    let mcp_pool_key = format!("{}::{}", mcp_key, channel_cwd_str);
+
+    let effective_key = session_key.unwrap_or_else(|| {
+        if is_dm {
+            format!("dm:{}:thread", effective_agent_id)
+        } else {
+            format!("topic:{}:chan:standard", session_channel_id)
+        }
+    });
+    let unique_session_id = format!("shinobi-session-{}", effective_key);
+
+    Ok(ResolvedNewSessionConfig {
+        session_channel_id,
+        is_dm,
+        target_workspace_dir,
+        effective_key,
+        unique_session_id,
+        mcp_key,
+        mcp_pool_key,
+    })
 }
 
 #[tokio::main]
@@ -510,103 +701,34 @@ async fn main() -> Result<()> {
                     out.flush()?;
                 }
             } else if method == "session/new" {
-                let session_key = params.get("sessionKey").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let raw_cid = params.get("channelId").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
-                let session_channel_id = match raw_cid {
-                    Some(c) => match validate_workspace_segment(c) {
-                        Ok(valid) => valid,
-                        Err(err_msg) => {
-                            let err_resp = serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "error": {
-                                    "code": -32602,
-                                    "message": format!("Invalid params (channelId): {}", err_msg)
-                                }
-                            });
-                            if let Ok(mut out) = stdout_shared.lock() {
-                                writeln!(out, "{}", err_resp.to_string())?;
-                                out.flush()?;
+                let env_agent_id = std::env::var("SHADOW_CREW_AGENT_ID").ok();
+                let resolved_cfg = match resolve_new_session_config(
+                    &params,
+                    &shadow_crew_home,
+                    env_agent_id.as_deref(),
+                ) {
+                    Ok(cfg) => cfg,
+                    Err((code, message)) => {
+                        let err_resp = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": code,
+                                "message": message
                             }
-                            continue;
+                        });
+                        if let Ok(mut out) = stdout_shared.lock() {
+                            writeln!(out, "{}", err_resp.to_string())?;
+                            out.flush()?;
                         }
-                    },
-                    None => "chan-default".to_string(),
-                };
-
-                let env_agent_id = std::env::var("SHADOW_CREW_AGENT_ID")
-                    .ok()
-                    .and_then(|s| validate_workspace_segment(&s).ok());
-                let raw_param_agent_id = params
-                    .get("agentId")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.trim().is_empty());
-                let validated_param_agent_id = match raw_param_agent_id {
-                    Some(a) => match validate_workspace_segment(a) {
-                        Ok(valid) => Some(valid),
-                        Err(err_msg) => {
-                            let err_resp = serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "error": {
-                                    "code": -32602,
-                                    "message": format!("Invalid params (agentId): {}", err_msg)
-                                }
-                            });
-                            if let Ok(mut out) = stdout_shared.lock() {
-                                writeln!(out, "{}", err_resp.to_string())?;
-                                out.flush()?;
-                            }
-                            continue;
-                        }
-                    },
-                    None => None,
-                };
-                let maybe_agent_id = validated_param_agent_id.as_deref().or(env_agent_id.as_deref());
-
-                let is_dm = maybe_agent_id.is_some()
-                    || session_channel_id.starts_with("dm-")
-                    || session_channel_id == "direct-messages";
-
-                // 沙箱归属校验与真实路径解析：同时拦截 .. 词法穿越与指向沙箱外的符号链接 (Symlink Escape)
-                let target_workspace_dir = {
-                    let candidate = if let Some(cwd) = params.get("cwd").and_then(|v| v.as_str()) {
-                        let trimmed = cwd.trim();
-                        let expanded = if trimmed.starts_with("~/") || trimmed == "~" {
-                            let user_home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
-                            trimmed.replacen('~', &user_home, 1)
-                        } else {
-                            trimmed.to_string()
-                        };
-                        let p = PathBuf::from(expanded);
-                        if p.is_relative() { shadow_crew_home.join(p) } else { p }
-                    } else if is_dm {
-                        let aid = maybe_agent_id.unwrap_or("agent-default");
-                        get_agent_dir(aid)
-                    } else {
-                        get_channel_dir(&session_channel_id)
-                    };
-
-                    if let Some(safe_canonical) = validate_and_resolve_workspace_dir(&candidate, &shadow_crew_home) {
-                        safe_canonical
-                    } else {
-                        eprintln!(
-                            "[Shinobi Agent] ⚠️ 检测到非法工作区路径或符号链接越界尝试 (cwd: {:?})，已强制收敛至安全沙箱目录",
-                            candidate
-                        );
-                        if is_dm {
-                            let aid = maybe_agent_id.unwrap_or("agent-default");
-                            get_agent_dir(aid)
-                        } else {
-                            get_channel_dir(&session_channel_id)
-                        }
+                        continue;
                     }
                 };
 
+                let session_channel_id = resolved_cfg.session_channel_id;
+                let is_dm = resolved_cfg.is_dm;
+                let target_workspace_dir = resolved_cfg.target_workspace_dir;
                 let channel_cwd_str = target_workspace_dir.to_string_lossy().to_string();
-                let _ = std::fs::create_dir_all(&target_workspace_dir);
-                let _ = std::fs::create_dir_all(target_workspace_dir.join("artifacts"));
-                let _ = std::fs::create_dir_all(target_workspace_dir.join("scratch"));
                 let _ = std::env::set_current_dir(&target_workspace_dir);
 
                 let meta_file = target_workspace_dir.join("meta.json");
@@ -631,28 +753,16 @@ async fn main() -> Result<()> {
 
                 // 按 (Channel/Agent 作用域 + 规范化工作区路径) 受控复用 MCP 客户端池，
                 // 严格保持不同频道/工作区物理隔离，同时杜绝大量 Topic 无限派生 MCP 子进程
-                let mcp_key = if is_dm {
-                    let aid = maybe_agent_id.unwrap_or("agent-default");
-                    format!("agent:{}", aid)
-                } else {
-                    session_channel_id.clone()
-                };
-                let mcp_pool_key = format!("{}::{}", mcp_key, channel_cwd_str);
+                let mcp_key = resolved_cfg.mcp_key;
+                let mcp_pool_key = resolved_cfg.mcp_pool_key;
                 let chan_param = if is_dm { None } else { Some(session_channel_id.as_str()) };
                 let session_mcp = mcp_pool
                     .get_or_spawn(&mcp_pool_key, &mcp_key, Some(&channel_cwd_str), chan_param)
                     .await;
                 prune_dead_session_mcp_refs(&mut active_sessions, &mut mcp_pool);
 
-                let effective_key = session_key.unwrap_or_else(|| {
-                    if is_dm {
-                        let aid = maybe_agent_id.unwrap_or("agent-default");
-                        format!("dm:{}:thread", aid)
-                    } else {
-                        format!("topic:{}:chan:standard", session_channel_id)
-                    }
-                });
-                let unique_session_id = format!("shinobi-session-{}", effective_key);
+                let effective_key = resolved_cfg.effective_key;
+                let unique_session_id = resolved_cfg.unique_session_id;
 
                 active_sessions.insert(
                     unique_session_id.clone(),
@@ -1287,6 +1397,124 @@ mod tests {
         );
 
         pool.remove_and_terminate("chan-2::d2");
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn test_env_agent_id_does_not_misclassify_channel_session_as_dm() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "shadow_crew_env_agent_dm_test_{}",
+            std::process::id()
+        ));
+        let sandbox_home = temp_base.join(".shadow-crew");
+        let _ = std::fs::remove_dir_all(&temp_base);
+
+        // 1. 进程环境中设置了 SHADOW_CREW_AGENT_ID ("agent-shinobi")，但请求带有正常 channelId ("chan-arch")：
+        // 必须判定为频道会话 (is_dm = false)，使用 channels/chan-arch 目录与频道级 mcp_key
+        let chan_params = serde_json::json!({
+            "channelId": "chan-arch",
+            "sessionKey": "channel:chan-arch:thread-101"
+        });
+        let chan_cfg = resolve_new_session_config(
+            &chan_params,
+            &sandbox_home,
+            Some("agent-shinobi"),
+        )
+        .expect("正常频道会话在存在 SHADOW_CREW_AGENT_ID 环境变量时应解析成功");
+
+        assert!(
+            !chan_cfg.is_dm,
+            "存在 SHADOW_CREW_AGENT_ID 环境变量时，带 channelId 的请求绝不能被误判为 DM"
+        );
+        assert!(
+            chan_cfg.target_workspace_dir.ends_with("channels/chan-arch"),
+            "频道会话必须使用 channels/<channelId> 工作区而非 Agent 私有目录: {:?}",
+            chan_cfg.target_workspace_dir
+        );
+        assert_eq!(chan_cfg.mcp_key, "chan-arch");
+
+        // 2. 即使未显式传 sessionKey，只要传了正常 channelId，也绝不能因 SHADOW_CREW_AGENT_ID 误判为 DM
+        let chan_no_key_params = serde_json::json!({
+            "channelId": "chan-backend"
+        });
+        let chan_no_key_cfg = resolve_new_session_config(
+            &chan_no_key_params,
+            &sandbox_home,
+            Some("agent-shinobi"),
+        )
+        .expect("仅传 channelId 的频道会话应解析成功");
+        assert!(!chan_no_key_cfg.is_dm);
+        assert!(chan_no_key_cfg
+            .target_workspace_dir
+            .ends_with("channels/chan-backend"));
+
+        // 3. 真实 DM 场景（sessionKey 以 "dm:" 开头，或无 channelId 且显式传了 agentId）：应正确识别为 DM 并使用 agents/<agentId>
+        let dm_params = serde_json::json!({
+            "sessionKey": "dm:agent-shinobi:thread-dm-1"
+        });
+        let dm_cfg = resolve_new_session_config(
+            &dm_params,
+            &sandbox_home,
+            Some("agent-shinobi"),
+        )
+        .expect("显式 dm: sessionKey 应解析成功");
+        assert!(dm_cfg.is_dm, "dm: 前缀应识别为私聊会话");
+        assert!(
+            dm_cfg
+                .target_workspace_dir
+                .ends_with("agents/agent-shinobi"),
+            "私聊会话应使用 agents/<agentId> 专属目录: {:?}",
+            dm_cfg.target_workspace_dir
+        );
+        assert_eq!(dm_cfg.mcp_key, "agent:agent-shinobi");
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn test_fallback_all_creation_failures_reject_session_without_returning_root() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "shadow_crew_fallback_failclosed_test_{}",
+            std::process::id()
+        ));
+        let sandbox_home = temp_base.join(".shadow-crew");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&sandbox_home).unwrap();
+
+        // 将 ~/.shadow-crew/channels 预先创建为普通文件（非目录），导致主工作区、chan-safe-default 与 isolated fallback 全部无法创建子目录
+        let channels_blocker_file = sandbox_home.join("channels");
+        std::fs::write(&channels_blocker_file, "blocker-not-a-directory").unwrap();
+
+        // 1. 直接调用 resolve_safe_fallback_dir 必须返回 Err，绝不退回至 sandbox_home 根目录
+        let fallback_res =
+            resolve_safe_fallback_dir(&sandbox_home, "channels", "chan-safe-default");
+        assert!(
+            fallback_res.is_err(),
+            "当 fallback 与 isolated 目录全部创建失败时，resolve_safe_fallback_dir 必须返回 Err (Fail-Closed)"
+        );
+
+        // 2. 调用 resolve_new_session_config 必须返回 (-32002, ...) 拒绝建连，绝不将 ~/.shadow-crew 根目录作为工作区返回
+        let params = serde_json::json!({
+            "channelId": "chan-normal",
+            "sessionKey": "channel:chan-normal:thread-1"
+        });
+        let sess_res = resolve_new_session_config(&params, &sandbox_home, None);
+        assert!(
+            sess_res.is_err(),
+            "当所有安全子工作区均无法创建时，session/new 必须拒绝建连，严禁退回至沙箱根目录"
+        );
+        let (err_code, err_msg) = sess_res.unwrap_err();
+        assert_eq!(err_code, -32002);
+        assert!(
+            err_msg.contains("fail-closed"),
+            "错误信息应明确标识 fail-closed 拒绝原因: {}",
+            err_msg
+        );
+        assert!(
+            !sandbox_home.join("artifacts").exists() && !sandbox_home.join("scratch").exists(),
+            "严禁在 ~/.shadow-crew 沙箱根目录下创建根级 artifacts 或 scratch"
+        );
+
         let _ = std::fs::remove_dir_all(&temp_base);
     }
 }
