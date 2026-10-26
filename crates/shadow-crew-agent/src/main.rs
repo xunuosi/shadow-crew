@@ -19,7 +19,124 @@ struct SessionState {
     channel_id: String,
     workspace_dir: PathBuf,
     system_prompt: Option<String>,
+    mcp_pool_key: String,
     mcp_client: Option<mcp_client::SharedMcpClient>,
+}
+
+/// 受控 MCP 客户端复用池上限：按 (Channel/Agent 作用域 + 规范化工作区路径) 复用，
+/// 既保留不同频道/工作区的严格物理隔离，又防止同频道大量 Topic 导致无限派生 MCP 子进程。
+pub const MAX_MCP_POOL_SIZE: usize = 8;
+
+struct PooledMcpEntry {
+    client: mcp_client::SharedMcpClient,
+    last_used_seq: u64,
+}
+
+pub struct McpClientPool {
+    entries: HashMap<String, PooledMcpEntry>,
+    seq: u64,
+    max_size: usize,
+}
+
+impl McpClientPool {
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            seq: 0,
+            max_size: max_size.max(1),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 按 (mcp_key, canonical_workspace_dir) 受控获取或启动 MCP 客户端
+    pub async fn get_or_spawn(
+        &mut self,
+        pool_key: &str,
+        mcp_key: &str,
+        workdir: Option<&str>,
+        channel_id: Option<&str>,
+    ) -> Option<mcp_client::SharedMcpClient> {
+        self.seq = self.seq.wrapping_add(1);
+        let now_seq = self.seq;
+
+        if let Some(existing) = self.entries.get_mut(pool_key) {
+            let alive = match existing.client.try_lock() {
+                Ok(mut guard) => guard.is_alive(),
+                Err(_) => true, // 正在执行工具调用，视为存活
+            };
+            if alive {
+                existing.last_used_seq = now_seq;
+                return Some(existing.client.clone());
+            } else {
+                self.entries.remove(pool_key);
+            }
+        }
+
+        // 若池已满，按 LRU 淘汰最久未使用的 MCP 子进程并主动终止
+        while self.entries.len() >= self.max_size {
+            let oldest_key = self
+                .entries
+                .iter()
+                .min_by_key(|(_, v)| v.last_used_seq)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = oldest_key {
+                if let Some(evicted) = self.entries.remove(&k) {
+                    if let Ok(mut guard) = evicted.client.try_lock() {
+                        guard.terminate();
+                    }
+                    eprintln!("[Shinobi Agent] ♻️ MCP 池达到上限 ({})，已按 LRU 回收闲置工作区客户端: {}", self.max_size, k);
+                }
+            } else {
+                break;
+            }
+        }
+
+        match mcp_client::NativeMcpClient::spawn_and_connect(workdir, channel_id).await {
+            Ok(client) => {
+                let tool_names: Vec<String> = client
+                    .get_tools()
+                    .iter()
+                    .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
+                    .collect();
+                eprintln!(
+                    "[Shinobi Agent] 原生内置 MCP (shinobi-dev-mcp) 挂载成功 (key={}, cwd={:?}, pool={}/{})，可用工具: {:?}",
+                    mcp_key,
+                    workdir,
+                    self.entries.len() + 1,
+                    self.max_size,
+                    tool_names
+                );
+                let shared = Arc::new(tokio::sync::Mutex::new(client));
+                self.entries.insert(
+                    pool_key.to_string(),
+                    PooledMcpEntry {
+                        client: shared.clone(),
+                        last_used_seq: now_seq,
+                    },
+                );
+                Some(shared)
+            }
+            Err(e) => {
+                eprintln!(
+                    "[Shinobi Agent] 挂载内置原生 MCP 工具失败 (当前会话降级为纯文本推演，绝不串用其他工作区 MCP): {:#}",
+                    e
+                );
+                None
+            }
+        }
+    }
+
+    /// 主动移除并终止不再被任何活跃 Session 引用的 MCP 客户端
+    pub fn remove_and_terminate(&mut self, pool_key: &str) {
+        if let Some(removed) = self.entries.remove(pool_key) {
+            if let Ok(mut guard) = removed.client.try_lock() {
+                guard.terminate();
+            }
+        }
+    }
 }
 
 /// 纯粹基于路径组件的规范化函数，消除 . 与 .. 相对段，不依赖底层文件系统实际存在
@@ -38,6 +155,105 @@ pub fn normalize_path(path: &std::path::Path) -> PathBuf {
         }
     }
     out
+}
+
+/// 清洗频道 ID 或 Agent ID，剔除任何路径分隔符或 .. 片段，防止构造目录时路径逃逸
+pub fn sanitize_workspace_segment(raw: &str, default_val: &str) -> String {
+    let filtered: String = raw
+        .trim()
+        .chars()
+        .filter(|c| *c != '/' && *c != '\\' && *c != '\0')
+        .collect();
+    let trimmed = filtered.trim_matches('.');
+    if trimmed.is_empty() {
+        default_val.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// 严格校验并解析目标工作区路径（词法规范化 + 符号链接穿透 canonicalize 真实路径校验）
+/// 1. 必须在创建任何目录前校验已有祖先路径，防止通过指向沙箱外的 symlink 在外部创建目录
+/// 2. 穿透解析全部已存在祖先的符号链接，确保最终真实物理路径严格位于规范化的 shadow_crew_home 之下
+pub fn validate_and_resolve_workspace_dir(
+    candidate: &std::path::Path,
+    shadow_crew_home: &std::path::Path,
+) -> Option<PathBuf> {
+    let _ = std::fs::create_dir_all(shadow_crew_home);
+    let canonical_home = std::fs::canonicalize(shadow_crew_home)
+        .unwrap_or_else(|_| normalize_path(shadow_crew_home));
+    let norm_home = normalize_path(shadow_crew_home);
+    let norm_candidate = normalize_path(candidate);
+
+    if !norm_candidate.starts_with(&norm_home) && !norm_candidate.starts_with(&canonical_home) {
+        return None;
+    }
+
+    // 若目标本身是悬空符号链接 (dangling symlink)，直接拒绝
+    if std::fs::symlink_metadata(&norm_candidate).is_ok() && !norm_candidate.exists() {
+        return None;
+    }
+
+    // 检查从候选路径向上到沙箱根之间的每一级已存在组件是否包含逃逸沙箱的符号链接
+    for ancestor in norm_candidate.ancestors() {
+        if ancestor == norm_home || ancestor == canonical_home {
+            break;
+        }
+        if let Ok(meta) = std::fs::symlink_metadata(ancestor) {
+            if meta.file_type().is_symlink() {
+                match std::fs::canonicalize(ancestor) {
+                    Ok(real_target) if real_target.starts_with(&canonical_home) => {}
+                    _ => return None,
+                }
+            }
+        }
+    }
+
+    // 定位最深层已存在的祖先目录并执行 canonicalize，再拼接尚未创建的相对子路径
+    let mut existing_ancestor = norm_candidate.as_path();
+    let mut missing_tail = Vec::new();
+    while !existing_ancestor.exists() {
+        if std::fs::symlink_metadata(existing_ancestor).is_ok() {
+            // 祖先中存在悬空符号链接
+            return None;
+        }
+        if let Some(name) = existing_ancestor.file_name() {
+            missing_tail.push(name.to_os_string());
+        } else {
+            return None;
+        }
+        match existing_ancestor.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => {
+                existing_ancestor = parent;
+            }
+            _ => return None,
+        }
+    }
+
+    let canonical_existing = std::fs::canonicalize(existing_ancestor).ok()?;
+    if !canonical_existing.starts_with(&canonical_home) {
+        return None;
+    }
+
+    let mut resolved = canonical_existing;
+    for comp in missing_tail.iter().rev() {
+        resolved.push(comp);
+    }
+
+    if !resolved.starts_with(&canonical_home) {
+        return None;
+    }
+
+    // 通过符号链接与真实路径前置校验后，安全创建目录并二次验证 canonicalize 结果
+    if std::fs::create_dir_all(&resolved).is_err() {
+        return None;
+    }
+    let final_canonical = std::fs::canonicalize(&resolved).ok()?;
+    if final_canonical.starts_with(&canonical_home) {
+        Some(final_canonical)
+    } else {
+        None
+    }
 }
 
 /// 解析用户级全局 Shadow Crew 根目录 (~/.shadow-crew)
@@ -64,30 +280,32 @@ fn get_shadow_crew_home_dir() -> std::path::PathBuf {
 
 /// 解析并创建指定频道的独立私有工作区 (~/.shadow-crew/channels/<channel_id>)
 fn get_channel_dir(channel_id: &str) -> std::path::PathBuf {
-    let clean_id = if channel_id.trim().is_empty() {
-        "chan-default"
-    } else {
-        channel_id.trim()
-    };
-    let channels_dir = get_shadow_crew_home_dir().join("channels").join(clean_id);
-    let _ = std::fs::create_dir_all(&channels_dir);
-    let _ = std::fs::create_dir_all(channels_dir.join("artifacts"));
-    let _ = std::fs::create_dir_all(channels_dir.join("scratch"));
-    channels_dir
+    let home = get_shadow_crew_home_dir();
+    let clean_id = sanitize_workspace_segment(channel_id, "chan-default");
+    let candidate = home.join("channels").join(&clean_id);
+    let safe_dir = validate_and_resolve_workspace_dir(&candidate, &home).unwrap_or_else(|| {
+        let fallback = home.join("channels").join("chan-safe-default");
+        let _ = std::fs::create_dir_all(&fallback);
+        std::fs::canonicalize(&fallback).unwrap_or(fallback)
+    });
+    let _ = std::fs::create_dir_all(safe_dir.join("artifacts"));
+    let _ = std::fs::create_dir_all(safe_dir.join("scratch"));
+    safe_dir
 }
 
 /// 解析并创建指定 Agent 的独立私有工作区 (~/.shadow-crew/agents/<agent_id>)
 fn get_agent_dir(agent_id: &str) -> std::path::PathBuf {
-    let clean_id = if agent_id.trim().is_empty() {
-        "agent-default"
-    } else {
-        agent_id.trim()
-    };
-    let agents_dir = get_shadow_crew_home_dir().join("agents").join(clean_id);
-    let _ = std::fs::create_dir_all(&agents_dir);
-    let _ = std::fs::create_dir_all(agents_dir.join("artifacts"));
-    let _ = std::fs::create_dir_all(agents_dir.join("scratch"));
-    agents_dir
+    let home = get_shadow_crew_home_dir();
+    let clean_id = sanitize_workspace_segment(agent_id, "agent-default");
+    let candidate = home.join("agents").join(&clean_id);
+    let safe_dir = validate_and_resolve_workspace_dir(&candidate, &home).unwrap_or_else(|| {
+        let fallback = home.join("agents").join("agent-safe-default");
+        let _ = std::fs::create_dir_all(&fallback);
+        std::fs::canonicalize(&fallback).unwrap_or(fallback)
+    });
+    let _ = std::fs::create_dir_all(safe_dir.join("artifacts"));
+    let _ = std::fs::create_dir_all(safe_dir.join("scratch"));
+    safe_dir
 }
 
 #[tokio::main]
@@ -130,6 +348,7 @@ async fn main() -> Result<()> {
     // 底座模型配置由宿主通过 SHADOW_CREW_LLM_* 环境变量注入
     let llm_config = llm::LlmConfig::from_env();
     let mut active_sessions: HashMap<String, SessionState> = HashMap::new();
+    let mut mcp_pool = McpClientPool::new(MAX_MCP_POOL_SIZE);
 
     // 持续监听来自 Tauri 宿主或父进程的 stdio JSON-RPC 2.0 请求
     for line in reader.lines() {
@@ -177,7 +396,7 @@ async fn main() -> Result<()> {
                     || session_channel_id.starts_with("dm-")
                     || session_channel_id == "direct-messages";
 
-                // 沙箱归属校验与路径规范化：杜绝绝对路径越界或 .. 路径穿越攻击
+                // 沙箱归属校验与真实路径解析：同时拦截 .. 词法穿越与指向沙箱外的符号链接 (Symlink Escape)
                 let target_workspace_dir = {
                     let candidate = if let Some(cwd) = params.get("cwd").and_then(|v| v.as_str()) {
                         let trimmed = cwd.trim();
@@ -196,14 +415,11 @@ async fn main() -> Result<()> {
                         get_channel_dir(&session_channel_id)
                     };
 
-                    let norm_candidate = normalize_path(&candidate);
-                    let norm_home = normalize_path(&shadow_crew_home);
-
-                    if norm_candidate.starts_with(&norm_home) {
-                        candidate
+                    if let Some(safe_canonical) = validate_and_resolve_workspace_dir(&candidate, &shadow_crew_home) {
+                        safe_canonical
                     } else {
                         eprintln!(
-                            "[Shinobi Agent] ⚠️ 检测到非法工作区路径尝试越界 (cwd: {:?})，已强制收敛至安全沙箱目录",
+                            "[Shinobi Agent] ⚠️ 检测到非法工作区路径或符号链接越界尝试 (cwd: {:?})，已强制收敛至安全沙箱目录",
                             candidate
                         );
                         if is_dm {
@@ -241,38 +457,19 @@ async fn main() -> Result<()> {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                // 专属会话级 MCP 工具隔离挂载：独立绑定当前会话工作区，绝不跨会话或全局复用
+                // 按 (Channel/Agent 作用域 + 规范化工作区路径) 受控复用 MCP 客户端池，
+                // 严格保持不同频道/工作区物理隔离，同时杜绝大量 Topic 无限派生 MCP 子进程
                 let mcp_key = if is_dm {
                     let aid = maybe_agent_id.unwrap_or("agent-default");
                     format!("agent:{}", aid)
                 } else {
                     session_channel_id.clone()
                 };
-
+                let mcp_pool_key = format!("{}::{}", mcp_key, channel_cwd_str);
                 let chan_param = if is_dm { None } else { Some(session_channel_id.as_str()) };
-                let session_mcp = match mcp_client::NativeMcpClient::spawn_and_connect(Some(&channel_cwd_str), chan_param).await {
-                    Ok(client) => {
-                        let tool_names: Vec<String> = client
-                            .get_tools()
-                            .iter()
-                            .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
-                            .collect();
-                        eprintln!(
-                            "[Shinobi Agent] 原生内置 MCP (shinobi-dev-mcp) 挂载成功 (key={}, cwd={})，可用工具: {:?}",
-                            mcp_key,
-                            channel_cwd_str,
-                            tool_names
-                        );
-                        Some(Arc::new(tokio::sync::Mutex::new(client)))
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "[Shinobi Agent] 挂载内置原生 MCP 工具失败 (当前会话降级为纯文本推演，绝不串用其他工作区 MCP): {:#}",
-                            e
-                        );
-                        None
-                    }
-                };
+                let session_mcp = mcp_pool
+                    .get_or_spawn(&mcp_pool_key, &mcp_key, Some(&channel_cwd_str), chan_param)
+                    .await;
 
                 let effective_key = session_key.unwrap_or_else(|| {
                     if is_dm {
@@ -292,6 +489,7 @@ async fn main() -> Result<()> {
                         channel_id: session_channel_id.clone(),
                         workspace_dir: target_workspace_dir,
                         system_prompt: sp,
+                        mcp_pool_key,
                         mcp_client: session_mcp,
                     },
                 );
@@ -309,7 +507,14 @@ async fn main() -> Result<()> {
                 }
             } else if method == "session/close" {
                 if let Some(close_sid) = params.get("sessionId").and_then(|v| v.as_str()) {
-                    active_sessions.remove(close_sid);
+                    if let Some(removed_session) = active_sessions.remove(close_sid) {
+                        let still_referenced = active_sessions
+                            .values()
+                            .any(|st| st.mcp_pool_key == removed_session.mcp_pool_key);
+                        if !still_referenced {
+                            mcp_pool.remove_and_terminate(&removed_session.mcp_pool_key);
+                        }
+                    }
                 }
                 let resp = serde_json::json!({
                     "jsonrpc": "2.0",
@@ -412,8 +617,19 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                // 严格会话物理隔离：仅使用该 Session 专属的 MCP 客户端，绝不跨会话或全局复用
-                let current_mcp_client = session_state.mcp_client.clone();
+                // 严格工作区物理隔离 + 池化存活自愈：若原 MCP 客户端因池满 LRU 被回收，按原工作区受控重连
+                let is_dm_session = session_state.session_key.starts_with("dm:") || session_state.channel_id.starts_with("dm-");
+                let chan_param_for_prompt = if is_dm_session { None } else { Some(session_state.channel_id.as_str()) };
+                let current_mcp_client = mcp_pool
+                    .get_or_spawn(
+                        &session_state.mcp_pool_key,
+                        &session_state.channel_id,
+                        Some(&current_workspace_cwd),
+                        chan_param_for_prompt,
+                    )
+                    .await
+                    .or_else(|| session_state.mcp_client.clone());
+                session_state.mcp_client = current_mcp_client.clone();
                 
                 // 1. 从私有记忆库召回关键知识 (全局核心认知 + 本地私有知识)
                 let mut recalled = memory_store.recall_relevant(query).unwrap_or_default();
@@ -445,7 +661,6 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                let is_dm_session = session_state.session_key.starts_with("dm:") || session_state.channel_id.starts_with("dm-");
                 let artifacts_dir = current_workspace_dir.join("artifacts").to_string_lossy().to_string();
                 let scratch_dir = current_workspace_dir.join("scratch").to_string_lossy().to_string();
                 if !system_prompt.contains("[当前频道专属工作空间环境]") && !system_prompt.contains("[当前 Agent 个人专属独立工作空间环境]") {
@@ -608,5 +823,86 @@ mod tests {
         let path = PathBuf::from("/a/b/./c/../d");
         let norm = normalize_path(&path);
         assert_eq!(norm, PathBuf::from("/a/b/d"));
+    }
+
+    #[test]
+    fn test_validate_and_resolve_workspace_dir_blocks_symlink_escape() {
+        let temp_base = std::env::temp_dir().join(format!("shadow_crew_symlink_test_{}", std::process::id()));
+        let sandbox_home = temp_base.join(".shadow-crew");
+        let outside_dir = temp_base.join("outside_secret_dir");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(sandbox_home.join("channels")).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+
+        // 1. 合法子目录（尚不存在时自动安全创建并 canonicalize）
+        let valid_chan = sandbox_home.join("channels/chan-safe-1");
+        let resolved_valid = validate_and_resolve_workspace_dir(&valid_chan, &sandbox_home);
+        assert!(resolved_valid.is_some(), "合法沙箱内子目录应校验通过");
+        let canonical_home = std::fs::canonicalize(&sandbox_home).unwrap();
+        assert!(resolved_valid.unwrap().starts_with(&canonical_home));
+
+        // 2. 符号链接越界测试：在 ~/.shadow-crew/channels/evil-link 下创建指向沙箱外 outside_dir 的 symlink
+        #[cfg(unix)]
+        {
+            let symlink_path = sandbox_home.join("channels/evil-link");
+            std::os::unix::fs::symlink(&outside_dir, &symlink_path).unwrap();
+
+            // 2a. 直接访问符号链接目录本身 -> 必须被拦截 (返回 None)
+            let direct_escape = validate_and_resolve_workspace_dir(&symlink_path, &sandbox_home);
+            assert!(
+                direct_escape.is_none(),
+                "指向沙箱外的符号链接目录必须被 canonicalize 校验拦截"
+            );
+
+            // 2b. 访问符号链接下尚未创建的深层子目录 -> 必须在 create_dir_all 之前被拦截，且不得在外部目录创建任何子目录
+            let nested_escape = symlink_path.join("sub_escape/deep");
+            let nested_res = validate_and_resolve_workspace_dir(&nested_escape, &sandbox_home);
+            assert!(
+                nested_res.is_none(),
+                "符号链接下的未创建子路径也必须被拦截"
+            );
+            assert!(
+                !outside_dir.join("sub_escape").exists(),
+                "严禁跟随符号链接在沙箱外创建目录"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[tokio::test]
+    async fn test_mcp_client_pool_reuse_and_bounded_eviction() {
+        let mut pool = McpClientPool::new(2);
+        let temp_base = std::env::temp_dir().join(format!("shadow_crew_mcp_pool_test_{}", std::process::id()));
+        let dir1 = temp_base.join("chan-1");
+        let dir2 = temp_base.join("chan-2");
+        let dir3 = temp_base.join("chan-3");
+        std::fs::create_dir_all(&dir1).unwrap();
+        std::fs::create_dir_all(&dir2).unwrap();
+        std::fs::create_dir_all(&dir3).unwrap();
+
+        let d1_str = dir1.to_string_lossy().to_string();
+        let d2_str = dir2.to_string_lossy().to_string();
+        let d3_str = dir3.to_string_lossy().to_string();
+
+        let c1_first = pool.get_or_spawn("chan-1::d1", "chan-1", Some(&d1_str), Some("chan-1")).await;
+        if let Some(c1_a) = c1_first {
+            // 同频道/同工作区的第二个 Topic 会话复用同一个 SharedMcpClient Arc 实例
+            let c1_b = pool.get_or_spawn("chan-1::d1", "chan-1", Some(&d1_str), Some("chan-1")).await.unwrap();
+            assert!(Arc::ptr_eq(&c1_a, &c1_b), "同一频道与工作区的多个 Session 必须复用同一 MCP 客户端实例");
+            assert_eq!(pool.len(), 1, "复用后池大小保持为 1");
+
+            let _c2 = pool.get_or_spawn("chan-2::d2", "chan-2", Some(&d2_str), Some("chan-2")).await.unwrap();
+            assert_eq!(pool.len(), 2, "新增不同频道后池大小为 2");
+
+            // 第 3 个不同频道进入容量为 2 的池时，自动按 LRU 淘汰最久未使用的 chan-1::d1
+            let _c3 = pool.get_or_spawn("chan-3::d3", "chan-3", Some(&d3_str), Some("chan-3")).await.unwrap();
+            assert_eq!(pool.len(), 2, "超出池上限时触发 LRU 回收，池大小严格受控 <= 2");
+
+            pool.remove_and_terminate("chan-2::d2");
+            pool.remove_and_terminate("chan-3::d3");
+            assert_eq!(pool.len(), 0, "主动移除后池清空");
+        }
+        let _ = std::fs::remove_dir_all(&temp_base);
     }
 }

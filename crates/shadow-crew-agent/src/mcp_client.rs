@@ -159,6 +159,16 @@ impl NativeMcpClient {
         &self.tools
     }
 
+    /// 检查底层 MCP 子进程是否仍然存活
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self._child.try_wait(), Ok(None))
+    }
+
+    /// 主动终止底层 MCP 子进程并释放资源
+    pub fn terminate(&mut self) {
+        let _ = self._child.start_kill();
+    }
+
     /// 将 MCP 工具定义转换为 OpenAI 兼容标准的 tools 参数
     pub fn to_openai_tools(&self) -> Vec<Value> {
         self.tools

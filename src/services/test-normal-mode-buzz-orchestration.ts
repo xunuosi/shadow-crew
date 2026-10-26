@@ -11,9 +11,11 @@ import {
   buildNormalModeTurnPrompt,
   aggregateTurnBarrierMentions,
   buildCascadePrompt,
+  buildCompositeSystemPrompt,
   MAX_DELTA_BATCH_EVENTS,
   type RoomTranscriptEntry,
 } from './agentCollaboration';
+import { buildAgentSessionKey, matchesSessionScope } from './acpClient';
 import type { Agent } from '../types';
 
 function createMockAgent(partial: {
@@ -626,6 +628,85 @@ console.log('\n5️⃣ 测试 5-Hop 级联接力防漏读竞态回归 (OpenClaw 
       hop5Batch.deltaMessages[2].id === 'reply-hop-4-glmclaude' &&
       hop5Prompt.includes('【第 4 轮 GlmClaude 正文：内核层批评与四问判据】'),
     'Hop 5 (OpenClaw 热会话): <delta-events> 完整包含第 2、3 轮及触发它的【第 4 轮 GlmClaude 正文】（同时自动排除第 1 轮自身发言）'
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 6. 频道成员变更时花名册缓存与水位线清理回归测试 (Roster Invalidation on Member Update)
+// ---------------------------------------------------------------------------
+console.log('\n6️⃣ 测试频道成员增删时已有 Session 花名册缓存与水位线精准失效');
+{
+  const standingSet = new Set<string>();
+  const watermarks = new Map<string, string>();
+
+  const ch1KeyA = buildAgentSessionKey({
+    agentId: mockAgentA.id,
+    roomId: 'thread-ch-1',
+    channelId: 'ch-1',
+    isDm: false,
+  });
+  const ch1TopicKeyA = buildAgentSessionKey({
+    agentId: mockAgentA.id,
+    roomId: 'topic-101',
+    channelId: 'ch-1',
+    isDm: false,
+    discussionMode: 'standard',
+  });
+  const ch2KeyA = buildAgentSessionKey({
+    agentId: mockAgentA.id,
+    roomId: 'thread-ch-2',
+    channelId: 'ch-2',
+    isDm: false,
+  });
+
+  standingSet.add(ch1KeyA);
+  standingSet.add(ch1TopicKeyA);
+  standingSet.add(ch2KeyA);
+  watermarks.set(ch1KeyA, 'msg-10');
+  watermarks.set(ch1TopicKeyA, 'msg-20');
+  watermarks.set(ch2KeyA, 'msg-30');
+
+  // 模拟 ch-1 成员变更前：已投递过 standing context，因此 includeRoster = false 不含新成员花名册
+  const beforeUpdatePrompt = buildCompositeSystemPrompt({
+    agent: mockAgentA,
+    availableAgents: [...channelAgents, mockOutsiderD],
+    includeRoster: !standingSet.has(ch1KeyA),
+  });
+  assert(
+    !beforeUpdatePrompt.includes(mockOutsiderD.handle),
+    '成员变更清理前：热会话 includeRoster=false 跳过花名册注入'
+  );
+
+  // 模拟 handleUpdateChannelMembers 清理 ch-1 作用域下的 standing context 与水位线
+  standingSet.forEach((key) => {
+    if (matchesSessionScope(key, { channelId: 'ch-1', deletedThreadIds: ['thread-ch-1'] })) {
+      standingSet.delete(key);
+    }
+  });
+  Array.from(watermarks.keys()).forEach((key) => {
+    if (matchesSessionScope(key, { channelId: 'ch-1', deletedThreadIds: ['thread-ch-1'] })) {
+      watermarks.delete(key);
+    }
+  });
+
+  assert(
+    !standingSet.has(ch1KeyA) && !standingSet.has(ch1TopicKeyA) && standingSet.has(ch2KeyA),
+    '清理 ch-1 作用域后：ch-1 主线程与所属议题的 standing context 被精准移除，ch-2 保持不受影响'
+  );
+  assert(
+    !watermarks.has(ch1KeyA) && !watermarks.has(ch1TopicKeyA) && watermarks.get(ch2KeyA) === 'msg-30',
+    '清理 ch-1 作用域后：ch-1 主线程与所属议题的会话水位线被精准移除，ch-2 保持不受影响'
+  );
+
+  // 清理后再次构建 SystemPrompt：includeRoster 恢复为 true，新加入成员完整出现在花名册中
+  const afterUpdatePrompt = buildCompositeSystemPrompt({
+    agent: mockAgentA,
+    availableAgents: [...channelAgents, mockOutsiderD],
+    includeRoster: !standingSet.has(ch1KeyA),
+  });
+  assert(
+    afterUpdatePrompt.includes(mockOutsiderD.handle) && afterUpdatePrompt.includes(mockOutsiderD.name),
+    '成员变更清理后：下一轮交互自动重新挂载最新团队花名册，已有 Agent 立即识别新入驻成员'
   );
 }
 

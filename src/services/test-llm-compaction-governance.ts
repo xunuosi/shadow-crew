@@ -521,6 +521,29 @@ console.log('\n1️⃣1️⃣ 测试上下文压缩双模架构 (compactConversa
 • 【重要执行结果】: 团队一致同意保留本地缓存优先策略，已完成验证合入`;
   assert(isValidMicroAgentSummary(engineeringSummaryWithNegativePhrases) === true, '包含工程描述"无法提供"与"rate limit"的真实技术摘要不应被误杀拒答');
 
+  // 11.6.2 验证包含裸词“架构”“方案”的普通无结构对话文本被严格拒绝，不误标为 mode="micro_agent"
+  assert(
+    isValidMicroAgentSummary('我们讨论架构和方案，但没有任何结论或事实。') === false,
+    '包含裸词“架构和方案”的普通句子必须被拒绝 (返回 false)'
+  );
+  assert(
+    isValidMicroAgentSummary('有一条普通聊天记录，提到了架构与方案，但并未总结。') === false,
+    '包含裸词“架构与方案”的普通聊天记录必须被拒绝 (返回 false)'
+  );
+  assert(
+    isValidMicroAgentSummary('在句子中间出现【架构与技术决议】: 但并非行首结构化标题格式，不应通过校验。') === false,
+    '非行首出现的标题片段必须被拒绝 (返回 false)'
+  );
+  const plainTextFallbackTurn = buildFoldedSummaryTurn(
+    sampleHistory.slice(0, 4),
+    300,
+    '我们讨论架构和方案，但没有任何结论或事实。'
+  );
+  assert(
+    plainTextFallbackTurn[0].content.includes('mode="rule_based"'),
+    '普通无结构文本传入 buildFoldedSummaryTurn 时强制回退为 mode="rule_based"'
+  );
+
   // 拒绝回答时，buildFoldedSummaryTurn 自动无缝降级为 rule_based
   const rejectedTurn = buildFoldedSummaryTurn(sampleHistory.slice(0, 4), 300, '抱歉，我无法总结这段对话。');
   assert(rejectedTurn[0].content.includes('mode="rule_based"'), '当模型输出拒答时，自动降级为 mode="rule_based"');
