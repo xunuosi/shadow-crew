@@ -1,5 +1,10 @@
+import { useState, useRef, useCallback } from 'react';
+import { matchesSessionScope } from './acpClient';
 import { 
   Agent, 
+  Channel,
+  Thread,
+  Message,
   DiscussionMode, 
   GameRolesConfig, 
   GameRoleType, 
@@ -1843,6 +1848,10 @@ export interface ExecuteAbortAgentOptions<TExec extends AbortableExecutionItem> 
       | ((prev: Record<string, CollaborationCascade>) => Record<string, CollaborationCascade>)
   ) => void;
   setIsGenerating: (val: boolean) => void;
+  setAgents?: (updater: (prev: Agent[]) => Agent[]) => void;
+  setMessages?: (
+    updater: (prev: Record<string, Message[]>) => Record<string, Message[]>
+  ) => void;
 }
 
 /**
@@ -1868,6 +1877,8 @@ export function executeAbortAgentOrchestration<TExec extends AbortableExecutionI
     setActiveExecutions,
     setActiveCascades,
     setIsGenerating,
+    setAgents,
+    setMessages,
   } = options;
 
   let remainingInThread = 0;
@@ -1955,9 +1966,473 @@ export function executeAbortAgentOrchestration<TExec extends AbortableExecutionI
     });
   }
 
+  if (setAgents) {
+    setAgents((prev) =>
+      prev.map((a) => (a.id === agentId && a.status !== 'idle' ? { ...a, status: 'running' } : a))
+    );
+  }
+
+  if (threadId && setMessages) {
+    setMessages((prev) => {
+      const list = prev[threadId];
+      if (!list || !list.some((m) => m.authorId === agentId && m.isPending)) return prev;
+      return {
+        ...prev,
+        [threadId]: list.map((m) =>
+          m.authorId === agentId && m.isPending
+            ? {
+                ...m,
+                isPending: false,
+                agentBadge: '已终止',
+                content: (m.content || '') + '\n\n*(已由用户手动终止推演)*',
+              }
+            : m
+        ),
+      };
+    });
+  }
+
   return {
     remainingInThread,
     shouldAbortWholeThread,
+  };
+}
+
+export interface ExecuteAbortAllOptions<TExec extends AbortableExecutionItem> {
+  threadId?: string;
+  activeExecutionsRef: { current: Record<string, TExec> };
+  activeCascadesRef: { current: Record<string, CollaborationCascade> };
+  turnEpochTracker: TurnEpochTracker;
+  inFlightHandovers: Set<string>;
+  generationEpochRef?: { current: number };
+  setActiveExecutions: (
+    updater:
+      | Record<string, TExec>
+      | ((prev: Record<string, TExec>) => Record<string, TExec>)
+  ) => void;
+  setActiveCascades: (
+    updater:
+      | Record<string, CollaborationCascade>
+      | ((prev: Record<string, CollaborationCascade>) => Record<string, CollaborationCascade>)
+  ) => void;
+  setIsGenerating: (val: boolean) => void;
+  setAgents?: (updater: (prev: Agent[]) => Agent[]) => void;
+  setMessages?: (
+    updater: (prev: Record<string, Message[]>) => Record<string, Message[]>
+  ) => void;
+}
+
+/**
+ * 执行指定线程或全局的全部执行终止编排：
+ * 1. 递增房间或全局 Epoch 并清理在途交接锁；
+ * 2. 标记匹配的级联为 isAborted，同步清理 activeExecutionsRef 与 React state；
+ * 3. 将挂起消息标记为「已终止」，并保持 Agent 在线就绪状态 ('running')。
+ */
+export function executeAbortAllOrchestration<TExec extends AbortableExecutionItem>(
+  options: ExecuteAbortAllOptions<TExec>
+): void {
+  const {
+    threadId,
+    activeExecutionsRef,
+    activeCascadesRef,
+    turnEpochTracker,
+    inFlightHandovers,
+    generationEpochRef,
+    setActiveExecutions,
+    setActiveCascades,
+    setIsGenerating,
+    setAgents,
+    setMessages,
+  } = options;
+
+  if (threadId) {
+    bumpRoomEpoch(turnEpochTracker, threadId);
+    inFlightHandovers.forEach((key) => {
+      if (key.startsWith(`${threadId}:`)) {
+        inFlightHandovers.delete(key);
+      }
+    });
+    if (setMessages) {
+      setMessages((prev) => {
+        const list = prev[threadId];
+        if (!list || !list.some((m) => m.isPending)) return prev;
+        return {
+          ...prev,
+          [threadId]: list.map((m) =>
+            m.isPending
+              ? {
+                  ...m,
+                  isPending: false,
+                  agentBadge: '已终止',
+                  content: (m.content || '') + '\n\n*(已由用户手动终止推演)*',
+                }
+              : m
+          ),
+        };
+      });
+    }
+  } else {
+    if (generationEpochRef) {
+      generationEpochRef.current++;
+    }
+    bumpGlobalEpoch(turnEpochTracker);
+    inFlightHandovers.clear();
+  }
+
+  const currentCascades = activeCascadesRef.current || {};
+  const nextCascades: Record<string, CollaborationCascade> = {};
+  (Object.entries(currentCascades) as [string, CollaborationCascade][]).forEach(([k, v]) => {
+    if (!threadId || v.roomId === threadId) {
+      nextCascades[k] = { ...v, isAborted: true };
+    } else {
+      nextCascades[k] = v;
+    }
+  });
+  activeCascadesRef.current = nextCascades;
+
+  setActiveCascades((prev) => {
+    const next: Record<string, CollaborationCascade> = {};
+    (Object.entries(prev) as [string, CollaborationCascade][]).forEach(([k, v]) => {
+      if (!threadId || v.roomId === threadId) {
+        next[k] = { ...v, isAborted: true };
+      } else {
+        next[k] = v;
+      }
+    });
+    activeCascadesRef.current = next;
+    return next;
+  });
+
+  const agentsToReset: string[] = [];
+  Object.values(activeExecutionsRef.current || {}).forEach((item) => {
+    if (!threadId || item.threadId === threadId || item.topicId === threadId) {
+      agentsToReset.push(item.agentId);
+    }
+  });
+
+  const nextExecs: Record<string, TExec> = { ...(activeExecutionsRef.current || {}) };
+  Object.keys(nextExecs).forEach((key) => {
+    const item = nextExecs[key];
+    if (!threadId || item.threadId === threadId || item.topicId === threadId) {
+      delete nextExecs[key];
+    }
+  });
+  activeExecutionsRef.current = nextExecs;
+  if (!threadId || Object.keys(nextExecs).length === 0) {
+    setIsGenerating(false);
+  }
+
+  setActiveExecutions((prev) => {
+    const next = { ...prev };
+    Object.keys(next).forEach((key) => {
+      const item = next[key];
+      if (!threadId || item.threadId === threadId || item.topicId === threadId) {
+        delete next[key];
+      }
+    });
+    if (!threadId || Object.keys(next).length === 0) {
+      setIsGenerating(false);
+    }
+    activeExecutionsRef.current = next;
+    return next;
+  });
+
+  if (setAgents) {
+    setAgents((prev) =>
+      prev.map((a) =>
+        agentsToReset.includes(a.id) && a.status !== 'idle' ? { ...a, status: 'running' } : a
+      )
+    );
+  }
+}
+
+export interface ExecuteUpdateChannelMembersOptions<TExec extends AbortableExecutionItem> {
+  channelId: string;
+  updatedMemberIds: string[];
+  agents: Agent[];
+  threads: Thread[];
+  messagesRef: { current: Record<string, Message[]> };
+  activeExecutionsRef: { current: Record<string, TExec> };
+  turnEpochTracker: TurnEpochTracker;
+  deliveredStandingContext: Set<string>;
+  sessionWatermarks: Map<string, string>;
+  setChannels: (updater: (prev: Channel[]) => Channel[]) => void;
+  setThreads: (updater: (prev: Thread[]) => Thread[]) => void;
+  onAbortRoom: (roomId: string) => void;
+  clearAcpSessionsByPrefix: (
+    agentId: string | undefined,
+    sessionKeyPrefix: string,
+    contextLabel: string
+  ) => Promise<void>;
+}
+
+/**
+ * 执行频道成员更新编排（邀请/移除成员）：
+ * 1. 计算归属于该频道的 Thread 与 Topic 列表，立即递增 channelEpoch 与受影响房间 roomEpoch；
+ * 2. 若受影响房间存在正在运行的执行，立即调用 onAbortRoom 终止在途旧花名册轮次；
+ * 3. 更新 channels 与 threads 的 React 状态；
+ * 4. 精确清理该频道及下属议题的 standing context、会话水位线与底层 ACP Session（channel:<id> 与 topic:<id>）。
+ */
+export async function executeUpdateChannelMembersOrchestration<
+  TExec extends AbortableExecutionItem
+>(options: ExecuteUpdateChannelMembersOptions<TExec>): Promise<{
+  updatedAgentIds: string[];
+  affectedRoomIds: string[];
+}> {
+  const {
+    channelId,
+    updatedMemberIds,
+    agents,
+    threads,
+    messagesRef,
+    activeExecutionsRef,
+    turnEpochTracker,
+    deliveredStandingContext,
+    sessionWatermarks,
+    setChannels,
+    setThreads,
+    onAbortRoom,
+    clearAcpSessionsByPrefix,
+  } = options;
+
+  const updatedAgentIds = updatedMemberIds.filter((id) => agents.some((a) => a.id === id));
+  const channelThreadIds = threads.filter((t) => t.channelId === channelId).map((t) => t.id);
+  const channelTopicIds: string[] = [];
+  for (const msgList of Object.values(messagesRef.current || {}) as Message[][]) {
+    for (const m of msgList) {
+      if (m.type === 'topic' && m.topicData?.channelId === channelId) {
+        channelTopicIds.push(m.topicData.id);
+      }
+    }
+  }
+  const affectedRoomIds = Array.from(new Set([...channelThreadIds, ...channelTopicIds]));
+
+  bumpChannelEpoch(turnEpochTracker, channelId, affectedRoomIds);
+  affectedRoomIds.forEach((rid) => {
+    const hasActive = Object.values(activeExecutionsRef.current || {}).some(
+      (e) => e.threadId === rid || e.topicId === rid
+    );
+    if (hasActive) {
+      onAbortRoom(rid);
+    }
+  });
+
+  setChannels((prev) =>
+    prev.map((c) =>
+      c.id === channelId
+        ? {
+            ...c,
+            memberIds: updatedMemberIds,
+            assignedAgentIds: updatedAgentIds,
+          }
+        : c
+    )
+  );
+
+  setThreads((prev) =>
+    prev.map((t) =>
+      t.channelId === channelId
+        ? { ...t, activeAgentIds: updatedAgentIds }
+        : t
+    )
+  );
+
+  deliveredStandingContext.forEach((key) => {
+    if (matchesSessionScope(key, { channelId, deletedThreadIds: affectedRoomIds })) {
+      deliveredStandingContext.delete(key);
+    }
+  });
+  Array.from(sessionWatermarks.keys()).forEach((key) => {
+    if (matchesSessionScope(key, { channelId, deletedThreadIds: affectedRoomIds })) {
+      sessionWatermarks.delete(key);
+    }
+  });
+
+  await Promise.all([
+    clearAcpSessionsByPrefix(undefined, `channel:${channelId}`, '更新频道成员'),
+    clearAcpSessionsByPrefix(undefined, `topic:${channelId}`, '更新频道成员'),
+  ]);
+
+  return {
+    updatedAgentIds,
+    affectedRoomIds,
+  };
+}
+
+export interface UseCollaborationLifecycleControllerInit<
+  TExec extends AbortableExecutionItem
+> {
+  initialAgents: Agent[];
+  initialChannels: Channel[];
+  initialThreads: Thread[];
+  initialMessages: Record<string, Message[]>;
+  initialActiveExecutions?: Record<string, TExec>;
+  initialActiveCascades?: Record<string, CollaborationCascade>;
+  initialStandingContextKeys?: string[];
+  initialWatermarks?: Array<[string, string]>;
+  isGameTopicResolver?: (threadId: string, messages: Record<string, Message[]>) => boolean;
+  clearAcpSessionsFn: (
+    agentId?: string,
+    sessionKeyPrefix?: string
+  ) => Promise<void>;
+}
+
+/**
+ * 供真实 React 19 组件挂载与生命周期测试复用的协同控制 Hook：
+ * 使用原生 React 19 `useState` / `useRef` / `useCallback` 管理 `agents`、`channels`、`threads`、`messages`、
+ * `activeExecutions`、`activeCascades` 与 `turnEpochTracker`，暴露与 `App.tsx` 完全一致的
+ * `handleAbortAgent`、`handleAbortAll` 与 `handleUpdateChannelMembers` 事件处理器。
+ */
+export function useCollaborationLifecycleController<
+  TExec extends AbortableExecutionItem
+>(init: UseCollaborationLifecycleControllerInit<TExec>) {
+  const [agents, setAgents] = useState<Agent[]>(init.initialAgents);
+  const [channels, setChannels] = useState<Channel[]>(init.initialChannels);
+  const [threads, setThreads] = useState<Thread[]>(init.initialThreads);
+  const [messages, setMessagesState] = useState<Record<string, Message[]>>(init.initialMessages);
+  const [activeExecutions, setActiveExecutionsState] = useState<Record<string, TExec>>(
+    init.initialActiveExecutions || {}
+  );
+  const [activeCascades, setActiveCascadesState] = useState<Record<string, CollaborationCascade>>(
+    init.initialActiveCascades || {}
+  );
+  const [isGenerating, setIsGenerating] = useState<boolean>(
+    Object.keys(init.initialActiveExecutions || {}).length > 0
+  );
+  const [sessionCleanupNotice, setSessionCleanupNotice] = useState<string | null>(null);
+
+  const messagesRef = useRef<Record<string, Message[]>>(init.initialMessages);
+  const activeExecutionsRef = useRef<Record<string, TExec>>(init.initialActiveExecutions || {});
+  const activeCascadesRef = useRef<Record<string, CollaborationCascade>>(
+    init.initialActiveCascades || {}
+  );
+  const turnEpochTrackerRef = useRef<TurnEpochTracker>(createTurnEpochTracker());
+  const inFlightHandoverRef = useRef<Set<string>>(new Set());
+  const generationEpochRef = useRef<number>(0);
+  const deliveredStandingContextRef = useRef<Set<string>>(
+    new Set(init.initialStandingContextKeys || [])
+  );
+  const sessionWatermarksRef = useRef<Map<string, string>>(
+    new Map(init.initialWatermarks || [])
+  );
+
+  const commitMessages = useCallback(
+    (
+      updater:
+        | Record<string, Message[]>
+        | ((prev: Record<string, Message[]>) => Record<string, Message[]>)
+    ) => {
+      setMessagesState((prev) => {
+        const next = typeof updater === 'function' ? updater(prev) : updater;
+        messagesRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
+
+  const safelyClearAcpSessions = useCallback(
+    async (
+      agentId: string | undefined,
+      sessionKeyPrefix: string,
+      contextLabel: string
+    ): Promise<void> => {
+      try {
+        await init.clearAcpSessionsFn(agentId, sessionKeyPrefix);
+        setSessionCleanupNotice((prev) => (prev && prev.includes(contextLabel) ? null : prev));
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        setSessionCleanupNotice(
+          `⚠️ ${contextLabel}时底层 ACP 会话清理未完全成功 (${reason})，为防上下文串扰已阻断对应作用域の新请求，请重试清理`
+        );
+      }
+    },
+    [init.clearAcpSessionsFn]
+  );
+
+  const handleAbortAgent = useCallback(
+    (agentId: string, threadId?: string) => {
+      const isGameTopic =
+        threadId && init.isGameTopicResolver
+          ? init.isGameTopicResolver(threadId, messagesRef.current)
+          : false;
+
+      return executeAbortAgentOrchestration({
+        agentId,
+        threadId,
+        isGameTopic,
+        activeExecutionsRef,
+        activeCascadesRef,
+        turnEpochTracker: turnEpochTrackerRef.current,
+        inFlightHandovers: inFlightHandoverRef.current,
+        generationEpochRef,
+        setActiveExecutions: setActiveExecutionsState,
+        setActiveCascades: setActiveCascadesState,
+        setIsGenerating,
+        setAgents,
+        setMessages: commitMessages,
+      });
+    },
+    [commitMessages, init.isGameTopicResolver]
+  );
+
+  const handleAbortAll = useCallback(
+    (threadId?: string) => {
+      executeAbortAllOrchestration({
+        threadId,
+        activeExecutionsRef,
+        activeCascadesRef,
+        turnEpochTracker: turnEpochTrackerRef.current,
+        inFlightHandovers: inFlightHandoverRef.current,
+        generationEpochRef,
+        setActiveExecutions: setActiveExecutionsState,
+        setActiveCascades: setActiveCascadesState,
+        setIsGenerating,
+        setAgents,
+        setMessages: commitMessages,
+      });
+    },
+    [commitMessages]
+  );
+
+  const handleUpdateChannelMembers = useCallback(
+    async (channelId: string, updatedMemberIds: string[]) => {
+      return executeUpdateChannelMembersOrchestration({
+        channelId,
+        updatedMemberIds,
+        agents,
+        threads,
+        messagesRef,
+        activeExecutionsRef,
+        turnEpochTracker: turnEpochTrackerRef.current,
+        deliveredStandingContext: deliveredStandingContextRef.current,
+        sessionWatermarks: sessionWatermarksRef.current,
+        setChannels,
+        setThreads,
+        onAbortRoom: handleAbortAll,
+        clearAcpSessionsByPrefix: safelyClearAcpSessions,
+      });
+    },
+    [agents, threads, handleAbortAll, safelyClearAcpSessions]
+  );
+
+  return {
+    agents,
+    channels,
+    threads,
+    messages,
+    activeExecutions,
+    activeCascades,
+    isGenerating,
+    sessionCleanupNotice,
+    turnEpochTrackerRef,
+    deliveredStandingContextRef,
+    sessionWatermarksRef,
+    inFlightHandoverRef,
+    generationEpochRef,
+    handleAbortAgent,
+    handleAbortAll,
+    handleUpdateChannelMembers,
   };
 }
 

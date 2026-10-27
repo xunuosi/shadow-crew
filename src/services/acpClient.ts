@@ -947,12 +947,21 @@ export async function sendPromptToAcpAgent(
     isDm: options.isDm,
     discussionMode: options.discussionMode,
   });
+  const unifiedSessionKey = buildUnifiedSessionKey({
+    agentId: agent.id,
+    roomId,
+    channelId: options.channelId,
+    isDm: options.isDm,
+    discussionMode: options.discussionMode,
+  });
   await waitForPendingAcpSessionClears({
     agentId: agent.id,
     sessionKey: barrierSessionKey,
     channelId: options.channelId,
     roomId,
   });
+  registerActiveAcpSessionForKey(barrierSessionKey);
+  registerActiveAcpSessionForKey(unifiedSessionKey);
 
   // 0. 统一解析并注入 Agent 自身专属专精人设与行为硬性约束
   const personaPrompt = buildAgentPersonaPrompt(agent);
@@ -1499,20 +1508,36 @@ export interface AcpSessionClearBarrierQuery {
 
 interface PendingSessionClearEntry {
   id: number;
+  generation: number;
   scopeKey: string;
+  abortController: AbortController;
+  timedOut: boolean;
+  cancelled: boolean;
   settledPromise: Promise<void>;
 }
 
 let nextClearEntryId = 1;
+let nextClearGeneration = 1;
 const pendingSessionClearEntries = new Map<number, PendingSessionClearEntry>();
 const failedSessionClearScopes = new Map<string, string>();
+const latestScopeClearGeneration = new Map<string, number>();
+const cancelledClearGenerations = new Set<number>();
+export interface AcpSessionClearInvokeArgs {
+  agentId: string | null;
+  sessionKeyPrefix: string | null;
+  clearGeneration: number;
+  signal: AbortSignal;
+  isStale: () => boolean;
+}
+
+const activeAcpSessionGenerations = new Map<string, number>();
 let customClearInvokeForTests:
-  | ((cmd: string, args: Record<string, unknown>) => Promise<unknown>)
+  | ((cmd: string, args: AcpSessionClearInvokeArgs) => Promise<unknown>)
   | null = null;
 let customClearTimeoutMsForTests: number | null = null;
 
 export function setAcpSessionClearInvokeForTests(
-  fn: ((cmd: string, args: Record<string, unknown>) => Promise<unknown>) | null
+  fn: ((cmd: string, args: AcpSessionClearInvokeArgs) => Promise<unknown>) | null
 ): void {
   customClearInvokeForTests = fn;
 }
@@ -1522,8 +1547,16 @@ export function setAcpSessionClearTimeoutMsForTests(timeoutMs: number | null): v
 }
 
 export function resetAcpSessionClearBarrierState(): void {
+  for (const entry of pendingSessionClearEntries.values()) {
+    entry.cancelled = true;
+    cancelledClearGenerations.add(entry.generation);
+    entry.abortController.abort();
+  }
   pendingSessionClearEntries.clear();
   failedSessionClearScopes.clear();
+  latestScopeClearGeneration.clear();
+  cancelledClearGenerations.clear();
+  activeAcpSessionGenerations.clear();
   customClearInvokeForTests = null;
   customClearTimeoutMsForTests = null;
 }
@@ -1543,28 +1576,203 @@ export function buildClearBarrierScopeKey(agentId?: string, sessionKeyPrefix?: s
   return '*';
 }
 
-function doesPrefixMatchBarrierQuery(prefix: string, query: AcpSessionClearBarrierQuery): boolean {
-  const colonPrefix = prefix.endsWith(':') ? prefix : `${prefix}:`;
-  if (query.sessionKey) {
-    if (query.sessionKey === prefix || query.sessionKey.startsWith(colonPrefix)) {
+function doesPrefixCoverPrefix(broaderPrefix: string, narrowerPrefix: string): boolean {
+  const cleanBroad = broaderPrefix.trim().replace(/:+$/, '');
+  const cleanNarrow = narrowerPrefix.trim().replace(/:+$/, '');
+  if (!cleanBroad || !cleanNarrow) return false;
+  return cleanNarrow === cleanBroad || cleanNarrow.startsWith(`${cleanBroad}:`);
+}
+
+function normalizeClearBarrierScopeKey(rawScope: string): string {
+  const trimmed = rawScope.trim();
+  if (!trimmed || trimmed === '*') {
+    return '*';
+  }
+  if (
+    trimmed.startsWith('agent:') ||
+    trimmed.startsWith('prefix:') ||
+    trimmed.startsWith('agent_prefix:')
+  ) {
+    return trimmed;
+  }
+  return `prefix:${trimmed}`;
+}
+
+/**
+ * 判断 broaderScopeKey 是否在语义上完整覆盖 narrowerScopeKey：
+ * - 全局 '*' 覆盖任意作用域；
+ * - 任何局部作用域绝不覆盖全局 '*'；
+ * - 'prefix:topic:ch-1' 覆盖 'prefix:topic:ch-1:topic-1' 与 'agent_prefix:<any>:topic:ch-1:topic-1'；
+ * - 'agent:<id>' 覆盖 'agent:<id>' 与 'agent_prefix:<id>:<any>'；
+ * - 'agent_prefix:<id>:<broad>' 覆盖 'agent_prefix:<id>:<narrow>'（当 broad 覆盖 narrow 时）。
+ */
+export function doesScopeCoverOtherScope(
+  rawBroaderScopeKey: string,
+  rawNarrowerScopeKey: string
+): boolean {
+  const broaderScopeKey = normalizeClearBarrierScopeKey(rawBroaderScopeKey);
+  const narrowerScopeKey = normalizeClearBarrierScopeKey(rawNarrowerScopeKey);
+
+  if (broaderScopeKey === narrowerScopeKey) {
+    return true;
+  }
+  if (broaderScopeKey === '*') {
+    return true;
+  }
+  if (narrowerScopeKey === '*') {
+    return false;
+  }
+
+  if (broaderScopeKey.startsWith('agent:')) {
+    const bAgent = broaderScopeKey.slice('agent:'.length);
+    if (narrowerScopeKey.startsWith('agent:')) {
+      return narrowerScopeKey.slice('agent:'.length) === bAgent;
+    }
+    if (narrowerScopeKey.startsWith('agent_prefix:')) {
+      const rest = narrowerScopeKey.slice('agent_prefix:'.length);
+      const sepIdx = rest.indexOf(':');
+      const nAgent = sepIdx >= 0 ? rest.slice(0, sepIdx) : rest;
+      return nAgent === bAgent;
+    }
+    return false;
+  }
+
+  if (broaderScopeKey.startsWith('prefix:')) {
+    const bPrefix = broaderScopeKey.slice('prefix:'.length);
+    if (narrowerScopeKey.startsWith('prefix:')) {
+      const nPrefix = narrowerScopeKey.slice('prefix:'.length);
+      return doesPrefixCoverPrefix(bPrefix, nPrefix);
+    }
+    if (narrowerScopeKey.startsWith('agent_prefix:')) {
+      const rest = narrowerScopeKey.slice('agent_prefix:'.length);
+      const sepIdx = rest.indexOf(':');
+      if (sepIdx < 0) return false;
+      const nPrefix = rest.slice(sepIdx + 1);
+      return doesPrefixCoverPrefix(bPrefix, nPrefix);
+    }
+    return false;
+  }
+
+  if (broaderScopeKey.startsWith('agent_prefix:')) {
+    const bRest = broaderScopeKey.slice('agent_prefix:'.length);
+    const bSep = bRest.indexOf(':');
+    if (bSep < 0) return false;
+    const bAgent = bRest.slice(0, bSep);
+    const bPrefix = bRest.slice(bSep + 1);
+
+    if (narrowerScopeKey.startsWith('agent_prefix:')) {
+      const nRest = narrowerScopeKey.slice('agent_prefix:'.length);
+      const nSep = nRest.indexOf(':');
+      if (nSep < 0) return false;
+      const nAgent = nRest.slice(0, nSep);
+      const nPrefix = nRest.slice(nSep + 1);
+      return bAgent === nAgent && doesPrefixCoverPrefix(bPrefix, nPrefix);
+    }
+    return false;
+  }
+
+  return false;
+}
+
+function hasNewerCoveringGeneration(scopeKey: string, generation: number): boolean {
+  const normScope = normalizeClearBarrierScopeKey(scopeKey);
+  for (const [recordedScope, recordedGen] of latestScopeClearGeneration.entries()) {
+    if (recordedGen > generation && doesScopeCoverOtherScope(recordedScope, normScope)) {
       return true;
     }
   }
+  return false;
+}
+
+export function isAcpSessionClearGenerationValid(
+  generation: number,
+  scopeKey?: string
+): boolean {
+  if (cancelledClearGenerations.has(generation)) {
+    return false;
+  }
+  if (scopeKey && hasNewerCoveringGeneration(scopeKey, generation)) {
+    return false;
+  }
+  return true;
+}
+
+export function registerActiveAcpSessionForKey(sessionKey: string): number {
+  const gen = nextClearGeneration++;
+  activeAcpSessionGenerations.set(sessionKey, gen);
+  return gen;
+}
+
+export function hasActiveAcpSessionForKey(sessionKey: string): boolean {
+  return activeAcpSessionGenerations.has(sessionKey);
+}
+
+export function purgeActiveAcpSessionsByScope(
+  rawScopeKey: string,
+  maxGeneration: number
+): number {
+  const scopeKey = normalizeClearBarrierScopeKey(rawScopeKey);
+  if (!isAcpSessionClearGenerationValid(maxGeneration, scopeKey)) {
+    return 0;
+  }
+  let removed = 0;
+  for (const [sessionKey, createdGen] of Array.from(activeAcpSessionGenerations.entries())) {
+    if (
+      createdGen <= maxGeneration &&
+      doesQueryMatchClearScope(scopeKey, { sessionKey })
+    ) {
+      activeAcpSessionGenerations.delete(sessionKey);
+      removed++;
+    }
+  }
+  return removed;
+}
+
+function doesPrefixMatchBarrierQuery(prefix: string, query: AcpSessionClearBarrierQuery): boolean {
+  const cleanPrefix = prefix.trim().replace(/:+$/, '');
+  const colonPrefix = `${cleanPrefix}:`;
+  if (query.sessionKey) {
+    const cleanSk = query.sessionKey.trim();
+    if (
+      cleanSk === cleanPrefix ||
+      cleanSk.startsWith(colonPrefix) ||
+      cleanPrefix.startsWith(`${cleanSk}:`)
+    ) {
+      return true;
+    }
+    if (!query.channelId && !query.roomId) {
+      return false;
+    }
+  }
+  if (query.channelId && query.roomId) {
+    if (
+      cleanPrefix === `channel:${query.channelId}` ||
+      cleanPrefix === `topic:${query.channelId}` ||
+      cleanPrefix === `channel:${query.channelId}:${query.roomId}` ||
+      cleanPrefix === `topic:${query.channelId}:${query.roomId}` ||
+      cleanPrefix.startsWith(`channel:${query.channelId}:${query.roomId}:`) ||
+      cleanPrefix.startsWith(`topic:${query.channelId}:${query.roomId}:`)
+    ) {
+      return true;
+    }
+    return false;
+  }
   if (query.channelId) {
     if (
-      prefix === `channel:${query.channelId}` ||
-      prefix === `topic:${query.channelId}` ||
-      prefix.startsWith(`channel:${query.channelId}:`) ||
-      prefix.startsWith(`topic:${query.channelId}:`)
+      cleanPrefix === `channel:${query.channelId}` ||
+      cleanPrefix === `topic:${query.channelId}` ||
+      cleanPrefix.startsWith(`channel:${query.channelId}:`) ||
+      cleanPrefix.startsWith(`topic:${query.channelId}:`)
     ) {
       return true;
     }
   }
   if (query.roomId) {
     if (
-      prefix === `topic:${query.roomId}` ||
-      prefix === `channel:${query.roomId}` ||
-      prefix.endsWith(`:${query.roomId}`)
+      cleanPrefix === `topic:${query.roomId}` ||
+      cleanPrefix === `channel:${query.roomId}` ||
+      cleanPrefix.endsWith(`:${query.roomId}`) ||
+      cleanPrefix.includes(`:${query.roomId}:`)
     ) {
       return true;
     }
@@ -1584,7 +1792,16 @@ export function doesQueryMatchClearScope(
   }
   if (scopeKey.startsWith('agent:')) {
     const targetAgentId = scopeKey.slice('agent:'.length);
-    return !query.agentId || query.agentId === targetAgentId;
+    if (query.agentId) {
+      return query.agentId === targetAgentId;
+    }
+    if (query.sessionKey) {
+      return (
+        query.sessionKey.startsWith(`dm:${targetAgentId}:`) ||
+        query.sessionKey.endsWith(`:${targetAgentId}`)
+      );
+    }
+    return true;
   }
   if (scopeKey.startsWith('prefix:')) {
     const prefix = scopeKey.slice('prefix:'.length);
@@ -1648,6 +1865,10 @@ export async function waitForPendingAcpSessionClears(
     if (timedOut) {
       const stillPending = matchingEntries.filter((e) => pendingSessionClearEntries.has(e.id));
       for (const hung of stillPending) {
+        hung.timedOut = true;
+        hung.cancelled = true;
+        cancelledClearGenerations.add(hung.generation);
+        hung.abortController.abort();
         pendingSessionClearEntries.delete(hung.id);
         failedSessionClearScopes.set(
           hung.scopeKey,
@@ -1683,11 +1904,34 @@ export async function clearAcpAgentSessions(
 ): Promise<void> {
   const scopeKey = buildClearBarrierScopeKey(agentId, sessionKeyPrefix);
   const entryId = nextClearEntryId++;
+  const clearGeneration = nextClearGeneration++;
+  const abortController = new AbortController();
   const timeoutMs =
     options?.timeoutMs ?? customClearTimeoutMsForTests ?? DEFAULT_SESSION_CLEAR_BARRIER_TIMEOUT_MS;
 
+  // 若存在被当前作用域覆盖的旧在途清理请求，立即将其标记为已取消并触发 abort，防止旧请求迟到返回产生逆序副作用
+  for (const existing of pendingSessionClearEntries.values()) {
+    if (doesScopeCoverOtherScope(scopeKey, existing.scopeKey)) {
+      existing.cancelled = true;
+      cancelledClearGenerations.add(existing.generation);
+      existing.abortController.abort();
+    }
+  }
+  latestScopeClearGeneration.set(scopeKey, clearGeneration);
+
+  const entry: PendingSessionClearEntry = {
+    id: entryId,
+    generation: clearGeneration,
+    scopeKey,
+    abortController,
+    timedOut: false,
+    cancelled: false,
+    settledPromise: Promise.resolve(),
+  };
+
   const runClear = async () => {
     clearLlmSessionHistory(agentId || sessionKeyPrefix);
+    purgeActiveAcpSessionsByScope(scopeKey, clearGeneration);
 
     const tauriInvoke =
       customClearInvokeForTests ||
@@ -1701,6 +1945,10 @@ export async function clearAcpAgentSessions(
       try {
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutHandle = setTimeout(() => {
+            entry.timedOut = true;
+            entry.cancelled = true;
+            cancelledClearGenerations.add(clearGeneration);
+            abortController.abort();
             reject(
               new Error(
                 `ACP Session 清理请求超时 (${timeoutMs}ms)，已按 Fail-Closed 策略锁定作用域 (${scopeKey})`
@@ -1709,17 +1957,40 @@ export async function clearAcpAgentSessions(
           }, timeoutMs);
         });
 
-        await Promise.race([
+        const invokePromise = Promise.resolve().then(() =>
           tauriInvoke('clear_agent_sessions', {
             agentId: agentId || null,
             sessionKeyPrefix: sessionKeyPrefix || null,
-          }),
-          timeoutPromise,
-        ]);
-        console.log(`[ACP Client] Cleared ACP process session_ids (agentId: ${agentId}, prefix: ${sessionKeyPrefix})`);
+            clearGeneration,
+            signal: abortController.signal,
+            isStale: () =>
+              entry.cancelled ||
+              entry.timedOut ||
+              !isAcpSessionClearGenerationValid(clearGeneration, scopeKey),
+          })
+        );
+        // 防止 timeoutPromise 先拒绝后，迟到的 invokePromise 拒绝触发 Node UnhandledPromiseRejection
+        void invokePromise.catch(() => {});
+
+        await Promise.race([invokePromise, timeoutPromise]);
+
+        // 若在等待期间该请求已超时或被更新代际的清理请求取消，则立即丢弃迟到结果，严禁执行任何后续解锁或删会话副作用
+        if (
+          entry.cancelled ||
+          entry.timedOut ||
+          !isAcpSessionClearGenerationValid(clearGeneration, scopeKey)
+        ) {
+          return;
+        }
+        console.log(
+          `[ACP Client] Cleared ACP process session_ids (agentId: ${agentId}, prefix: ${sessionKeyPrefix}, gen: ${clearGeneration})`
+        );
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
-        failedSessionClearScopes.set(scopeKey, errMsg);
+        // 仅当尚无更新的覆盖作用域清理代际接管时，才写入失败锁（防止被取消的旧请求迟到报错反向污染新成功状态）
+        if (!hasNewerCoveringGeneration(scopeKey, clearGeneration)) {
+          failedSessionClearScopes.set(scopeKey, errMsg);
+        }
         console.warn('[ACP Client] Failed to invoke clear_agent_sessions in Tauri:', e);
         throw e;
       } finally {
@@ -1729,27 +2000,36 @@ export async function clearAcpAgentSessions(
       }
     }
 
-    // 清理成功后：
-    // - 仅当全局清理 (scopeKey === '*') 成功时，才可解除全局 '*' 锁定并清空全部失败记录；
-    // - 局部作用域清理 (scopeKey !== '*') 成功时，仅解除该局部作用域自身的失败记录，绝不解除全局 '*' 锁！
+    if (
+      entry.cancelled ||
+      entry.timedOut ||
+      !isAcpSessionClearGenerationValid(clearGeneration, scopeKey)
+    ) {
+      return;
+    }
+
+    // 清理成功后按作用域包含关系解除失败锁：
+    // - 全局清理 (scopeKey === '*') 成功时，清空所有失败记录；
+    // - 宽作用域清理成功时，清除其覆盖的所有同级与更窄作用域失败锁（例如 topic:ch-1 成功自动解除 topic:ch-1:topic-1），但绝不解除全局 '*' 锁！
+    purgeActiveAcpSessionsByScope(scopeKey, clearGeneration);
     if (scopeKey === '*') {
       failedSessionClearScopes.clear();
     } else {
-      failedSessionClearScopes.delete(scopeKey);
+      for (const failedKey of Array.from(failedSessionClearScopes.keys())) {
+        if (doesScopeCoverOtherScope(scopeKey, failedKey)) {
+          failedSessionClearScopes.delete(failedKey);
+        }
+      }
     }
   };
 
   const rawPromise = runClear();
-  const settledPromise = rawPromise.then(
+  entry.settledPromise = rawPromise.then(
     () => undefined,
     () => undefined
   );
 
-  pendingSessionClearEntries.set(entryId, {
-    id: entryId,
-    scopeKey,
-    settledPromise,
-  });
+  pendingSessionClearEntries.set(entryId, entry);
 
   try {
     await rawPromise;

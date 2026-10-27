@@ -146,6 +146,8 @@ import {
   bumpChannelEpoch,
   bumpAgentExecutionEpoch,
   executeAbortAgentOrchestration,
+  executeAbortAllOrchestration,
+  executeUpdateChannelMembersOrchestration,
 } from './services/agentCollaboration';
 
 export default function App() {
@@ -1491,65 +1493,21 @@ export default function App() {
 
   // Handle Channel Members Update (Invite / Remove Agent or Human)
   const handleUpdateChannelMembers = async (channelId: string, updatedMemberIds: string[]) => {
-    const updatedAgentIds = updatedMemberIds.filter((id) => agents.some((a) => a.id === id));
-    const channelThreadIds = threads.filter((t) => t.channelId === channelId).map((t) => t.id);
-    const channelTopicIds: string[] = [];
-    for (const msgList of Object.values(messagesRef.current) as Message[][]) {
-      for (const m of msgList) {
-        if (m.type === 'topic' && m.topicData?.channelId === channelId) {
-          channelTopicIds.push(m.topicData.id);
-        }
-      }
-    }
-    const affectedRoomIds = Array.from(new Set([...channelThreadIds, ...channelTopicIds]));
-
-    // 1. 立即递增频道与所属房间/议题的代际 Epoch 并终止在途旧轮次推演，防止旧花名册上下文在成员变更后继续回写
-    bumpChannelEpoch(turnEpochTrackerRef.current, channelId, affectedRoomIds);
-    affectedRoomIds.forEach((rid) => {
-      const hasActive = Object.values(activeExecutionsRef.current).some(
-        (e) => e.threadId === rid || e.topicId === rid
-      );
-      if (hasActive) {
-        handleAbortAll(rid);
-      }
+    await executeUpdateChannelMembersOrchestration({
+      channelId,
+      updatedMemberIds,
+      agents,
+      threads,
+      messagesRef,
+      activeExecutionsRef,
+      turnEpochTracker: turnEpochTrackerRef.current,
+      deliveredStandingContext: deliveredStandingContextRef.current,
+      sessionWatermarks: sessionWatermarksRef.current,
+      setChannels,
+      setThreads,
+      onAbortRoom: handleAbortAll,
+      clearAcpSessionsByPrefix: safelyClearAcpSessions,
     });
-
-    setChannels((prev) =>
-      prev.map((c) =>
-        c.id === channelId
-          ? {
-              ...c,
-              memberIds: updatedMemberIds,
-              assignedAgentIds: updatedAgentIds,
-            }
-          : c
-      )
-    );
-    // 同步更新该频道下各个 Thread 的 activeAgentIds 列表
-    setThreads((prev) =>
-      prev.map((t) =>
-        t.channelId === channelId
-          ? { ...t, activeAgentIds: updatedAgentIds }
-          : t
-      )
-    );
-
-    // 2. 清理该频道及下属议题的 standing context、会话水位线与底层 ACP Session，并等待清理完成
-    // 同时 sendPromptToAcpAgent 内部也会通过 waitForPendingAcpSessionClears 门禁等待清理完成，彻底杜绝新消息复用旧 Session
-    deliveredStandingContextRef.current.forEach((key) => {
-      if (matchesSessionScope(key, { channelId, deletedThreadIds: affectedRoomIds })) {
-        deliveredStandingContextRef.current.delete(key);
-      }
-    });
-    Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
-      if (matchesSessionScope(key, { channelId, deletedThreadIds: affectedRoomIds })) {
-        sessionWatermarksRef.current.delete(key);
-      }
-    });
-    await Promise.all([
-      safelyClearAcpSessions(undefined, `channel:${channelId}`, '更新频道成员'),
-      safelyClearAcpSessions(undefined, `topic:${channelId}`, '更新频道成员'),
-    ]);
   };
 
   // Handle Channel Deletion (Cascading Teardown)
@@ -6600,103 +6558,25 @@ export default function App() {
       setActiveExecutions,
       setActiveCascades,
       setIsGenerating,
+      setAgents,
+      setMessages: commitMessages,
     });
-
-    // 重点：在会话状态栏点击「停止」仅中止当前推演轮次，Agent 必须维持在线就绪状态 ('running')，
-    // 严禁将其设为 'idle' (离线) 或调用 stop_acp_agent 杀死守护进程，否则后续协同接力会误报离线
-    setAgents((prev) =>
-      prev.map((a) => (a.id === agentId && a.status !== 'idle' ? { ...a, status: 'running' } : a))
-    );
-
-    if (threadId) {
-      setMessages((prev) => {
-        const list = prev[threadId];
-        if (!list || !list.some((m) => m.authorId === agentId && m.isPending)) return prev;
-        return {
-          ...prev,
-          [threadId]: list.map((m) =>
-            m.authorId === agentId && m.isPending
-              ? {
-                  ...m,
-                  isPending: false,
-                  agentBadge: '已终止',
-                  content: (m.content || '') + '\n\n*(已由用户手动终止推演)*',
-                }
-              : m
-          ),
-        };
-      });
-    }
   };
 
   const handleAbortAll = (threadId?: string) => {
-    if (threadId) {
-      bumpRoomEpoch(turnEpochTrackerRef.current, threadId);
-      inFlightHandoverRef.current.forEach((key) => {
-        if (key.startsWith(`${threadId}:`)) {
-          inFlightHandoverRef.current.delete(key);
-        }
-      });
-      setMessages((prev) => {
-        const list = prev[threadId];
-        if (!list || !list.some((m) => m.isPending)) return prev;
-        return {
-          ...prev,
-          [threadId]: list.map((m) =>
-            m.isPending
-              ? {
-                  ...m,
-                  isPending: false,
-                  agentBadge: '已终止',
-                  content: (m.content || '') + '\n\n*(已由用户手动终止推演)*',
-                }
-              : m
-          ),
-        };
-      });
-    } else {
-      generationEpochRef.current++;
-      bumpGlobalEpoch(turnEpochTrackerRef.current);
-      inFlightHandoverRef.current.clear();
-    }
-
-    setActiveCascades((prev) => {
-      const next: Record<string, CollaborationCascade> = {};
-      (Object.entries(prev) as [string, CollaborationCascade][]).forEach(([k, v]) => {
-        if (!threadId || v.roomId === threadId) {
-          next[k] = { ...v, isAborted: true };
-        } else {
-          next[k] = v;
-        }
-      });
-      return next;
+    executeAbortAllOrchestration({
+      threadId,
+      activeExecutionsRef,
+      activeCascadesRef,
+      turnEpochTracker: turnEpochTrackerRef.current,
+      inFlightHandovers: inFlightHandoverRef.current,
+      generationEpochRef,
+      setActiveExecutions,
+      setActiveCascades,
+      setIsGenerating,
+      setAgents,
+      setMessages: commitMessages,
     });
-
-    const agentsToReset: string[] = [];
-    Object.values(activeExecutionsRef.current).forEach((item) => {
-      if (!threadId || item.threadId === threadId || item.topicId === threadId) {
-        agentsToReset.push(item.agentId);
-      }
-    });
-
-    setActiveExecutions((prev) => {
-      const next = { ...prev };
-      Object.keys(next).forEach((key) => {
-        const item = next[key];
-        if (!threadId || item.threadId === threadId || item.topicId === threadId) {
-          delete next[key];
-        }
-      });
-      if (!threadId || Object.keys(next).length === 0) {
-        setIsGenerating(false);
-      }
-      return next;
-    });
-
-    // 重点：中止执行后 Agent 维持在线就绪状态 ('running')，绝对不能设为 'idle' (离线) 导致必须重新点击 Start
-    setAgents((prev) =>
-      prev.map((a) => (agentsToReset.includes(a.id) && a.status !== 'idle' ? { ...a, status: 'running' } : a))
-    );
   };
 
   // Send Message in active thread

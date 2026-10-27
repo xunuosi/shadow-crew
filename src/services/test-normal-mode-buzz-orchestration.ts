@@ -3,6 +3,8 @@
  * 运行方式：npx tsx src/services/test-normal-mode-buzz-orchestration.ts
  */
 
+import React from 'react';
+import ReactDOMClient from 'react-dom/client';
 import {
   escapeSemanticText,
   wrapSemanticSection,
@@ -21,6 +23,7 @@ import {
   bumpChannelEpoch,
   bumpAgentExecutionEpoch,
   executeAbortAgentOrchestration,
+  useCollaborationLifecycleController,
   type CollaborationCascade,
   type RoomTranscriptEntry,
 } from './agentCollaboration';
@@ -30,15 +33,19 @@ import {
   buildAgentSessionKey,
   parseSessionKey,
   matchesSessionScope,
+  doesScopeCoverOtherScope,
   sendPromptToAcpAgent,
   clearAcpAgentSessions,
   waitForPendingAcpSessionClears,
   getPendingAcpSessionClearCount,
+  getFailedAcpSessionClearReason,
+  hasActiveAcpSessionForKey,
+  purgeActiveAcpSessionsByScope,
   setAcpSessionClearInvokeForTests,
   setAcpSessionClearTimeoutMsForTests,
   resetAcpSessionClearBarrierState,
 } from './acpClient';
-import type { Agent } from '../types';
+import type { Agent, Channel, Thread, Message } from '../types';
 
 function createMockAgent(partial: {
   id: string;
@@ -1040,6 +1047,137 @@ async function runEpochAndBarrierTests() {
   );
   resetAcpSessionClearBarrierState();
 
+  // 7.4e 超时后的“迟到清理”竞态测试 (Late-Completing Timed-out Clear Task Must Not Delete Newer Sessions)
+  {
+    let clearCallSeq = 0;
+    let firstCallSignalAbortedOnLateFinish = false;
+    let firstCallMarkedStaleOnLateFinish = false;
+    let lateFinishCompleted = false;
+
+    setAcpSessionClearInvokeForTests(async (_cmd, args) => {
+      clearCallSeq += 1;
+      const callIdx = clearCallSeq;
+      if (callIdx === 1) {
+        // 第 1 次清理请求耗时 80ms，超过 timeoutMs=25ms
+        await new Promise((r) => setTimeout(r, 80));
+        firstCallSignalAbortedOnLateFinish = Boolean(args?.signal?.aborted);
+        firstCallMarkedStaleOnLateFinish = Boolean(args?.isStale?.());
+        // 即使底层自定义回调尝试根据 clearGeneration 清理会话，也会因 clearGeneration 已作废而被拦截
+        if (!args?.signal?.aborted && !args?.isStale?.()) {
+          purgeActiveAcpSessionsByScope(args?.sessionKeyPrefix || '*', args?.clearGeneration);
+        }
+        lateFinishCompleted = true;
+        return undefined;
+      }
+      // 第 2 次重试清理请求立即成功
+      purgeActiveAcpSessionsByScope(args?.sessionKeyPrefix || '*', args?.clearGeneration);
+      return undefined;
+    });
+
+    // 步骤 1：第 1 次清理请求在 25ms 超时，进入 Fail-Closed
+    let firstClearTimedOut = false;
+    try {
+      await clearAcpAgentSessions(undefined, 'channel:ch-late', { timeoutMs: 25 });
+    } catch {
+      firstClearTimedOut = true;
+    }
+    assert(
+      firstClearTimedOut && getFailedAcpSessionClearReason({ channelId: 'ch-late' }) !== null,
+      '迟到清理竞态步骤 1：首次清理超时后进入 Fail-Closed 保护态'
+    );
+
+    // 步骤 2：用户发起重试清理并立即成功，解除 Fail-Closed 锁
+    await clearAcpAgentSessions(undefined, 'channel:ch-late', { timeoutMs: 500 });
+    assert(
+      getFailedAcpSessionClearReason({ channelId: 'ch-late' }) === null,
+      '迟到清理竞态步骤 2：重试清理成功后解除 Fail-Closed 锁'
+    );
+
+    // 步骤 3：重试成功后立即发送新 Prompt，建立新 Session (channel:ch-late:thread-1:<agentId>)
+    const newSessionKey = buildAgentSessionKey({
+      agentId: mockAgentA.id,
+      roomId: 'thread-1',
+      channelId: 'ch-late',
+      isDm: false,
+    });
+    const promptResAfterRetry = await sendPromptToAcpAgent({
+      agent: mockAgentA,
+      roomId: 'thread-1',
+      channelId: 'ch-late',
+      prompt: 'new prompt after retry clear',
+    });
+    assert(
+      !promptResAfterRetry.isError && hasActiveAcpSessionForKey(newSessionKey),
+      '迟到清理竞态步骤 3：解锁后新 Prompt 正常发送并登记新建活跃 Session'
+    );
+
+    // 步骤 4：等待第 1 次超时请求在 80ms 后迟到完成，验证其已被取消且未误删刚才新建的 Session
+    await new Promise((r) => setTimeout(r, 75));
+    assert(
+      lateFinishCompleted &&
+        firstCallSignalAbortedOnLateFinish &&
+        firstCallMarkedStaleOnLateFinish &&
+        hasActiveAcpSessionForKey(newSessionKey) &&
+        getFailedAcpSessionClearReason({ channelId: 'ch-late' }) === null,
+      '迟到清理竞态步骤 4：超时旧请求迟到完成时 AbortSignal 已触发、generation 判定失效，绝不误删重试后新建的 Session，也不污染锁状态'
+    );
+    resetAcpSessionClearBarrierState();
+  }
+
+  // 7.4f 更宽作用域清理成功，自动解除其覆盖的更窄作用域失败锁（且局部成功仍绝不解除全局 '*' 锁）
+  {
+    assert(
+      doesScopeCoverOtherScope('topic:ch-1', 'topic:ch-1:topic-1') &&
+        doesScopeCoverOtherScope('topic:ch-1', 'topic:ch-1:topic-1:standard') &&
+        !doesScopeCoverOtherScope('topic:ch-1', 'topic:ch-10:topic-1') &&
+        !doesScopeCoverOtherScope('topic:ch-1', '*'),
+      '作用域包含关系校验：宽作用域 topic:ch-1 覆盖窄作用域 topic:ch-1:topic-1，但不覆盖相邻频道 topic:ch-10 或全局 "*"'
+    );
+
+    // 1. 窄作用域 topic:ch-1:topic-1 清理失败
+    setAcpSessionClearInvokeForTests(async () => {
+      throw new Error('Narrow topic clear failed');
+    });
+    let narrowFailed = false;
+    try {
+      await clearAcpAgentSessions(undefined, 'topic:ch-1:topic-1');
+    } catch {
+      narrowFailed = true;
+    }
+
+    let blockedBeforeBroaderClear = false;
+    try {
+      await waitForPendingAcpSessionClears({
+        sessionKey: 'topic:ch-1:topic-1:standard',
+        channelId: 'ch-1',
+        roomId: 'topic-1',
+      });
+    } catch {
+      blockedBeforeBroaderClear = true;
+    }
+
+    // 2. 随后更宽作用域 topic:ch-1 清理成功（逻辑上已完整覆盖 topic:ch-1:topic-1）
+    setAcpSessionClearInvokeForTests(async () => undefined);
+    await clearAcpAgentSessions(undefined, 'topic:ch-1');
+
+    // 3. 对 topic:ch-1:topic-1 的新 Prompt 不再被拦截
+    let blockedAfterBroaderSuccessfulClear = false;
+    try {
+      await waitForPendingAcpSessionClears({
+        sessionKey: 'topic:ch-1:topic-1:standard',
+        channelId: 'ch-1',
+        roomId: 'topic-1',
+      });
+    } catch {
+      blockedAfterBroaderSuccessfulClear = true;
+    }
+    assert(
+      narrowFailed && blockedBeforeBroaderClear && !blockedAfterBroaderSuccessfulClear,
+      '宽作用域解锁窄作用域：topic:ch-1:topic-1 清理失败后，更宽作用域 topic:ch-1 清理成功自动解除其覆盖的子议题失败锁 (blockedAfterBroaderSuccessfulClear = false)'
+    );
+    resetAcpSessionClearBarrierState();
+  }
+
   // 7.5 全局清空历史 (bumpGlobalEpoch) 使所有房间与频道快照统一失效
   const snapAfter = captureTurnEpochSnapshot(tracker, {
     roomId: 'topic-game-2',
@@ -1082,6 +1220,319 @@ async function runEpochAndBarrierTests() {
       malformedChanParsed.type === 'legacy',
     'Session Key 冒号隔离：含 ":" 的 Agent/Channel ID 在构造阶段直接报错拒绝，且 parseSessionKey 拒绝多段畸形 key 绝不截断误解析'
   );
+
+  // 7.7 真实 React 19 组件挂载 (ReactDOMClient.createRoot + React.act) 下的 handleAbortAgent 与 handleUpdateChannelMembers 完整事件测试
+  {
+    const g = globalThis as Record<string, unknown>;
+    if (!g.HTMLIFrameElement) {
+      g.HTMLIFrameElement = class HTMLIFrameElement {};
+    }
+    const createMinimalDomNode = (tag: string) => ({
+      nodeType: 1,
+      tagName: tag.toUpperCase(),
+      nodeName: tag.toUpperCase(),
+      style: {},
+      childNodes: [] as unknown[],
+      ownerDocument: null as unknown,
+      appendChild(c: unknown) {
+        this.childNodes.push(c);
+        return c;
+      },
+      removeChild(c: unknown) {
+        const idx = this.childNodes.indexOf(c);
+        if (idx >= 0) this.childNodes.splice(idx, 1);
+        return c;
+      },
+      insertBefore(c: unknown) {
+        this.childNodes.push(c);
+        return c;
+      },
+      addEventListener() {},
+      removeEventListener() {},
+      setAttribute() {},
+      removeAttribute() {},
+    });
+    const doc = {
+      nodeType: 9,
+      createElement: (tag: string) => {
+        const el = createMinimalDomNode(tag);
+        el.ownerDocument = doc;
+        return el;
+      },
+      createTextNode: (text: string) => ({ nodeType: 3, nodeValue: text, ownerDocument: null }),
+      addEventListener() {},
+      removeEventListener() {},
+      activeElement: null,
+      body: createMinimalDomNode('body'),
+    };
+    g.document = doc;
+    g.window = { event: undefined, document: doc, HTMLIFrameElement: g.HTMLIFrameElement };
+    g.IS_REACT_ACT_ENVIRONMENT = true;
+
+    const clearedPrefixesInComponent: string[] = [];
+    setAcpSessionClearInvokeForTests(async (_cmd, args) => {
+      if (args?.sessionKeyPrefix) {
+        clearedPrefixesInComponent.push(args.sessionKeyPrefix);
+      }
+      return undefined;
+    });
+
+    const ch1StandingKey = buildAgentSessionKey({
+      agentId: mockAgentA.id,
+      roomId: 'thread-ch-1',
+      channelId: 'ch-1',
+      isDm: false,
+    });
+    const ch1TopicStandingKey = buildAgentSessionKey({
+      agentId: mockAgentA.id,
+      roomId: 'topic-ch-1',
+      channelId: 'ch-1',
+      isDm: false,
+      discussionMode: 'standard',
+    });
+    const ch2StandingKey = buildAgentSessionKey({
+      agentId: mockAgentA.id,
+      roomId: 'thread-ch-2',
+      channelId: 'ch-2',
+      isDm: false,
+    });
+
+    const initialChannels: Channel[] = [
+      {
+        id: 'ch-1',
+        projectId: 'proj-1',
+        name: 'arch-review',
+        description: 'Architecture Review',
+        creatorId: 'user-1',
+        status: 'active',
+        isPrivate: false,
+        iconName: 'hash',
+        unreadCount: 0,
+        memberIds: [mockAgentA.id, mockAgentB.id],
+        assignedAgentIds: [mockAgentA.id, mockAgentB.id],
+      },
+      {
+        id: 'ch-2',
+        projectId: 'proj-1',
+        name: 'other-chan',
+        description: 'Other Channel',
+        creatorId: 'user-1',
+        status: 'active',
+        isPrivate: false,
+        iconName: 'hash',
+        unreadCount: 0,
+        memberIds: [mockAgentA.id],
+        assignedAgentIds: [mockAgentA.id],
+      },
+    ];
+    const initialThreads: Thread[] = [
+      {
+        id: 'thread-ch-1',
+        channelId: 'ch-1',
+        channelName: 'arch-review',
+        type: 'thread',
+        title: '#arch-review',
+        authorId: 'user-1',
+        authorName: 'User',
+        authorHandle: '@user',
+        authorAvatar: '👤',
+        timestamp: '10:00',
+        preview: '',
+        activeAgentIds: [mockAgentA.id, mockAgentB.id],
+      },
+    ];
+    const initialMessages: Record<string, Message[]> = {
+      'thread-ch-1': [
+        {
+          id: 'msg-pending-a',
+          threadId: 'thread-ch-1',
+          channelId: 'ch-1',
+          authorId: mockAgentA.id,
+          authorName: mockAgentA.name,
+          authorHandle: mockAgentA.handle,
+          authorAvatar: mockAgentA.avatar,
+          isAgent: true,
+          isPending: true,
+          timestamp: '10:01',
+          content: '正在推演 A...',
+        },
+        {
+          id: 'msg-pending-b',
+          threadId: 'thread-ch-1',
+          channelId: 'ch-1',
+          authorId: mockAgentB.id,
+          authorName: mockAgentB.name,
+          authorHandle: mockAgentB.handle,
+          authorAvatar: mockAgentB.avatar,
+          isAgent: true,
+          isPending: true,
+          timestamp: '10:01',
+          content: '正在推演 B...',
+        },
+        {
+          id: 'msg-topic-card-1',
+          threadId: 'thread-ch-1',
+          channelId: 'ch-1',
+          authorId: 'user-1',
+          authorName: 'User',
+          authorHandle: '@user',
+          authorAvatar: '👤',
+          isAgent: false,
+          timestamp: '10:02',
+          content: 'Topic Card',
+          type: 'topic',
+          topicData: {
+            id: 'topic-ch-1',
+            channelId: 'ch-1',
+            title: 'Sub-topic in ch-1',
+            status: 'open',
+            authorId: 'user-1',
+            authorName: 'User',
+            authorAvatar: '👤',
+            timestamp: '10:02',
+            repliesCount: 0,
+            participatingAgentIds: [mockAgentA.id, mockAgentB.id],
+          },
+        },
+      ],
+    };
+
+    let latestController: ReturnType<
+      typeof useCollaborationLifecycleController<{
+        agentId: string;
+        threadId: string;
+        topicId?: string;
+      }>
+    > | null = null;
+
+    function TestHarnessComponent() {
+      const ctrl = useCollaborationLifecycleController({
+        initialAgents: [mockAgentA, mockAgentB, mockOutsiderD],
+        initialChannels,
+        initialThreads,
+        initialMessages,
+        initialActiveExecutions: {
+          [`thread-ch-1:${mockAgentA.id}`]: {
+            agentId: mockAgentA.id,
+            threadId: 'thread-ch-1',
+          },
+          [`thread-ch-1:${mockAgentB.id}`]: {
+            agentId: mockAgentB.id,
+            threadId: 'thread-ch-1',
+          },
+        },
+        initialActiveCascades: {
+          'cascade-ch-1': {
+            cascadeId: 'cascade-ch-1',
+            rootMessageId: 'msg-root',
+            roomId: 'thread-ch-1',
+            originalPrompt: 'hello',
+            depth: 1,
+            maxDepth: 12,
+            visitedAgentIds: [mockAgentA.id, mockAgentB.id],
+            agentCallCounts: { [mockAgentA.id]: 1, [mockAgentB.id]: 1 },
+            isAborted: false,
+          },
+        },
+        initialStandingContextKeys: [ch1StandingKey, ch1TopicStandingKey, ch2StandingKey],
+        initialWatermarks: [
+          [ch1StandingKey, 'wm-1'],
+          [ch1TopicStandingKey, 'wm-2'],
+          [ch2StandingKey, 'wm-3'],
+        ],
+        clearAcpSessionsFn: (agentId, prefix) => clearAcpAgentSessions(agentId, prefix),
+      });
+      latestController = ctrl;
+      return React.createElement('div', null, `execCount:${Object.keys(ctrl.activeExecutions).length}`);
+    }
+
+    const container = doc.createElement('div');
+    let root: ReactDOMClient.Root | null = null;
+    await React.act(async () => {
+      root = ReactDOMClient.createRoot(container as unknown as Element);
+      root.render(React.createElement(TestHarnessComponent));
+    });
+
+    const ctrlBefore = latestController!;
+    const snapAInComponent = captureTurnEpochSnapshot(ctrlBefore.turnEpochTrackerRef.current, {
+      roomId: 'thread-ch-1',
+      channelId: 'ch-1',
+      agentId: mockAgentA.id,
+    });
+    const snapBInComponent = captureTurnEpochSnapshot(ctrlBefore.turnEpochTrackerRef.current, {
+      roomId: 'thread-ch-1',
+      channelId: 'ch-1',
+      agentId: mockAgentB.id,
+    });
+
+    // 1. 在真实 React 19 组件内触发 handleAbortAgent(mockAgentA.id, 'thread-ch-1')
+    await React.act(async () => {
+      latestController!.handleAbortAgent(mockAgentA.id, 'thread-ch-1');
+    });
+
+    const ctrlAfterAbortA = latestController!;
+    const msgAAfterAbort = ctrlAfterAbortA.messages['thread-ch-1'].find(
+      (m) => m.id === 'msg-pending-a'
+    );
+    const msgBAfterAbort = ctrlAfterAbortA.messages['thread-ch-1'].find(
+      (m) => m.id === 'msg-pending-b'
+    );
+    const agentAAfterAbort = ctrlAfterAbortA.agents.find((a) => a.id === mockAgentA.id);
+
+    assert(
+      !ctrlAfterAbortA.activeExecutions[`thread-ch-1:${mockAgentA.id}`] &&
+        Boolean(ctrlAfterAbortA.activeExecutions[`thread-ch-1:${mockAgentB.id}`]) &&
+        ctrlAfterAbortA.isGenerating === true &&
+        ctrlAfterAbortA.activeCascades['cascade-ch-1'].isAborted === false &&
+        isTurnEpochStale(ctrlAfterAbortA.turnEpochTrackerRef.current, snapAInComponent) &&
+        !isTurnEpochStale(ctrlAfterAbortA.turnEpochTrackerRef.current, snapBInComponent) &&
+        msgAAfterAbort?.isPending === false &&
+        msgAAfterAbort?.agentBadge === '已终止' &&
+        msgBAfterAbort?.isPending === true &&
+        agentAAfterAbort?.status === 'running',
+      '真实 React 19 组件挂载下调用 handleAbortAgent：仅终止 Agent A 消息并递增其 executionEpoch，Agent B 消息、在线状态与协同级联在批处理渲染后完好保留'
+    );
+
+    // 2. 在真实 React 19 组件内触发 handleUpdateChannelMembers('ch-1', [mockAgentA.id, mockOutsiderD.id])
+    await React.act(async () => {
+      await latestController!.handleUpdateChannelMembers('ch-1', [
+        mockAgentA.id,
+        mockOutsiderD.id,
+      ]);
+    });
+
+    const ctrlAfterMemberUpdate = latestController!;
+    const updatedCh1 = ctrlAfterMemberUpdate.channels.find((c) => c.id === 'ch-1');
+    const updatedThreadCh1 = ctrlAfterMemberUpdate.threads.find((t) => t.id === 'thread-ch-1');
+    const msgBAfterMemberUpdate = ctrlAfterMemberUpdate.messages['thread-ch-1'].find(
+      (m) => m.id === 'msg-pending-b'
+    );
+
+    assert(
+      updatedCh1?.assignedAgentIds?.length === 2 &&
+        updatedCh1.assignedAgentIds.includes(mockOutsiderD.id) &&
+        !updatedCh1.assignedAgentIds.includes(mockAgentB.id) &&
+        updatedThreadCh1?.activeAgentIds?.includes(mockOutsiderD.id) &&
+        Object.keys(ctrlAfterMemberUpdate.activeExecutions).length === 0 &&
+        ctrlAfterMemberUpdate.isGenerating === false &&
+        isTurnEpochStale(ctrlAfterMemberUpdate.turnEpochTrackerRef.current, snapBInComponent) &&
+        msgBAfterMemberUpdate?.isPending === false &&
+        msgBAfterMemberUpdate?.agentBadge === '已终止' &&
+        !ctrlAfterMemberUpdate.deliveredStandingContextRef.current.has(ch1StandingKey) &&
+        !ctrlAfterMemberUpdate.deliveredStandingContextRef.current.has(ch1TopicStandingKey) &&
+        ctrlAfterMemberUpdate.deliveredStandingContextRef.current.has(ch2StandingKey) &&
+        !ctrlAfterMemberUpdate.sessionWatermarksRef.current.has(ch1StandingKey) &&
+        ctrlAfterMemberUpdate.sessionWatermarksRef.current.get(ch2StandingKey) === 'wm-3' &&
+        clearedPrefixesInComponent.includes('channel:ch-1') &&
+        clearedPrefixesInComponent.includes('topic:ch-1'),
+      '真实 React 19 组件挂载下调用 handleUpdateChannelMembers：同步中止该频道在途执行、更新频道与线程成员状态、精准失效 ch-1 花名册与水位线并清理底层 Session'
+    );
+
+    await React.act(async () => {
+      root?.unmount();
+    });
+    resetAcpSessionClearBarrierState();
+  }
 }
 
 runEpochAndBarrierTests().then(() => {

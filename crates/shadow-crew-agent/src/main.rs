@@ -10,17 +10,17 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-struct SessionState {
+pub struct SessionState {
     #[allow(dead_code)]
-    session_id: String,
+    pub session_id: String,
     #[allow(dead_code)]
-    session_key: String,
+    pub session_key: String,
     #[allow(dead_code)]
-    channel_id: String,
-    workspace_dir: PathBuf,
-    system_prompt: Option<String>,
-    mcp_pool_key: String,
-    mcp_client: Option<mcp_client::SharedMcpClient>,
+    pub channel_id: String,
+    pub workspace_dir: PathBuf,
+    pub system_prompt: Option<String>,
+    pub mcp_pool_key: String,
+    pub mcp_client: Option<mcp_client::SharedMcpClient>,
 }
 
 /// 受控 MCP 客户端复用池上限：按 (Channel/Agent 作用域 + 规范化工作区路径) 复用，
@@ -755,6 +755,196 @@ pub fn resolve_new_session_config(
     })
 }
 
+/// 在 `session/prompt` 每次进入工作区前对已保存的 `session_state.workspace_dir` 进行实时 TOCTOU 复验：
+/// 1. 校验沙箱根目录 `shadow_crew_home` 非符号链接并完成 `canonicalize`；
+/// 2. 校验当前会话所属的专属所有者目录（`channels/<channel_id>` 或 `agents/<agent_id>`）非符号链接且位于 `canonical_home` 下；
+/// 3. 逐级校验 `session_state.workspace_dir` 及其到 `canonical_home` 的每一级目录均真实存在且绝非 symlink，同时校验 `canonicalize` 后的真实物理路径未漂移、未跨出当前会话所属的所有者目录；
+/// 4. 校验工作区内的 `meta.json`、`memory.sqlite`、`artifacts`、`scratch` 若存在则不得为 symlink；
+/// 5. 一旦检测到 `session/new` 之后发生了目录或文件的 symlink 替换（TOCTOU 攻击），立即返回 `Err((-32003, ...))` 拒绝执行。
+pub fn revalidate_session_workspace_dir(
+    session_state: &SessionState,
+    shadow_crew_home: &std::path::Path,
+) -> std::result::Result<PathBuf, (i32, String)> {
+    let home_meta = std::fs::symlink_metadata(shadow_crew_home).map_err(|e| {
+        (
+            -32003,
+            format!(
+                "Security violation (TOCTOU): shadow_crew_home missing or inaccessible: {}",
+                e
+            ),
+        )
+    })?;
+    if home_meta.file_type().is_symlink() || !home_meta.is_dir() {
+        return Err((
+            -32003,
+            "Security violation (TOCTOU): shadow_crew_home is a symlink or not a directory"
+                .to_string(),
+        ));
+    }
+    let canonical_home = std::fs::canonicalize(shadow_crew_home).map_err(|e| {
+        (
+            -32003,
+            format!(
+                "Security violation (TOCTOU): failed to canonicalize shadow_crew_home: {}",
+                e
+            ),
+        )
+    })?;
+
+    // 确定会话所属的专属顶层隔离目录 (channels/<channel_id> 或 agents/<agent_id>)
+    let is_dm_session = session_state.session_key.starts_with("dm:")
+        || session_state.mcp_pool_key.starts_with("agent:")
+        || session_state.channel_id.starts_with("dm-")
+        || session_state.channel_id == "direct-messages";
+
+    let owner_rel_dir = if is_dm_session {
+        let agent_seg = if let Some(rest) = session_state.mcp_pool_key.strip_prefix("agent:") {
+            rest.split("::").next().unwrap_or("agent-default")
+        } else if session_state.session_key.starts_with("dm:") {
+            session_state
+                .session_key
+                .split(':')
+                .nth(1)
+                .unwrap_or("agent-default")
+        } else {
+            session_state
+                .channel_id
+                .strip_prefix("dm-")
+                .filter(|s| !s.is_empty())
+                .unwrap_or("agent-default")
+        };
+        let valid_agent = validate_workspace_segment(agent_seg).map_err(|e| {
+            (
+                -32003,
+                format!("Security violation (TOCTOU): invalid session agent segment: {}", e),
+            )
+        })?;
+        PathBuf::from("agents").join(valid_agent)
+    } else {
+        let valid_chan = validate_workspace_segment(&session_state.channel_id).map_err(|e| {
+            (
+                -32003,
+                format!(
+                    "Security violation (TOCTOU): invalid session channel segment: {}",
+                    e
+                ),
+            )
+        })?;
+        PathBuf::from("channels").join(valid_chan)
+    };
+
+    let expected_owner_dir = canonical_home.join(&owner_rel_dir);
+
+    // 校验 workspace_dir 本身非 symlink 且为真实目录
+    let ws_meta = std::fs::symlink_metadata(&session_state.workspace_dir).map_err(|e| {
+        (
+            -32003,
+            format!(
+                "Security violation (TOCTOU): workspace_dir {:?} missing or inaccessible: {}",
+                session_state.workspace_dir, e
+            ),
+        )
+    })?;
+    if ws_meta.file_type().is_symlink() || !ws_meta.is_dir() {
+        return Err((
+            -32003,
+            format!(
+                "Security violation (TOCTOU): workspace_dir {:?} was replaced with a symlink or non-directory",
+                session_state.workspace_dir
+            ),
+        ));
+    }
+
+    // 逐级向上检查从 workspace_dir 到 canonical_home 的每一个祖先节点，严禁任何一级被替换为 symlink
+    let mut cursor: Option<&std::path::Path> = Some(session_state.workspace_dir.as_path());
+    let mut reached_home = false;
+    while let Some(curr) = cursor {
+        let meta = std::fs::symlink_metadata(curr).map_err(|e| {
+            (
+                -32003,
+                format!(
+                    "Security violation (TOCTOU): ancestor {:?} inaccessible: {}",
+                    curr, e
+                ),
+            )
+        })?;
+        if meta.file_type().is_symlink() {
+            return Err((
+                -32003,
+                format!(
+                    "Security violation (TOCTOU): workspace ancestor {:?} was replaced with a symlink",
+                    curr
+                ),
+            ));
+        }
+        if curr == canonical_home.as_path() || curr == shadow_crew_home {
+            reached_home = true;
+            break;
+        }
+        cursor = curr.parent();
+    }
+    if !reached_home {
+        return Err((
+            -32003,
+            format!(
+                "Security violation (TOCTOU): workspace_dir {:?} does not descend from shadow_crew_home {:?}",
+                session_state.workspace_dir, canonical_home
+            ),
+        ));
+    }
+
+    // 二次 canonicalize 校验真实物理路径未逃逸出 canonical_home 及会话所属的 expected_owner_dir
+    let canonical_ws = std::fs::canonicalize(&session_state.workspace_dir).map_err(|e| {
+        (
+            -32003,
+            format!(
+                "Security violation (TOCTOU): failed to canonicalize workspace_dir {:?}: {}",
+                session_state.workspace_dir, e
+            ),
+        )
+    })?;
+    let canonical_owner = std::fs::canonicalize(&expected_owner_dir).map_err(|e| {
+        (
+            -32003,
+            format!(
+                "Security violation (TOCTOU): failed to canonicalize owner dir {:?}: {}",
+                expected_owner_dir, e
+            ),
+        )
+    })?;
+
+    if !canonical_ws.starts_with(&canonical_home)
+        || canonical_ws == canonical_home
+        || !canonical_ws.starts_with(&canonical_owner)
+    {
+        return Err((
+            -32003,
+            format!(
+                "Security violation (TOCTOU): canonical workspace {:?} escaped expected owner sandbox {:?}",
+                canonical_ws, canonical_owner
+            ),
+        ));
+    }
+
+    // 校验工作区内部关键文件与子目录（meta.json, memory.sqlite, artifacts, scratch）未被替换为 symlink
+    for entry_name in ["meta.json", "memory.sqlite", "artifacts", "scratch"] {
+        let candidate_entry = canonical_ws.join(entry_name);
+        if let Ok(entry_meta) = std::fs::symlink_metadata(&candidate_entry) {
+            if entry_meta.file_type().is_symlink() {
+                return Err((
+                    -32003,
+                    format!(
+                        "Security violation (TOCTOU): workspace entry {:?} was replaced with a symlink",
+                        candidate_entry
+                    ),
+                ));
+            }
+        }
+    }
+
+    Ok(canonical_ws)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 实例化私有持久化 SQLite 记忆引擎 (收敛至 ~/.shadow-crew/global_memory.sqlite)
@@ -972,8 +1162,33 @@ async fn main() -> Result<()> {
                 };
 
                 // 严格 Session 隔离门禁：session/prompt 必须对应通过 session/new 成功建立的活跃会话，杜绝使用全局伪状态
-                let session_state = match active_sessions.get_mut(&prompt_sid) {
-                    Some(st) => st,
+                let verified_workspace_dir = match active_sessions.get(&prompt_sid) {
+                    Some(st) => match revalidate_session_workspace_dir(st, &shadow_crew_home) {
+                        Ok(dir) => dir,
+                        Err((err_code, err_msg)) => {
+                            if let Some(removed_session) = active_sessions.remove(&prompt_sid) {
+                                let still_referenced = active_sessions
+                                    .values()
+                                    .any(|other| other.mcp_pool_key == removed_session.mcp_pool_key);
+                                if !still_referenced {
+                                    mcp_pool.remove_and_terminate(&removed_session.mcp_pool_key);
+                                }
+                            }
+                            let err_resp = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {
+                                    "code": err_code,
+                                    "message": err_msg
+                                }
+                            });
+                            if let Ok(mut out) = stdout_shared.lock() {
+                                writeln!(out, "{}", err_resp.to_string())?;
+                                out.flush()?;
+                            }
+                            continue;
+                        }
+                    },
                     None => {
                         let err_resp = serde_json::json!({
                             "jsonrpc": "2.0",
@@ -990,6 +1205,12 @@ async fn main() -> Result<()> {
                         continue;
                     }
                 };
+
+                let session_state = match active_sessions.get_mut(&prompt_sid) {
+                    Some(st) => st,
+                    None => continue,
+                };
+                session_state.workspace_dir = verified_workspace_dir.clone();
 
                 let query = if let Some(prompt_arr) = params.get("prompt").and_then(|v| v.as_array()) {
                     prompt_arr.iter()
@@ -1008,7 +1229,7 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                let current_workspace_dir = session_state.workspace_dir.clone();
+                let current_workspace_dir = verified_workspace_dir;
                 let current_workspace_cwd = current_workspace_dir.to_string_lossy().to_string();
                 let _ = std::env::set_current_dir(&current_workspace_dir);
 
@@ -1771,6 +1992,85 @@ mod tests {
             !cross_agent_cwd.exists(),
             "严禁为越权的跨 Agent cwd (agents/agent-B) 在磁盘上创建目录"
         );
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_session_prompt_workspace_toctou_symlink_replacement_is_blocked() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "shadow_crew_toctou_test_{}",
+            std::process::id()
+        ));
+        let sandbox_home = temp_base.join(".shadow-crew");
+        let outside_dir = temp_base.join("outside_sensitive_dir");
+        let _ = std::fs::remove_dir_all(&temp_base);
+        std::fs::create_dir_all(&sandbox_home).expect("create sandbox_home");
+        std::fs::create_dir_all(&outside_dir).expect("create outside_dir");
+
+        // 1. session/new 阶段：创建合法的频道工作区与子目录工作区
+        let sub_cwd = sandbox_home.join("channels/chan-toctou/module-core");
+        let cfg = resolve_new_session_config(
+            &serde_json::json!({
+                "channelId": "chan-toctou",
+                "sessionKey": "channel:chan-toctou:thread-1",
+                "cwd": sub_cwd.to_string_lossy().to_string()
+            }),
+            &sandbox_home,
+            None,
+        )
+        .expect("session/new 初始合法配置应解析成功");
+
+        let session_state = SessionState {
+            session_id: cfg.unique_session_id.clone(),
+            session_key: cfg.effective_key.clone(),
+            channel_id: cfg.session_channel_id.clone(),
+            workspace_dir: cfg.target_workspace_dir.clone(),
+            system_prompt: None,
+            mcp_pool_key: cfg.mcp_pool_key.clone(),
+            mcp_client: None,
+        };
+
+        // 2. 未被篡改前，session/prompt 的 TOCTOU 复验通过
+        let verified = revalidate_session_workspace_dir(&session_state, &sandbox_home)
+            .expect("未篡改的工作区应通过 TOCTOU 复验");
+        assert_eq!(verified, session_state.workspace_dir);
+
+        // 3. 场景 A：在 session/new 与 session/prompt 之间，工作区目录内的 meta.json 被替换为指向沙箱外的 symlink
+        let meta_link_path = session_state.workspace_dir.join("meta.json");
+        let _ = std::fs::remove_file(&meta_link_path);
+        let outside_secret_file = outside_dir.join("secret.json");
+        std::fs::write(&outside_secret_file, r#"{"secret":true}"#).expect("write secret");
+        std::os::unix::fs::symlink(&outside_secret_file, &meta_link_path)
+            .expect("create meta.json symlink");
+
+        let meta_toctou_err = revalidate_session_workspace_dir(&session_state, &sandbox_home)
+            .expect_err("meta.json 被替换为 symlink 时必须被 TOCTOU 复验拦截");
+        assert_eq!(meta_toctou_err.0, -32003);
+        assert!(meta_toctou_err.1.contains("TOCTOU"));
+        let _ = std::fs::remove_file(&meta_link_path);
+
+        // 4. 场景 B：在 session/new 与 session/prompt 之间，整个工作区子目录 module-core 被删除并替换为指向 outside_dir 的 symlink
+        std::fs::remove_dir_all(&session_state.workspace_dir).expect("remove module-core dir");
+        std::os::unix::fs::symlink(&outside_dir, &session_state.workspace_dir)
+            .expect("replace workspace_dir with symlink to outside_dir");
+
+        let dir_toctou_err = revalidate_session_workspace_dir(&session_state, &sandbox_home)
+            .expect_err("workspace_dir 在 session/new 后被替换为 symlink 时必须被 TOCTOU 复验拦截");
+        assert_eq!(dir_toctou_err.0, -32003);
+        assert!(dir_toctou_err.1.contains("TOCTOU"));
+
+        // 5. 场景 C：父级频道目录 channels/chan-toctou 被整体替换为指向其他频道或沙箱外的 symlink
+        let chan_dir = sandbox_home.join("channels/chan-toctou");
+        let _ = std::fs::remove_dir_all(&chan_dir);
+        std::os::unix::fs::symlink(&outside_dir, &chan_dir)
+            .expect("replace parent channel dir with symlink");
+
+        let parent_toctou_err = revalidate_session_workspace_dir(&session_state, &sandbox_home)
+            .expect_err("祖先目录在 session/new 后被替换为 symlink 时必须被 TOCTOU 复验拦截");
+        assert_eq!(parent_toctou_err.0, -32003);
+        assert!(parent_toctou_err.1.contains("TOCTOU"));
 
         let _ = std::fs::remove_dir_all(&temp_base);
     }

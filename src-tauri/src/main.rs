@@ -135,11 +135,16 @@ async fn send_prompt_to_agent(
 async fn clear_agent_sessions(
     agent_id: Option<String>,
     session_key_prefix: Option<String>,
+    clear_generation: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let manager = state.acp_manager.lock().await;
     manager
-        .clear_agent_sessions(agent_id.as_deref(), session_key_prefix.as_deref())
+        .clear_agent_sessions_with_generation(
+            agent_id.as_deref(),
+            session_key_prefix.as_deref(),
+            clear_generation,
+        )
         .await;
     Ok(())
 }
