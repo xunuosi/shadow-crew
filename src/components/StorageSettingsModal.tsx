@@ -107,7 +107,8 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
       setConfirmClearMessages(false);
       await loadStats();
     } catch (err) {
-      showToast('清空消息失败');
+      setConfirmClearMessages(false);
+      showToast(err instanceof Error ? `清空消息异常：${err.message}` : '清空消息失败');
     } finally {
       setCleaning(false);
     }

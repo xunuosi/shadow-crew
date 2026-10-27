@@ -15,6 +15,46 @@ export interface AcpSendPromptOptions {
 }
 
 /**
+ * 严格校验 Session Key 单段标识符（agentId / channelId / roomId / discussionMode）：
+ * 1. 严禁为空、`.`、`..`、以 `.` 开头/结尾或包含 `..`
+ * 2. 严禁包含结构分隔符 `:`、路径分隔符 `/`、`\`、空字节 `\0` 或控制字符
+ */
+export function validateSessionSegment(raw: string, fieldName = 'session segment'): string {
+  const trimmed = typeof raw === 'string' ? raw.trim() : '';
+  if (!trimmed) {
+    throw new Error(`Invalid ${fieldName}: segment cannot be empty`);
+  }
+  if (
+    trimmed === '.' ||
+    trimmed === '..' ||
+    trimmed.startsWith('.') ||
+    trimmed.endsWith('.') ||
+    trimmed.includes('..')
+  ) {
+    throw new Error(`Invalid ${fieldName} '${raw}': relative dot segments are forbidden`);
+  }
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    const code = trimmed.charCodeAt(i);
+    if (ch === ':' || ch === '/' || ch === '\\' || code === 0 || code < 0x20 || code === 0x7f) {
+      throw new Error(
+        `Invalid ${fieldName} '${raw}': colons, path separators, and control characters are forbidden`
+      );
+    }
+  }
+  return trimmed;
+}
+
+export function isValidSessionSegment(raw: string | undefined): boolean {
+  if (!raw || typeof raw !== 'string') return false;
+  try {
+    return validateSessionSegment(raw) === raw;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 统一多模式会话 Key 命名空间构造器
  * 严格对齐 Rust 底层 session_key 与 ACP 会话沙箱契约（原始规范字符串）：
  * 1. 1-on-1 私聊: `dm:{agentId}:{threadId}`
@@ -28,28 +68,37 @@ export function buildUnifiedSessionKey(options: {
   isDm?: boolean;
   discussionMode?: string;
 }): string {
+  const validRoomId = validateSessionSegment(options.roomId, 'roomId');
+  const trimmedChannelId = options.channelId?.trim();
+  const validChannelId = trimmedChannelId
+    ? validateSessionSegment(trimmedChannelId, 'channelId')
+    : undefined;
+
   const isDm =
     options.isDm ??
-    (Boolean(
-      !options.channelId ||
-      options.channelId === 'direct-messages' ||
-      options.channelId.startsWith('dm-') ||
-      options.roomId.startsWith('thread-dm-')
-    ));
+    Boolean(
+      !validChannelId ||
+      validChannelId === 'direct-messages' ||
+      validChannelId.startsWith('dm-') ||
+      validRoomId.startsWith('thread-dm-')
+    );
 
   if (isDm) {
-    const aid = options.agentId || 'default';
-    return `dm:${aid}:${options.roomId}`;
+    const aid = validateSessionSegment(options.agentId || 'default', 'agentId');
+    return `dm:${aid}:${validRoomId}`;
   }
 
-  const effectiveChanId = (options.channelId && options.channelId.trim()) || options.roomId;
-  const isTopic = options.roomId !== effectiveChanId && !options.roomId.startsWith('chan-');
+  const effectiveChanId = validChannelId || validRoomId;
+  const isTopic = validRoomId !== effectiveChanId && !validRoomId.startsWith('chan-');
 
   if (isTopic) {
-    const rawMode = (options.discussionMode && options.discussionMode.trim()) || 'standard';
-    return `topic:${effectiveChanId}:${options.roomId}:${rawMode}`;
+    const rawMode = validateSessionSegment(
+      (options.discussionMode && options.discussionMode.trim()) || 'standard',
+      'discussionMode'
+    );
+    return `topic:${effectiveChanId}:${validRoomId}:${rawMode}`;
   } else {
-    return `channel:${effectiveChanId}:${options.roomId}`;
+    return `channel:${effectiveChanId}:${validRoomId}`;
   }
 }
 
@@ -64,12 +113,13 @@ export function buildAgentSessionKey(options: {
   isDm?: boolean;
   discussionMode?: string;
 }): string {
-  const baseKey = buildUnifiedSessionKey(options);
+  const validAgentId = validateSessionSegment(options.agentId, 'agentId');
+  const baseKey = buildUnifiedSessionKey({ ...options, agentId: validAgentId });
   // 私聊 baseKey 已经包含 agentId (dm:{agentId}:{threadId})，无需重复追加
   if (baseKey.startsWith('dm:')) {
     return baseKey;
   }
-  return `${baseKey}:${options.agentId}`;
+  return `${baseKey}:${validAgentId}`;
 }
 
 export interface ParsedSessionKey {
@@ -84,6 +134,9 @@ export function parseSessionKey(key: string): ParsedSessionKey {
   if (!key) return { type: 'legacy' };
   const parts = key.split(':');
   if (parts[0] === 'dm') {
+    if (parts.length !== 3 || !isValidSessionSegment(parts[1]) || !isValidSessionSegment(parts[2])) {
+      return { type: 'legacy' };
+    }
     return {
       type: 'dm',
       agentId: parts[1],
@@ -91,6 +144,15 @@ export function parseSessionKey(key: string): ParsedSessionKey {
     };
   }
   if (parts[0] === 'topic') {
+    if (
+      (parts.length !== 4 && parts.length !== 5) ||
+      !isValidSessionSegment(parts[1]) ||
+      !isValidSessionSegment(parts[2]) ||
+      !isValidSessionSegment(parts[3]) ||
+      (parts.length === 5 && !isValidSessionSegment(parts[4]))
+    ) {
+      return { type: 'legacy' };
+    }
     return {
       type: 'topic',
       channelId: parts[1],
@@ -100,6 +162,14 @@ export function parseSessionKey(key: string): ParsedSessionKey {
     };
   }
   if (parts[0] === 'channel') {
+    if (
+      (parts.length !== 3 && parts.length !== 4) ||
+      !isValidSessionSegment(parts[1]) ||
+      !isValidSessionSegment(parts[2]) ||
+      (parts.length === 4 && !isValidSessionSegment(parts[3]))
+    ) {
+      return { type: 'legacy' };
+    }
     return {
       type: 'channel',
       channelId: parts[1],
@@ -1439,6 +1509,7 @@ const failedSessionClearScopes = new Map<string, string>();
 let customClearInvokeForTests:
   | ((cmd: string, args: Record<string, unknown>) => Promise<unknown>)
   | null = null;
+let customClearTimeoutMsForTests: number | null = null;
 
 export function setAcpSessionClearInvokeForTests(
   fn: ((cmd: string, args: Record<string, unknown>) => Promise<unknown>) | null
@@ -1446,10 +1517,15 @@ export function setAcpSessionClearInvokeForTests(
   customClearInvokeForTests = fn;
 }
 
+export function setAcpSessionClearTimeoutMsForTests(timeoutMs: number | null): void {
+  customClearTimeoutMsForTests = timeoutMs;
+}
+
 export function resetAcpSessionClearBarrierState(): void {
   pendingSessionClearEntries.clear();
   failedSessionClearScopes.clear();
   customClearInvokeForTests = null;
+  customClearTimeoutMsForTests = null;
 }
 
 export function buildClearBarrierScopeKey(agentId?: string, sessionKeyPrefix?: string): string {
@@ -1539,7 +1615,8 @@ export function getFailedAcpSessionClearReason(query?: AcpSessionClearBarrierQue
 export async function waitForPendingAcpSessionClears(
   query?: AcpSessionClearBarrierQuery
 ): Promise<void> {
-  const timeoutMs = query?.timeoutMs ?? DEFAULT_SESSION_CLEAR_BARRIER_TIMEOUT_MS;
+  const timeoutMs =
+    query?.timeoutMs ?? customClearTimeoutMsForTests ?? DEFAULT_SESSION_CLEAR_BARRIER_TIMEOUT_MS;
 
   while (true) {
     const matchingEntries = Array.from(pendingSessionClearEntries.values()).filter((entry) =>
@@ -1599,9 +1676,15 @@ export function getPendingAcpSessionClearCount(): number {
  * 清除指定 Agent 或全量 Agent 在底座与直连大模型运行时的会话缓存
  * 保持前后端水位线、历史消息与底层 ACP 进程 session_id 彻底同步重置
  */
-export async function clearAcpAgentSessions(agentId?: string, sessionKeyPrefix?: string): Promise<void> {
+export async function clearAcpAgentSessions(
+  agentId?: string,
+  sessionKeyPrefix?: string,
+  options?: { timeoutMs?: number }
+): Promise<void> {
   const scopeKey = buildClearBarrierScopeKey(agentId, sessionKeyPrefix);
   const entryId = nextClearEntryId++;
+  const timeoutMs =
+    options?.timeoutMs ?? customClearTimeoutMsForTests ?? DEFAULT_SESSION_CLEAR_BARRIER_TIMEOUT_MS;
 
   const runClear = async () => {
     clearLlmSessionHistory(agentId || sessionKeyPrefix);
@@ -1614,26 +1697,45 @@ export async function clearAcpAgentSessions(agentId?: string, sessionKeyPrefix?:
         : null);
 
     if (tauriInvoke) {
+      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
       try {
-        await tauriInvoke('clear_agent_sessions', {
-          agentId: agentId || null,
-          sessionKeyPrefix: sessionKeyPrefix || null,
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            reject(
+              new Error(
+                `ACP Session 清理请求超时 (${timeoutMs}ms)，已按 Fail-Closed 策略锁定作用域 (${scopeKey})`
+              )
+            );
+          }, timeoutMs);
         });
+
+        await Promise.race([
+          tauriInvoke('clear_agent_sessions', {
+            agentId: agentId || null,
+            sessionKeyPrefix: sessionKeyPrefix || null,
+          }),
+          timeoutPromise,
+        ]);
         console.log(`[ACP Client] Cleared ACP process session_ids (agentId: ${agentId}, prefix: ${sessionKeyPrefix})`);
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
         failedSessionClearScopes.set(scopeKey, errMsg);
         console.warn('[ACP Client] Failed to invoke clear_agent_sessions in Tauri:', e);
         throw e;
+      } finally {
+        if (timeoutHandle !== null) {
+          clearTimeout(timeoutHandle);
+        }
       }
     }
 
-    // 清理成功后解除对应作用域（或全局）的 Fail-Closed 锁定状态
+    // 清理成功后：
+    // - 仅当全局清理 (scopeKey === '*') 成功时，才可解除全局 '*' 锁定并清空全部失败记录；
+    // - 局部作用域清理 (scopeKey !== '*') 成功时，仅解除该局部作用域自身的失败记录，绝不解除全局 '*' 锁！
     if (scopeKey === '*') {
       failedSessionClearScopes.clear();
     } else {
       failedSessionClearScopes.delete(scopeKey);
-      failedSessionClearScopes.delete('*');
     }
   };
 

@@ -25,13 +25,17 @@ import {
   type RoomTranscriptEntry,
 } from './agentCollaboration';
 import {
+  validateSessionSegment,
+  buildUnifiedSessionKey,
   buildAgentSessionKey,
+  parseSessionKey,
   matchesSessionScope,
   sendPromptToAcpAgent,
   clearAcpAgentSessions,
   waitForPendingAcpSessionClears,
   getPendingAcpSessionClearCount,
   setAcpSessionClearInvokeForTests,
+  setAcpSessionClearTimeoutMsForTests,
   resetAcpSessionClearBarrierState,
 } from './acpClient';
 import type { Agent } from '../types';
@@ -946,12 +950,12 @@ async function runEpochAndBarrierTests() {
   setAcpSessionClearInvokeForTests(
     () => new Promise(() => {}) // 永久挂起的 Promise
   );
-  void clearAcpAgentSessions(undefined, 'channel:ch-hang').catch(() => {});
+  void clearAcpAgentSessions(undefined, 'channel:ch-hang', { timeoutMs: 60 }).catch(() => {});
   let timedOutAsExpected = false;
   try {
     await waitForPendingAcpSessionClears({
       channelId: 'ch-hang',
-      timeoutMs: 45,
+      timeoutMs: 30,
     });
   } catch (err) {
     timedOutAsExpected =
@@ -965,6 +969,77 @@ async function runEpochAndBarrierTests() {
   );
   resetAcpSessionClearBarrierState();
 
+  // 7.4c 全局清理失败锁 ('*') 绝不能被后续局部作用域清理成功错误解除
+  setAcpSessionClearInvokeForTests(async () => {
+    throw new Error('Global clear_agent_sessions failure');
+  });
+  let globalClearRejected = false;
+  try {
+    await clearAcpAgentSessions(); // 全局清理 (scopeKey === '*')
+  } catch {
+    globalClearRejected = true;
+  }
+  let blockedAfterGlobalFailure = false;
+  try {
+    await waitForPendingAcpSessionClears({ channelId: 'ch-2' });
+  } catch {
+    blockedAfterGlobalFailure = true;
+  }
+
+  // 随后仅局部清理 channel:ch-1 成功
+  setAcpSessionClearInvokeForTests(async () => undefined);
+  await clearAcpAgentSessions(undefined, 'channel:ch-1');
+
+  let stillBlockedAfterUnrelatedScopedSuccess = false;
+  try {
+    await waitForPendingAcpSessionClears({ channelId: 'ch-2' });
+  } catch {
+    stillBlockedAfterUnrelatedScopedSuccess = true;
+  }
+  assert(
+    globalClearRejected && blockedAfterGlobalFailure && stillBlockedAfterUnrelatedScopedSuccess,
+    '全局 Fail-Closed 锁隔离：全局清理失败后，局部清理 channel:ch-1 成功绝不解除全局 "*" 锁，其他频道 ch-2 保持阻断'
+  );
+
+  // 只有当全局清理重试成功时，才解除全局 '*' 锁定
+  await clearAcpAgentSessions();
+  let unblockedAfterGlobalRetrySuccess = true;
+  try {
+    await waitForPendingAcpSessionClears({ channelId: 'ch-2' });
+  } catch {
+    unblockedAfterGlobalRetrySuccess = false;
+  }
+  assert(
+    unblockedAfterGlobalRetrySuccess,
+    '全局 Fail-Closed 锁恢复：当全局 clearAcpAgentSessions() 重试成功后，正常解除全局 "*" 锁定'
+  );
+  resetAcpSessionClearBarrierState();
+
+  // 7.4d clearAcpAgentSessions 原始 Promise 自身内置超时：防止 StorageSettingsModal 等调用方永久挂起
+  setAcpSessionClearTimeoutMsForTests(45);
+  setAcpSessionClearInvokeForTests(
+    () => new Promise(() => {}) // 永久不 resolve 的底层调用
+  );
+  let directClearTimedOut = false;
+  try {
+    await clearAcpAgentSessions();
+  } catch (err) {
+    directClearTimedOut = err instanceof Error && err.message.includes('超时');
+  }
+  let globalLockedAfterDirectClearTimeout = false;
+  try {
+    await waitForPendingAcpSessionClears({ channelId: 'ch-any' });
+  } catch {
+    globalLockedAfterDirectClearTimeout = true;
+  }
+  assert(
+    directClearTimedOut &&
+      getPendingAcpSessionClearCount() === 0 &&
+      globalLockedAfterDirectClearTimeout,
+    'clearAcpAgentSessions 自身超时保护：底层 IPC 挂起时按 timeoutMs 主动拒绝、释放 pending 队列并转入 Fail-Closed 状态，杜绝 UI 永久卡死'
+  );
+  resetAcpSessionClearBarrierState();
+
   // 7.5 全局清空历史 (bumpGlobalEpoch) 使所有房间与频道快照统一失效
   const snapAfter = captureTurnEpochSnapshot(tracker, {
     roomId: 'topic-game-2',
@@ -974,6 +1049,38 @@ async function runEpochAndBarrierTests() {
   assert(
     isTurnEpochStale(tracker, snapAfter),
     '全局清空或全局终止 (bumpGlobalEpoch) 后，所有在途快照一律失效'
+  );
+
+  // 7.6 包含冒号 ':' 的 Agent/Channel/Room ID 在构造与解析 Session Key 时被严格拒绝
+  let colonInAgentRejected = false;
+  try {
+    buildAgentSessionKey({
+      agentId: 'a:b',
+      roomId: 'thread-1',
+      isDm: true,
+    });
+  } catch {
+    colonInAgentRejected = true;
+  }
+  let colonInChannelRejected = false;
+  try {
+    buildUnifiedSessionKey({
+      roomId: 'topic-1',
+      channelId: 'chan:1',
+      discussionMode: 'standard',
+    });
+  } catch {
+    colonInChannelRejected = true;
+  }
+  const malformedDmParsed = parseSessionKey('dm:a:b:thread-1');
+  const malformedChanParsed = parseSessionKey('channel:chan:1:thread-1:agent-x');
+  assert(
+    colonInAgentRejected &&
+      colonInChannelRejected &&
+      malformedDmParsed.type === 'legacy' &&
+      malformedDmParsed.agentId === undefined &&
+      malformedChanParsed.type === 'legacy',
+    'Session Key 冒号隔离：含 ":" 的 Agent/Channel ID 在构造阶段直接报错拒绝，且 parseSessionKey 拒绝多段畸形 key 绝不截断误解析'
   );
 }
 

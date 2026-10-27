@@ -7688,7 +7688,15 @@ export default function App() {
             deliveredStandingContextRef.current.clear();
             sessionWatermarksRef.current.clear();
             clearLlmSessionHistory();
-            await clearAcpAgentSessions();
+            try {
+              await clearAcpAgentSessions();
+            } catch (err) {
+              const reason = err instanceof Error ? err.message : String(err);
+              setSessionCleanupNotice(
+                `⚠️ 清空全部历史消息时底层 ACP 会话重置异常 (${reason})，已启用 Fail-Closed 保护，请检查连接后重试`
+              );
+              throw err;
+            }
           }}
           onOpenMemoryExport={() => {
             setExportingAgent(agents[0] || null);

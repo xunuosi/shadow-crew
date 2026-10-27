@@ -202,7 +202,7 @@ pub fn normalize_path(path: &std::path::Path) -> PathBuf {
 }
 
 /// 严格校验工作区单段标识符（Channel ID / Agent ID）：
-/// 严禁静默剥离 `/` 或 `\` 导致 `"a/b"` 与 `"ab"` 发生目录别名碰撞，非法 ID 直接返回 Err 拒绝。
+/// 严禁静默剥离 `/`、`\` 或 `:` 导致 `"a/b"` 与 `"ab"` 发生目录别名碰撞，或破坏复合 Session Key 结构分隔，非法 ID 直接返回 Err 拒绝。
 pub fn validate_workspace_segment(raw: &str) -> std::result::Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -221,14 +221,65 @@ pub fn validate_workspace_segment(raw: &str) -> std::result::Result<String, Stri
     }
     if trimmed
         .chars()
-        .any(|c| c == '/' || c == '\\' || c == '\0' || c.is_control())
+        .any(|c| c == ':' || c == '/' || c == '\\' || c == '\0' || c.is_control())
     {
         return Err(format!(
-            "invalid workspace segment '{}': path separators and control characters are forbidden",
+            "invalid workspace segment '{}': colons, path separators, and control characters are forbidden",
             raw
         ));
     }
     Ok(trimmed.to_string())
+}
+
+/// 严格校验复合 Session Key 结构与各段合法性：
+/// - `dm:<agentId>:<roomId>` (固定 3 段)
+/// - `channel:<channelId>:<roomId>` (固定 3 段)
+/// - `topic:<channelId>:<topicId>:<discussionMode>` (固定 4 段)
+/// - 单段自定义标识 (1 段)
+/// 任何段内包含非法字符或段数不匹配（如因 ID 含 `:` 导致被拆成多余段）均直接返回 Err 拒绝。
+pub fn validate_session_key(raw_key: &str) -> std::result::Result<String, String> {
+    let trimmed = raw_key.trim();
+    if trimmed.is_empty() {
+        return Err("sessionKey cannot be empty".to_string());
+    }
+    let parts: Vec<&str> = trimmed.split(':').collect();
+    match parts[0] {
+        "dm" | "channel" => {
+            if parts.len() != 3 {
+                return Err(format!(
+                    "invalid sessionKey '{}': '{}' namespace requires exactly 3 colon-separated segments (found {})",
+                    raw_key,
+                    parts[0],
+                    parts.len()
+                ));
+            }
+            validate_workspace_segment(parts[1])?;
+            validate_workspace_segment(parts[2])?;
+            Ok(trimmed.to_string())
+        }
+        "topic" => {
+            if parts.len() != 4 {
+                return Err(format!(
+                    "invalid sessionKey '{}': 'topic' namespace requires exactly 4 colon-separated segments (found {})",
+                    raw_key,
+                    parts.len()
+                ));
+            }
+            validate_workspace_segment(parts[1])?;
+            validate_workspace_segment(parts[2])?;
+            validate_workspace_segment(parts[3])?;
+            Ok(trimmed.to_string())
+        }
+        _ => {
+            if parts.len() != 1 {
+                return Err(format!(
+                    "invalid sessionKey '{}': unrecognized multi-segment prefix '{}'",
+                    raw_key, parts[0]
+                ));
+            }
+            validate_workspace_segment(parts[0])
+        }
+    }
 }
 
 /// 严格校验并解析目标工作区路径（词法规范化 + 符号链接穿透 canonicalize 真实路径校验）
@@ -472,20 +523,31 @@ pub struct ResolvedNewSessionConfig {
 }
 
 /// 解析并校验 `session/new` 请求参数与隔离工作区（纯函数入口，供主循环与单元测试共用）：
-/// 1. 严格校验 `channelId` / `agentId` 段合法性，非法时返回 `(-32602, ...)`；
+/// 1. 严格校验 `channelId` / `agentId` / `sessionKey` 段合法性（含冒号 `:` 与路径分隔符拦截），非法时返回 `(-32602, ...)`；
 /// 2. 判定 `is_dm` 时严格依据显式 `sessionKey` 前缀 (`dm:` vs `channel:`/`topic:`) 或无 `channelId` 时的显式 `params.agentId`，
 ///    绝不因进程环境变量 `SHADOW_CREW_AGENT_ID` 存在而把正常频道会话误判为私聊；
-/// 3. 若主路径与 fallback 隔离路径均无法安全创建，返回 `(-32002, ...)` 拒绝建连，绝不退回至 `~/.shadow-crew` 根目录。
+/// 3. 严格校验自定义 `cwd` 必须归属于当前会话所属的 `channels/<channelId>` 或 `agents/<agentId>` 专属目录（及其子目录），严禁跨频道或跨 Agent 混用工作区；
+/// 4. 若主路径与 fallback 隔离路径均无法安全创建，返回 `(-32002, ...)` 拒绝建连，绝不退回至 `~/.shadow-crew` 根目录。
 pub fn resolve_new_session_config(
     params: &serde_json::Value,
     shadow_crew_home: &std::path::Path,
     env_agent_id: Option<&str>,
 ) -> std::result::Result<ResolvedNewSessionConfig, (i32, String)> {
-    let session_key = params
+    let raw_session_key = params
         .get("sessionKey")
         .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
+        .map(|s| s.trim())
         .filter(|s| !s.is_empty());
+
+    let session_key = match raw_session_key {
+        Some(sk) => match validate_session_key(sk) {
+            Ok(valid) => Some(valid),
+            Err(err_msg) => {
+                return Err((-32602, format!("Invalid params (sessionKey): {}", err_msg)));
+            }
+        },
+        None => None,
+    };
 
     let raw_cid = params
         .get("channelId")
@@ -503,10 +565,6 @@ pub fn resolve_new_session_config(
         None => None,
     };
 
-    let session_channel_id = validated_cid
-        .clone()
-        .unwrap_or_else(|| "chan-default".to_string());
-
     let validated_env_agent_id = env_agent_id.and_then(|s| validate_workspace_segment(s).ok());
     let raw_param_agent_id = params
         .get("agentId")
@@ -523,6 +581,44 @@ pub fn resolve_new_session_config(
         },
         None => None,
     };
+
+    let mut sk_channel_id: Option<String> = None;
+    let mut sk_agent_id: Option<String> = None;
+    if let Some(ref sk) = session_key {
+        let parts: Vec<&str> = sk.split(':').collect();
+        if parts[0] == "dm" && parts.len() == 3 {
+            if let Some(ref param_aid) = validated_param_agent_id {
+                if param_aid != parts[1] {
+                    return Err((
+                        -32602,
+                        format!(
+                            "Invalid params: sessionKey agentId '{}' does not match agentId '{}'",
+                            parts[1], param_aid
+                        ),
+                    ));
+                }
+            }
+            sk_agent_id = Some(parts[1].to_string());
+        } else if (parts[0] == "channel" || parts[0] == "topic") && parts.len() >= 3 {
+            if let Some(ref param_cid) = validated_cid {
+                if param_cid != parts[1] {
+                    return Err((
+                        -32602,
+                        format!(
+                            "Invalid params: sessionKey channelId '{}' does not match channelId '{}'",
+                            parts[1], param_cid
+                        ),
+                    ));
+                }
+            }
+            sk_channel_id = Some(parts[1].to_string());
+        }
+    }
+
+    let session_channel_id = validated_cid
+        .clone()
+        .or(sk_channel_id)
+        .unwrap_or_else(|| "chan-default".to_string());
 
     // DM 判定优先级：
     // 1. 显式 sessionKey 前缀 ("dm:" -> true, "channel:" / "topic:" -> false)
@@ -546,15 +642,22 @@ pub fn resolve_new_session_config(
 
     let effective_agent_id = validated_param_agent_id
         .as_deref()
+        .or(sk_agent_id.as_deref())
         .or(validated_env_agent_id.as_deref())
         .unwrap_or("agent-default");
 
-    let fallback_workspace_res = || {
-        if is_dm {
-            try_get_agent_dir_with_home(effective_agent_id, shadow_crew_home)
-        } else {
-            try_get_channel_dir_with_home(&session_channel_id, shadow_crew_home)
-        }
+    let expected_owner_dir = if is_dm {
+        try_get_agent_dir_with_home(effective_agent_id, shadow_crew_home)
+            .map_err(|e| (-32002, e))?
+    } else {
+        try_get_channel_dir_with_home(&session_channel_id, shadow_crew_home)
+            .map_err(|e| (-32002, e))?
+    };
+
+    let logical_owner_dir = if is_dm {
+        normalize_path(&shadow_crew_home.join("agents").join(effective_agent_id))
+    } else {
+        normalize_path(&shadow_crew_home.join("channels").join(&session_channel_id))
     };
 
     let target_workspace_dir = if let Some(cwd) = params
@@ -577,26 +680,51 @@ pub fn resolve_new_session_config(
         } else {
             p
         };
+        let norm_candidate = normalize_path(&candidate);
 
-        if let Some(safe_canonical) =
-            validate_and_resolve_workspace_dir(&candidate, shadow_crew_home)
-        {
-            if std::fs::create_dir_all(safe_canonical.join("artifacts")).is_ok()
-                && std::fs::create_dir_all(safe_canonical.join("scratch")).is_ok()
-            {
-                safe_canonical
+        let rebased_subpath =
+            if norm_candidate == logical_owner_dir || norm_candidate == expected_owner_dir {
+                Some(PathBuf::new())
+            } else if let Ok(rel) = norm_candidate.strip_prefix(&expected_owner_dir) {
+                Some(rel.to_path_buf())
+            } else if let Ok(rel) = norm_candidate.strip_prefix(&logical_owner_dir) {
+                Some(rel.to_path_buf())
             } else {
-                fallback_workspace_res().map_err(|e| (-32002, e))?
+                None
+            };
+
+        match rebased_subpath {
+            Some(rel) if rel.as_os_str().is_empty() => expected_owner_dir,
+            Some(rel) => {
+                let scoped_candidate = expected_owner_dir.join(rel);
+                if let Some(safe_canonical) =
+                    validate_and_resolve_workspace_dir(&scoped_candidate, &expected_owner_dir)
+                {
+                    if std::fs::create_dir_all(safe_canonical.join("artifacts")).is_ok()
+                        && std::fs::create_dir_all(safe_canonical.join("scratch")).is_ok()
+                    {
+                        safe_canonical
+                    } else {
+                        expected_owner_dir
+                    }
+                } else {
+                    eprintln!(
+                        "[Shinobi Agent] ⚠️ 检测到工作区子路径或符号链接越界尝试 (cwd: {:?})，已强制收敛至所属专属目录 {:?}",
+                        candidate, expected_owner_dir
+                    );
+                    expected_owner_dir
+                }
             }
-        } else {
-            eprintln!(
-                "[Shinobi Agent] ⚠️ 检测到非法工作区路径或符号链接越界尝试 (cwd: {:?})，已强制收敛至安全沙箱目录",
-                candidate
-            );
-            fallback_workspace_res().map_err(|e| (-32002, e))?
+            None => {
+                eprintln!(
+                    "[Shinobi Agent] ⚠️ 检测到跨频道/跨Agent工作区访问或沙箱越界尝试 (cwd: {:?}, expected_owner: {:?})，已强制隔离至当前会话专属目录",
+                    candidate, expected_owner_dir
+                );
+                expected_owner_dir
+            }
         }
     } else {
-        fallback_workspace_res().map_err(|e| (-32002, e))?
+        expected_owner_dir
     };
 
     let channel_cwd_str = target_workspace_dir.to_string_lossy().to_string();
@@ -1513,6 +1641,135 @@ mod tests {
         assert!(
             !sandbox_home.join("artifacts").exists() && !sandbox_home.join("scratch").exists(),
             "严禁在 ~/.shadow-crew 沙箱根目录下创建根级 artifacts 或 scratch"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn test_colon_in_agent_or_channel_id_is_rejected() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "shadow_crew_colon_id_test_{}",
+            std::process::id()
+        ));
+        let sandbox_home = temp_base.join(".shadow-crew");
+        let _ = std::fs::remove_dir_all(&temp_base);
+
+        // 1. 单段校验必须拒绝包含冒号 ':' 的 ID
+        assert!(
+            validate_workspace_segment("a:b").is_err(),
+            "包含 ':' 的 Agent/Channel ID 必须被 validate_workspace_segment 拒绝"
+        );
+        assert!(
+            validate_session_key("dm:a:b:thread-1").is_err(),
+            "因 ID 含 ':' 导致被拆成 4 段的 dm:a:b:thread-1 必须被 validate_session_key 拒绝"
+        );
+        assert!(
+            validate_session_key("channel:chan:1:thread-1").is_err(),
+            "因 channelId 含 ':' 导致被拆成 4 段的 channel:chan:1:thread-1 必须被拒绝"
+        );
+
+        // 2. session/new 参数校验必须以 -32602 拒绝含 ':' 的 agentId、channelId 或畸形 sessionKey
+        let bad_agent_res = resolve_new_session_config(
+            &serde_json::json!({ "agentId": "a:b" }),
+            &sandbox_home,
+            None,
+        );
+        assert!(bad_agent_res.is_err());
+        assert_eq!(bad_agent_res.unwrap_err().0, -32602);
+
+        let bad_channel_res = resolve_new_session_config(
+            &serde_json::json!({ "channelId": "chan:1" }),
+            &sandbox_home,
+            None,
+        );
+        assert!(bad_channel_res.is_err());
+        assert_eq!(bad_channel_res.unwrap_err().0, -32602);
+
+        let bad_sk_res = resolve_new_session_config(
+            &serde_json::json!({ "sessionKey": "dm:a:b:thread-1" }),
+            &sandbox_home,
+            None,
+        );
+        assert!(bad_sk_res.is_err());
+        assert_eq!(bad_sk_res.unwrap_err().0, -32602);
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn test_cwd_cross_channel_or_agent_is_isolated_to_owner_workspace() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "shadow_crew_cwd_owner_isolation_test_{}",
+            std::process::id()
+        ));
+        let sandbox_home = temp_base.join(".shadow-crew");
+        let _ = std::fs::remove_dir_all(&temp_base);
+
+        // 1. 频道 A 会话试图通过 cwd 指向频道 B 的沙箱内目录 (~/.shadow-crew/channels/chan-B)：
+        // 必须被拦截并强制收敛至 channels/chan-A，且绝不能在磁盘上创建 channels/chan-B！
+        let cross_chan_cwd = sandbox_home.join("channels/chan-B");
+        let chan_a_cfg = resolve_new_session_config(
+            &serde_json::json!({
+                "channelId": "chan-A",
+                "sessionKey": "channel:chan-A:thread-1",
+                "cwd": cross_chan_cwd.to_string_lossy().to_string()
+            }),
+            &sandbox_home,
+            None,
+        )
+        .expect("跨频道 cwd 请求应被安全收敛至所属频道目录而非崩溃");
+
+        assert!(
+            chan_a_cfg.target_workspace_dir.ends_with("channels/chan-A"),
+            "channelId=chan-A 传入 channels/chan-B 作为 cwd 时，必须强制隔离回 channels/chan-A: {:?}",
+            chan_a_cfg.target_workspace_dir
+        );
+        assert!(
+            !cross_chan_cwd.exists(),
+            "严禁为越权的跨频道 cwd (channels/chan-B) 在磁盘上创建目录"
+        );
+
+        // 2. 频道 A 会话传入归属于 chan-A 内部的子目录 (channels/chan-A/module-auth) -> 允许并正确解析
+        let valid_sub_cwd = sandbox_home.join("channels/chan-A/module-auth");
+        let chan_a_sub_cfg = resolve_new_session_config(
+            &serde_json::json!({
+                "channelId": "chan-A",
+                "sessionKey": "channel:chan-A:thread-1",
+                "cwd": valid_sub_cwd.to_string_lossy().to_string()
+            }),
+            &sandbox_home,
+            None,
+        )
+        .expect("同频道合法子目录 cwd 应解析成功");
+        assert!(
+            chan_a_sub_cfg
+                .target_workspace_dir
+                .ends_with("channels/chan-A/module-auth"),
+            "归属于当前频道的子目录应被允许: {:?}",
+            chan_a_sub_cfg.target_workspace_dir
+        );
+
+        // 3. 私聊 Agent A 会话试图通过 cwd 指向 Agent B 或频道目录 -> 必须强制隔离回 agents/agent-A
+        let cross_agent_cwd = sandbox_home.join("agents/agent-B");
+        let dm_a_cfg = resolve_new_session_config(
+            &serde_json::json!({
+                "agentId": "agent-A",
+                "sessionKey": "dm:agent-A:thread-dm-1",
+                "cwd": cross_agent_cwd.to_string_lossy().to_string()
+            }),
+            &sandbox_home,
+            None,
+        )
+        .expect("跨 Agent cwd 请求应被安全收敛至所属 Agent 目录");
+        assert!(
+            dm_a_cfg.target_workspace_dir.ends_with("agents/agent-A"),
+            "agentId=agent-A 传入 agents/agent-B 作为 cwd 时，必须强制隔离回 agents/agent-A: {:?}",
+            dm_a_cfg.target_workspace_dir
+        );
+        assert!(
+            !cross_agent_cwd.exists(),
+            "严禁为越权的跨 Agent cwd (agents/agent-B) 在磁盘上创建目录"
         );
 
         let _ = std::fs::remove_dir_all(&temp_base);
