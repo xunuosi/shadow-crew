@@ -77,6 +77,118 @@ pub struct AgentRuntimeStatus {
     pub status_detail: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionEntry {
+    pub session_id: String,
+    pub system_prompt: String,
+    pub created_gen: u64,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct SessionRegistry {
+    pub entries: HashMap<String, SessionEntry>,
+    pub latest_clear_generation: u64,
+}
+
+impl SessionRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&self, session_key: &str) -> Option<&SessionEntry> {
+        self.entries.get(session_key)
+    }
+
+    pub fn insert(
+        &mut self,
+        session_key: String,
+        session_id: String,
+        system_prompt: String,
+    ) -> u64 {
+        let created_gen = self.latest_clear_generation + 1;
+        self.entries.insert(
+            session_key,
+            SessionEntry {
+                session_id,
+                system_prompt,
+                created_gen,
+            },
+        );
+        created_gen
+    }
+
+    pub fn remove(&mut self, session_key: &str) -> Option<SessionEntry> {
+        self.entries.remove(session_key)
+    }
+
+    /// 按作用域与清理代际（`clear_generation`）原子裁剪会话映射表：
+    /// 1. 若 `clear_generation < latest_clear_generation`，判定为已超时/被新请求取代的迟到清理，直接返回空列表且不修改任何状态；
+    /// 2. 否则推进 `latest_clear_generation`，并仅移除匹配作用域且 `created_gen <= clear_generation` 的会话，保护清理发起后新建的会话不被误删。
+    pub fn prune_with_generation(
+        &mut self,
+        key_or_prefix: Option<&str>,
+        clear_generation: Option<u64>,
+    ) -> Vec<String> {
+        if let Some(gen) = clear_generation {
+            if gen < self.latest_clear_generation {
+                tracing::warn!(
+                    "[ACP Manager] Ignoring stale clear_sessions request (gen {} < latest {})",
+                    gen,
+                    self.latest_clear_generation
+                );
+                return Vec::new();
+            }
+            self.latest_clear_generation = self.latest_clear_generation.max(gen);
+        }
+
+        let mut removed_sessions: Vec<String> = Vec::new();
+
+        if let Some(target) = key_or_prefix {
+            let t = target.trim();
+            // 精确 key 匹配或冒号前缀边界匹配 (如 "topic:c1:" 或 "channel:c1:")，杜绝 contains 模糊误删相邻键
+            let colon_prefix = if t.ends_with(':') {
+                t.to_string()
+            } else {
+                format!("{}:", t)
+            };
+            let mut keys_to_remove = Vec::new();
+
+            for (k, entry) in self.entries.iter() {
+                if k == t || k.starts_with(&colon_prefix) {
+                    if let Some(max_gen) = clear_generation {
+                        if entry.created_gen > max_gen {
+                            continue;
+                        }
+                    }
+                    keys_to_remove.push(k.clone());
+                    removed_sessions.push(entry.session_id.clone());
+                }
+            }
+
+            for k in keys_to_remove {
+                self.entries.remove(&k);
+            }
+        } else if let Some(max_gen) = clear_generation {
+            let mut keys_to_remove = Vec::new();
+            for (k, entry) in self.entries.iter() {
+                if entry.created_gen > max_gen {
+                    continue;
+                }
+                keys_to_remove.push(k.clone());
+                removed_sessions.push(entry.session_id.clone());
+            }
+            for k in keys_to_remove {
+                self.entries.remove(&k);
+            }
+        } else {
+            removed_sessions.extend(self.entries.values().map(|e| e.session_id.clone()));
+            self.entries.clear();
+        }
+
+        removed_sessions
+    }
+}
+
 #[derive(Clone)]
 pub struct RunningAgent {
     #[allow(dead_code)]
@@ -93,10 +205,7 @@ pub struct RunningAgent {
     pub init_error: Arc<TokioMutex<Option<String>>>,
     pub auth_state: Arc<TokioMutex<String>>,
     pub status_detail: Arc<TokioMutex<Option<String>>>,
-    pub session_ids: Arc<TokioMutex<HashMap<String, String>>>,
-    pub session_prompts: Arc<TokioMutex<HashMap<String, String>>>,
-    pub session_generations: Arc<TokioMutex<HashMap<String, u64>>>,
-    pub latest_clear_generation: Arc<AtomicU64>,
+    pub session_registry: Arc<TokioMutex<SessionRegistry>>,
     #[allow(dead_code)]
     pub cwd: String,
     pub app_handle: AppHandle,
@@ -417,10 +526,7 @@ impl AcpProcessManager {
         let init_error = Arc::new(TokioMutex::new(None::<String>));
         let auth_state = Arc::new(TokioMutex::new("ok".to_string()));
         let status_detail = Arc::new(TokioMutex::new(None::<String>));
-        let session_ids = Arc::new(TokioMutex::new(HashMap::new()));
-        let session_prompts = Arc::new(TokioMutex::new(HashMap::new()));
-        let session_generations = Arc::new(TokioMutex::new(HashMap::new()));
-        let latest_clear_generation = Arc::new(AtomicU64::new(0));
+        let session_registry = Arc::new(TokioMutex::new(SessionRegistry::new()));
         let now_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -679,10 +785,7 @@ impl AcpProcessManager {
                 init_error: init_error.clone(),
                 auth_state: auth_state.clone(),
                 status_detail: status_detail.clone(),
-                session_ids,
-                session_prompts,
-                session_generations,
-                latest_clear_generation,
+                session_registry,
                 cwd: shadow_crew_home_str,
                 app_handle: app_handle.clone(),
                 last_activity: last_activity.clone(),
@@ -808,92 +911,13 @@ impl AcpProcessManager {
     }
 }
 
-/// 按作用域与清理代际（`clear_generation`）裁剪会话映射表：
-/// 1. 若 `clear_generation < latest_clear_generation`，判定为已超时/被新请求取代的迟到清理，直接返回空列表且不修改任何状态；
-/// 2. 否则推进 `latest_clear_generation`，并仅移除匹配作用域且 `created_gen <= clear_generation` 的会话，保护清理发起后新建的会话不被误删。
-pub fn prune_session_maps_with_generation(
-    map: &mut HashMap<String, String>,
-    prompts_map: &mut HashMap<String, String>,
-    gens_map: &mut HashMap<String, u64>,
-    latest_clear_generation: &AtomicU64,
-    key_or_prefix: Option<&str>,
-    clear_generation: Option<u64>,
-) -> Vec<String> {
-    if let Some(gen) = clear_generation {
-        let latest = latest_clear_generation.load(Ordering::SeqCst);
-        if gen < latest {
-            tracing::warn!(
-                "[ACP Manager] Ignoring stale clear_sessions request (gen {} < latest {})",
-                gen,
-                latest
-            );
-            return Vec::new();
-        }
-        latest_clear_generation.fetch_max(gen, Ordering::SeqCst);
-    }
-
-    let mut removed_sessions: Vec<String> = Vec::new();
-
-    if let Some(target) = key_or_prefix {
-        let t = target.trim();
-        // 精确 key 匹配或冒号前缀边界匹配 (如 "topic:c1:" 或 "channel:c1:")，杜绝 contains 模糊误删相邻键
-        let colon_prefix = if t.ends_with(':') {
-            t.to_string()
-        } else {
-            format!("{}:", t)
-        };
-        let mut keys_to_remove = Vec::new();
-
-        for (k, sid) in map.iter() {
-            if k == t || k.starts_with(&colon_prefix) {
-                if let (Some(max_gen), Some(&created_gen)) = (clear_generation, gens_map.get(k)) {
-                    if created_gen > max_gen {
-                        continue;
-                    }
-                }
-                keys_to_remove.push(k.clone());
-                removed_sessions.push(sid.clone());
-            }
-        }
-
-        for k in keys_to_remove {
-            map.remove(&k);
-            prompts_map.remove(&k);
-            gens_map.remove(&k);
-        }
-    } else if let Some(max_gen) = clear_generation {
-        let mut keys_to_remove = Vec::new();
-        for (k, sid) in map.iter() {
-            if let Some(&created_gen) = gens_map.get(k) {
-                if created_gen > max_gen {
-                    continue;
-                }
-            }
-            keys_to_remove.push(k.clone());
-            removed_sessions.push(sid.clone());
-        }
-        for k in keys_to_remove {
-            map.remove(&k);
-            prompts_map.remove(&k);
-            gens_map.remove(&k);
-        }
-    } else {
-        removed_sessions.extend(map.values().cloned());
-        map.clear();
-        prompts_map.clear();
-        gens_map.clear();
-    }
-
-    removed_sessions
-}
-
 impl RunningAgent {
     #[allow(dead_code)]
     pub async fn clear_sessions(&self, key_or_prefix: Option<&str>) {
         self.clear_sessions_with_generation(key_or_prefix, None).await;
     }
 
-    /// 清空当前 Agent 内部指定 key/前缀（或全部）的 session_ids 缓存映射，
+    /// 清空当前 Agent 内部指定 key/前缀（或全部）的 session 缓存映射，
     /// 并在移除前向 Agent 进程发送 ACP `session/close` 标准请求释放底层沙箱与上下文内存。
     /// 若提供了 `clear_generation`：
     /// 1. 当 `clear_generation < self.latest_clear_generation` 时，判定为超时迟到的旧清理请求，直接丢弃；
@@ -904,17 +928,8 @@ impl RunningAgent {
         clear_generation: Option<u64>,
     ) {
         let removed_sessions = {
-            let mut map = self.session_ids.lock().await;
-            let mut prompts_map = self.session_prompts.lock().await;
-            let mut gens_map = self.session_generations.lock().await;
-            prune_session_maps_with_generation(
-                &mut map,
-                &mut prompts_map,
-                &mut gens_map,
-                &self.latest_clear_generation,
-                key_or_prefix,
-                clear_generation,
-            )
+            let mut reg = self.session_registry.lock().await;
+            reg.prune_with_generation(key_or_prefix, clear_generation)
         };
 
         // 异步向底层 ACP 进程发送 session/close，使 Agent 进程释放底层会话资源
@@ -1091,11 +1106,10 @@ impl RunningAgent {
         // 剥离冷启动首轮动态挂载的团队花名册 (Roster Guidance)，确保第 2 轮起的 warm-session 不会被误判为变更而意外重建导致上下文丢失
         let normalized_sp = normalize_system_prompt_for_sync(&enriched_sp);
         let mut session_id = {
-            let map = agent.session_ids.lock().await;
-            let prompts_map = agent.session_prompts.lock().await;
-            if let Some(existing_sp) = prompts_map.get(&session_key) {
-                if existing_sp == &normalized_sp {
-                    map.get(&session_key).cloned()
+            let reg = agent.session_registry.lock().await;
+            if let Some(entry) = reg.get(&session_key) {
+                if entry.system_prompt == normalized_sp {
+                    Some(entry.session_id.clone())
                 } else {
                     tracing::info!(
                         "[Agent {}] Persona/environment prompt changed for session_key {}. Refreshing session to sync updated persona/mode.",
@@ -1104,17 +1118,15 @@ impl RunningAgent {
                     None
                 }
             } else {
-                map.get(&session_key).cloned()
+                None
             }
         };
 
         if session_id.is_none() {
             // 若原先已存在旧 sessionId，先发送 session/close 关闭释放旧会话资源
             let old_sid = {
-                let mut map = agent.session_ids.lock().await;
-                let mut prompts_map = agent.session_prompts.lock().await;
-                prompts_map.remove(&session_key);
-                map.remove(&session_key)
+                let mut reg = agent.session_registry.lock().await;
+                reg.remove(&session_key).map(|e| e.session_id)
             };
             if let Some(old_id) = old_sid {
                 let close_req = serde_json::json!({
@@ -1179,10 +1191,10 @@ impl RunningAgent {
                 sid,
                 workspace_cwd
             );
-            let created_gen = agent.latest_clear_generation.load(Ordering::SeqCst) + 1;
-            agent.session_ids.lock().await.insert(session_key.clone(), sid.clone());
-            agent.session_prompts.lock().await.insert(session_key.clone(), normalized_sp.clone());
-            agent.session_generations.lock().await.insert(session_key.clone(), created_gen);
+            {
+                let mut reg = agent.session_registry.lock().await;
+                reg.insert(session_key.clone(), sid.clone(), normalized_sp.clone());
+            }
             session_id = Some(sid);
         }
 
@@ -1332,9 +1344,7 @@ impl RunningAgent {
             Ok(resp) => {
                 // 若出现特定 session 错误，清除缓存触发重新 session/new
                 if let Some(err) = resp.get("error") {
-                    let mut map = agent.session_ids.lock().await;
-                    map.remove(&session_key);
-                    agent.session_prompts.lock().await.remove(&session_key);
+                    agent.session_registry.lock().await.remove(&session_key);
 
                     let err_msg = err.get("message").and_then(|m| m.as_str()).unwrap_or_default();
                     if err_msg.contains("Authentication required") || err_msg.to_lowercase().contains("authentication") {
@@ -1520,44 +1530,39 @@ mod runtime_status_tests {
 
     #[test]
     fn test_clear_sessions_with_generation_ignores_stale_and_preserves_newer_sessions() {
-        use super::prune_session_maps_with_generation;
-        use std::collections::HashMap;
-        use std::sync::atomic::{AtomicU64, Ordering};
+        use super::{SessionEntry, SessionRegistry};
 
-        let mut map = HashMap::new();
-        let mut prompts_map = HashMap::new();
-        let mut gens_map = HashMap::new();
-        let latest_gen = AtomicU64::new(0);
+        let mut reg = SessionRegistry::new();
 
         // 1. 初始会话 (created at gen = 0)
-        map.insert("channel:ch-1:thread-1".to_string(), "sid-old-1".to_string());
-        prompts_map.insert("channel:ch-1:thread-1".to_string(), "sp-1".to_string());
-        gens_map.insert("channel:ch-1:thread-1".to_string(), 0);
+        reg.entries.insert(
+            "channel:ch-1:thread-1".to_string(),
+            SessionEntry {
+                session_id: "sid-old-1".to_string(),
+                system_prompt: "sp-1".to_string(),
+                created_gen: 0,
+            },
+        );
 
-        // 2. 重试的清理请求 (gen = 2) 先一步执行完成，清理了旧会话并将 latest_gen 推进到 2
-        let removed_by_retry = prune_session_maps_with_generation(
-            &mut map,
-            &mut prompts_map,
-            &mut gens_map,
-            &latest_gen,
+        // 2. 重试的清理请求 (gen = 2) 先一步执行完成，清理了旧会话并将 latest_clear_generation 推进到 2
+        let removed_by_retry = reg.prune_with_generation(
             Some("channel:ch-1"),
             Some(2),
         );
         assert_eq!(removed_by_retry, vec!["sid-old-1".to_string()]);
-        assert_eq!(latest_gen.load(Ordering::SeqCst), 2);
-        assert!(map.is_empty());
+        assert_eq!(reg.latest_clear_generation, 2);
+        assert!(reg.entries.is_empty());
 
-        // 3. 清理成功后，用户发起新 Prompt，创建了代际为 2 的新会话 sid-new-2
-        map.insert("channel:ch-1:thread-1".to_string(), "sid-new-2".to_string());
-        prompts_map.insert("channel:ch-1:thread-1".to_string(), "sp-2".to_string());
-        gens_map.insert("channel:ch-1:thread-1".to_string(), 2);
+        // 3. 清理成功后，用户发起新 Prompt，创建了代际为 3 (latest_clear_generation + 1) 的新会话 sid-new-2
+        reg.insert(
+            "channel:ch-1:thread-1".to_string(),
+            "sid-new-2".to_string(),
+            "sp-2".to_string(),
+        );
+        assert_eq!(reg.get("channel:ch-1:thread-1").unwrap().created_gen, 3);
 
         // 4. 此前超时的旧清理请求 (gen = 1 < latest_gen = 2) 迟到到达 -> 必须被直接忽略，不得删除 sid-new-2！
-        let removed_by_late_clear = prune_session_maps_with_generation(
-            &mut map,
-            &mut prompts_map,
-            &mut gens_map,
-            &latest_gen,
+        let removed_by_late_clear = reg.prune_with_generation(
             Some("channel:ch-1"),
             Some(1),
         );
@@ -1566,9 +1571,58 @@ mod runtime_status_tests {
             "迟到的旧清理请求 (gen=1 < latest=2) 严禁删除已新建的会话"
         );
         assert_eq!(
-            map.get("channel:ch-1:thread-1").map(|s| s.as_str()),
+            reg.get("channel:ch-1:thread-1").map(|e| e.session_id.as_str()),
             Some("sid-new-2"),
             "新建的会话 sid-new-2 必须完好保留"
         );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_session_registry_insert_and_clear_atomicity() {
+        use super::SessionRegistry;
+        use std::sync::Arc;
+        use tokio::sync::Mutex as TokioMutex;
+
+        let registry = Arc::new(TokioMutex::new(SessionRegistry::new()));
+
+        let mut handles = Vec::new();
+        // 1. 并发注册 20 个会话
+        for i in 0..20 {
+            let reg_clone = registry.clone();
+            handles.push(tokio::spawn(async move {
+                let mut reg = reg_clone.lock().await;
+                reg.insert(
+                    format!("channel:ch-{}:thread-1", i % 4),
+                    format!("sid-{}", i),
+                    format!("sp-{}", i),
+                );
+            }));
+        }
+
+        // 2. 并发对特定频道按代际进行裁剪清理
+        for gen in 1..=5 {
+            let reg_clone = registry.clone();
+            handles.push(tokio::spawn(async move {
+                let mut reg = reg_clone.lock().await;
+                reg.prune_with_generation(Some("channel:ch-0"), Some(gen));
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        let reg = registry.lock().await;
+        // 验证原子性不变量：条目要么不存在，要么三要素完全对齐，绝无孤立 prompt 或丢失代际
+        for (k, entry) in &reg.entries {
+            assert!(!entry.session_id.is_empty(), "session_id 不能为空");
+            assert!(!entry.system_prompt.is_empty(), "system_prompt 不能为空");
+            assert!(entry.created_gen > 0, "created_gen 必须为正代际");
+            assert!(
+                k.starts_with("channel:ch-"),
+                "session_key 必须保留有效前缀: {}",
+                k
+            );
+        }
     }
 }

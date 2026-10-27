@@ -3600,6 +3600,7 @@ name = "shadow-crew-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "reqwest",
  "rusqlite",
  "serde",

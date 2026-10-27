@@ -17,6 +17,7 @@ pub struct SessionState {
     pub session_key: String,
     #[allow(dead_code)]
     pub channel_id: String,
+    pub owner_dir: PathBuf,
     pub workspace_dir: PathBuf,
     pub system_prompt: Option<String>,
     pub mcp_pool_key: String,
@@ -515,6 +516,7 @@ pub fn get_agent_dir_with_home(agent_id: &str, home: &std::path::Path) -> std::p
 pub struct ResolvedNewSessionConfig {
     pub session_channel_id: String,
     pub is_dm: bool,
+    pub owner_dir: PathBuf,
     pub target_workspace_dir: PathBuf,
     pub effective_key: String,
     pub unique_session_id: String,
@@ -694,7 +696,7 @@ pub fn resolve_new_session_config(
             };
 
         match rebased_subpath {
-            Some(rel) if rel.as_os_str().is_empty() => expected_owner_dir,
+            Some(rel) if rel.as_os_str().is_empty() => expected_owner_dir.clone(),
             Some(rel) => {
                 let scoped_candidate = expected_owner_dir.join(rel);
                 if let Some(safe_canonical) =
@@ -705,14 +707,14 @@ pub fn resolve_new_session_config(
                     {
                         safe_canonical
                     } else {
-                        expected_owner_dir
+                        expected_owner_dir.clone()
                     }
                 } else {
                     eprintln!(
                         "[Shinobi Agent] ⚠️ 检测到工作区子路径或符号链接越界尝试 (cwd: {:?})，已强制收敛至所属专属目录 {:?}",
                         candidate, expected_owner_dir
                     );
-                    expected_owner_dir
+                    expected_owner_dir.clone()
                 }
             }
             None => {
@@ -720,11 +722,11 @@ pub fn resolve_new_session_config(
                     "[Shinobi Agent] ⚠️ 检测到跨频道/跨Agent工作区访问或沙箱越界尝试 (cwd: {:?}, expected_owner: {:?})，已强制隔离至当前会话专属目录",
                     candidate, expected_owner_dir
                 );
-                expected_owner_dir
+                expected_owner_dir.clone()
             }
         }
     } else {
-        expected_owner_dir
+        expected_owner_dir.clone()
     };
 
     let channel_cwd_str = target_workspace_dir.to_string_lossy().to_string();
@@ -747,6 +749,7 @@ pub fn resolve_new_session_config(
     Ok(ResolvedNewSessionConfig {
         session_channel_id,
         is_dm,
+        owner_dir: expected_owner_dir,
         target_workspace_dir,
         effective_key,
         unique_session_id,
@@ -755,10 +758,55 @@ pub fn resolve_new_session_config(
     })
 }
 
+/// 原子安全进入工作区目录：
+/// 在 Unix 环境下利用 O_DIRECTORY | O_NOFOLLOW 与 fchdir，确保从路径解析到进程当前工作目录变更之间绝无 symlink 竞争窗口；
+/// 若目标路径在最后一刻被替换为 symlink，系统调用立即拒绝 (ELOOP/ENOTDIR)，绝不跟随沙箱外路径。
+#[cfg(unix)]
+pub fn enter_workspace_dir_safe(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(dir.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let fd = unsafe {
+        libc::open(
+            c_path.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let chdir_res = unsafe { libc::fchdir(fd) };
+    let chdir_err = if chdir_res < 0 {
+        Some(std::io::Error::last_os_error())
+    } else {
+        None
+    };
+    unsafe { libc::close(fd) };
+    if let Some(err) = chdir_err {
+        return Err(err);
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn enter_workspace_dir_safe(dir: &std::path::Path) -> std::io::Result<()> {
+    std::env::set_current_dir(dir)?;
+    let cur = std::env::current_dir()?;
+    let cur_canonical = std::fs::canonicalize(&cur)?;
+    let dir_canonical = std::fs::canonicalize(dir)?;
+    if cur_canonical != dir_canonical {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Security violation: working directory changed during switch",
+        ));
+    }
+    Ok(())
+}
+
 /// 在 `session/prompt` 每次进入工作区前对已保存的 `session_state.workspace_dir` 进行实时 TOCTOU 复验：
 /// 1. 校验沙箱根目录 `shadow_crew_home` 非符号链接并完成 `canonicalize`；
-/// 2. 校验当前会话所属的专属所有者目录（`channels/<channel_id>` 或 `agents/<agent_id>`）非符号链接且位于 `canonical_home` 下；
-/// 3. 逐级校验 `session_state.workspace_dir` 及其到 `canonical_home` 的每一级目录均真实存在且绝非 symlink，同时校验 `canonicalize` 后的真实物理路径未漂移、未跨出当前会话所属的所有者目录；
+/// 2. 校验当前会话所属的专属所有者目录 `session_state.owner_dir` 非符号链接且位于 `canonical_home` 的对应类别（channels/ 或 agents/）下；
+/// 3. 逐级校验 `session_state.workspace_dir` 及其到 `canonical_home` 的每一级目录均真实存在且绝非 symlink，同时校验 `canonicalize` 后的真实物理路径未漂移、未跨出该会话的 `canonical_owner` 目录；
 /// 4. 校验工作区内的 `meta.json`、`memory.sqlite`、`artifacts`、`scratch` 若存在则不得为 symlink；
 /// 5. 一旦检测到 `session/new` 之后发生了目录或文件的 symlink 替换（TOCTOU 攻击），立即返回 `Err((-32003, ...))` 拒绝执行。
 pub fn revalidate_session_workspace_dir(
@@ -791,49 +839,53 @@ pub fn revalidate_session_workspace_dir(
         )
     })?;
 
-    // 确定会话所属的专属顶层隔离目录 (channels/<channel_id> 或 agents/<agent_id>)
+    // 校验会话所属的顶层隔离所有者目录 (session_state.owner_dir)
     let is_dm_session = session_state.session_key.starts_with("dm:")
         || session_state.mcp_pool_key.starts_with("agent:")
         || session_state.channel_id.starts_with("dm-")
         || session_state.channel_id == "direct-messages";
 
-    let owner_rel_dir = if is_dm_session {
-        let agent_seg = if let Some(rest) = session_state.mcp_pool_key.strip_prefix("agent:") {
-            rest.split("::").next().unwrap_or("agent-default")
-        } else if session_state.session_key.starts_with("dm:") {
-            session_state
-                .session_key
-                .split(':')
-                .nth(1)
-                .unwrap_or("agent-default")
-        } else {
-            session_state
-                .channel_id
-                .strip_prefix("dm-")
-                .filter(|s| !s.is_empty())
-                .unwrap_or("agent-default")
-        };
-        let valid_agent = validate_workspace_segment(agent_seg).map_err(|e| {
-            (
-                -32003,
-                format!("Security violation (TOCTOU): invalid session agent segment: {}", e),
-            )
-        })?;
-        PathBuf::from("agents").join(valid_agent)
-    } else {
-        let valid_chan = validate_workspace_segment(&session_state.channel_id).map_err(|e| {
-            (
-                -32003,
-                format!(
-                    "Security violation (TOCTOU): invalid session channel segment: {}",
-                    e
-                ),
-            )
-        })?;
-        PathBuf::from("channels").join(valid_chan)
-    };
+    let expected_category = if is_dm_session { "agents" } else { "channels" };
+    let category_root = canonical_home.join(expected_category);
 
-    let expected_owner_dir = canonical_home.join(&owner_rel_dir);
+    let owner_meta = std::fs::symlink_metadata(&session_state.owner_dir).map_err(|e| {
+        (
+            -32003,
+            format!(
+                "Security violation (TOCTOU): owner_dir {:?} missing or inaccessible: {}",
+                session_state.owner_dir, e
+            ),
+        )
+    })?;
+    if owner_meta.file_type().is_symlink() || !owner_meta.is_dir() {
+        return Err((
+            -32003,
+            format!(
+                "Security violation (TOCTOU): owner_dir {:?} was replaced with a symlink or non-directory",
+                session_state.owner_dir
+            ),
+        ));
+    }
+
+    let canonical_owner = std::fs::canonicalize(&session_state.owner_dir).map_err(|e| {
+        (
+            -32003,
+            format!(
+                "Security violation (TOCTOU): failed to canonicalize owner_dir {:?}: {}",
+                session_state.owner_dir, e
+            ),
+        )
+    })?;
+
+    if !canonical_owner.starts_with(&category_root) || canonical_owner == category_root {
+        return Err((
+            -32003,
+            format!(
+                "Security violation (TOCTOU): canonical owner {:?} escaped expected category sandbox {:?}",
+                canonical_owner, category_root
+            ),
+        ));
+    }
 
     // 校验 workspace_dir 本身非 symlink 且为真实目录
     let ws_meta = std::fs::symlink_metadata(&session_state.workspace_dir).map_err(|e| {
@@ -893,22 +945,13 @@ pub fn revalidate_session_workspace_dir(
         ));
     }
 
-    // 二次 canonicalize 校验真实物理路径未逃逸出 canonical_home 及会话所属的 expected_owner_dir
+    // 二次 canonicalize 校验真实物理路径未逃逸出 canonical_home 及会话所属的 canonical_owner
     let canonical_ws = std::fs::canonicalize(&session_state.workspace_dir).map_err(|e| {
         (
             -32003,
             format!(
                 "Security violation (TOCTOU): failed to canonicalize workspace_dir {:?}: {}",
                 session_state.workspace_dir, e
-            ),
-        )
-    })?;
-    let canonical_owner = std::fs::canonicalize(&expected_owner_dir).map_err(|e| {
-        (
-            -32003,
-            format!(
-                "Security violation (TOCTOU): failed to canonicalize owner dir {:?}: {}",
-                expected_owner_dir, e
             ),
         )
     })?;
@@ -1047,7 +1090,7 @@ async fn main() -> Result<()> {
                 let is_dm = resolved_cfg.is_dm;
                 let target_workspace_dir = resolved_cfg.target_workspace_dir;
                 let channel_cwd_str = target_workspace_dir.to_string_lossy().to_string();
-                let _ = std::env::set_current_dir(&target_workspace_dir);
+                let _ = enter_workspace_dir_safe(&target_workspace_dir);
 
                 let meta_file = target_workspace_dir.join("meta.json");
                 let now_secs = std::time::SystemTime::now()
@@ -1088,6 +1131,7 @@ async fn main() -> Result<()> {
                         session_id: unique_session_id.clone(),
                         session_key: effective_key,
                         channel_id: session_channel_id.clone(),
+                        owner_dir: resolved_cfg.owner_dir,
                         workspace_dir: target_workspace_dir,
                         system_prompt: sp,
                         mcp_pool_key,
@@ -1231,7 +1275,22 @@ async fn main() -> Result<()> {
 
                 let current_workspace_dir = verified_workspace_dir;
                 let current_workspace_cwd = current_workspace_dir.to_string_lossy().to_string();
-                let _ = std::env::set_current_dir(&current_workspace_dir);
+                if let Err(e) = enter_workspace_dir_safe(&current_workspace_dir) {
+                    active_sessions.remove(&prompt_sid);
+                    let err_resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32003,
+                            "message": format!("Security violation (TOCTOU): atomic directory switch failed: {}", e)
+                        }
+                    });
+                    if let Ok(mut out) = stdout_shared.lock() {
+                        let _ = writeln!(out, "{}", err_resp.to_string());
+                        let _ = out.flush();
+                    }
+                    continue;
+                }
 
                 // 更新工作区活跃状态
                 let meta_file = current_workspace_dir.join("meta.json");
@@ -1704,6 +1763,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 session_key: "topic:t1:chan-1:standard".to_string(),
                 channel_id: "chan-1".to_string(),
+                owner_dir: dir1.clone(),
                 workspace_dir: dir1.clone(),
                 system_prompt: None,
                 mcp_pool_key: "chan-1::d1".to_string(),
@@ -2026,6 +2086,7 @@ mod tests {
             session_id: cfg.unique_session_id.clone(),
             session_key: cfg.effective_key.clone(),
             channel_id: cfg.session_channel_id.clone(),
+            owner_dir: cfg.owner_dir.clone(),
             workspace_dir: cfg.target_workspace_dir.clone(),
             system_prompt: None,
             mcp_pool_key: cfg.mcp_pool_key.clone(),
@@ -2071,6 +2132,146 @@ mod tests {
             .expect_err("祖先目录在 session/new 后被替换为 symlink 时必须被 TOCTOU 复验拦截");
         assert_eq!(parent_toctou_err.0, -32003);
         assert!(parent_toctou_err.1.contains("TOCTOU"));
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[tokio::test]
+    async fn test_fallback_session_lifecycle_runs_session_prompt_successfully() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "shadow_crew_fallback_lifecycle_test_{}",
+            std::process::id()
+        ));
+        let sandbox_home = temp_base.join("home");
+        let outside_dir = temp_base.join("outside");
+        std::fs::create_dir_all(&sandbox_home).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+
+        // 场景 1：Channel 目录被恶意篡改为指向沙箱外的 symlink，触发回退到 channels/chan-safe-default
+        let chan_link_path = sandbox_home.join("channels/chan-attack");
+        std::fs::create_dir_all(sandbox_home.join("channels")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_dir, &chan_link_path).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&outside_dir, &chan_link_path).unwrap();
+
+        let cfg = resolve_new_session_config(
+            &serde_json::json!({
+                "channelId": "chan-attack",
+                "sessionKey": "channel:chan-attack:topic-1"
+            }),
+            &sandbox_home,
+            None,
+        )
+        .expect("resolve_new_session_config 应自动回退至 chan-safe-default 安全目录");
+
+        assert!(
+            cfg.target_workspace_dir.ends_with("channels/chan-safe-default"),
+            "target_workspace_dir 应回退到 chan-safe-default: {:?}",
+            cfg.target_workspace_dir
+        );
+        assert!(
+            cfg.owner_dir.ends_with("channels/chan-safe-default"),
+            "owner_dir 必须记录为 chan-safe-default: {:?}",
+            cfg.owner_dir
+        );
+        assert_eq!(cfg.session_channel_id, "chan-attack");
+
+        let fallback_session = SessionState {
+            session_id: cfg.unique_session_id.clone(),
+            session_key: cfg.effective_key.clone(),
+            channel_id: cfg.session_channel_id.clone(),
+            owner_dir: cfg.owner_dir.clone(),
+            workspace_dir: cfg.target_workspace_dir.clone(),
+            system_prompt: None,
+            mcp_pool_key: cfg.mcp_pool_key.clone(),
+            mcp_client: None,
+        };
+
+        // 验证：回退会话在 session/prompt 阶段的 TOCTOU 复验必须成功，绝不得被错误拒绝
+        let verified_ws = revalidate_session_workspace_dir(&fallback_session, &sandbox_home)
+            .expect("合法回退会话必须顺利通过 session/prompt 的 TOCTOU 复验");
+        assert_eq!(
+            std::fs::canonicalize(&verified_ws).unwrap(),
+            std::fs::canonicalize(&fallback_session.workspace_dir).unwrap()
+        );
+
+        // 验证：原子进入工作区目录也必须成功
+        enter_workspace_dir_safe(&verified_ws).expect("安全回退目录原子进入应成功");
+
+        // 场景 2：DM 会话的 agent 目录为指向沙箱外的 symlink，触发回退到 agents/agent-safe-default
+        let agent_link_path = sandbox_home.join("agents/agent-attack");
+        std::fs::create_dir_all(sandbox_home.join("agents")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_dir, &agent_link_path).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&outside_dir, &agent_link_path).unwrap();
+
+        let dm_cfg = resolve_new_session_config(
+            &serde_json::json!({
+                "isDirectMessage": true,
+                "agentId": "agent-attack",
+                "sessionKey": "dm:agent-attack:thread-1"
+            }),
+            &sandbox_home,
+            Some("agent-attack"),
+        )
+        .expect("DM resolve_new_session_config 应自动回退至 agent-safe-default");
+
+        assert!(
+            dm_cfg.owner_dir.ends_with("agents/agent-safe-default"),
+            "DM owner_dir 必须记录为 agent-safe-default: {:?}",
+            dm_cfg.owner_dir
+        );
+
+        let dm_fallback_session = SessionState {
+            session_id: dm_cfg.unique_session_id.clone(),
+            session_key: dm_cfg.effective_key.clone(),
+            channel_id: dm_cfg.session_channel_id.clone(),
+            owner_dir: dm_cfg.owner_dir.clone(),
+            workspace_dir: dm_cfg.target_workspace_dir.clone(),
+            system_prompt: None,
+            mcp_pool_key: dm_cfg.mcp_pool_key.clone(),
+            mcp_client: None,
+        };
+
+        let verified_dm_ws = revalidate_session_workspace_dir(&dm_fallback_session, &sandbox_home)
+            .expect("DM 回退会话必须顺利通过 session/prompt 的 TOCTOU 复验");
+        enter_workspace_dir_safe(&verified_dm_ws).expect("DM 安全回退目录原子进入应成功");
+
+        let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn test_atomic_workspace_enter_blocks_symlink_replacement() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "shadow_crew_atomic_enter_test_{}",
+            std::process::id()
+        ));
+        let real_dir = temp_base.join("real_workspace");
+        let symlink_path = temp_base.join("symlink_workspace");
+        std::fs::create_dir_all(&real_dir).unwrap();
+
+        // 建立指向真实工作区的 symlink
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_dir, &symlink_path).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&real_dir, &symlink_path).unwrap();
+
+        // 真实目录进入必须成功
+        enter_workspace_dir_safe(&real_dir).expect("进入真实物理目录应成功");
+
+        // 符号链接必须被 O_NOFOLLOW 拒绝，杜绝 TOCTOU 竞争替换
+        let err = enter_workspace_dir_safe(&symlink_path)
+            .expect_err("通过 symlink 进入工作区必须被 enter_workspace_dir_safe 阻断");
+        assert!(
+            err.kind() == std::io::ErrorKind::PermissionDenied
+                || err.kind() == std::io::ErrorKind::InvalidInput
+                || err.raw_os_error() == Some(libc::ELOOP)
+                || err.raw_os_error() == Some(libc::ENOTDIR),
+            "错误类型应匹配 symlink 拒绝: {:?}",
+            err
+        );
 
         let _ = std::fs::remove_dir_all(&temp_base);
     }

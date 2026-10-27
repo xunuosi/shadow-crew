@@ -1178,6 +1178,82 @@ async function runEpochAndBarrierTests() {
     resetAcpSessionClearBarrierState();
   }
 
+  // 7.4g 被新清理请求取消的旧挂起任务不得阻塞屏障或导致二次超时加锁 (Cancelled hung clear must not block barrier)
+  {
+    let callCount = 0;
+    let hungSignalAborted = false;
+
+    setAcpSessionClearInvokeForTests(async (_cmd, args) => {
+      callCount += 1;
+      if (callCount === 1) {
+        // 第 1 次清理：底层模拟永久挂起（且忽略 signal）
+        return new Promise((_resolve) => {
+          args?.signal?.addEventListener('abort', () => {
+            hungSignalAborted = true;
+          });
+        });
+      }
+      // 第 2 次清理（覆盖前者的同作用域或更宽作用域）：立即完成
+      return undefined;
+    });
+
+    // 1. 触发第 1 次清理任务（永久挂起，不 await，模拟后台挂起请求）
+    const hungPromise = clearAcpAgentSessions(undefined, 'channel:ch-supersede', {
+      timeoutMs: 100,
+    });
+    // 捕获可能在背景抛出的 timeout 错误，防止未捕获 rejection
+    hungPromise.catch(() => undefined);
+
+    // 稍微让事件循环转动一下以挂起条目
+    await new Promise((r) => setTimeout(r, 10));
+    assert(
+      getPendingAcpSessionClearCount() === 1,
+      '旧清理任务已挂起在屏障队列中'
+    );
+
+    // 2. 触发第 2 次覆盖清理请求并等待成功
+    await clearAcpAgentSessions(undefined, 'channel:ch-supersede');
+
+    assert(
+      hungSignalAborted,
+      '新清理请求必须立即触发旧挂起任务的 AbortSignal'
+    );
+
+    // 3. 此时屏障等待必须立刻完成，绝不阻塞，更绝不能因旧挂起任务而超时抛错并进入 Fail-Closed
+    let barrierBlocked = false;
+    try {
+      await waitForPendingAcpSessionClears({
+        channelId: 'ch-supersede',
+        timeoutMs: 50,
+      });
+    } catch {
+      barrierBlocked = true;
+    }
+
+    assert(
+      !barrierBlocked,
+      '被取代取消的旧挂起任务绝不能阻塞屏障或触发超时: barrierBlocked = false'
+    );
+    assert(
+      getFailedAcpSessionClearReason({ channelId: 'ch-supersede' }) === null,
+      '新清理已成功，且被取消任务未错误写入失败原因'
+    );
+
+    // 4. 验证随后向该 channel 发送 Prompt 畅通无阻
+    const promptRes = await sendPromptToAcpAgent({
+      agent: mockAgentA,
+      roomId: 'thread-1',
+      channelId: 'ch-supersede',
+      prompt: 'hello after supersede clear',
+    });
+    assert(
+      !promptRes.isError,
+      '旧挂起任务被取代取消后，新 Prompt 必须顺利通过屏障并执行成功'
+    );
+
+    resetAcpSessionClearBarrierState();
+  }
+
   // 7.5 全局清空历史 (bumpGlobalEpoch) 使所有房间与频道快照统一失效
   const snapAfter = captureTurnEpochSnapshot(tracker, {
     roomId: 'topic-game-2',

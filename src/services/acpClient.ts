@@ -1513,6 +1513,8 @@ interface PendingSessionClearEntry {
   abortController: AbortController;
   timedOut: boolean;
   cancelled: boolean;
+  settled: boolean;
+  resolveSettled: () => void;
   settledPromise: Promise<void>;
 }
 
@@ -1551,6 +1553,10 @@ export function resetAcpSessionClearBarrierState(): void {
     entry.cancelled = true;
     cancelledClearGenerations.add(entry.generation);
     entry.abortController.abort();
+    if (!entry.settled) {
+      entry.settled = true;
+      entry.resolveSettled();
+    }
   }
   pendingSessionClearEntries.clear();
   failedSessionClearScopes.clear();
@@ -1836,8 +1842,13 @@ export async function waitForPendingAcpSessionClears(
     query?.timeoutMs ?? customClearTimeoutMsForTests ?? DEFAULT_SESSION_CLEAR_BARRIER_TIMEOUT_MS;
 
   while (true) {
-    const matchingEntries = Array.from(pendingSessionClearEntries.values()).filter((entry) =>
-      doesQueryMatchClearScope(entry.scopeKey, query)
+    const matchingEntries = Array.from(pendingSessionClearEntries.values()).filter(
+      (entry) =>
+        !entry.cancelled &&
+        !entry.timedOut &&
+        !entry.settled &&
+        !cancelledClearGenerations.has(entry.generation) &&
+        doesQueryMatchClearScope(entry.scopeKey, query)
     );
     if (matchingEntries.length === 0) {
       break;
@@ -1863,21 +1874,32 @@ export async function waitForPendingAcpSessionClears(
     }
 
     if (timedOut) {
-      const stillPending = matchingEntries.filter((e) => pendingSessionClearEntries.has(e.id));
+      const stillPending = matchingEntries.filter(
+        (e) =>
+          pendingSessionClearEntries.has(e.id) &&
+          !e.cancelled &&
+          !cancelledClearGenerations.has(e.generation)
+      );
       for (const hung of stillPending) {
         hung.timedOut = true;
         hung.cancelled = true;
         cancelledClearGenerations.add(hung.generation);
         hung.abortController.abort();
         pendingSessionClearEntries.delete(hung.id);
+        if (!hung.settled) {
+          hung.settled = true;
+          hung.resolveSettled();
+        }
         failedSessionClearScopes.set(
           hung.scopeKey,
           `ACP Session 清理请求超时 (${timeoutMs}ms)`
         );
       }
-      throw new Error(
-        `ACP Session 清理屏障等待超时 (${timeoutMs}ms)，已按 Fail-Closed 策略阻断当前作用域派发以防复用旧上下文`
-      );
+      if (stillPending.length > 0) {
+        throw new Error(
+          `ACP Session 清理屏障等待超时 (${timeoutMs}ms)，已按 Fail-Closed 策略阻断当前作用域派发以防复用旧上下文`
+        );
+      }
     }
   }
 
@@ -1910,14 +1932,24 @@ export async function clearAcpAgentSessions(
     options?.timeoutMs ?? customClearTimeoutMsForTests ?? DEFAULT_SESSION_CLEAR_BARRIER_TIMEOUT_MS;
 
   // 若存在被当前作用域覆盖的旧在途清理请求，立即将其标记为已取消并触发 abort，防止旧请求迟到返回产生逆序副作用
-  for (const existing of pendingSessionClearEntries.values()) {
+  for (const existing of Array.from(pendingSessionClearEntries.values())) {
     if (doesScopeCoverOtherScope(scopeKey, existing.scopeKey)) {
       existing.cancelled = true;
       cancelledClearGenerations.add(existing.generation);
       existing.abortController.abort();
+      pendingSessionClearEntries.delete(existing.id);
+      if (!existing.settled) {
+        existing.settled = true;
+        existing.resolveSettled();
+      }
     }
   }
   latestScopeClearGeneration.set(scopeKey, clearGeneration);
+
+  let resolveSettled!: () => void;
+  const settledPromise = new Promise<void>((resolve) => {
+    resolveSettled = resolve;
+  });
 
   const entry: PendingSessionClearEntry = {
     id: entryId,
@@ -1926,7 +1958,9 @@ export async function clearAcpAgentSessions(
     abortController,
     timedOut: false,
     cancelled: false,
-    settledPromise: Promise.resolve(),
+    settled: false,
+    resolveSettled,
+    settledPromise,
   };
 
   const runClear = async () => {
@@ -1944,11 +1978,28 @@ export async function clearAcpAgentSessions(
       let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
       try {
         const timeoutPromise = new Promise<never>((_, reject) => {
+          abortController.signal.addEventListener(
+            'abort',
+            () => {
+              if (timeoutHandle !== null) {
+                clearTimeout(timeoutHandle);
+                timeoutHandle = null;
+              }
+            },
+            { once: true }
+          );
           timeoutHandle = setTimeout(() => {
+            if (entry.cancelled || cancelledClearGenerations.has(clearGeneration)) {
+              return;
+            }
             entry.timedOut = true;
-            entry.cancelled = true;
             cancelledClearGenerations.add(clearGeneration);
             abortController.abort();
+            pendingSessionClearEntries.delete(entryId);
+            if (!entry.settled) {
+              entry.settled = true;
+              entry.resolveSettled();
+            }
             reject(
               new Error(
                 `ACP Session 清理请求超时 (${timeoutMs}ms)，已按 Fail-Closed 策略锁定作用域 (${scopeKey})`
@@ -1987,8 +2038,12 @@ export async function clearAcpAgentSessions(
         );
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
-        // 仅当尚无更新的覆盖作用域清理代际接管时，才写入失败锁（防止被取消的旧请求迟到报错反向污染新成功状态）
-        if (!hasNewerCoveringGeneration(scopeKey, clearGeneration)) {
+        // 仅当该请求未被取消且尚无更新的覆盖作用域清理代际接管时，才写入失败锁（防止被取消的旧请求迟到报错反向污染新成功状态）
+        // 注意：若属于本任务自身超时 (entry.timedOut)，必须写入失败锁执行 Fail-Closed 阻断
+        if (
+          (!entry.cancelled || entry.timedOut) &&
+          !hasNewerCoveringGeneration(scopeKey, clearGeneration)
+        ) {
           failedSessionClearScopes.set(scopeKey, errMsg);
         }
         console.warn('[ACP Client] Failed to invoke clear_agent_sessions in Tauri:', e);
@@ -2024,9 +2079,21 @@ export async function clearAcpAgentSessions(
   };
 
   const rawPromise = runClear();
-  entry.settledPromise = rawPromise.then(
-    () => undefined,
-    () => undefined
+  rawPromise.then(
+    () => {
+      if (!entry.settled) {
+        entry.settled = true;
+        entry.resolveSettled();
+      }
+      pendingSessionClearEntries.delete(entryId);
+    },
+    () => {
+      if (!entry.settled) {
+        entry.settled = true;
+        entry.resolveSettled();
+      }
+      pendingSessionClearEntries.delete(entryId);
+    }
   );
 
   pendingSessionClearEntries.set(entryId, entry);
@@ -2034,6 +2101,10 @@ export async function clearAcpAgentSessions(
   try {
     await rawPromise;
   } finally {
+    if (!entry.settled) {
+      entry.settled = true;
+      entry.resolveSettled();
+    }
     pendingSessionClearEntries.delete(entryId);
   }
 }
