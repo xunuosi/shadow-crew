@@ -719,7 +719,7 @@ async fn main() {
     };
 
     let state = AppState {
-        acp_manager: Arc::new(Mutex::new(AcpProcessManager::new())),
+        acp_manager: Arc::new(Mutex::new(AcpProcessManager::with_db(db_manager.clone()))),
         db_manager,
         nostr_relay_url: "ws://127.0.0.1:8080/relay".to_string(),
     };

@@ -189,8 +189,18 @@ impl SessionRegistry {
     }
 }
 
+/// 检查 ACP initialize 响应中是否声明了 loadSession 能力 (支持 capabilities.loadSession 或 agentCapabilities.loadSession)
+pub fn check_supports_load_session(result: &serde_json::Value) -> bool {
+    result.get("capabilities").and_then(|c| c.get("loadSession")).and_then(|v| v.as_bool())
+        .or_else(|| result.get("agentCapabilities").and_then(|c| c.get("loadSession")).and_then(|v| v.as_bool()))
+        .or_else(|| result.get("capabilities").and_then(|c| c.get("sessions")).and_then(|s| s.get("load")).and_then(|v| v.as_bool()))
+        .or_else(|| result.get("agentCapabilities").and_then(|c| c.get("sessions")).and_then(|s| s.get("load")).and_then(|v| v.as_bool()))
+        .unwrap_or(false)
+}
+
 #[derive(Clone)]
 pub struct RunningAgent {
+    pub agent_id: String,
     #[allow(dead_code)]
     pub pid: u32,
     pub child: Arc<TokioMutex<Option<Child>>>,
@@ -206,6 +216,8 @@ pub struct RunningAgent {
     pub auth_state: Arc<TokioMutex<String>>,
     pub status_detail: Arc<TokioMutex<Option<String>>>,
     pub session_registry: Arc<TokioMutex<SessionRegistry>>,
+    pub supports_load_session: Arc<AtomicBool>,
+    pub db_manager: Option<Arc<crate::db_manager::DatabaseManager>>,
     #[allow(dead_code)]
     pub cwd: String,
     pub app_handle: AppHandle,
@@ -217,12 +229,22 @@ pub struct RunningAgent {
 
 pub struct AcpProcessManager {
     agents: HashMap<String, RunningAgent>,
+    db_manager: Option<Arc<crate::db_manager::DatabaseManager>>,
 }
 
 impl AcpProcessManager {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             agents: HashMap::new(),
+            db_manager: None,
+        }
+    }
+
+    pub fn with_db(db_manager: Arc<crate::db_manager::DatabaseManager>) -> Self {
+        Self {
+            agents: HashMap::new(),
+            db_manager: Some(db_manager),
         }
     }
 
@@ -295,12 +317,21 @@ impl AcpProcessManager {
                 agent
                     .clear_sessions_with_generation(session_key_prefix, clear_generation)
                     .await;
+            } else if let Some(ref db) = self.db_manager {
+                // Agent 进程当前未在运行，但收到显式会话清理请求，直接同步清理 SQLite 持久化记录
+                let _ = db.delete_acp_session(Some(aid), session_key_prefix);
             }
         } else {
-            for agent in self.agents.values() {
-                agent
-                    .clear_sessions_with_generation(session_key_prefix, clear_generation)
-                    .await;
+            if self.agents.is_empty() {
+                if let Some(ref db) = self.db_manager {
+                    let _ = db.delete_acp_session(None, session_key_prefix);
+                }
+            } else {
+                for agent in self.agents.values() {
+                    agent
+                        .clear_sessions_with_generation(session_key_prefix, clear_generation)
+                        .await;
+                }
             }
         }
     }
@@ -527,6 +558,7 @@ impl AcpProcessManager {
         let auth_state = Arc::new(TokioMutex::new("ok".to_string()));
         let status_detail = Arc::new(TokioMutex::new(None::<String>));
         let session_registry = Arc::new(TokioMutex::new(SessionRegistry::new()));
+        let supports_load_session = Arc::new(AtomicBool::new(false));
         let now_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -774,6 +806,7 @@ impl AcpProcessManager {
         self.agents.insert(
             agent_id.to_string(),
             RunningAgent {
+                agent_id: agent_id.to_string(),
                 pid,
                 child: child_arc,
                 stdin_tx: stdin_tx.clone(),
@@ -786,6 +819,8 @@ impl AcpProcessManager {
                 auth_state: auth_state.clone(),
                 status_detail: status_detail.clone(),
                 session_registry,
+                supports_load_session: supports_load_session.clone(),
+                db_manager: self.db_manager.clone(),
                 cwd: shadow_crew_home_str,
                 app_handle: app_handle.clone(),
                 last_activity: last_activity.clone(),
@@ -841,6 +876,13 @@ impl AcpProcessManager {
                     tracing::info!("[Agent {}] Immediate initialize succeeded: {:?}", agent_id, resp);
                     log_acp_event(agent_id, "INIT_OK", &format!("ACP initialize handshake confirmed: {:?}", resp.get("result")));
                     initialized.store(true, Ordering::SeqCst);
+                    if let Some(res) = resp.get("result") {
+                        let supported = check_supports_load_session(res);
+                        supports_load_session.store(supported, Ordering::SeqCst);
+                        if supported {
+                            tracing::info!("[Agent {}] Immediate init: Agent reports support for ACP session/load capability", agent_id);
+                        }
+                    }
                 }
             }
             Ok(Err(_)) => {
@@ -931,6 +973,13 @@ impl RunningAgent {
             let mut reg = self.session_registry.lock().await;
             reg.prune_with_generation(key_or_prefix, clear_generation)
         };
+
+        // 仅在真实发生裁剪移除时同步清理 SQLite 持久化表，避免迟到的旧代际清理误删新会话记录
+        if !removed_sessions.is_empty() {
+            if let Some(ref db) = self.db_manager {
+                let _ = db.delete_acp_session(Some(&self.agent_id), key_or_prefix);
+            }
+        }
 
         // 异步向底层 ACP 进程发送 session/close，使 Agent 进程释放底层会话资源
         for sid in removed_sessions {
@@ -1037,6 +1086,13 @@ impl RunningAgent {
                     } else {
                         tracing::info!("[Agent {}] initialize succeeded: {:?}", agent_id, resp);
                         agent.initialized.store(true, Ordering::SeqCst);
+                        if let Some(res) = resp.get("result") {
+                            let supported = check_supports_load_session(res);
+                            agent.supports_load_session.store(supported, Ordering::SeqCst);
+                            if supported {
+                                tracing::info!("[Agent {}] Lazy init: Agent reports support for ACP session/load capability", agent_id);
+                            }
+                        }
                         // 握手恢复成功，清除历史错误态并回正运行态
                         if agent.init_error.lock().await.take().is_some() {
                             *agent.status_detail.lock().await = None;
@@ -1122,6 +1178,93 @@ impl RunningAgent {
             }
         };
 
+        // Layer 1 (协议级恢复优先): 若内存中未命中 session_id，检查 SQLite 持久化记录
+        // 若历史记录存在、人设与工作区对齐且 Agent 声明支持 loadSession，优先尝试 session/load
+        if session_id.is_none() {
+            let persisted_opt = if let Some(ref db) = agent.db_manager {
+                db.get_acp_session(agent_id, &session_key).ok().flatten()
+            } else {
+                None
+            };
+
+            if let Some(persisted) = persisted_opt {
+                let persona_matched = persisted.system_prompt == normalized_sp;
+                let cwd_matched = persisted.workspace_cwd == workspace_cwd;
+                let supports_load = agent.supports_load_session.load(Ordering::SeqCst);
+
+                if persona_matched && cwd_matched && supports_load {
+                    tracing::info!(
+                        "[Agent {}] Found persisted session {} for key {}. Attempting Layer 1 session/load recovery...",
+                        agent_id, persisted.session_id, session_key
+                    );
+                    let load_id = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let (load_tx, load_rx) = oneshot::channel();
+                    {
+                        let mut map = agent.pending_requests.lock().await;
+                        map.insert(load_id, load_tx);
+                    }
+                    let mut load_params = serde_json::json!({
+                        "sessionId": &persisted.session_id,
+                        "sessionKey": &session_key,
+                        "cwd": &workspace_cwd,
+                    });
+                    if is_dm {
+                        load_params["agentId"] = serde_json::Value::String(agent_id.to_string());
+                    } else if let Some(c) = channel_id {
+                        load_params["channelId"] = serde_json::Value::String(c.to_string());
+                    }
+                    load_params["systemPrompt"] = serde_json::Value::String(enriched_sp.clone());
+
+                    let load_req = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": load_id,
+                        "method": "session/load",
+                        "params": load_params
+                    });
+                    let _ = agent.stdin_tx.send(load_req.to_string()).await;
+                    match tokio::time::timeout(Duration::from_secs(5), load_rx).await {
+                        Ok(Ok(resp)) if resp.get("error").is_none() => {
+                            tracing::info!(
+                                "[Agent {}] Layer 1 recovery SUCCEEDED: restored session {} via session/load",
+                                agent_id, persisted.session_id
+                            );
+                            log_acp_event(
+                                agent_id,
+                                "SESSION_RESUMED",
+                                &format!("Restored session {} via session/load", persisted.session_id),
+                            );
+                            {
+                                let mut reg = agent.session_registry.lock().await;
+                                reg.insert(session_key.clone(), persisted.session_id.clone(), normalized_sp.clone());
+                            }
+                            session_id = Some(persisted.session_id);
+                        }
+                        _ => {
+                            tracing::warn!(
+                                "[Agent {}] Layer 1 session/load failed or timed out for session {}. Falling back to Layer 2 (session/new)...",
+                                agent_id, persisted.session_id
+                            );
+                            if let Some(ref db) = agent.db_manager {
+                                let _ = db.delete_acp_session(Some(agent_id), Some(&session_key));
+                            }
+                        }
+                    }
+                } else if !persona_matched || !cwd_matched {
+                    tracing::info!(
+                        "[Agent {}] Persisted session {} invalidated due to persona/cwd change. Purging stale record.",
+                        agent_id, persisted.session_id
+                    );
+                    if let Some(ref db) = agent.db_manager {
+                        let _ = db.delete_acp_session(Some(agent_id), Some(&session_key));
+                    }
+                }
+            }
+        }
+
+        // Layer 2 (平台层增量兜底): 若无法原地恢复，则发起 session/new 建立新会话并持久化
         if session_id.is_none() {
             // 若原先已存在旧 sessionId，先发送 session/close 关闭释放旧会话资源
             let old_sid = {
@@ -1195,6 +1338,26 @@ impl RunningAgent {
                 let mut reg = agent.session_registry.lock().await;
                 reg.insert(session_key.clone(), sid.clone(), normalized_sp.clone());
             }
+            // 持久化到 SQLite
+            if let Some(ref db) = agent.db_manager {
+                if let Err(e) = db.save_acp_session(
+                    agent_id,
+                    &session_key,
+                    &sid,
+                    &workspace_cwd,
+                    &normalized_sp,
+                ) {
+                    tracing::warn!("[Agent {}] Failed to save acp session to sqlite: {}", agent_id, e);
+                }
+            }
+            // 通知前端会话已重新分配 (Layer 2 兜底水位线重置)
+            let _ = agent.app_handle.emit(
+                "acp:session_reset",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "session_key": &session_key
+                }),
+            );
             session_id = Some(sid);
         }
 
@@ -1345,6 +1508,9 @@ impl RunningAgent {
                 // 若出现特定 session 错误，清除缓存触发重新 session/new
                 if let Some(err) = resp.get("error") {
                     agent.session_registry.lock().await.remove(&session_key);
+                    if let Some(ref db) = agent.db_manager {
+                        let _ = db.delete_acp_session(Some(agent_id), Some(&session_key));
+                    }
 
                     let err_msg = err.get("message").and_then(|m| m.as_str()).unwrap_or_default();
                     if err_msg.contains("Authentication required") || err_msg.to_lowercase().contains("authentication") {
@@ -1624,5 +1790,40 @@ mod runtime_status_tests {
                 k
             );
         }
+    }
+
+    #[test]
+    fn test_check_supports_load_session() {
+        use super::check_supports_load_session;
+
+        let with_capabilities = serde_json::json!({
+            "capabilities": {
+                "loadSession": true
+            }
+        });
+        assert!(check_supports_load_session(&with_capabilities));
+
+        let with_agent_capabilities = serde_json::json!({
+            "agentCapabilities": {
+                "loadSession": true
+            }
+        });
+        assert!(check_supports_load_session(&with_agent_capabilities));
+
+        let with_nested_sessions = serde_json::json!({
+            "capabilities": {
+                "sessions": {
+                    "load": true
+                }
+            }
+        });
+        assert!(check_supports_load_session(&with_nested_sessions));
+
+        let without_support = serde_json::json!({
+            "capabilities": {
+                "prompts": { "listChanged": true }
+            }
+        });
+        assert!(!check_supports_load_session(&without_support));
     }
 }

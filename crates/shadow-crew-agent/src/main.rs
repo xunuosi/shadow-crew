@@ -1053,7 +1053,8 @@ async fn main() -> Result<()> {
                             "prompts": { "listChanged": true },
                             "tools": { "listChanged": true },
                             "memory": { "persistent": true, "backend": "sqlite" },
-                            "workspace": { "canDirectExec": true }
+                            "workspace": { "canDirectExec": true },
+                            "loadSession": true
                         }
                     }
                 });
@@ -1144,6 +1145,131 @@ async fn main() -> Result<()> {
                     "id": id,
                     "result": {
                         "sessionId": unique_session_id
+                    }
+                });
+                if let Ok(mut out) = stdout_shared.lock() {
+                    writeln!(out, "{}", resp.to_string())?;
+                    out.flush()?;
+                }
+            } else if method == "session/load" {
+                let requested_sid = match params.get("sessionId").and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    Some(s) => s.to_string(),
+                    None => {
+                        let err_resp = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32602,
+                                "message": "Invalid params: missing sessionId for session/load"
+                            }
+                        });
+                        if let Ok(mut out) = stdout_shared.lock() {
+                            writeln!(out, "{}", err_resp.to_string())?;
+                            out.flush()?;
+                        }
+                        continue;
+                    }
+                };
+
+                // 若当前内存中已存在该活跃 session，直接复用并更新 systemPrompt（若提供）
+                if let Some(existing) = active_sessions.get_mut(&requested_sid) {
+                    if let Some(sp) = params.get("systemPrompt").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+                        existing.system_prompt = Some(sp);
+                    }
+                    let resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "sessionId": requested_sid
+                        }
+                    });
+                    if let Ok(mut out) = stdout_shared.lock() {
+                        writeln!(out, "{}", resp.to_string())?;
+                        out.flush()?;
+                    }
+                    continue;
+                }
+
+                // 若因 Agent 进程重启等导致内存缺失，依据 params 恢复 Session 状态与 MCP 客户端池
+                let env_agent_id = std::env::var("SHADOW_CREW_AGENT_ID").ok();
+                let resolved_cfg = match resolve_new_session_config(
+                    &params,
+                    &shadow_crew_home,
+                    env_agent_id.as_deref(),
+                ) {
+                    Ok(cfg) => cfg,
+                    Err((code, message)) => {
+                        let err_resp = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": code,
+                                "message": message
+                            }
+                        });
+                        if let Ok(mut out) = stdout_shared.lock() {
+                            writeln!(out, "{}", err_resp.to_string())?;
+                            out.flush()?;
+                        }
+                        continue;
+                    }
+                };
+
+                let session_channel_id = resolved_cfg.session_channel_id;
+                let is_dm = resolved_cfg.is_dm;
+                let target_workspace_dir = resolved_cfg.target_workspace_dir;
+                let channel_cwd_str = target_workspace_dir.to_string_lossy().to_string();
+                let _ = enter_workspace_dir_safe(&target_workspace_dir);
+
+                let meta_file = target_workspace_dir.join("meta.json");
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let meta_obj = serde_json::json!({
+                    "channelId": session_channel_id,
+                    "createdAt": now_secs,
+                    "lastActive": now_secs,
+                    "workspaceDir": channel_cwd_str,
+                    "artifactsDir": target_workspace_dir.join("artifacts").to_string_lossy(),
+                    "scratchDir": target_workspace_dir.join("scratch").to_string_lossy(),
+                });
+                let _ = std::fs::write(&meta_file, meta_obj.to_string());
+
+                let sp = params
+                    .get("systemPrompt")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let mcp_key = resolved_cfg.mcp_key;
+                let mcp_pool_key = resolved_cfg.mcp_pool_key;
+                let chan_param = if is_dm { None } else { Some(session_channel_id.as_str()) };
+                let session_mcp = mcp_pool
+                    .get_or_spawn(&mcp_pool_key, &mcp_key, Some(&channel_cwd_str), chan_param)
+                    .await;
+                prune_dead_session_mcp_refs(&mut active_sessions, &mut mcp_pool);
+
+                let effective_key = resolved_cfg.effective_key;
+
+                active_sessions.insert(
+                    requested_sid.clone(),
+                    SessionState {
+                        session_id: requested_sid.clone(),
+                        session_key: effective_key,
+                        channel_id: session_channel_id.clone(),
+                        owner_dir: resolved_cfg.owner_dir,
+                        workspace_dir: target_workspace_dir,
+                        system_prompt: sp,
+                        mcp_pool_key,
+                        mcp_client: session_mcp,
+                    },
+                );
+
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "sessionId": requested_sid
                     }
                 });
                 if let Ok(mut out) = stdout_shared.lock() {
@@ -2274,5 +2400,54 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&temp_base);
+    }
+
+    #[test]
+    fn test_session_load_restoration_and_workspace_revalidation() {
+        let temp_home = std::env::temp_dir().join(format!(
+            "shadow_crew_session_load_test_{}",
+            std::process::id()
+        ));
+        let chan_id = "test-load-chan";
+        let expected_owner = temp_home.join("channels").join(chan_id);
+        std::fs::create_dir_all(&expected_owner).unwrap();
+        let canonical_expected_owner = std::fs::canonicalize(&expected_owner).unwrap_or(expected_owner.clone());
+
+        let persisted_session_id = "session-topic:test-load-chan:thread-1:standard";
+        let load_params = serde_json::json!({
+            "sessionId": persisted_session_id,
+            "sessionKey": "topic:test-load-chan:thread-1:standard",
+            "channelId": chan_id,
+            "cwd": expected_owner.to_string_lossy(),
+            "systemPrompt": "You are a test agent"
+        });
+
+        let resolved_cfg = resolve_new_session_config(
+            &load_params,
+            &temp_home,
+            None,
+        ).expect("session/load 参数解析必须成功");
+
+        assert_eq!(resolved_cfg.session_channel_id, chan_id);
+        assert!(!resolved_cfg.is_dm);
+        assert_eq!(resolved_cfg.target_workspace_dir, canonical_expected_owner);
+
+        let restored_state = SessionState {
+            session_id: persisted_session_id.to_string(),
+            session_key: resolved_cfg.effective_key,
+            channel_id: resolved_cfg.session_channel_id,
+            owner_dir: resolved_cfg.owner_dir,
+            workspace_dir: resolved_cfg.target_workspace_dir,
+            system_prompt: Some("You are a test agent".to_string()),
+            mcp_pool_key: resolved_cfg.mcp_pool_key,
+            mcp_client: None,
+        };
+
+        // 验证恢复出的 SessionState 可顺利通过 session/prompt 阶段的 TOCTOU 复验
+        let verified = revalidate_session_workspace_dir(&restored_state, &temp_home)
+            .expect("恢复的 SessionState 必须通过工作区目录复验");
+        assert_eq!(verified, canonical_expected_owner);
+
+        let _ = std::fs::remove_dir_all(&temp_home);
     }
 }

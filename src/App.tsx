@@ -1087,20 +1087,8 @@ export default function App() {
     tauriListen('acp:status_change', (event: any) => {
       const payload = event?.payload;
       if (payload && payload.agent_id) {
-        if (payload.status === 'stopped') {
-          // Agent 停止或重启后，清空该 Agent 在各房间的交付缓存与消息水位线，确保新拉起后重新注入 session/new
-          deliveredStandingContextRef.current.forEach((key) => {
-            if (matchesSessionScope(key, { agentId: payload.agent_id })) {
-              deliveredStandingContextRef.current.delete(key);
-            }
-          });
-          Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
-            if (matchesSessionScope(key, { agentId: payload.agent_id })) {
-              sessionWatermarksRef.current.delete(key);
-            }
-          });
-          void safelyClearAcpSessions(payload.agent_id, undefined, `Agent (${payload.agent_id}) 停止`);
-        }
+        // 当 Agent 停止或断开连接时，仅更新 UI 状态为 idle，严禁静默销毁已持久化的会话与水位线，
+        // 确保 Agent 重新连接后能优先通过 Layer 1 (session/load) 原地恢复会话上下文
         setAgents((prev) =>
           prev.map((a) => {
             if (a.id === payload.agent_id) {
@@ -1117,6 +1105,32 @@ export default function App() {
       }
     }).then((fn: any) => {
       unlisten = fn;
+    }).catch(() => {});
+
+    let unlistenSessionReset: (() => void) | undefined;
+    tauriListen('acp:session_reset', (event: any) => {
+      const payload = event?.payload;
+      if (payload) {
+        // 当底层确认触发 session/new (未命中或不支持 session/load 时)，重置该会话的水位线与公约挂载标记，
+        // 使得 Layer 2 平台层在 Prompt 编译时自动注入增量与历史补偿
+        if (payload.session_key) {
+          deliveredStandingContextRef.current.delete(payload.session_key);
+          sessionWatermarksRef.current.delete(payload.session_key);
+        } else if (payload.agent_id) {
+          deliveredStandingContextRef.current.forEach((key) => {
+            if (matchesSessionScope(key, { agentId: payload.agent_id })) {
+              deliveredStandingContextRef.current.delete(key);
+            }
+          });
+          Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
+            if (matchesSessionScope(key, { agentId: payload.agent_id })) {
+              sessionWatermarksRef.current.delete(key);
+            }
+          });
+        }
+      }
+    }).then((fn: any) => {
+      unlistenSessionReset = fn;
     }).catch(() => {});
 
     let unlistenHeartbeat: (() => void) | undefined;
@@ -1210,6 +1224,7 @@ export default function App() {
 
     return () => {
       if (unlisten) unlisten();
+      if (unlistenSessionReset) unlistenSessionReset();
       if (unlistenHeartbeat) unlistenHeartbeat();
       if (unlistenChunk) unlistenChunk();
     };

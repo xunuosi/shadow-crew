@@ -17,6 +17,17 @@ pub struct StorageStatsDto {
     pub protected_bytes: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcpSessionRecord {
+    pub agent_id: String,
+    pub session_key: String,
+    pub session_id: String,
+    pub workspace_cwd: String,
+    pub system_prompt: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 pub struct DatabaseManager {
     conn: Mutex<Connection>,
     db_path: String,
@@ -179,6 +190,19 @@ impl DatabaseManager {
                 value_json TEXT NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+
+            -- 5. ACP 会话状态持久化映射表 (跨进程重启与会话接续恢复真值表)
+            CREATE TABLE IF NOT EXISTS acp_sessions (
+                agent_id TEXT NOT NULL,
+                session_key TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                workspace_cwd TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (agent_id, session_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_acp_sessions_agent ON acp_sessions(agent_id);
         ");
 
         Ok(Self {
@@ -682,6 +706,163 @@ impl DatabaseManager {
             "workspaceState": state_map,
         }))
     }
+
+    /// 插入或更新指定 Agent 与 session_key 对应的 ACP 会话映射
+    pub fn save_acp_session(
+        &self,
+        agent_id: &str,
+        session_key: &str,
+        session_id: &str,
+        workspace_cwd: &str,
+        system_prompt: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO acp_sessions (agent_id, session_key, session_id, workspace_cwd, system_prompt, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
+             ON CONFLICT(agent_id, session_key) DO UPDATE SET
+                session_id = excluded.session_id,
+                workspace_cwd = excluded.workspace_cwd,
+                system_prompt = excluded.system_prompt,
+                updated_at = CURRENT_TIMESTAMP",
+            params![agent_id, session_key, session_id, workspace_cwd, system_prompt],
+        )?;
+        Ok(())
+    }
+
+    /// 获取指定 Agent 与 session_key 的持久化会话记录
+    pub fn get_acp_session(&self, agent_id: &str, session_key: &str) -> Result<Option<AcpSessionRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT agent_id, session_key, session_id, workspace_cwd, system_prompt, created_at, updated_at
+             FROM acp_sessions
+             WHERE agent_id = ?1 AND session_key = ?2",
+        )?;
+        let mut rows = stmt.query(params![agent_id, session_key])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(AcpSessionRecord {
+                agent_id: row.get(0)?,
+                session_key: row.get(1)?,
+                session_id: row.get(2)?,
+                workspace_cwd: row.get(3)?,
+                system_prompt: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// 清理指定 Agent 或指定 session_key 前缀的持久化会话映射，并返回被删除的 session_id 列表
+    pub fn delete_acp_session(
+        &self,
+        agent_id: Option<&str>,
+        session_key_or_prefix: Option<&str>,
+    ) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut removed_sids = Vec::new();
+
+        let (select_sql, delete_sql, params_vec): (String, String, Vec<String>) = match (agent_id, session_key_or_prefix) {
+            (Some(a), Some(p)) => {
+                let clean_p = p.trim();
+                let colon_prefix = if clean_p.ends_with(':') {
+                    format!("{}%", clean_p)
+                } else {
+                    format!("{}:%", clean_p)
+                };
+                (
+                    "SELECT session_id FROM acp_sessions WHERE agent_id = ?1 AND (session_key = ?2 OR session_key LIKE ?3)".to_string(),
+                    "DELETE FROM acp_sessions WHERE agent_id = ?1 AND (session_key = ?2 OR session_key LIKE ?3)".to_string(),
+                    vec![a.to_string(), clean_p.to_string(), colon_prefix],
+                )
+            }
+            (Some(a), None) => (
+                "SELECT session_id FROM acp_sessions WHERE agent_id = ?1".to_string(),
+                "DELETE FROM acp_sessions WHERE agent_id = ?1".to_string(),
+                vec![a.to_string()],
+            ),
+            (None, Some(p)) => {
+                let clean_p = p.trim();
+                let colon_prefix = if clean_p.ends_with(':') {
+                    format!("{}%", clean_p)
+                } else {
+                    format!("{}:%", clean_p)
+                };
+                (
+                    "SELECT session_id FROM acp_sessions WHERE session_key = ?1 OR session_key LIKE ?2".to_string(),
+                    "DELETE FROM acp_sessions WHERE session_key = ?1 OR session_key LIKE ?2".to_string(),
+                    vec![clean_p.to_string(), colon_prefix],
+                )
+            }
+            (None, None) => (
+                "SELECT session_id FROM acp_sessions".to_string(),
+                "DELETE FROM acp_sessions".to_string(),
+                vec![],
+            ),
+        };
+
+        {
+            let mut stmt = conn.prepare(&select_sql)?;
+            let rusqlite_params = rusqlite::params_from_iter(params_vec.iter());
+            let mut rows = stmt.query(rusqlite_params)?;
+            while let Some(row) = rows.next()? {
+                let sid: String = row.get(0)?;
+                removed_sids.push(sid);
+            }
+        }
+
+        {
+            let rusqlite_params = rusqlite::params_from_iter(params_vec.iter());
+            conn.execute(&delete_sql, rusqlite_params)?;
+        }
+
+        Ok(removed_sids)
+    }
+
+    /// 列出指定 Agent 的所有持久化会话记录
+    pub fn list_acp_sessions(&self, agent_id: Option<&str>) -> Result<Vec<AcpSessionRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut records = Vec::new();
+
+        if let Some(a) = agent_id {
+            let mut stmt = conn.prepare(
+                "SELECT agent_id, session_key, session_id, workspace_cwd, system_prompt, created_at, updated_at
+                 FROM acp_sessions WHERE agent_id = ?1 ORDER BY updated_at DESC",
+            )?;
+            let mut rows = stmt.query(params![a])?;
+            while let Some(row) = rows.next()? {
+                records.push(AcpSessionRecord {
+                    agent_id: row.get(0)?,
+                    session_key: row.get(1)?,
+                    session_id: row.get(2)?,
+                    workspace_cwd: row.get(3)?,
+                    system_prompt: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                });
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT agent_id, session_key, session_id, workspace_cwd, system_prompt, created_at, updated_at
+                 FROM acp_sessions ORDER BY updated_at DESC",
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                records.push(AcpSessionRecord {
+                    agent_id: row.get(0)?,
+                    session_key: row.get(1)?,
+                    session_id: row.get(2)?,
+                    workspace_cwd: row.get(3)?,
+                    system_prompt: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                });
+            }
+        }
+
+        Ok(records)
+    }
 }
 
 #[cfg(test)]
@@ -737,5 +918,71 @@ mod tests {
         assert_eq!(full["agents"].as_array().unwrap().len(), 1);
         assert_eq!(full["teams"].as_array().unwrap().len(), 1);
         assert_eq!(full["workspaceState"]["activeProjectId"], "p1");
+    }
+
+    #[test]
+    fn test_acp_session_persistence_lifecycle() {
+        let mgr = DatabaseManager::new(":memory:").expect("Failed to create in-memory db");
+
+        // 1. 保存 3 个不同维度的 ACP 会话映射
+        mgr.save_acp_session(
+            "agent_alpha",
+            "dm:agent_alpha:thread_1",
+            "sess_dm_01",
+            "/tmp/agent_alpha",
+            "system_prompt_v1",
+        ).expect("save dm session failed");
+
+        mgr.save_acp_session(
+            "agent_alpha",
+            "channel:chan_1:thread_2",
+            "sess_chan_01",
+            "/tmp/chan_1",
+            "system_prompt_v1",
+        ).expect("save channel session failed");
+
+        mgr.save_acp_session(
+            "agent_alpha",
+            "topic:chan_1:topic_3:standard",
+            "sess_topic_01",
+            "/tmp/chan_1",
+            "system_prompt_v1",
+        ).expect("save topic session failed");
+
+        // 2. 精确读取验证
+        let dm_sess = mgr.get_acp_session("agent_alpha", "dm:agent_alpha:thread_1")
+            .expect("get dm session query failed")
+            .expect("dm session should exist");
+        assert_eq!(dm_sess.session_id, "sess_dm_01");
+        assert_eq!(dm_sess.workspace_cwd, "/tmp/agent_alpha");
+
+        // 3. 覆盖更新 (session_id 轮转或 cwd 变更)
+        mgr.save_acp_session(
+            "agent_alpha",
+            "dm:agent_alpha:thread_1",
+            "sess_dm_02",
+            "/tmp/agent_alpha_v2",
+            "system_prompt_v2",
+        ).expect("update dm session failed");
+
+        let updated_dm = mgr.get_acp_session("agent_alpha", "dm:agent_alpha:thread_1")
+            .expect("query updated dm session failed")
+            .unwrap();
+        assert_eq!(updated_dm.session_id, "sess_dm_02");
+        assert_eq!(updated_dm.workspace_cwd, "/tmp/agent_alpha_v2");
+        assert_eq!(updated_dm.system_prompt, "system_prompt_v2");
+
+        // 4. 按作用域前缀删除 (清理 topic:chan_1:)
+        let deleted = mgr.delete_acp_session(Some("agent_alpha"), Some("topic:chan_1:"))
+            .expect("delete by prefix failed");
+        assert_eq!(deleted, vec!["sess_topic_01"]);
+        assert!(mgr.get_acp_session("agent_alpha", "topic:chan_1:topic_3:standard").unwrap().is_none());
+        assert!(mgr.get_acp_session("agent_alpha", "channel:chan_1:thread_2").unwrap().is_some());
+
+        // 5. 按 Agent 全量清理
+        let deleted_all = mgr.delete_acp_session(Some("agent_alpha"), None)
+            .expect("delete all agent sessions failed");
+        assert_eq!(deleted_all.len(), 2);
+        assert!(mgr.list_acp_sessions(Some("agent_alpha")).unwrap().is_empty());
     }
 }
