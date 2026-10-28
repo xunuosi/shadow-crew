@@ -331,19 +331,19 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                       </span>
                     </div>
 
-                    {/* 方案 B: 独立能力栏 (Bar View) */}
+                    {/* 方案 1: 单行精炼能力条 */}
                     <div
                       className={`p-2 rounded-xl border flex items-center justify-between transition-all ${
                         isLoadSupported
-                          ? 'bg-emerald-50 dark:bg-emerald-500/15 border-emerald-300 dark:border-emerald-500/30'
+                          ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-600 dark:text-emerald-300'
                           : isLoadUnsupported
-                          ? 'bg-amber-50 dark:bg-amber-500/15 border-amber-300 dark:border-amber-500/30'
+                          ? 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-300'
                           : 'bg-surface border-border'
                       }`}
                     >
-                      <div className="flex flex-col">
+                      <div className="flex flex-col min-w-0 pr-2">
                         <span
-                          className={`font-mono font-semibold text-[11px] flex items-center gap-1.5 ${
+                          className={`font-mono font-semibold text-[11px] flex items-center gap-1.5 whitespace-nowrap ${
                             isLoadSupported
                               ? 'text-emerald-800 dark:text-emerald-300'
                               : isLoadUnsupported
@@ -352,18 +352,18 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                           }`}
                         >
                           <span
-                            className={`w-1.5 h-1.5 rounded-full ${
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                               isLoadSupported
-                                ? 'bg-emerald-500'
+                                ? 'bg-emerald-500 animate-pulse'
                                 : isLoadUnsupported
                                 ? 'bg-amber-500'
                                 : 'bg-zinc-400'
                             }`}
                           />
-                          <span>session/load (会话热恢复)</span>
+                          <span>session/load (会话恢复)</span>
                         </span>
                         <span
-                          className={`text-[10px] mt-0.5 ${
+                          className={`text-[10px] mt-0.5 truncate ${
                             isLoadSupported
                               ? 'text-emerald-700 dark:text-emerald-400'
                               : isLoadUnsupported
@@ -374,12 +374,12 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                           {isLoadSupported
                             ? '支持断点续聊与会话热重载，网络开销极低'
                             : isLoadUnsupported
-                            ? '未实现 session/load，系统自动启用全量历史追加 (Prompt Fallback) 兜底'
+                            ? '未实现 session/load，系统自动启用全量历史追加兜底'
                             : '进程未启动，握手后自动探测对端 Capabilities'}
                         </span>
                       </div>
                       <span
-                        className={`font-mono text-[10px] font-bold shrink-0 ml-2 ${
+                        className={`font-mono text-[10px] font-semibold whitespace-nowrap shrink-0 pl-1 ${
                           isLoadSupported
                             ? 'text-emerald-800 dark:text-emerald-300'
                             : isLoadUnsupported
@@ -387,7 +387,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                             : 'text-fg-muted'
                         }`}
                       >
-                        {isLoadSupported ? '已就绪 ✓' : isLoadUnsupported ? '未支持 ⚠️' : '等待连通 ⏳'}
+                        {isLoadSupported ? '支持 ✓' : isLoadUnsupported ? '仅单次 ⚠️' : '待握手'}
                       </span>
                     </div>
 

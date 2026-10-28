@@ -71,35 +71,18 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   const [allStopped, setAllStopped] = useState(false);
   const [sessionFilter, setSessionFilter] = useState<'all' | 'supported' | 'unsupported' | 'pending'>('all');
 
-  const isAgentActive = (a: Agent) =>
-    a.status === 'running' ||
-    a.status === 'starting' ||
-    a.status === 'thinking' ||
-    a.status === 'using_skill' ||
-    a.status === 'accessing_workspace' ||
-    a.status === 'querying_memory';
+  const hasAgentLoadSession = (a: Agent) =>
+    Boolean(a.capabilities?.supportsLoadSession ?? (a.capabilities as any)?.loadSession);
 
-  const supportedCount = agents.filter((a) => a.capabilities?.supportsLoadSession === true).length;
-  const unsupportedCount = agents.filter((a) => {
-    const running = isAgentActive(a);
-    return (
-      a.capabilities?.supportsLoadSession === false ||
-      (running && a.capabilities?.supportsLoadSession !== true && a.status !== 'starting')
-    );
-  }).length;
-  const pendingCount = agents.filter((a) => {
-    const running = isAgentActive(a);
-    return !running && a.capabilities?.supportsLoadSession === undefined;
-  }).length;
+  const supportedCount = agents.filter((a) => a.status !== 'idle' && hasAgentLoadSession(a)).length;
+  const unsupportedCount = agents.filter((a) => a.status !== 'idle' && !hasAgentLoadSession(a)).length;
+  const pendingCount = agents.filter((a) => a.status === 'idle').length;
 
   const filteredAgents = agents.filter((a) => {
     if (sessionFilter === 'all') return true;
-    const running = isAgentActive(a);
-    const isSupported = a.capabilities?.supportsLoadSession === true;
-    const isUnsupported =
-      a.capabilities?.supportsLoadSession === false ||
-      (running && !isSupported && a.status !== 'starting');
-    const isPending = !running && a.capabilities?.supportsLoadSession === undefined;
+    const isSupported = a.status !== 'idle' && hasAgentLoadSession(a);
+    const isUnsupported = a.status !== 'idle' && !hasAgentLoadSession(a);
+    const isPending = a.status === 'idle';
 
     if (sessionFilter === 'supported') return isSupported;
     if (sessionFilter === 'unsupported') return isUnsupported;
@@ -236,10 +219,10 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     ? 'bg-amber-600 text-white shadow-xs font-semibold'
                     : 'text-amber-700 dark:text-amber-400 hover:text-amber-800'
                 }`}
-                title="未实现 session/load，需单次会话重放兜底"
+                title="未实现 session/load，仅单次会话"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                <span>未支持 ({unsupportedCount})</span>
+                <span>仅单次 ({unsupportedCount})</span>
               </button>
               <button
                 onClick={() => setSessionFilter('pending')}
@@ -251,7 +234,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                 title="离线未探测对端 Capabilities"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-zinc-400" />
-                <span>待探测 ({pendingCount})</span>
+                <span>待握手 ({pendingCount})</span>
               </button>
             </div>
           </div>
@@ -649,57 +632,48 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     );
                   })()}
 
-                  {/* 方案 B: ACP 对端 loadSession 会话恢复能力独立栏 */}
+                  {/* 方案 1: 单行精炼能力条 */}
                   {(() => {
-                    const isSupported = agent.capabilities?.supportsLoadSession === true;
-                    const isUnsupported =
-                      agent.capabilities?.supportsLoadSession === false ||
-                      (isRunning && !isSupported && agent.status !== 'starting');
-
-                    if (isSupported) {
-                      return (
-                        <div
-                          className="mt-1 p-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 flex items-center justify-between text-[11px] shadow-2xs transition-all"
-                          title="ACP 对端声明支持会话热恢复。切换房间、重连或进程重启后，可无缝恢复先前的会话上下文。"
-                        >
-                          <span className="text-emerald-800 dark:text-emerald-300 font-medium flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" />
-                            <span>ACP 会话热恢复</span>
-                          </span>
-                          <span className="font-mono text-[10px] font-bold text-emerald-800 dark:text-emerald-300">
-                            已就绪 ✓
-                          </span>
-                        </div>
-                      );
-                    }
-
-                    if (isUnsupported) {
-                      return (
-                        <div
-                          className="mt-1 p-1.5 rounded-xl bg-amber-50 dark:bg-amber-500/15 border border-amber-300 dark:border-amber-500/30 flex items-center justify-between text-[11px] shadow-2xs transition-all"
-                          title="ACP 对端未实现 session/load。每次重启或重连将以独立 session/new 重新初始化，系统自动采用全量历史追加兜底。"
-                        >
-                          <span className="text-amber-800 dark:text-amber-300 font-medium flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-400" />
-                            <span>ACP 会话热恢复</span>
-                          </span>
-                          <span className="font-mono text-[10px] font-bold text-amber-800 dark:text-amber-300">
-                            未支持 ⚠️
-                          </span>
-                        </div>
-                      );
-                    }
+                    const hasLoadSession = Boolean(
+                      agent.capabilities?.supportsLoadSession ?? (agent.capabilities as any)?.loadSession
+                    );
+                    const isIdle = agent.status === 'idle';
 
                     return (
                       <div
-                        className="mt-1 p-1.5 rounded-xl bg-surface-subtle border border-border flex items-center justify-between text-[11px] transition-all"
-                        title="进程未启动。点击启动或进行连通性测试后，将自动解析对端 Capabilities。"
+                        className={`mt-2 p-1.5 px-2.5 rounded-xl border flex items-center justify-between text-[11px] select-none transition-all ${
+                          isIdle
+                            ? 'bg-surface-subtle border-border text-fg-muted'
+                            : hasLoadSession
+                            ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-600 dark:text-emerald-300'
+                            : 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-300'
+                        }`}
+                        title={
+                          isIdle
+                            ? '进程未启动。点击启动或进行连通性测试后，将自动解析对端 Capabilities。'
+                            : hasLoadSession
+                            ? 'ACP 对端声明支持会话热恢复。切换房间、重连或进程重启后，可无缝恢复先前的会话上下文。'
+                            : 'ACP 对端未实现 session/load。每次重启或重连将以独立 session/new 重新初始化，系统自动采用全量历史追加兜底。'
+                        }
                       >
-                        <span className="text-fg-muted font-medium flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500" />
-                          <span>ACP 会话热恢复</span>
+                        {/* 左侧：精炼主标签 */}
+                        <div className="flex items-center gap-1.5 min-w-0 shrink-0">
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              isIdle
+                                ? 'bg-zinc-400 dark:bg-zinc-500'
+                                : hasLoadSession
+                                ? 'bg-emerald-500 animate-pulse'
+                                : 'bg-amber-500'
+                            }`}
+                          />
+                          <span className="font-medium whitespace-nowrap">会话恢复</span>
+                        </div>
+
+                        {/* 右侧：紧凑状态短语 */}
+                        <span className="font-mono text-[10px] font-semibold whitespace-nowrap shrink-0 pl-1">
+                          {isIdle ? '待握手' : hasLoadSession ? '支持 ✓' : '仅单次 ⚠️'}
                         </span>
-                        <span className="font-mono text-[10px] text-fg-muted">等待连通 ⏳</span>
                       </div>
                     );
                   })()}

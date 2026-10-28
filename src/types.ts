@@ -183,6 +183,7 @@ export interface Agent {
     canDelegateToSubAgents: boolean;
     supportsStreaming: boolean;
     supportsLoadSession?: boolean;
+    loadSession?: boolean;
   };
 
   // Local ACP Profile & Environment Variables (ENV)

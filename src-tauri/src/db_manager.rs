@@ -24,6 +24,7 @@ pub struct AcpSessionRecord {
     pub session_id: String,
     pub workspace_cwd: String,
     pub system_prompt: String,
+    pub created_gen: u64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -206,12 +207,16 @@ impl DatabaseManager {
                 session_id TEXT NOT NULL,
                 workspace_cwd TEXT NOT NULL,
                 system_prompt TEXT NOT NULL,
+                created_gen INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (agent_id, session_key)
             );
             CREATE INDEX IF NOT EXISTS idx_acp_sessions_agent ON acp_sessions(agent_id);
         ");
+
+        // 平滑升级已有历史数据库结构
+        let _ = conn.execute("ALTER TABLE acp_sessions ADD COLUMN created_gen INTEGER DEFAULT 0", []);
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -723,17 +728,19 @@ impl DatabaseManager {
         session_id: &str,
         workspace_cwd: &str,
         system_prompt: &str,
+        created_gen: u64,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO acp_sessions (agent_id, session_key, session_id, workspace_cwd, system_prompt, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
+            "INSERT INTO acp_sessions (agent_id, session_key, session_id, workspace_cwd, system_prompt, created_gen, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP)
              ON CONFLICT(agent_id, session_key) DO UPDATE SET
                 session_id = excluded.session_id,
                 workspace_cwd = excluded.workspace_cwd,
                 system_prompt = excluded.system_prompt,
+                created_gen = excluded.created_gen,
                 updated_at = CURRENT_TIMESTAMP",
-            params![agent_id, session_key, session_id, workspace_cwd, system_prompt],
+            params![agent_id, session_key, session_id, workspace_cwd, system_prompt, created_gen],
         )?;
         Ok(())
     }
@@ -742,7 +749,7 @@ impl DatabaseManager {
     pub fn get_acp_session(&self, agent_id: &str, session_key: &str) -> Result<Option<AcpSessionRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT agent_id, session_key, session_id, workspace_cwd, system_prompt, created_at, updated_at
+            "SELECT agent_id, session_key, session_id, workspace_cwd, system_prompt, created_gen, created_at, updated_at
              FROM acp_sessions
              WHERE agent_id = ?1 AND session_key = ?2",
         )?;
@@ -754,19 +761,22 @@ impl DatabaseManager {
                 session_id: row.get(2)?,
                 workspace_cwd: row.get(3)?,
                 system_prompt: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
+                created_gen: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
             }))
         } else {
             Ok(None)
         }
     }
 
-    /// 清理指定 Agent 或指定 session_key 前缀的持久化会话映射，并返回被删除的 session_id 列表
+    /// 清理指定 Agent 或指定 session_key 前缀的持久化会话映射，并返回被删除的 session_id 列表。
+    /// 若提供了 `max_created_gen`，则仅删除 `created_gen <= max_created_gen` 的记录，严格保护清理请求发起后新建的会话！
     pub fn delete_acp_session(
         &self,
         agent_id: Option<&str>,
         session_key_or_prefix: Option<&str>,
+        max_created_gen: Option<u64>,
     ) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut removed_sids = Vec::new();
@@ -780,17 +790,33 @@ impl DatabaseManager {
                 } else {
                     format!("{}:%", escaped_p)
                 };
+                let mut v = vec![a.to_string(), clean_p.to_string(), colon_prefix];
+                let gen_clause = if let Some(g) = max_created_gen {
+                    v.push(g.to_string());
+                    " AND created_gen <= ?4"
+                } else {
+                    ""
+                };
                 (
-                    "SELECT session_id FROM acp_sessions WHERE agent_id = ?1 AND (session_key = ?2 OR session_key LIKE ?3 ESCAPE '\\')".to_string(),
-                    "DELETE FROM acp_sessions WHERE agent_id = ?1 AND (session_key = ?2 OR session_key LIKE ?3 ESCAPE '\\')".to_string(),
-                    vec![a.to_string(), clean_p.to_string(), colon_prefix],
+                    format!("SELECT session_id FROM acp_sessions WHERE agent_id = ?1 AND (session_key = ?2 OR session_key LIKE ?3 ESCAPE '\\'){}", gen_clause),
+                    format!("DELETE FROM acp_sessions WHERE agent_id = ?1 AND (session_key = ?2 OR session_key LIKE ?3 ESCAPE '\\'){}", gen_clause),
+                    v,
                 )
             }
-            (Some(a), None) => (
-                "SELECT session_id FROM acp_sessions WHERE agent_id = ?1".to_string(),
-                "DELETE FROM acp_sessions WHERE agent_id = ?1".to_string(),
-                vec![a.to_string()],
-            ),
+            (Some(a), None) => {
+                let mut v = vec![a.to_string()];
+                let gen_clause = if let Some(g) = max_created_gen {
+                    v.push(g.to_string());
+                    " AND created_gen <= ?2"
+                } else {
+                    ""
+                };
+                (
+                    format!("SELECT session_id FROM acp_sessions WHERE agent_id = ?1{}", gen_clause),
+                    format!("DELETE FROM acp_sessions WHERE agent_id = ?1{}", gen_clause),
+                    v,
+                )
+            }
             (None, Some(p)) => {
                 let clean_p = p.trim();
                 let escaped_p = escape_sql_like(clean_p);
@@ -799,17 +825,33 @@ impl DatabaseManager {
                 } else {
                     format!("{}:%", escaped_p)
                 };
+                let mut v = vec![clean_p.to_string(), colon_prefix];
+                let gen_clause = if let Some(g) = max_created_gen {
+                    v.push(g.to_string());
+                    " AND created_gen <= ?3"
+                } else {
+                    ""
+                };
                 (
-                    "SELECT session_id FROM acp_sessions WHERE session_key = ?1 OR session_key LIKE ?2 ESCAPE '\\'".to_string(),
-                    "DELETE FROM acp_sessions WHERE session_key = ?1 OR session_key LIKE ?2 ESCAPE '\\'".to_string(),
-                    vec![clean_p.to_string(), colon_prefix],
+                    format!("SELECT session_id FROM acp_sessions WHERE (session_key = ?1 OR session_key LIKE ?2 ESCAPE '\\'){}", gen_clause),
+                    format!("DELETE FROM acp_sessions WHERE (session_key = ?1 OR session_key LIKE ?2 ESCAPE '\\'){}", gen_clause),
+                    v,
                 )
             }
-            (None, None) => (
-                "SELECT session_id FROM acp_sessions".to_string(),
-                "DELETE FROM acp_sessions".to_string(),
-                vec![],
-            ),
+            (None, None) => {
+                let mut v = Vec::new();
+                let gen_clause = if let Some(g) = max_created_gen {
+                    v.push(g.to_string());
+                    " WHERE created_gen <= ?1"
+                } else {
+                    ""
+                };
+                (
+                    format!("SELECT session_id FROM acp_sessions{}", gen_clause),
+                    format!("DELETE FROM acp_sessions{}", gen_clause),
+                    v,
+                )
+            }
         };
 
         {
@@ -837,7 +879,7 @@ impl DatabaseManager {
 
         if let Some(a) = agent_id {
             let mut stmt = conn.prepare(
-                "SELECT agent_id, session_key, session_id, workspace_cwd, system_prompt, created_at, updated_at
+                "SELECT agent_id, session_key, session_id, workspace_cwd, system_prompt, created_gen, created_at, updated_at
                  FROM acp_sessions WHERE agent_id = ?1 ORDER BY updated_at DESC",
             )?;
             let mut rows = stmt.query(params![a])?;
@@ -848,13 +890,14 @@ impl DatabaseManager {
                     session_id: row.get(2)?,
                     workspace_cwd: row.get(3)?,
                     system_prompt: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    created_gen: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
                 });
             }
         } else {
             let mut stmt = conn.prepare(
-                "SELECT agent_id, session_key, session_id, workspace_cwd, system_prompt, created_at, updated_at
+                "SELECT agent_id, session_key, session_id, workspace_cwd, system_prompt, created_gen, created_at, updated_at
                  FROM acp_sessions ORDER BY updated_at DESC",
             )?;
             let mut rows = stmt.query([])?;
@@ -865,8 +908,9 @@ impl DatabaseManager {
                     session_id: row.get(2)?,
                     workspace_cwd: row.get(3)?,
                     system_prompt: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    created_gen: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
                 });
             }
         }
@@ -941,6 +985,7 @@ mod tests {
             "sess_dm_01",
             "/tmp/agent_alpha",
             "system_prompt_v1",
+            1,
         ).expect("save dm session failed");
 
         mgr.save_acp_session(
@@ -949,6 +994,7 @@ mod tests {
             "sess_chan_01",
             "/tmp/chan_1",
             "system_prompt_v1",
+            1,
         ).expect("save channel session failed");
 
         mgr.save_acp_session(
@@ -957,6 +1003,7 @@ mod tests {
             "sess_topic_01",
             "/tmp/chan_1",
             "system_prompt_v1",
+            1,
         ).expect("save topic session failed");
 
         // 2. 精确读取验证
@@ -965,6 +1012,7 @@ mod tests {
             .expect("dm session should exist");
         assert_eq!(dm_sess.session_id, "sess_dm_01");
         assert_eq!(dm_sess.workspace_cwd, "/tmp/agent_alpha");
+        assert_eq!(dm_sess.created_gen, 1);
 
         // 3. 覆盖更新 (session_id 轮转或 cwd 变更)
         mgr.save_acp_session(
@@ -973,6 +1021,7 @@ mod tests {
             "sess_dm_02",
             "/tmp/agent_alpha_v2",
             "system_prompt_v2",
+            2,
         ).expect("update dm session failed");
 
         let updated_dm = mgr.get_acp_session("agent_alpha", "dm:agent_alpha:thread_1")
@@ -981,9 +1030,10 @@ mod tests {
         assert_eq!(updated_dm.session_id, "sess_dm_02");
         assert_eq!(updated_dm.workspace_cwd, "/tmp/agent_alpha_v2");
         assert_eq!(updated_dm.system_prompt, "system_prompt_v2");
+        assert_eq!(updated_dm.created_gen, 2);
 
         // 4. 按作用域前缀删除 (清理 topic:chan_1:)
-        let deleted = mgr.delete_acp_session(Some("agent_alpha"), Some("topic:chan_1:"))
+        let deleted = mgr.delete_acp_session(Some("agent_alpha"), Some("topic:chan_1:"), None)
             .expect("delete by prefix failed");
         assert_eq!(deleted, vec!["sess_topic_01"]);
         assert!(mgr.get_acp_session("agent_alpha", "topic:chan_1:topic_3:standard").unwrap().is_none());
@@ -996,16 +1046,23 @@ mod tests {
             "sess_chan_other",
             "/tmp/chanA1",
             "system_prompt_v1",
+            1,
         ).expect("save chanA1 session failed");
 
-        let deleted_wildcard = mgr.delete_acp_session(Some("agent_alpha"), Some("channel:chan_1:"))
+        let deleted_wildcard = mgr.delete_acp_session(Some("agent_alpha"), Some("channel:chan_1:"), None)
             .expect("delete by exact prefix failed");
         assert_eq!(deleted_wildcard, vec!["sess_chan_01"]);
         // chanA1 必须完好保留，未被当成 chan_1 误删
         assert!(mgr.get_acp_session("agent_alpha", "channel:chanA1:thread_2").unwrap().is_some());
 
-        // 5. 按 Agent 全量清理
-        let deleted_all = mgr.delete_acp_session(Some("agent_alpha"), None)
+        // 5. 验证 Generation 屏障防护：若旧清理请求 (gen=1) 迟到到达，绝不能删除代际为 2 的新建会话
+        let late_deleted = mgr.delete_acp_session(Some("agent_alpha"), Some("dm:agent_alpha:thread_1"), Some(1))
+            .expect("late clear query should succeed");
+        assert!(late_deleted.is_empty(), "迟到的旧清理 (gen=1) 严禁删除 created_gen=2 的新会话");
+        assert!(mgr.get_acp_session("agent_alpha", "dm:agent_alpha:thread_1").unwrap().is_some());
+
+        // 6. 按 Agent 全量清理 (无 generation 限制)
+        let deleted_all = mgr.delete_acp_session(Some("agent_alpha"), None, None)
             .expect("delete all agent sessions failed");
         assert_eq!(deleted_all.len(), 2);
         assert!(mgr.list_acp_sessions(Some("agent_alpha")).unwrap().is_empty());

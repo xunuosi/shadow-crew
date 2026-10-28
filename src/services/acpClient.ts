@@ -2144,7 +2144,25 @@ export async function ensureAcpAgentSession(options: {
   channelId?: string;
   systemPrompt?: string;
   discussionMode?: string;
+  isDm?: boolean;
 }): Promise<EnsureSessionResult | null> {
+  const isDm = options.isDm ?? (Boolean(!options.channelId || options.channelId === 'direct-messages' || options.channelId.startsWith('dm-') || options.roomId.startsWith('thread-dm-')));
+  const barrierSessionKey = buildAgentSessionKey({
+    agentId: options.agentId,
+    roomId: options.roomId,
+    channelId: isDm ? undefined : options.channelId,
+    isDm,
+    discussionMode: options.discussionMode,
+  });
+
+  // 1. 严格等待针对该作用域的 Session 清理屏障，消除预检与清理之间的交错与重叠
+  await waitForPendingAcpSessionClears({
+    agentId: options.agentId,
+    sessionKey: barrierSessionKey,
+    channelId: options.channelId,
+    roomId: options.roomId,
+  });
+
   const tauriInvoke =
     typeof window !== 'undefined'
       ? (window as any).__TAURI_INTERNALS__?.invoke ||
@@ -2155,18 +2173,20 @@ export async function ensureAcpAgentSession(options: {
     return null;
   }
 
+  // 2. 预检调用，失败时严格抛出异常（Fail-Closed），严禁静默吞错返回 null
   try {
     const result = await tauriInvoke('ensure_agent_session', {
       agentId: options.agentId,
       roomId: options.roomId,
-      channelId: options.channelId || null,
+      channelId: isDm ? null : (options.channelId || null),
       systemPrompt: options.systemPrompt || null,
       discussionMode: options.discussionMode || null,
     });
     return result as EnsureSessionResult;
   } catch (err) {
-    console.warn(`[ACP Client] ensure_agent_session preflight failed for agent ${options.agentId}:`, err);
-    return null;
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[ACP Client] ensure_agent_session preflight failed for agent ${options.agentId}:`, msg);
+    throw new Error(`ACP Agent [${options.agentId}] session preflight failed: ${msg}`);
   }
 }
 

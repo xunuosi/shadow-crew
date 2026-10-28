@@ -1113,25 +1113,25 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                           <span>ACP 握手探测结果 (Capabilities Check)</span>
                           <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 font-bold">200 OK</span>
                         </div>
-                        {/* 方案 B: 独立能力栏 */}
+                        {/* 方案 1: 单行精炼能力条 */}
                         {remoteTestResult.loadSession ? (
-                          <div className="p-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 flex items-center justify-between text-[11px]">
-                            <span className="text-emerald-800 dark:text-emerald-300 font-medium flex items-center gap-1.5">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" />
-                              <span>ACP 会话热恢复</span>
-                            </span>
-                            <span className="font-mono text-[10px] font-bold text-emerald-800 dark:text-emerald-300">
-                              已就绪 ✓
+                          <div className="p-1.5 px-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-600 dark:text-emerald-300 flex items-center justify-between text-[11px] select-none">
+                            <div className="flex items-center gap-1.5 min-w-0 shrink-0">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                              <span className="font-medium whitespace-nowrap">会话恢复</span>
+                            </div>
+                            <span className="font-mono text-[10px] font-semibold whitespace-nowrap shrink-0 pl-1">
+                              支持 ✓
                             </span>
                           </div>
                         ) : (
-                          <div className="p-1.5 rounded-xl bg-amber-50 dark:bg-amber-500/15 border border-amber-300 dark:border-amber-500/30 flex items-center justify-between text-[11px]">
-                            <span className="text-amber-800 dark:text-amber-300 font-medium flex items-center gap-1.5">
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-400" />
-                              <span>ACP 会话热恢复</span>
-                            </span>
-                            <span className="font-mono text-[10px] font-bold text-amber-800 dark:text-amber-300">
-                              未支持 ⚠️
+                          <div className="p-1.5 px-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-300 flex items-center justify-between text-[11px] select-none">
+                            <div className="flex items-center gap-1.5 min-w-0 shrink-0">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                              <span className="font-medium whitespace-nowrap">会话恢复</span>
+                            </div>
+                            <span className="font-mono text-[10px] font-semibold whitespace-nowrap shrink-0 pl-1">
+                              仅单次 ⚠️
                             </span>
                           </div>
                         )}

@@ -333,9 +333,9 @@ impl AcpProcessManager {
                 agent
                     .clear_sessions_with_generation(session_key_prefix, clear_generation)
                     .await;
-            }
-            if let Some(ref db) = self.db_manager {
-                db.delete_acp_session(Some(aid), session_key_prefix)
+            } else if let Some(ref db) = self.db_manager {
+                // Agent 进程当前未在运行，但收到会话清理请求，直接同步清理 SQLite 持久化记录（带 generation 保护）
+                db.delete_acp_session(Some(aid), session_key_prefix, clear_generation)
                     .with_context(|| format!("Failed to delete ACP session for agent '{}'", aid))?;
             }
         } else {
@@ -345,7 +345,7 @@ impl AcpProcessManager {
                     .await;
             }
             if let Some(ref db) = self.db_manager {
-                db.delete_acp_session(None, session_key_prefix)
+                db.delete_acp_session(None, session_key_prefix, clear_generation)
                     .with_context(|| "Failed to delete ACP sessions globally".to_string())?;
             }
         }
@@ -1011,14 +1011,16 @@ impl RunningAgent {
         key_or_prefix: Option<&str>,
         clear_generation: Option<u64>,
     ) {
+        let _guard = self.prompt_lock.lock().await;
+
         let removed_sessions = {
             let mut reg = self.session_registry.lock().await;
             reg.prune_with_generation(key_or_prefix, clear_generation)
         };
 
-        // 同步清理 SQLite 持久化表
+        // 同步清理 SQLite 持久化表，并携带 clear_generation 保护，杜绝误删清理发起之后新建的会话记录
         if let Some(ref db) = self.db_manager {
-            let _ = db.delete_acp_session(Some(&self.agent_id), key_or_prefix);
+            let _ = db.delete_acp_session(Some(&self.agent_id), key_or_prefix, clear_generation);
         }
 
         // 异步向底层 ACP 进程发送 session/close，使 Agent 进程释放底层会话资源
@@ -1300,9 +1302,19 @@ impl RunningAgent {
                             "SESSION_RESUMED",
                             &format!("Restored session {} via session/load", persisted.session_id),
                         );
-                        {
+                        let restored_gen = {
                             let mut reg = self.session_registry.lock().await;
-                            reg.insert(session_key.clone(), persisted.session_id.clone(), normalized_sp.clone());
+                            reg.insert(session_key.clone(), persisted.session_id.clone(), normalized_sp.clone())
+                        };
+                        if let Some(ref db) = self.db_manager {
+                            let _ = db.save_acp_session(
+                                agent_id,
+                                &session_key,
+                                &persisted.session_id,
+                                &workspace_cwd,
+                                &normalized_sp,
+                                restored_gen,
+                            );
                         }
                         return Ok(EnsureSessionResult {
                             session_id: persisted.session_id,
@@ -1319,7 +1331,7 @@ impl RunningAgent {
                             agent_id, persisted.session_id, res
                         );
                         if let Some(ref db) = self.db_manager {
-                            let _ = db.delete_acp_session(Some(agent_id), Some(&session_key));
+                            let _ = db.delete_acp_session(Some(agent_id), Some(&session_key), None);
                         }
                     }
                 }
@@ -1329,7 +1341,7 @@ impl RunningAgent {
                     agent_id, persisted.session_id
                 );
                 if let Some(ref db) = self.db_manager {
-                    let _ = db.delete_acp_session(Some(agent_id), Some(&session_key));
+                    let _ = db.delete_acp_session(Some(agent_id), Some(&session_key), None);
                 }
             }
         }
@@ -1411,10 +1423,10 @@ impl RunningAgent {
             agent_id, session_key, room_id, sid, workspace_cwd
         );
 
-        {
+        let created_gen = {
             let mut reg = self.session_registry.lock().await;
-            reg.insert(session_key.clone(), sid.clone(), normalized_sp.clone());
-        }
+            reg.insert(session_key.clone(), sid.clone(), normalized_sp.clone())
+        };
         if let Some(ref db) = self.db_manager {
             if let Err(e) = db.save_acp_session(
                 agent_id,
@@ -1422,6 +1434,7 @@ impl RunningAgent {
                 &sid,
                 &workspace_cwd,
                 &normalized_sp,
+                created_gen,
             ) {
                 tracing::warn!("[Agent {}] Failed to save acp session to sqlite: {}", agent_id, e);
             }
@@ -1631,7 +1644,7 @@ impl RunningAgent {
                         );
                         self.session_registry.lock().await.remove(&session_key);
                         if let Some(ref db) = self.db_manager {
-                            let _ = db.delete_acp_session(Some(agent_id), Some(&session_key));
+                            let _ = db.delete_acp_session(Some(agent_id), Some(&session_key), None);
                         }
                     }
 
@@ -2031,6 +2044,7 @@ mod runtime_status_tests {
             "sid-persisted-1",
             "/tmp/fake-cwd",
             "sp-test",
+            1,
         )
         .expect("save session");
 
