@@ -75,6 +75,7 @@ pub struct AgentRuntimeStatus {
     pub auth_state: String, // "ok" | "auth_required" | "missing_key" | "unknown"
     pub status: String,     // "running" | "auth_required" | "starting" | "error" | "idle"
     pub status_detail: Option<String>,
+    pub supports_load_session: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,6 +294,11 @@ impl AcpProcessManager {
             };
 
             let status = derive_runtime_status(is_alive, &auth_state, init_error.is_some()).to_string();
+            let supports_load = if is_alive {
+                Some(agent.supports_load_session.load(Ordering::SeqCst))
+            } else {
+                None
+            };
 
             statuses.push(AgentRuntimeStatus {
                 agent_id: id.clone(),
@@ -302,6 +308,7 @@ impl AcpProcessManager {
                 auth_state,
                 status,
                 status_detail,
+                supports_load_session: supports_load,
             });
         }
         statuses

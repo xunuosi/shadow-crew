@@ -29,6 +29,8 @@ export interface AgentRuntimeStatus {
   auth_state: 'ok' | 'auth_required' | 'missing_key' | 'unknown';
   status: 'running' | 'auth_required' | 'starting' | 'error' | 'idle';
   status_detail?: string | null;
+  supports_load_session?: boolean | null;
+  supportsLoadSession?: boolean | null;
 }
 
 export interface AgentSkill {
@@ -180,6 +182,7 @@ export interface Agent {
     canExecuteSkills: boolean;
     canDelegateToSubAgents: boolean;
     supportsStreaming: boolean;
+    supportsLoadSession?: boolean;
   };
 
   // Local ACP Profile & Environment Variables (ENV)

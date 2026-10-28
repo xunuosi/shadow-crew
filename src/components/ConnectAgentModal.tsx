@@ -99,6 +99,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     ok: boolean;
     latencyMs: number;
     error?: string;
+    agentInfo?: any;
+    loadSession?: boolean;
+    rawRpcResult?: any;
   } | null>(null);
 
   // Local ACP Runtimes & Discovery
@@ -422,6 +425,13 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       ? { modelBadge: effectiveModelBadge, modelConfig: finalModelConfig }
       : { modelBadge: isRemoteMode ? 'Remote ACP' : 'ACP Stdio', modelConfig: undefined };
 
+    const effectiveSupportsLoadSession =
+      isRemoteMode && remoteTestResult?.ok && remoteTestResult.loadSession !== undefined
+        ? remoteTestResult.loadSession
+        : isShinobiNative || selectedAcp.id === 'claude_code'
+        ? true
+        : initialAgent?.capabilities?.supportsLoadSession;
+
     if (initialAgent && onUpdateAgent) {
       const trimmedName = name.trim();
       const finalHandle = normalizeAgentHandle(trimmedName, initialAgent.id);
@@ -441,6 +451,18 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         acpTransport: transport,
         acpCommandOrUrl: resolvedCommand,
         ...modelPayload,
+        capabilities: {
+          ...(initialAgent.capabilities || {
+            canUseInternalMemory: true,
+            canAccessWorkspaceFiles: true,
+            canExecuteSkills: true,
+            canDelegateToSubAgents: true,
+            supportsStreaming: true,
+          }),
+          ...(effectiveSupportsLoadSession !== undefined
+            ? { supportsLoadSession: effectiveSupportsLoadSession }
+            : {}),
+        },
         ...(healthCheck
           ? {
               isModelHealthy: healthCheck.ok,
@@ -483,6 +505,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           canExecuteSkills: true,
           canDelegateToSubAgents: true,
           supportsStreaming: true,
+          ...(effectiveSupportsLoadSession !== undefined
+            ? { supportsLoadSession: effectiveSupportsLoadSession }
+            : {}),
         },
         workspace: {
           rootPath: defaultWorkspaceRoot || '.',
@@ -1061,21 +1086,61 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                   </div>
                 )}
                 {remoteTestResult && (
-                  <div className={`mt-2 p-2.5 rounded-xl border text-[11px] flex items-center gap-2 ${
-                    remoteTestResult.ok
-                      ? 'bg-emerald-50/90 border-emerald-300 text-emerald-800 dark:bg-emerald-950/30 dark:border-emerald-800/40 dark:text-emerald-300'
-                      : 'bg-red-50/90 border-red-300 text-red-800 dark:bg-red-950/30 dark:border-red-800/40 dark:text-red-300'
-                  }`}>
-                    {remoteTestResult.ok ? (
-                      <>
-                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                        <span>连通握手成功！往返延迟: <strong>{remoteTestResult.latencyMs}ms</strong></span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="w-2 h-2 rounded-full bg-red-500" />
-                        <span>连接失败: {remoteTestResult.error}</span>
-                      </>
+                  <div className="space-y-2 mt-2">
+                    <div
+                      className={`p-2.5 rounded-xl border text-[11px] flex items-center gap-2 ${
+                        remoteTestResult.ok
+                          ? 'bg-emerald-50/90 border-emerald-300 text-emerald-800 dark:bg-emerald-500/15 dark:border-emerald-500/30 dark:text-emerald-300'
+                          : 'bg-red-50/90 border-red-300 text-red-800 dark:bg-red-950/30 dark:border-red-800/40 dark:text-red-300'
+                      }`}
+                    >
+                      {remoteTestResult.ok ? (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                          <span>连通握手成功！往返延迟: <strong>{remoteTestResult.latencyMs}ms</strong></span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-red-500" />
+                          <span>连接失败: {remoteTestResult.error}</span>
+                        </>
+                      )}
+                    </div>
+
+                    {remoteTestResult.ok && (
+                      <div className="p-2.5 rounded-xl bg-surface-subtle border border-border space-y-2">
+                        <div className="text-[11px] font-semibold text-fg flex items-center justify-between">
+                          <span>ACP 握手探测结果 (Capabilities Check)</span>
+                          <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 font-bold">200 OK</span>
+                        </div>
+                        {/* 方案 B: 独立能力栏 */}
+                        {remoteTestResult.loadSession ? (
+                          <div className="p-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 flex items-center justify-between text-[11px]">
+                            <span className="text-emerald-800 dark:text-emerald-300 font-medium flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" />
+                              <span>ACP 会话热恢复</span>
+                            </span>
+                            <span className="font-mono text-[10px] font-bold text-emerald-800 dark:text-emerald-300">
+                              已就绪 ✓
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="p-1.5 rounded-xl bg-amber-50 dark:bg-amber-500/15 border border-amber-300 dark:border-amber-500/30 flex items-center justify-between text-[11px]">
+                            <span className="text-amber-800 dark:text-amber-300 font-medium flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-400" />
+                              <span>ACP 会话热恢复</span>
+                            </span>
+                            <span className="font-mono text-[10px] font-bold text-amber-800 dark:text-amber-300">
+                              未支持 ⚠️
+                            </span>
+                          </div>
+                        )}
+                        <p className="text-[10px] text-fg-muted leading-relaxed">
+                          {remoteTestResult.loadSession
+                            ? '已成功识别该 Agent 的 loadSession 扩展能力，在团队多议题切换与重启时将启用会话快照直连。'
+                            : '该 Agent 未声明 session/load 能力。重启或议题切换时，系统将自动使用全量消息历史重放 (Prompt Fallback) 兜底。'}
+                        </p>
+                      </div>
                     )}
                   </div>
                 )}

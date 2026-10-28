@@ -634,7 +634,14 @@ export async function probeRemoteAcpConnection(
   remoteUrl: string,
   authToken?: string,
   timeoutMs = 6000
-): Promise<{ ok: boolean; latencyMs: number; error?: string; agentInfo?: any }> {
+): Promise<{
+  ok: boolean;
+  latencyMs: number;
+  error?: string;
+  agentInfo?: any;
+  loadSession?: boolean;
+  rawRpcResult?: any;
+}> {
   const startTime = Date.now();
 
   return new Promise((resolve) => {
@@ -687,8 +694,19 @@ export async function probeRemoteAcpConnection(
           try {
             const data = JSON.parse(event.data);
             const agentInfo = data?.result?.agentInfo || { name: 'Remote ACP Agent' };
+            const loadSession =
+              data?.result?.capabilities?.loadSession ??
+              data?.result?.agentCapabilities?.loadSession ??
+              data?.result?.capabilities?.sessions?.load ??
+              data?.result?.agentCapabilities?.sessions?.load;
             ws?.close();
-            resolve({ ok: true, latencyMs, agentInfo });
+            resolve({
+              ok: true,
+              latencyMs,
+              agentInfo,
+              loadSession: typeof loadSession === 'boolean' ? loadSession : undefined,
+              rawRpcResult: data,
+            });
           } catch {
             ws?.close();
             resolve({ ok: true, latencyMs });

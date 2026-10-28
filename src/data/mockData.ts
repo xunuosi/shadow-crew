@@ -52,6 +52,7 @@ export const INITIAL_AGENTS: Agent[] = [
       canExecuteSkills: true,
       canDelegateToSubAgents: true,
       supportsStreaming: true,
+      supportsLoadSession: true,
     },
     workspace: {
       rootPath: '~/.shadow-crew',
@@ -96,6 +97,7 @@ export const INITIAL_AGENTS: Agent[] = [
       canExecuteSkills: true,
       canDelegateToSubAgents: true,
       supportsStreaming: true,
+      supportsLoadSession: true,
     },
     workspace: {
       rootPath: '~/.shadow-crew',

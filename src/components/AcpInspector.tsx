@@ -254,6 +254,214 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
               </button>
             )}
 
+            {/* 对端能力感知面板 (ACP RFC loadSession & Capabilities Perception) */}
+            {(() => {
+              const isRunning =
+                selectedAgent.status === 'running' ||
+                selectedAgent.status === 'starting' ||
+                selectedAgent.status === 'thinking' ||
+                selectedAgent.status === 'using_skill' ||
+                selectedAgent.status === 'accessing_workspace' ||
+                selectedAgent.status === 'querying_memory';
+
+              const isLoadSupported = selectedAgent.capabilities?.supportsLoadSession === true;
+              const isLoadUnsupported =
+                selectedAgent.capabilities?.supportsLoadSession === false ||
+                (isRunning && !isLoadSupported && selectedAgent.status !== 'starting');
+
+              const jsonRpcSample =
+                isRunning || isLoadSupported || isLoadUnsupported
+                  ? JSON.stringify(
+                      {
+                        jsonrpc: '2.0',
+                        id: 101,
+                        result: {
+                          protocolVersion: 1,
+                          agentCapabilities: {
+                            loadSession: isLoadSupported,
+                            streaming: selectedAgent.capabilities?.supportsStreaming ?? true,
+                            mcpCapabilities: {
+                              http: true,
+                              sse: true,
+                            },
+                          },
+                          agentInfo: {
+                            name: selectedAgent.name,
+                            version: selectedAgent.protocolVersion || '1.0.4',
+                          },
+                        },
+                      },
+                      null,
+                      2
+                    )
+                  : JSON.stringify(
+                      {
+                        notice:
+                          'Agent 处于待探测/离线状态。启动或建立连接后，系统将自动抓取 initialize 响应报文与 capabilities。',
+                      },
+                      null,
+                      2
+                    );
+
+              return (
+                <div className="p-3 rounded-2xl bg-surface-subtle border border-border space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-fg flex items-center gap-1.5">
+                      <span>🎯 对端能力感知面板</span>
+                    </span>
+                    <span
+                      className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-semibold border ${
+                        isLoadSupported
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-300 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30'
+                          : isLoadUnsupported
+                          ? 'bg-amber-50 text-amber-800 border-amber-300 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30'
+                          : 'bg-surface border-border text-fg-muted'
+                      }`}
+                    >
+                      loadSession: {isLoadSupported ? 'true' : isLoadUnsupported ? 'false' : 'pending'}
+                    </span>
+                  </div>
+
+                  {/* Feature Matrix List */}
+                  <div className="space-y-2 text-[11px]">
+                    <div className="flex items-center justify-between p-2 rounded-xl bg-surface border border-border">
+                      <span className="text-fg-secondary font-mono">session/new (新建会话)</span>
+                      <span className="text-emerald-700 dark:text-emerald-400 font-bold flex items-center gap-1">
+                        ✓ 支持 (基线)
+                      </span>
+                    </div>
+
+                    {/* 方案 B: 独立能力栏 (Bar View) */}
+                    <div
+                      className={`p-2 rounded-xl border flex items-center justify-between transition-all ${
+                        isLoadSupported
+                          ? 'bg-emerald-50 dark:bg-emerald-500/15 border-emerald-300 dark:border-emerald-500/30'
+                          : isLoadUnsupported
+                          ? 'bg-amber-50 dark:bg-amber-500/15 border-amber-300 dark:border-amber-500/30'
+                          : 'bg-surface border-border'
+                      }`}
+                    >
+                      <div className="flex flex-col">
+                        <span
+                          className={`font-mono font-semibold text-[11px] flex items-center gap-1.5 ${
+                            isLoadSupported
+                              ? 'text-emerald-800 dark:text-emerald-300'
+                              : isLoadUnsupported
+                              ? 'text-amber-800 dark:text-amber-300'
+                              : 'text-fg-secondary'
+                          }`}
+                        >
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              isLoadSupported
+                                ? 'bg-emerald-500'
+                                : isLoadUnsupported
+                                ? 'bg-amber-500'
+                                : 'bg-zinc-400'
+                            }`}
+                          />
+                          <span>session/load (会话热恢复)</span>
+                        </span>
+                        <span
+                          className={`text-[10px] mt-0.5 ${
+                            isLoadSupported
+                              ? 'text-emerald-700 dark:text-emerald-400'
+                              : isLoadUnsupported
+                              ? 'text-amber-700 dark:text-amber-400'
+                              : 'text-fg-muted'
+                          }`}
+                        >
+                          {isLoadSupported
+                            ? '支持断点续聊与会话热重载，网络开销极低'
+                            : isLoadUnsupported
+                            ? '未实现 session/load，系统自动启用全量历史追加 (Prompt Fallback) 兜底'
+                            : '进程未启动，握手后自动探测对端 Capabilities'}
+                        </span>
+                      </div>
+                      <span
+                        className={`font-mono text-[10px] font-bold shrink-0 ml-2 ${
+                          isLoadSupported
+                            ? 'text-emerald-800 dark:text-emerald-300'
+                            : isLoadUnsupported
+                            ? 'text-amber-800 dark:text-amber-300'
+                            : 'text-fg-muted'
+                        }`}
+                      >
+                        {isLoadSupported ? '已就绪 ✓' : isLoadUnsupported ? '未支持 ⚠️' : '等待连通 ⏳'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between p-2 rounded-xl bg-surface border border-border">
+                      <span className="text-fg-secondary font-mono">session/prompt (研讨流式交互)</span>
+                      <span className="text-emerald-700 dark:text-emerald-400 font-bold flex items-center gap-1">
+                        ✓ 支持
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between p-2 rounded-xl bg-surface border border-border">
+                      <span className="text-fg-secondary font-mono">session/cancel (中断生成)</span>
+                      <span className="text-emerald-700 dark:text-emerald-400 font-bold flex items-center gap-1">
+                        ✓ 支持
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Real-time JSON-RPC 2.0 initialize Wire Inspection */}
+                  <div className="space-y-1.5 pt-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-fg">ACP 初始化响应报文 (JSON-RPC)</span>
+                      <span className="text-[10px] font-mono text-fg-muted">Method: initialize</span>
+                    </div>
+                    <pre className="p-2.5 rounded-xl bg-surface border border-border text-[10px] font-mono text-fg-secondary overflow-x-auto leading-relaxed custom-scrollbar max-h-36">
+                      <code>{jsonRpcSample}</code>
+                    </pre>
+                    <p className="text-[10px] text-fg-muted leading-normal">
+                      当 <code className="text-fg font-mono">loadSession === false</code>{' '}
+                      时，系统将自动高亮警示并启用会话全量历史重放机制。
+                    </p>
+                  </div>
+
+                  {/* Operational Action Guides */}
+                  <div
+                    className={`p-2.5 rounded-xl border text-[11px] space-y-1 ${
+                      isLoadSupported
+                        ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-300 dark:border-emerald-500/25'
+                        : isLoadUnsupported
+                        ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/25'
+                        : 'bg-surface border-border'
+                    }`}
+                  >
+                    <div
+                      className={`font-semibold flex items-center gap-1 ${
+                        isLoadSupported
+                          ? 'text-emerald-800 dark:text-emerald-300'
+                          : isLoadUnsupported
+                          ? 'text-amber-800 dark:text-amber-300'
+                          : 'text-fg'
+                      }`}
+                    >
+                      <span>💡 运行态策略建议</span>
+                    </div>
+                    <p
+                      className={`text-[10px] leading-relaxed ${
+                        isLoadSupported
+                          ? 'text-emerald-900/90 dark:text-emerald-200/90'
+                          : isLoadUnsupported
+                          ? 'text-amber-900/90 dark:text-amber-200/90'
+                          : 'text-fg-secondary'
+                      }`}
+                    >
+                      {isLoadSupported
+                        ? '当前对端已开启完整的会话恢复能力。切换房间或议题时，将自动下发旧会话的 session_id 进行无损唤醒，无需重复回放历史记录。'
+                        : isLoadUnsupported
+                        ? '⚠️ 警示：该对端未实现 session/load 协议。任何重启或议题切换都会导致对端会话丢失。系统已启用前端全量上下文历史追加模式 (Prompt Fallback) 作为兜底。'
+                        : '对端目前处于未连接/待探测状态。启动后系统将通过 ACP initialize 握手探针自动抓取 capabilities 并更新视觉指示栏。'}
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Tauri IPC Telemetry */}
             <div className="p-2.5 rounded bg-surface-subtle border border-border space-y-2">
               <div className="flex items-center justify-between text-[11px] font-mono">

@@ -971,12 +971,29 @@ export default function App() {
             if (match && match.is_alive) {
               const targetStatus = match.status === 'idle' ? 'idle' : (match.status as any);
               const targetDetail = match.status_detail || undefined;
-              if (a.status !== targetStatus || a.statusDetail !== targetDetail) {
+              const remoteSupportsLoad = match.supportsLoadSession ?? match.supports_load_session;
+              const hasLoadChanged =
+                remoteSupportsLoad !== undefined &&
+                remoteSupportsLoad !== null &&
+                a.capabilities?.supportsLoadSession !== remoteSupportsLoad;
+              if (a.status !== targetStatus || a.statusDetail !== targetDetail || hasLoadChanged) {
                 hasChange = true;
                 return {
                   ...a,
                   status: targetStatus,
                   statusDetail: targetDetail,
+                  capabilities: {
+                    ...(a.capabilities || {
+                      canUseInternalMemory: true,
+                      canAccessWorkspaceFiles: true,
+                      canExecuteSkills: true,
+                      canDelegateToSubAgents: true,
+                      supportsStreaming: true,
+                    }),
+                    ...(remoteSupportsLoad !== undefined && remoteSupportsLoad !== null
+                      ? { supportsLoadSession: remoteSupportsLoad }
+                      : {}),
+                  },
                 };
               }
               return a;
