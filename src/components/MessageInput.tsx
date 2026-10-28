@@ -26,7 +26,6 @@ import { UnifiedAvatar } from './AgentAvatarArtwork';
 interface MessageInputProps {
   onSendMessage: (content: string, targetAgentId?: string) => void;
   activeAgents: Agent[];
-  allAgents?: Agent[];
   isGenerating?: boolean;
   onAbort?: () => void;
   channelName?: string;
@@ -45,7 +44,6 @@ const MAX_HISTORY_SIZE = 200;
 export const MessageInput: React.FC<MessageInputProps> = ({
   onSendMessage,
   activeAgents,
-  allAgents = [],
   isGenerating = false,
   onAbort,
   channelName = 'TestChannel',
@@ -138,9 +136,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const displayedAgents = activeAgents.slice(0, 3);
   const overflowAgents = activeAgents.slice(3);
 
-  const activeAgentIds = new Set((activeAgents || []).map((a) => a.id));
-  const otherAgents = (allAgents || []).filter((a) => !activeAgentIds.has(a.id));
-  const candidateAgents = [...(activeAgents || []), ...otherAgents];
+  // 频道 @ 候选严格限定在当前频道准入成员内，绝不混入工作区其他 Agent
+  const candidateAgents = activeAgents;
 
   const filteredCandidates = candidateAgents.filter(
     (ag) =>

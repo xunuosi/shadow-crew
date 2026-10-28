@@ -838,13 +838,9 @@ export default function App() {
   // 当前频道的专属受邀成员 Agent 列表 (严格限定在当前频道的受邀成员范围内，杜绝非成员 Agent 渗入)
   const currentChannelAgents = useMemo(() => {
     if (!activeChannel) return [];
-    const channelIds = new Set([
-      ...(activeChannel.assignedAgentIds || []),
-      ...(activeChannel.memberIds || []),
-      ...(activeThread?.activeAgentIds || []),
-    ]);
-    return agents.filter((a) => channelIds.has(a.id));
-  }, [activeChannel, activeThread?.activeAgentIds, agents]);
+    const memberIds = new Set(activeChannel.memberIds);
+    return agents.filter((a) => memberIds.has(a.id));
+  }, [activeChannel, agents]);
 
   // 当编辑议题时，计算该议题所属频道及该频道的可用 Agent 成员列表 (严格限定在对应频道准入成员)
   const editingTopicChannel = useMemo(() => {
@@ -7619,15 +7615,7 @@ export default function App() {
                   onAbort={() => activeThread && handleAbortAll(activeThread.id)}
                   activeAgents={activeThread.type === 'dm' 
                     ? agents.filter((a) => a.id === activeThread.authorId || activeThread.activeAgentIds?.includes(a.id))
-                    : agents.filter((a) => {
-                        const channelIds = new Set([
-                          ...(activeChannel?.assignedAgentIds || []),
-                          ...(activeChannel?.memberIds || []),
-                          ...(activeThread.activeAgentIds || [])
-                        ]);
-                        return channelIds.has(a.id);
-                      })}
-                  allAgents={agents}
+                    : currentChannelAgents}
                   isGenerating={isCurrentThreadGenerating}
                   channelName={activeThread.type === 'dm' ? (activeThread.authorName || 'Agent') : (activeChannel?.name || 'chat')}
                   onOpenNewTopicModal={activeThread.type === 'dm' ? undefined : () => setIsNewTopicModalOpen(true)}
