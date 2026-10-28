@@ -1,8 +1,8 @@
+use crate::mcp_client::SharedMcpClient;
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
-use std::time::Duration;
 use shadow_crew_protocol::McpCallTrace;
-use crate::mcp_client::SharedMcpClient;
+use std::time::Duration;
 
 /// Shinobi 底座模型配置，由宿主 (Shadow Crew) 在拉起进程时通过 SHADOW_CREW_LLM_* 环境变量注入
 #[derive(Debug, Clone)]
@@ -18,7 +18,10 @@ pub struct LlmConfig {
 impl LlmConfig {
     /// 从环境变量加载；未配置模型或缺少必要凭证时返回 None
     pub fn from_env() -> Option<Self> {
-        let model_id = std::env::var("SHADOW_CREW_LLM_MODEL_ID").ok()?.trim().to_string();
+        let model_id = std::env::var("SHADOW_CREW_LLM_MODEL_ID")
+            .ok()?
+            .trim()
+            .to_string();
         if model_id.is_empty() {
             return None;
         }
@@ -51,6 +54,12 @@ impl LlmConfig {
 pub struct LlmExecutionResult {
     pub text_response: String,
     pub mcp_tool_calls: Vec<McpCallTrace>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationTurn {
+    pub role: String,
+    pub content: String,
 }
 
 fn chat_completions_url(raw: &str) -> String {
@@ -101,8 +110,12 @@ fn build_http_client() -> Result<reqwest::Client> {
 
 /// 快速单轮文本推演包装
 #[allow(dead_code)]
-pub async fn complete(config: &LlmConfig, system_prompt: &str, user_prompt: &str) -> Result<String> {
-    let res = complete_with_tools(config, system_prompt, user_prompt, None, |_, _| {}).await?;
+pub async fn complete(
+    config: &LlmConfig,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> Result<String> {
+    let res = complete_with_tools(config, system_prompt, user_prompt, &[], None, |_, _| {}).await?;
     Ok(res.text_response)
 }
 
@@ -111,6 +124,7 @@ pub async fn complete_with_tools<F>(
     config: &LlmConfig,
     system_prompt: &str,
     user_prompt: &str,
+    history: &[ConversationTurn],
     mcp_client: Option<SharedMcpClient>,
     on_tool_step: F,
 ) -> Result<LlmExecutionResult>
@@ -118,7 +132,9 @@ where
     F: Fn(&str, &str) + Send + Sync,
 {
     if config.base_url.trim().is_empty() {
-        return Err(anyhow!("模型 Base URL 未配置，请在设置中填写提供商网关地址"));
+        return Err(anyhow!(
+            "模型 Base URL 未配置，请在设置中填写提供商网关地址"
+        ));
     }
 
     let client = build_http_client()?;
@@ -131,6 +147,7 @@ where
             config,
             system_prompt,
             user_prompt,
+            history,
             mcp_client,
             on_tool_step,
             MAX_REACT_TURNS,
@@ -155,10 +172,9 @@ where
 
     let has_tools = !openai_tools.is_empty();
 
-    let mut messages: Vec<Value> = vec![
-        json!({ "role": "system", "content": system_prompt }),
-        json!({ "role": "user", "content": user_prompt }),
-    ];
+    let mut messages: Vec<Value> = vec![json!({ "role": "system", "content": system_prompt })];
+    append_openai_history(&mut messages, history);
+    messages.push(json!({ "role": "user", "content": user_prompt }));
 
     for _turn in 0..MAX_REACT_TURNS {
         let mut body = json!({
@@ -173,7 +189,8 @@ where
             body["tool_choice"] = json!("auto");
         }
 
-        let mut req = client.post(&url)
+        let mut req = client
+            .post(&url)
             .header("content-type", "application/json")
             .json(&body);
 
@@ -181,12 +198,19 @@ where
             req = req.header("Authorization", format!("Bearer {}", config.api_key.trim()));
         }
 
-        let resp = req.send().await.with_context(|| format!("请求大模型网关端点 [{}] 失败", url))?;
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("请求大模型网关端点 [{}] 失败", url))?;
         let status = resp.status();
         let resp_text = resp.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            return Err(anyhow!("大模型网关服务端响应异常 (HTTP {}): {}", status.as_u16(), resp_text));
+            return Err(anyhow!(
+                "大模型网关服务端响应异常 (HTTP {}): {}",
+                status.as_u16(),
+                resp_text
+            ));
         }
 
         let value: Value = serde_json::from_str(&resp_text)
@@ -207,7 +231,8 @@ where
                     let call_id = call["id"].as_str().unwrap_or("call_default");
                     let func_name = call["function"]["name"].as_str().unwrap_or_default();
                     let func_args_raw = call["function"]["arguments"].as_str().unwrap_or("{}");
-                    let parsed_args: Value = serde_json::from_str(func_args_raw).unwrap_or(json!({}));
+                    let parsed_args: Value =
+                        serde_json::from_str(func_args_raw).unwrap_or(json!({}));
 
                     tool_traces.push(McpCallTrace {
                         server_name: "shinobi-dev-mcp".to_string(),
@@ -242,10 +267,7 @@ where
         }
 
         // 模型未请求工具，提取最终文本回复
-        let final_text = message["content"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+        let final_text = message["content"].as_str().unwrap_or_default().to_string();
 
         return Ok(LlmExecutionResult {
             text_response: non_empty(final_text)?,
@@ -274,6 +296,7 @@ async fn run_anthropic_react_loop<F>(
     config: &LlmConfig,
     system_prompt: &str,
     user_prompt: &str,
+    history: &[ConversationTurn],
     mcp_client: Option<SharedMcpClient>,
     on_tool_step: F,
     max_turns: usize,
@@ -296,7 +319,12 @@ where
     };
 
     let has_tools = !anthropic_tools.is_empty();
-    let mut messages: Vec<Value> = vec![json!({ "role": "user", "content": user_prompt })];
+    let mut messages: Vec<Value> = history
+        .iter()
+        .filter(|turn| matches!(turn.role.as_str(), "user" | "assistant"))
+        .map(|turn| json!({ "role": turn.role, "content": turn.content }))
+        .collect();
+    messages.push(json!({ "role": "user", "content": user_prompt }));
 
     for _ in 0..max_turns {
         let mut body = json!({
@@ -311,18 +339,26 @@ where
             body["tools"] = json!(anthropic_tools);
         }
 
-        let req = client.post(&url)
+        let req = client
+            .post(&url)
             .header("x-api-key", &config.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
             .json(&body);
 
-        let resp = req.send().await.with_context(|| format!("请求 Anthropic 端点 [{}] 失败", url))?;
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("请求 Anthropic 端点 [{}] 失败", url))?;
         let status = resp.status();
         let resp_text = resp.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            return Err(anyhow!("Anthropic 服务端响应异常 (HTTP {}): {}", status.as_u16(), resp_text));
+            return Err(anyhow!(
+                "Anthropic 服务端响应异常 (HTTP {}): {}",
+                status.as_u16(),
+                resp_text
+            ));
         }
 
         let value: Value = serde_json::from_str(&resp_text)
@@ -380,7 +416,13 @@ where
 
         let text = content_blocks
             .iter()
-            .filter_map(|b| if b["type"] == "text" { b["text"].as_str() } else { None })
+            .filter_map(|b| {
+                if b["type"] == "text" {
+                    b["text"].as_str()
+                } else {
+                    None
+                }
+            })
             .collect::<Vec<_>>()
             .join("");
 
@@ -401,5 +443,48 @@ fn non_empty(text: String) -> Result<String> {
         Err(anyhow!("模型网关返回了有效 HTTP 响应，但文本内容为空"))
     } else {
         Ok(text)
+    }
+}
+
+fn append_openai_history(messages: &mut Vec<Value>, history: &[ConversationTurn]) {
+    for turn in history {
+        if matches!(turn.role.as_str(), "user" | "assistant") {
+            messages.push(json!({
+                "role": turn.role,
+                "content": turn.content,
+            }));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{append_openai_history, ConversationTurn};
+    use serde_json::json;
+
+    #[test]
+    fn persisted_history_is_ordered_before_current_user_turn() {
+        let history = vec![
+            ConversationTurn {
+                role: "user".to_string(),
+                content: "first".to_string(),
+            },
+            ConversationTurn {
+                role: "assistant".to_string(),
+                content: "answer".to_string(),
+            },
+        ];
+        let mut messages = vec![json!({ "role": "system", "content": "system" })];
+        append_openai_history(&mut messages, &history);
+        messages.push(json!({ "role": "user", "content": "second" }));
+
+        let roles: Vec<_> = messages
+            .iter()
+            .filter_map(|message| message.get("role").and_then(|role| role.as_str()))
+            .collect();
+        assert_eq!(roles, vec!["system", "user", "assistant", "user"]);
+        assert_eq!(messages[1]["content"], "first");
+        assert_eq!(messages[2]["content"], "answer");
+        assert_eq!(messages[3]["content"], "second");
     }
 }

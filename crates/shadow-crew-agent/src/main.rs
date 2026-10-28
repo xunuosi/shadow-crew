@@ -1,9 +1,11 @@
 mod llm;
 mod mcp_client;
 mod memory;
+mod session_store;
 
 use anyhow::Result;
 use memory::AgentMemoryStore;
+use session_store::{SessionStore, StoredSession};
 use shadow_crew_protocol::{AcpPromptResult, MemoryTrace};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
@@ -27,6 +29,7 @@ pub struct SessionState {
 /// 受控 MCP 客户端复用池上限：按 (Channel/Agent 作用域 + 规范化工作区路径) 复用，
 /// 既保留不同频道/工作区的严格物理隔离，又防止同频道大量 Topic 导致无限派生 MCP 子进程。
 pub const MAX_MCP_POOL_SIZE: usize = 8;
+const MAX_SESSION_HISTORY_MESSAGES: usize = 48;
 
 struct PooledMcpEntry {
     client: mcp_client::SharedMcpClient,
@@ -114,7 +117,10 @@ impl McpClientPool {
                     if let Ok(mut guard) = evicted.client.try_lock() {
                         guard.terminate();
                     }
-                    eprintln!("[Shinobi Agent] ♻️ MCP 池达到上限 ({})，已按 LRU 回收闲置工作区客户端: {}", self.max_size, k);
+                    eprintln!(
+                        "[Shinobi Agent] ♻️ MCP 池达到上限 ({})，已按 LRU 回收闲置工作区客户端: {}",
+                        self.max_size, k
+                    );
                 }
             } else {
                 break;
@@ -192,10 +198,10 @@ pub fn normalize_path(path: &std::path::Path) -> PathBuf {
         match comp {
             Component::Prefix(p) => out.push(Component::Prefix(p)),
             Component::RootDir => out.push(Component::RootDir),
-            Component::CurDir => {},
+            Component::CurDir => {}
             Component::ParentDir => {
                 out.pop();
-            },
+            }
             Component::Normal(c) => out.push(c),
         }
     }
@@ -444,7 +450,9 @@ fn get_shadow_crew_home_dir() -> std::path::PathBuf {
         .map(std::path::PathBuf::from)
         .or_else(|| {
             if cfg!(target_os = "windows") {
-                std::env::var("USERPROFILE").ok().map(std::path::PathBuf::from)
+                std::env::var("USERPROFILE")
+                    .ok()
+                    .map(std::path::PathBuf::from)
             } else {
                 std::env::var("HOME").ok().map(std::path::PathBuf::from)
             }
@@ -998,7 +1006,9 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| {
             let home = get_shadow_crew_home_dir();
             let _ = std::fs::create_dir_all(&home);
-            home.join("global_memory.sqlite").to_string_lossy().to_string()
+            home.join("global_memory.sqlite")
+                .to_string_lossy()
+                .to_string()
         });
     let is_first_init = !std::path::Path::new(&db_path).exists();
     let memory_store = AgentMemoryStore::new(&db_path)?;
@@ -1020,6 +1030,17 @@ async fn main() -> Result<()> {
     let shadow_crew_home = get_shadow_crew_home_dir();
     let _ = std::fs::create_dir_all(&shadow_crew_home);
     let _ = std::env::set_current_dir(&shadow_crew_home);
+    let session_store_agent_id = std::env::var("SHADOW_CREW_AGENT_ID")
+        .ok()
+        .and_then(|raw| validate_workspace_segment(&raw).ok())
+        .unwrap_or_else(|| "agent-default".to_string());
+    let session_store_dir = shadow_crew_home.join("cache").join("native-agent-sessions");
+    let _ = std::fs::create_dir_all(&session_store_dir);
+    let mut session_store = SessionStore::new(
+        &session_store_dir
+            .join(format!("{}.sqlite", session_store_agent_id))
+            .to_string_lossy(),
+    )?;
 
     let stdin = io::stdin();
     let stdout_shared = Arc::new(std::sync::Mutex::new(io::stdout()));
@@ -1039,8 +1060,14 @@ async fn main() -> Result<()> {
 
         if let Ok(json_req) = serde_json::from_str::<serde_json::Value>(&line) {
             let id = json_req.get("id").cloned().unwrap_or(serde_json::json!(1));
-            let method = json_req.get("method").and_then(|v| v.as_str()).unwrap_or("session/prompt");
-            let params = json_req.get("params").cloned().unwrap_or(serde_json::json!({}));
+            let method = json_req
+                .get("method")
+                .and_then(|v| v.as_str())
+                .unwrap_or("session/prompt");
+            let params = json_req
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
 
             if method == "initialize" {
                 let resp = serde_json::json!({
@@ -1053,7 +1080,10 @@ async fn main() -> Result<()> {
                             "prompts": { "listChanged": true },
                             "tools": { "listChanged": true },
                             "memory": { "persistent": true, "backend": "sqlite" },
-                            "workspace": { "canDirectExec": true }
+                            "workspace": { "canDirectExec": true },
+                            "sessionCapabilities": {
+                                "resume": {}
+                            }
                         },
                         "capabilities": {
                             "prompts": { "listChanged": true },
@@ -1122,14 +1152,42 @@ async fn main() -> Result<()> {
                 // 严格保持不同频道/工作区物理隔离，同时杜绝大量 Topic 无限派生 MCP 子进程
                 let mcp_key = resolved_cfg.mcp_key;
                 let mcp_pool_key = resolved_cfg.mcp_pool_key;
-                let chan_param = if is_dm { None } else { Some(session_channel_id.as_str()) };
+                let effective_key = resolved_cfg.effective_key;
+                let unique_session_id = resolved_cfg.unique_session_id;
+                let stored_session = StoredSession {
+                    session_id: unique_session_id.clone(),
+                    session_key: effective_key.clone(),
+                    channel_id: session_channel_id.clone(),
+                    owner_dir: resolved_cfg.owner_dir.clone(),
+                    workspace_dir: target_workspace_dir.clone(),
+                    system_prompt: sp.clone(),
+                    mcp_pool_key: mcp_pool_key.clone(),
+                };
+                if let Err(e) = session_store.upsert_session(&stored_session, true) {
+                    let err_resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32603,
+                            "message": format!("Failed to persist native ACP session: {:#}", e)
+                        }
+                    });
+                    if let Ok(mut out) = stdout_shared.lock() {
+                        let _ = writeln!(out, "{}", err_resp.to_string());
+                        let _ = out.flush();
+                    }
+                    continue;
+                }
+
+                let chan_param = if is_dm {
+                    None
+                } else {
+                    Some(session_channel_id.as_str())
+                };
                 let session_mcp = mcp_pool
                     .get_or_spawn(&mcp_pool_key, &mcp_key, Some(&channel_cwd_str), chan_param)
                     .await;
                 prune_dead_session_mcp_refs(&mut active_sessions, &mut mcp_pool);
-
-                let effective_key = resolved_cfg.effective_key;
-                let unique_session_id = resolved_cfg.unique_session_id;
 
                 active_sessions.insert(
                     unique_session_id.clone(),
@@ -1156,6 +1214,158 @@ async fn main() -> Result<()> {
                     writeln!(out, "{}", resp.to_string())?;
                     out.flush()?;
                 }
+            } else if method == "session/resume" {
+                let requested_sid = match params
+                    .get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|sid| !sid.is_empty())
+                {
+                    Some(sid) => sid.to_string(),
+                    None => {
+                        let err_resp = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32602,
+                                "message": "Invalid params: missing sessionId for session/resume"
+                            }
+                        });
+                        if let Ok(mut out) = stdout_shared.lock() {
+                            let _ = writeln!(out, "{}", err_resp.to_string());
+                            let _ = out.flush();
+                        }
+                        continue;
+                    }
+                };
+
+                if active_sessions.contains_key(&requested_sid) {
+                    let resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {}
+                    });
+                    if let Ok(mut out) = stdout_shared.lock() {
+                        let _ = writeln!(out, "{}", resp.to_string());
+                        let _ = out.flush();
+                    }
+                    continue;
+                }
+
+                let stored = match session_store.get_session(&requested_sid) {
+                    Ok(Some(session)) => session,
+                    Ok(None) => {
+                        let err_resp = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32002,
+                                "message": format!("Session not found: {}", requested_sid)
+                            }
+                        });
+                        if let Ok(mut out) = stdout_shared.lock() {
+                            let _ = writeln!(out, "{}", err_resp.to_string());
+                            let _ = out.flush();
+                        }
+                        continue;
+                    }
+                    Err(e) => {
+                        let err_resp = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32603,
+                                "message": format!("Failed to load persisted session: {:#}", e)
+                            }
+                        });
+                        if let Ok(mut out) = stdout_shared.lock() {
+                            let _ = writeln!(out, "{}", err_resp.to_string());
+                            let _ = out.flush();
+                        }
+                        continue;
+                    }
+                };
+
+                if let Some(requested_cwd) = params.get("cwd").and_then(|v| v.as_str()) {
+                    let requested_path = std::path::Path::new(requested_cwd);
+                    let requested = std::fs::canonicalize(requested_path)
+                        .unwrap_or_else(|_| normalize_path(requested_path));
+                    let stored_cwd = std::fs::canonicalize(&stored.workspace_dir)
+                        .unwrap_or_else(|_| normalize_path(&stored.workspace_dir));
+                    if requested != stored_cwd {
+                        let err_resp = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32602,
+                                "message": format!(
+                                    "Session cwd mismatch: stored {:?}, requested {:?}",
+                                    stored.workspace_dir,
+                                    requested_cwd
+                                )
+                            }
+                        });
+                        if let Ok(mut out) = stdout_shared.lock() {
+                            let _ = writeln!(out, "{}", err_resp.to_string());
+                            let _ = out.flush();
+                        }
+                        continue;
+                    }
+                }
+
+                let mut restored_state = SessionState {
+                    session_id: stored.session_id.clone(),
+                    session_key: stored.session_key.clone(),
+                    channel_id: stored.channel_id.clone(),
+                    owner_dir: stored.owner_dir,
+                    workspace_dir: stored.workspace_dir,
+                    system_prompt: stored.system_prompt,
+                    mcp_pool_key: stored.mcp_pool_key.clone(),
+                    mcp_client: None,
+                };
+                match revalidate_session_workspace_dir(&restored_state, &shadow_crew_home) {
+                    Ok(verified) => restored_state.workspace_dir = verified,
+                    Err((code, message)) => {
+                        let err_resp = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": { "code": code, "message": message }
+                        });
+                        if let Ok(mut out) = stdout_shared.lock() {
+                            let _ = writeln!(out, "{}", err_resp.to_string());
+                            let _ = out.flush();
+                        }
+                        continue;
+                    }
+                }
+
+                let is_dm = restored_state.session_key.starts_with("dm:")
+                    || restored_state.channel_id.starts_with("dm-");
+                let chan_param = if is_dm {
+                    None
+                } else {
+                    Some(restored_state.channel_id.as_str())
+                };
+                restored_state.mcp_client = mcp_pool
+                    .get_or_spawn(
+                        &restored_state.mcp_pool_key,
+                        &restored_state.channel_id,
+                        Some(&restored_state.workspace_dir.to_string_lossy()),
+                        chan_param,
+                    )
+                    .await;
+                prune_dead_session_mcp_refs(&mut active_sessions, &mut mcp_pool);
+                active_sessions.insert(requested_sid, restored_state);
+
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {}
+                });
+                if let Ok(mut out) = stdout_shared.lock() {
+                    let _ = writeln!(out, "{}", resp.to_string());
+                    let _ = out.flush();
+                }
             } else if method == "session/load" {
                 let err_resp = serde_json::json!({
                     "jsonrpc": "2.0",
@@ -1172,6 +1382,12 @@ async fn main() -> Result<()> {
                 continue;
             } else if method == "session/close" {
                 if let Some(close_sid) = params.get("sessionId").and_then(|v| v.as_str()) {
+                    if let Err(e) = session_store.delete_session(close_sid) {
+                        eprintln!(
+                            "[Shinobi Agent] Failed to delete persisted session {}: {:#}",
+                            close_sid, e
+                        );
+                    }
                     if let Some(removed_session) = active_sessions.remove(close_sid) {
                         let still_referenced = active_sessions
                             .values()
@@ -1206,7 +1422,11 @@ async fn main() -> Result<()> {
                     out.flush()?;
                 }
             } else if method == "session/prompt" {
-                let prompt_sid = match params.get("sessionId").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
+                let prompt_sid = match params
+                    .get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                {
                     Some(s) => s.trim().to_string(),
                     None => {
                         let err_resp = serde_json::json!({
@@ -1231,9 +1451,9 @@ async fn main() -> Result<()> {
                         Ok(dir) => dir,
                         Err((err_code, err_msg)) => {
                             if let Some(removed_session) = active_sessions.remove(&prompt_sid) {
-                                let still_referenced = active_sessions
-                                    .values()
-                                    .any(|other| other.mcp_pool_key == removed_session.mcp_pool_key);
+                                let still_referenced = active_sessions.values().any(|other| {
+                                    other.mcp_pool_key == removed_session.mcp_pool_key
+                                });
                                 if !still_referenced {
                                     mcp_pool.remove_and_terminate(&removed_session.mcp_pool_key);
                                 }
@@ -1276,16 +1496,19 @@ async fn main() -> Result<()> {
                 };
                 session_state.workspace_dir = verified_workspace_dir.clone();
 
-                let query = if let Some(prompt_arr) = params.get("prompt").and_then(|v| v.as_array()) {
-                    prompt_arr.iter()
-                        .find_map(|b| b.get("text").and_then(|t| t.as_str()))
-                        .unwrap_or_default()
-                } else {
-                    params.get("user_query")
-                        .or_else(|| params.get("prompt"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                };
+                let query =
+                    if let Some(prompt_arr) = params.get("prompt").and_then(|v| v.as_array()) {
+                        prompt_arr
+                            .iter()
+                            .find_map(|b| b.get("text").and_then(|t| t.as_str()))
+                            .unwrap_or_default()
+                    } else {
+                        params
+                            .get("user_query")
+                            .or_else(|| params.get("prompt"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                    };
 
                 if let Some(prompt_sp) = params.get("systemPrompt").and_then(|v| v.as_str()) {
                     if !prompt_sp.trim().is_empty() {
@@ -1331,8 +1554,13 @@ async fn main() -> Result<()> {
                 // 严格工作区物理隔离 + 池化存活自愈：
                 // 若原 MCP 客户端因池满 LRU 被回收并终止，按原工作区受控重连；
                 // 若重连失败，直接降级为 None（纯文本推演），绝不回退到已终止的旧 session_state.mcp_client！
-                let is_dm_session = session_state.session_key.starts_with("dm:") || session_state.channel_id.starts_with("dm-");
-                let chan_param_for_prompt = if is_dm_session { None } else { Some(session_state.channel_id.as_str()) };
+                let is_dm_session = session_state.session_key.starts_with("dm:")
+                    || session_state.channel_id.starts_with("dm-");
+                let chan_param_for_prompt = if is_dm_session {
+                    None
+                } else {
+                    Some(session_state.channel_id.as_str())
+                };
                 let current_mcp_client = mcp_pool
                     .get_or_spawn(
                         &session_state.mcp_pool_key,
@@ -1342,10 +1570,13 @@ async fn main() -> Result<()> {
                     )
                     .await;
                 session_state.mcp_client = current_mcp_client.clone();
-                
+
                 // 1. 从私有记忆库召回关键知识 (全局核心认知 + 本地私有知识)
                 let mut recalled = memory_store.recall_relevant(query).unwrap_or_default();
-                let local_mem_path = current_workspace_dir.join("memory.sqlite").to_string_lossy().to_string();
+                let local_mem_path = current_workspace_dir
+                    .join("memory.sqlite")
+                    .to_string_lossy()
+                    .to_string();
                 if let Ok(local_mem_store) = AgentMemoryStore::new(&local_mem_path) {
                     if let Ok(loc_recalled) = local_mem_store.recall_relevant(query) {
                         recalled.extend(loc_recalled);
@@ -1376,9 +1607,17 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                let artifacts_dir = current_workspace_dir.join("artifacts").to_string_lossy().to_string();
-                let scratch_dir = current_workspace_dir.join("scratch").to_string_lossy().to_string();
-                if !system_prompt.contains("[当前频道专属工作空间环境]") && !system_prompt.contains("[当前 Agent 个人专属独立工作空间环境]") {
+                let artifacts_dir = current_workspace_dir
+                    .join("artifacts")
+                    .to_string_lossy()
+                    .to_string();
+                let scratch_dir = current_workspace_dir
+                    .join("scratch")
+                    .to_string_lossy()
+                    .to_string();
+                if !system_prompt.contains("[当前频道专属工作空间环境]")
+                    && !system_prompt.contains("[当前 Agent 个人专属独立工作空间环境]")
+                {
                     if is_dm_session {
                         system_prompt.push_str(&format!(
                             "\n\n[当前 Agent 个人专属独立工作空间环境]:\n- Session Key: {}\n- Agent 独立工作区根目录 (Working Directory / cwd): {}\n- 专属落地产物目录 (Artifacts): {}\n- 专属临时调试目录 (Scratch): {}\n提示: 您当前处于与用户的 1-on-1 私聊中，沉淀的正式技术推演文档、方案或代码 Patch 将安全保存至您个人的专属产物目录中，与频道(channels)业务及其他 Agent 物理隔离。\n",
@@ -1398,9 +1637,29 @@ async fn main() -> Result<()> {
                     }
                 }
 
+                let conversation_history = match session_store
+                    .load_recent_messages(&prompt_sid, MAX_SESSION_HISTORY_MESSAGES)
+                {
+                    Ok(messages) => messages
+                        .into_iter()
+                        .map(|message| llm::ConversationTurn {
+                            role: message.role,
+                            content: message.content,
+                        })
+                        .collect::<Vec<_>>(),
+                    Err(e) => {
+                        eprintln!(
+                            "[Shinobi Agent] Failed to load persisted history for {}: {:#}",
+                            prompt_sid, e
+                        );
+                        Vec::new()
+                    }
+                };
+                let query_owned = query.to_string();
                 let session_id_owned = prompt_sid.clone();
                 let sid_for_tool = prompt_sid.clone();
                 let stdout_clone = stdout_shared.clone();
+                let mut persist_exchange = false;
 
                 let exec_result = match &llm_config {
                     None => llm::LlmExecutionResult {
@@ -1430,8 +1689,20 @@ async fn main() -> Result<()> {
                             }
                         };
 
-                        match llm::complete_with_tools(cfg, &system_prompt, query, current_mcp_client.clone(), on_tool_step).await {
-                            Ok(res) => res,
+                        match llm::complete_with_tools(
+                            cfg,
+                            &system_prompt,
+                            &query_owned,
+                            &conversation_history,
+                            current_mcp_client.clone(),
+                            on_tool_step,
+                        )
+                        .await
+                        {
+                            Ok(res) => {
+                                persist_exchange = true;
+                                res
+                            }
                             Err(e) => llm::LlmExecutionResult {
                                 text_response: format!("⚠️ Shinobi 底座模型推演失败：{:#}", e),
                                 mcp_tool_calls: vec![],
@@ -1439,6 +1710,19 @@ async fn main() -> Result<()> {
                         }
                     }
                 };
+
+                if persist_exchange {
+                    if let Err(e) = session_store.append_exchange(
+                        &prompt_sid,
+                        &query_owned,
+                        &exec_result.text_response,
+                    ) {
+                        eprintln!(
+                            "[Shinobi Agent] Failed to persist conversation turn for {}: {:#}",
+                            prompt_sid, e
+                        );
+                    }
+                }
 
                 // 流式回传完成通知
                 let chunk_notification = serde_json::json!({
@@ -1542,7 +1826,8 @@ mod tests {
 
     #[test]
     fn test_validate_and_resolve_workspace_dir_blocks_symlink_escape() {
-        let temp_base = std::env::temp_dir().join(format!("shadow_crew_symlink_test_{}", std::process::id()));
+        let temp_base =
+            std::env::temp_dir().join(format!("shadow_crew_symlink_test_{}", std::process::id()));
         let sandbox_home = temp_base.join(".shadow-crew");
         let outside_dir = temp_base.join("outside_secret_dir");
         let _ = std::fs::remove_dir_all(&temp_base);
@@ -1572,10 +1857,7 @@ mod tests {
             // 2b. 访问符号链接下尚未创建的深层子目录 -> 必须在 create_dir_all 之前被拦截，且不得在外部目录创建任何子目录
             let nested_escape = symlink_path.join("sub_escape/deep");
             let nested_res = validate_and_resolve_workspace_dir(&nested_escape, &sandbox_home);
-            assert!(
-                nested_res.is_none(),
-                "符号链接下的未创建子路径也必须被拦截"
-            );
+            assert!(nested_res.is_none(), "符号链接下的未创建子路径也必须被拦截");
             assert!(
                 !outside_dir.join("sub_escape").exists(),
                 "严禁跟随符号链接在沙箱外创建目录"
@@ -1614,16 +1896,11 @@ mod tests {
             validate_workspace_segment(".ab").is_err(),
             "以 '.' 开头的 ID 必须被拒绝"
         );
-        assert!(
-            validate_workspace_segment("").is_err(),
-            "空 ID 必须被拒绝"
-        );
+        assert!(validate_workspace_segment("").is_err(), "空 ID 必须被拒绝");
 
         // 验证 get_channel_dir_with_home("a/b") 与 get_channel_dir_with_home("ab") 绝不会落入同一工作区目录
-        let temp_base = std::env::temp_dir().join(format!(
-            "shadow_crew_collision_test_{}",
-            std::process::id()
-        ));
+        let temp_base =
+            std::env::temp_dir().join(format!("shadow_crew_collision_test_{}", std::process::id()));
         let sandbox_home = temp_base.join(".shadow-crew");
         let _ = std::fs::remove_dir_all(&temp_base);
 
@@ -1709,7 +1986,8 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_client_pool_reuse_and_bounded_eviction() {
         let mut pool = McpClientPool::new(2);
-        let temp_base = std::env::temp_dir().join(format!("shadow_crew_mcp_pool_test_{}", std::process::id()));
+        let temp_base =
+            std::env::temp_dir().join(format!("shadow_crew_mcp_pool_test_{}", std::process::id()));
         let dir1 = temp_base.join("chan-1");
         let dir2 = temp_base.join("chan-2");
         let dir3 = temp_base.join("chan-3");
@@ -1731,7 +2009,10 @@ mod tests {
             .get_or_spawn("chan-1::d1", "chan-1", Some(&d1_str), Some("chan-1"))
             .await
             .expect("同工作区复用必须返回存活的 MCP 客户端");
-        assert!(Arc::ptr_eq(&c1_a, &c1_b), "同一频道与工作区的多个 Session 必须复用同一 MCP 客户端实例");
+        assert!(
+            Arc::ptr_eq(&c1_a, &c1_b),
+            "同一频道与工作区的多个 Session 必须复用同一 MCP 客户端实例"
+        );
         assert_eq!(pool.len(), 1, "复用后池大小保持为 1");
 
         let _c2 = pool
@@ -1745,12 +2026,19 @@ mod tests {
             .get_or_spawn("chan-3::d3", "chan-3", Some(&d3_str), Some("chan-3"))
             .await
             .expect("第 3 个工作区 MCP 客户端必须拉起成功并触发 LRU 淘汰");
-        assert_eq!(pool.len(), 2, "超出池上限时触发 LRU 回收，池大小严格受控 <= 2");
+        assert_eq!(
+            pool.len(),
+            2,
+            "超出池上限时触发 LRU 回收，池大小严格受控 <= 2"
+        );
 
         // 被淘汰的 c1_a 子进程必须已被终止
         {
             let mut guard = c1_a.lock().await;
-            assert!(!guard.is_alive(), "被 LRU 回收的旧 MCP 客户端进程必须已终止");
+            assert!(
+                !guard.is_alive(),
+                "被 LRU 回收的旧 MCP 客户端进程必须已终止"
+            );
         }
 
         pool.remove_and_terminate("chan-2::d2");
@@ -1760,7 +2048,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mcp_pool_eviction_clears_session_and_reconnect_failure_does_not_use_dead_client() {
+    async fn test_mcp_pool_eviction_clears_session_and_reconnect_failure_does_not_use_dead_client()
+    {
         let mut pool = McpClientPool::new(1);
         let mut active_sessions: HashMap<String, SessionState> = HashMap::new();
         let temp_base = std::env::temp_dir().join(format!(
@@ -1846,19 +2135,18 @@ mod tests {
             "channelId": "chan-arch",
             "sessionKey": "channel:chan-arch:thread-101"
         });
-        let chan_cfg = resolve_new_session_config(
-            &chan_params,
-            &sandbox_home,
-            Some("agent-shinobi"),
-        )
-        .expect("正常频道会话在存在 SHADOW_CREW_AGENT_ID 环境变量时应解析成功");
+        let chan_cfg =
+            resolve_new_session_config(&chan_params, &sandbox_home, Some("agent-shinobi"))
+                .expect("正常频道会话在存在 SHADOW_CREW_AGENT_ID 环境变量时应解析成功");
 
         assert!(
             !chan_cfg.is_dm,
             "存在 SHADOW_CREW_AGENT_ID 环境变量时，带 channelId 的请求绝不能被误判为 DM"
         );
         assert!(
-            chan_cfg.target_workspace_dir.ends_with("channels/chan-arch"),
+            chan_cfg
+                .target_workspace_dir
+                .ends_with("channels/chan-arch"),
             "频道会话必须使用 channels/<channelId> 工作区而非 Agent 私有目录: {:?}",
             chan_cfg.target_workspace_dir
         );
@@ -1868,12 +2156,9 @@ mod tests {
         let chan_no_key_params = serde_json::json!({
             "channelId": "chan-backend"
         });
-        let chan_no_key_cfg = resolve_new_session_config(
-            &chan_no_key_params,
-            &sandbox_home,
-            Some("agent-shinobi"),
-        )
-        .expect("仅传 channelId 的频道会话应解析成功");
+        let chan_no_key_cfg =
+            resolve_new_session_config(&chan_no_key_params, &sandbox_home, Some("agent-shinobi"))
+                .expect("仅传 channelId 的频道会话应解析成功");
         assert!(!chan_no_key_cfg.is_dm);
         assert!(chan_no_key_cfg
             .target_workspace_dir
@@ -1883,12 +2168,8 @@ mod tests {
         let dm_params = serde_json::json!({
             "sessionKey": "dm:agent-shinobi:thread-dm-1"
         });
-        let dm_cfg = resolve_new_session_config(
-            &dm_params,
-            &sandbox_home,
-            Some("agent-shinobi"),
-        )
-        .expect("显式 dm: sessionKey 应解析成功");
+        let dm_cfg = resolve_new_session_config(&dm_params, &sandbox_home, Some("agent-shinobi"))
+            .expect("显式 dm: sessionKey 应解析成功");
         assert!(dm_cfg.is_dm, "dm: 前缀应识别为私聊会话");
         assert!(
             dm_cfg
@@ -1951,10 +2232,8 @@ mod tests {
 
     #[test]
     fn test_colon_in_agent_or_channel_id_is_rejected() {
-        let temp_base = std::env::temp_dir().join(format!(
-            "shadow_crew_colon_id_test_{}",
-            std::process::id()
-        ));
+        let temp_base =
+            std::env::temp_dir().join(format!("shadow_crew_colon_id_test_{}", std::process::id()));
         let sandbox_home = temp_base.join(".shadow-crew");
         let _ = std::fs::remove_dir_all(&temp_base);
 
@@ -2081,10 +2360,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_session_prompt_workspace_toctou_symlink_replacement_is_blocked() {
-        let temp_base = std::env::temp_dir().join(format!(
-            "shadow_crew_toctou_test_{}",
-            std::process::id()
-        ));
+        let temp_base =
+            std::env::temp_dir().join(format!("shadow_crew_toctou_test_{}", std::process::id()));
         let sandbox_home = temp_base.join(".shadow-crew");
         let outside_dir = temp_base.join("outside_sensitive_dir");
         let _ = std::fs::remove_dir_all(&temp_base);
@@ -2191,7 +2468,8 @@ mod tests {
         .expect("resolve_new_session_config 应自动回退至 chan-safe-default 安全目录");
 
         assert!(
-            cfg.target_workspace_dir.ends_with("channels/chan-safe-default"),
+            cfg.target_workspace_dir
+                .ends_with("channels/chan-safe-default"),
             "target_workspace_dir 应回退到 chan-safe-default: {:?}",
             cfg.target_workspace_dir
         );
@@ -2319,7 +2597,8 @@ mod tests {
         let chan_id = "test-load-chan";
         let expected_owner = temp_home.join("channels").join(chan_id);
         std::fs::create_dir_all(&expected_owner).unwrap();
-        let canonical_expected_owner = std::fs::canonicalize(&expected_owner).unwrap_or(expected_owner.clone());
+        let canonical_expected_owner =
+            std::fs::canonicalize(&expected_owner).unwrap_or(expected_owner.clone());
 
         let persisted_session_id = "session-topic:test-load-chan:thread-1:standard";
         let load_params = serde_json::json!({
@@ -2330,11 +2609,8 @@ mod tests {
             "systemPrompt": "You are a test agent"
         });
 
-        let resolved_cfg = resolve_new_session_config(
-            &load_params,
-            &temp_home,
-            None,
-        ).expect("session/load 参数解析必须成功");
+        let resolved_cfg = resolve_new_session_config(&load_params, &temp_home, None)
+            .expect("session/load 参数解析必须成功");
 
         assert_eq!(resolved_cfg.session_channel_id, chan_id);
         assert!(!resolved_cfg.is_dm);
