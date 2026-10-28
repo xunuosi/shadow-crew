@@ -2164,6 +2164,7 @@ export interface ExecuteUpdateChannelMembersOptions<TExec extends AbortableExecu
     sessionKeyPrefix: string,
     contextLabel: string
   ) => Promise<void>;
+  onSessionWarmStateMutated?: () => void;
 }
 
 /**
@@ -2193,6 +2194,7 @@ export async function executeUpdateChannelMembersOrchestration<
     setThreads,
     onAbortRoom,
     clearAcpSessionsByPrefix,
+    onSessionWarmStateMutated,
   } = options;
 
   const updatedAgentIds = updatedMemberIds.filter((id) => agents.some((a) => a.id === id));
@@ -2247,6 +2249,7 @@ export async function executeUpdateChannelMembersOrchestration<
       sessionWatermarks.delete(key);
     }
   });
+  onSessionWarmStateMutated?.();
 
   await Promise.all([
     clearAcpSessionsByPrefix(undefined, `channel:${channelId}`, '更新频道成员'),
@@ -2275,6 +2278,7 @@ export interface UseCollaborationLifecycleControllerInit<
     agentId?: string,
     sessionKeyPrefix?: string
   ) => Promise<void>;
+  onSessionWarmStateMutated?: () => void;
 }
 
 /**
@@ -2411,9 +2415,10 @@ export function useCollaborationLifecycleController<
         setThreads,
         onAbortRoom: handleAbortAll,
         clearAcpSessionsByPrefix: safelyClearAcpSessions,
+        onSessionWarmStateMutated: init.onSessionWarmStateMutated,
       });
     },
-    [agents, threads, handleAbortAll, safelyClearAcpSessions]
+    [agents, threads, handleAbortAll, safelyClearAcpSessions, init.onSessionWarmStateMutated]
   );
 
   return {

@@ -1480,6 +1480,7 @@ async function runEpochAndBarrierTests() {
         topicId?: string;
       }>
     > | null = null;
+    let warmStateMutationCount = 0;
 
     function TestHarnessComponent() {
       const ctrl = useCollaborationLifecycleController({
@@ -1517,6 +1518,9 @@ async function runEpochAndBarrierTests() {
           [ch2StandingKey, 'wm-3'],
         ],
         clearAcpSessionsFn: (agentId, prefix) => clearAcpAgentSessions(agentId, prefix),
+        onSessionWarmStateMutated: () => {
+          warmStateMutationCount++;
+        },
       });
       latestController = ctrl;
       return React.createElement('div', null, `execCount:${Object.keys(ctrl.activeExecutions).length}`);
@@ -1599,6 +1603,7 @@ async function runEpochAndBarrierTests() {
         ctrlAfterMemberUpdate.deliveredStandingContextRef.current.has(ch2StandingKey) &&
         !ctrlAfterMemberUpdate.sessionWatermarksRef.current.has(ch1StandingKey) &&
         ctrlAfterMemberUpdate.sessionWatermarksRef.current.get(ch2StandingKey) === 'wm-3' &&
+        warmStateMutationCount === 1 &&
         clearedPrefixesInComponent.includes('channel:ch-1') &&
         clearedPrefixesInComponent.includes('topic:ch-1'),
       '真实 React 19 组件挂载下调用 handleUpdateChannelMembers：同步中止该频道在途执行、更新频道与线程成员状态、精准失效 ch-1 花名册与水位线并清理底层 Session'

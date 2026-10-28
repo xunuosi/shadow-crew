@@ -1642,6 +1642,7 @@ export default function App() {
       setThreads,
       onAbortRoom: handleAbortAll,
       clearAcpSessionsByPrefix: safelyClearAcpSessions,
+      onSessionWarmStateMutated: persistSessionWarmState,
     });
   };
 
