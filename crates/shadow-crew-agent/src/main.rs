@@ -208,6 +208,20 @@ pub fn normalize_path(path: &std::path::Path) -> PathBuf {
     out
 }
 
+fn build_resume_mcp_pool_key(
+    session_key: &str,
+    channel_id: &str,
+    workspace_dir: &std::path::Path,
+) -> String {
+    let mcp_key = session_key
+        .strip_prefix("dm:")
+        .and_then(|rest| rest.split(':').next())
+        .filter(|agent_id| !agent_id.is_empty())
+        .map(|agent_id| format!("agent:{}", agent_id))
+        .unwrap_or_else(|| channel_id.to_string());
+    format!("{}::{}", mcp_key, workspace_dir.to_string_lossy())
+}
+
 /// 严格校验工作区单段标识符（Channel ID / Agent ID）：
 /// 严禁静默剥离 `/`、`\` 或 `:` 导致 `"a/b"` 与 `"ab"` 发生目录别名碰撞，或破坏复合 Session Key 结构分隔，非法 ID 直接返回 Err 拒绝。
 pub fn validate_workspace_segment(raw: &str) -> std::result::Result<String, String> {
@@ -1240,25 +1254,92 @@ async fn main() -> Result<()> {
                 };
 
                 if let Some(existing) = active_sessions.get_mut(&requested_sid) {
+                    let mut next_workspace_dir = existing.workspace_dir.clone();
                     if let Some(requested_cwd) = params.get("cwd").and_then(|v| v.as_str()) {
                         let req_path = std::path::Path::new(requested_cwd);
-                        if let Some(valid_dir) =
+                        let Some(valid_dir) =
                             validate_and_resolve_workspace_dir(req_path, &shadow_crew_home)
-                        {
-                            let norm_owner = normalize_path(&existing.owner_dir);
-                            let canon_owner = std::fs::canonicalize(&existing.owner_dir)
-                                .unwrap_or_else(|_| norm_owner.clone());
-                            if valid_dir.starts_with(&norm_owner)
-                                || valid_dir.starts_with(&canon_owner)
-                            {
-                                existing.workspace_dir = valid_dir;
+                        else {
+                            let err_resp = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {
+                                    "code": -32602,
+                                    "message": format!("Invalid workspace cwd: {:?}", requested_cwd)
+                                }
+                            });
+                            if let Ok(mut out) = stdout_shared.lock() {
+                                let _ = writeln!(out, "{}", err_resp.to_string());
+                                let _ = out.flush();
                             }
+                            continue;
+                        };
+                        let norm_owner = normalize_path(&existing.owner_dir);
+                        let canon_owner = std::fs::canonicalize(&existing.owner_dir)
+                            .unwrap_or_else(|_| norm_owner.clone());
+                        if !valid_dir.starts_with(&norm_owner)
+                            && !valid_dir.starts_with(&canon_owner)
+                        {
+                            let err_resp = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {
+                                    "code": -32602,
+                                    "message": format!(
+                                        "Security violation: requested cwd {:?} is outside owner directory {:?}",
+                                        requested_cwd, existing.owner_dir
+                                    )
+                                }
+                            });
+                            if let Ok(mut out) = stdout_shared.lock() {
+                                let _ = writeln!(out, "{}", err_resp.to_string());
+                                let _ = out.flush();
+                            }
+                            continue;
                         }
+                        next_workspace_dir = valid_dir;
                     }
-                    if let Some(sp) = params.get("systemPrompt").and_then(|v| v.as_str()) {
-                        if !sp.trim().is_empty() {
-                            existing.system_prompt = Some(sp.to_string());
+                    let workspace_changed = next_workspace_dir != existing.workspace_dir;
+                    let next_mcp_pool_key = build_resume_mcp_pool_key(
+                        &existing.session_key,
+                        &existing.channel_id,
+                        &next_workspace_dir,
+                    );
+                    let next_system_prompt = params
+                        .get("systemPrompt")
+                        .and_then(|v| v.as_str())
+                        .filter(|sp| !sp.trim().is_empty())
+                        .map(str::to_string)
+                        .or_else(|| existing.system_prompt.clone());
+                    let updated_session = StoredSession {
+                        session_id: existing.session_id.clone(),
+                        session_key: existing.session_key.clone(),
+                        channel_id: existing.channel_id.clone(),
+                        owner_dir: existing.owner_dir.clone(),
+                        workspace_dir: next_workspace_dir.clone(),
+                        system_prompt: next_system_prompt.clone(),
+                        mcp_pool_key: next_mcp_pool_key.clone(),
+                    };
+                    if let Err(e) = session_store.upsert_session(&updated_session, false) {
+                        let err_resp = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32603,
+                                "message": format!("Failed to persist resumed session: {:#}", e)
+                            }
+                        });
+                        if let Ok(mut out) = stdout_shared.lock() {
+                            let _ = writeln!(out, "{}", err_resp.to_string());
+                            let _ = out.flush();
                         }
+                        continue;
+                    }
+                    existing.workspace_dir = next_workspace_dir;
+                    existing.system_prompt = next_system_prompt;
+                    existing.mcp_pool_key = next_mcp_pool_key;
+                    if workspace_changed {
+                        existing.mcp_client = None;
                     }
                     let resp = serde_json::json!({
                         "jsonrpc": "2.0",
@@ -1357,6 +1438,17 @@ async fn main() -> Result<()> {
                 } else {
                     stored.workspace_dir
                 };
+                let target_system_prompt = params
+                    .get("systemPrompt")
+                    .and_then(|v| v.as_str())
+                    .filter(|sp| !sp.trim().is_empty())
+                    .map(str::to_string)
+                    .or_else(|| stored.system_prompt.clone());
+                let target_mcp_pool_key = build_resume_mcp_pool_key(
+                    &stored.session_key,
+                    &stored.channel_id,
+                    &target_workspace,
+                );
 
                 let mut restored_state = SessionState {
                     session_id: stored.session_id.clone(),
@@ -1364,8 +1456,8 @@ async fn main() -> Result<()> {
                     channel_id: stored.channel_id.clone(),
                     owner_dir: stored.owner_dir,
                     workspace_dir: target_workspace,
-                    system_prompt: stored.system_prompt,
-                    mcp_pool_key: stored.mcp_pool_key.clone(),
+                    system_prompt: target_system_prompt,
+                    mcp_pool_key: target_mcp_pool_key,
                     mcp_client: None,
                 };
                 match revalidate_session_workspace_dir(&restored_state, &shadow_crew_home) {
@@ -1382,6 +1474,30 @@ async fn main() -> Result<()> {
                         }
                         continue;
                     }
+                }
+                let persisted_update = StoredSession {
+                    session_id: restored_state.session_id.clone(),
+                    session_key: restored_state.session_key.clone(),
+                    channel_id: restored_state.channel_id.clone(),
+                    owner_dir: restored_state.owner_dir.clone(),
+                    workspace_dir: restored_state.workspace_dir.clone(),
+                    system_prompt: restored_state.system_prompt.clone(),
+                    mcp_pool_key: restored_state.mcp_pool_key.clone(),
+                };
+                if let Err(e) = session_store.upsert_session(&persisted_update, false) {
+                    let err_resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32603,
+                            "message": format!("Failed to persist restored session: {:#}", e)
+                        }
+                    });
+                    if let Ok(mut out) = stdout_shared.lock() {
+                        let _ = writeln!(out, "{}", err_resp.to_string());
+                        let _ = out.flush();
+                    }
+                    continue;
                 }
 
                 let is_dm = restored_state.session_key.starts_with("dm:")
@@ -2716,5 +2832,18 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&temp_home);
+    }
+
+    #[test]
+    fn resume_mcp_pool_key_preserves_channel_and_agent_scope() {
+        let workspace = std::path::Path::new("/tmp/shadow-crew/workspace");
+        assert_eq!(
+            build_resume_mcp_pool_key("channel:chan-1:thread-1", "chan-1", workspace),
+            "chan-1::/tmp/shadow-crew/workspace"
+        );
+        assert_eq!(
+            build_resume_mcp_pool_key("dm:agent-1:thread-dm-agent-1", "agent-1", workspace),
+            "agent:agent-1::/tmp/shadow-crew/workspace"
+        );
     }
 }

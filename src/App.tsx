@@ -489,6 +489,7 @@ export default function App() {
             if (handleMigrated) {
               deliveredStandingContextRef.current.clear();
               sessionWatermarksRef.current.clear();
+              persistSessionWarmState();
               await saveAgentsToDb(sanitizedAgents);
             }
           } else if (agents.length > 0) {
@@ -1680,6 +1681,7 @@ export default function App() {
         sessionWatermarksRef.current.delete(key);
       }
     });
+    persistSessionWarmState();
     if (activeTopicData && activeTopicData.channelId === channelId) {
       setActiveTopicId(null);
     }
@@ -2074,6 +2076,7 @@ export default function App() {
         sessionWatermarksRef.current.delete(key);
       }
     });
+    persistSessionWarmState();
     const targetTopicChanId = editingTopicChannel?.id || activeChannel?.id;
     setEditingTopic(null);
     if (targetTopicChanId) {
@@ -2454,7 +2457,10 @@ export default function App() {
           deliveredStandingContextRef.current.delete(sessionKey);
           sessionWatermarksRef.current.delete(sessionKey);
           persistSessionWarmState();
-        } else if (sessionPreflight?.recoveryMode === 'resume') {
+        } else if (
+          sessionPreflight?.recoveryMode === 'resume' ||
+          sessionPreflight?.recoveryMode === 'load'
+        ) {
           deliveredStandingContextRef.current.add(sessionKey);
           if (!sessionWatermarksRef.current.has(sessionKey)) {
             const transcript = messagesRef.current[roomId] || [];
@@ -5631,7 +5637,10 @@ export default function App() {
         deliveredStandingContextRef.current.delete(sessionKey);
         sessionWatermarksRef.current.delete(sessionKey);
         persistSessionWarmState();
-      } else if (sessionPreflight?.recoveryMode === 'resume') {
+      } else if (
+        sessionPreflight?.recoveryMode === 'resume' ||
+        sessionPreflight?.recoveryMode === 'load'
+      ) {
         deliveredStandingContextRef.current.add(sessionKey);
         if (!sessionWatermarksRef.current.has(sessionKey)) {
           const currentTopicTranscript = messagesRef.current[topicId] || [];
@@ -6980,6 +6989,7 @@ export default function App() {
               sessionWatermarksRef.current.delete(key);
             }
           });
+          persistSessionWarmState();
           void Promise.all([
             safelyClearAcpSessions(undefined, `channel:${activeChannel.id}`, '频道自动邀请新成员'),
             safelyClearAcpSessions(undefined, `topic:${activeChannel.id}`, '频道自动邀请新成员'),
@@ -7186,7 +7196,10 @@ export default function App() {
         deliveredStandingContextRef.current.delete(sessionKey);
         sessionWatermarksRef.current.delete(sessionKey);
         persistSessionWarmState();
-      } else if (sessionPreflight?.recoveryMode === 'resume') {
+      } else if (
+        sessionPreflight?.recoveryMode === 'resume' ||
+        sessionPreflight?.recoveryMode === 'load'
+      ) {
         deliveredStandingContextRef.current.add(sessionKey);
         if (!sessionWatermarksRef.current.has(sessionKey)) {
           const roomTranscript = messagesRef.current[currentThreadId] || [];
