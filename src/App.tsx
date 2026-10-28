@@ -1139,8 +1139,7 @@ export default function App() {
             deliveredStandingContextRef.current.delete(compoundKey);
             sessionWatermarksRef.current.delete(compoundKey);
           }
-        }
-        if (payload.agent_id) {
+        } else if (payload.agent_id) {
           deliveredStandingContextRef.current.forEach((key) => {
             if (matchesSessionScope(key, { agentId: payload.agent_id })) {
               deliveredStandingContextRef.current.delete(key);
@@ -2298,26 +2297,66 @@ export default function App() {
         const agentSnapshot = captureTurnEpoch(roomId, targetChannelId, targetAgent.id);
         const primaryInvoker = invokingAgents[0] || effectiveTurnOutputs[0].agent;
         const execKey = isTopic && topicId ? `${topicId}:${targetAgent.id}` : `${roomId}:${targetAgent.id}`;
+        const isDm = activeThread?.type === 'dm';
         const sessionKey = buildAgentSessionKey({
           agentId: targetAgent.id,
           roomId,
           channelId: targetChannelId,
-          isDm: activeThread?.type === 'dm',
+          isDm,
           discussionMode: currentTopicObj?.discussionMode,
         });
 
-        const baseSystemPrompt = buildCompositeSystemPrompt({
+        const preflightSystemPrompt = buildCompositeSystemPrompt({
           agent: targetAgent,
           availableAgents: candidateAgents,
-          includeRoster: false,
+          includeRoster: !isDm,
         });
-        const sessionPreflight = await ensureAcpAgentSession({
-          agentId: targetAgent.id,
-          roomId,
-          channelId: targetChannelId,
-          systemPrompt: baseSystemPrompt,
-          discussionMode: currentTopicObj?.discussionMode,
-        });
+
+        let sessionPreflight: { isNew: boolean } | null = null;
+        try {
+          sessionPreflight = await ensureAcpAgentSession({
+            agentId: targetAgent.id,
+            roomId,
+            channelId: targetChannelId,
+            systemPrompt: preflightSystemPrompt,
+            discussionMode: currentTopicObj?.discussionMode,
+          });
+        } catch (err) {
+          console.error(`[NormalTurn] Preflight ensureAcpAgentSession failed for ${targetAgent.name}:`, err);
+          setActiveExecutions((prev) => {
+            const next = { ...prev };
+            delete next[execKey];
+            if (Object.keys(next).length === 0) setIsGenerating(false);
+            return next;
+          });
+          setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'idle' } : a)));
+          syncRunningAgentsWithBackend();
+          const errorReply: Message = {
+            id: `msg-collab-err-${Date.now()}-${targetAgent.id}`,
+            threadId: roomId,
+            channelId: targetChannelId,
+            authorId: targetAgent.id,
+            authorName: targetAgent.name,
+            authorHandle: targetAgent.handle,
+            authorAvatar: targetAgent.avatar,
+            isAgent: true,
+            agentBadge: 'ACP Error',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `⚠️ **会话初始化异常**：${err instanceof Error ? err.message : String(err)}`,
+          };
+          commitMessages((prev) => {
+            const existing = prev[roomId] || [];
+            const nextRoomMsgs = existing.some((m) => m.id === errorReply.id)
+              ? existing
+              : [...existing, errorReply];
+            return {
+              ...prev,
+              [roomId]: nextRoomMsgs,
+            };
+          });
+          return;
+        }
+
         if (sessionPreflight?.isNew) {
           deliveredStandingContextRef.current.delete(sessionKey);
           sessionWatermarksRef.current.delete(sessionKey);
@@ -5407,18 +5446,72 @@ export default function App() {
         discussionMode: isGameTheoretic ? 'game_theoretic' : 'standard',
       });
 
-      const baseSystemPrompt = buildCompositeSystemPrompt({
+      const preflightSystemPrompt = buildCompositeSystemPrompt({
         agent,
         availableAgents: candidateAgents,
-        includeRoster: false,
+        includeRoster: true,
       });
-      const sessionPreflight = await ensureAcpAgentSession({
-        agentId: agent.id,
-        roomId: topicId,
-        channelId: topicChannel?.id || activeTopicData?.channelId,
-        systemPrompt: baseSystemPrompt,
-        discussionMode: isGameTheoretic ? 'game_theoretic' : 'standard',
-      });
+
+      let sessionPreflight: { isNew: boolean } | null = null;
+      try {
+        sessionPreflight = await ensureAcpAgentSession({
+          agentId: agent.id,
+          roomId: topicId,
+          channelId: topicChannel?.id || activeTopicData?.channelId,
+          systemPrompt: preflightSystemPrompt,
+          discussionMode: isGameTheoretic ? 'game_theoretic' : 'standard',
+        });
+      } catch (err) {
+        console.error(`[TopicTurn] Preflight ensureAcpAgentSession failed for ${agent.name}:`, err);
+        setActiveExecutions((prev) => {
+          const next = { ...prev };
+          delete next[execKey];
+          if (Object.keys(next).length === 0) setIsGenerating(false);
+          return next;
+        });
+        setAgents((prev) => prev.map((a) => (a.id === agent.id ? { ...a, status: 'idle' } : a)));
+        syncRunningAgentsWithBackend();
+
+        const errorReply: Message = {
+          id: `topic-reply-err-${Date.now()}-${agent.id}`,
+          threadId: topicId,
+          channelId: topicChannel?.id,
+          authorId: agent.id,
+          authorName: agent.name,
+          authorHandle: agent.handle,
+          authorAvatar: agent.avatar,
+          isAgent: true,
+          isPending: false,
+          gameStage: isGameTheoretic ? executionStage : undefined,
+          gameRole: isGameTheoretic ? targetRoleType : undefined,
+          agentBadge: 'ACP Error',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `⚠️ **会话初始化异常**：${err instanceof Error ? err.message : String(err)}\n\n请检查 Agent 命令配置或相关依赖环境。`,
+        };
+
+        if (isGameTheoretic && executionStage === 'challenge') {
+          updateTopicDataInState(topicId, (old) => ({
+            ...old,
+            gameStage: 'arbitration',
+            gameTheoreticState: {
+              ...old.gameTheoreticState,
+              currentStage: 'arbitration',
+              isChallengerResponded: false,
+              quorumAlert: `制衡方 (${agent.name}) 发生会话初始化异常：${err instanceof Error ? err.message : String(err)}`,
+            },
+          }));
+        }
+
+        commitMessages((prev) => {
+          const existing = prev[topicId] || [];
+          return {
+            ...prev,
+            [topicId]: [...existing, errorReply],
+          };
+        });
+        return null;
+      }
+
       if (sessionPreflight?.isNew) {
         deliveredStandingContextRef.current.delete(sessionKey);
         sessionWatermarksRef.current.delete(sessionKey);
@@ -6904,17 +6997,54 @@ export default function App() {
         isDm: isDmThread,
       });
 
-      const baseSystemPrompt = buildCompositeSystemPrompt({
+      const preflightSystemPrompt = buildCompositeSystemPrompt({
         agent: targetAgent,
         availableAgents: candidateAgents,
-        includeRoster: false,
+        includeRoster: !isDmThread,
       });
-      const sessionPreflight = await ensureAcpAgentSession({
-        agentId: targetAgent.id,
-        roomId: currentThreadId,
-        channelId: isDmThread ? undefined : activeChannel?.id,
-        systemPrompt: baseSystemPrompt,
-      });
+
+      let sessionPreflight: { isNew: boolean } | null = null;
+      try {
+        sessionPreflight = await ensureAcpAgentSession({
+          agentId: targetAgent.id,
+          roomId: currentThreadId,
+          channelId: isDmThread ? undefined : activeChannel?.id,
+          systemPrompt: preflightSystemPrompt,
+        });
+      } catch (err) {
+        console.error(`[ThreadTurn] Preflight ensureAcpAgentSession failed for ${targetAgent.name}:`, err);
+        setActiveExecutions((prev) => {
+          const next = { ...prev };
+          delete next[`${currentThreadId}:${targetAgent.id}`];
+          if (Object.keys(next).length === 0) setIsGenerating(false);
+          return next;
+        });
+        setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'idle' } : a)));
+        syncRunningAgentsWithBackend();
+
+        const errorReply: Message = {
+          id: `msg-err-${Date.now()}-${targetAgent.id}`,
+          threadId: currentThreadId,
+          channelId: targetChannelId,
+          authorId: targetAgent.id,
+          authorName: targetAgent.name,
+          authorHandle: targetAgent.handle,
+          authorAvatar: targetAgent.avatar,
+          isAgent: true,
+          agentBadge: 'ACP Error',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `⚠️ **会话初始化异常**：${err instanceof Error ? err.message : String(err)}\n\n请检查 Agent 命令配置或相关依赖环境。`,
+        };
+        commitMessages((prev) => {
+          const existing = prev[currentThreadId] || [];
+          return {
+            ...prev,
+            [currentThreadId]: [...existing, errorReply],
+          };
+        });
+        return null;
+      }
+
       if (sessionPreflight?.isNew) {
         deliveredStandingContextRef.current.delete(sessionKey);
         sessionWatermarksRef.current.delete(sessionKey);

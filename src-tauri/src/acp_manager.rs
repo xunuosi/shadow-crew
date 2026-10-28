@@ -353,6 +353,7 @@ impl AcpProcessManager {
     }
 
     /// 预检并确保指定 Agent 在当前会话下拥有已建立或已恢复的 ACP sessionId
+    #[allow(dead_code)]
     pub async fn ensure_session(
         &self,
         agent_id: &str,

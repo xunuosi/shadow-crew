@@ -140,14 +140,22 @@ async fn ensure_agent_session(
     discussion_mode: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<acp_manager::EnsureSessionResult, String> {
-    let manager = state.acp_manager.lock().await;
-    if !manager.is_agent_running(&agent_id) {
-        return Err(format!(
-            "Agent '{}' 尚未开启通信。请先在 Agent 控制面板点击「Start」启动进程并建立 ACP 握手连接。",
-            agent_id
-        ));
-    }
-    manager
+    // 关键并发隔离：在极小作用域内获取目标 Agent 的轻量级 Clone 句柄并检查存活状态，
+    // 立即释放全局 acp_manager 锁！不同 Agent 的 session/load 或 session/new 完全并发执行，绝不发生跨 Agent 串行阻塞！
+    let agent = {
+        let manager = state.acp_manager.lock().await;
+        if !manager.is_agent_running(&agent_id) {
+            return Err(format!(
+                "Agent '{}' 尚未开启通信。请先在 Agent 控制面板点击「Start」启动进程并建立 ACP 握手连接。",
+                agent_id
+            ));
+        }
+        manager
+            .get_agent(&agent_id)
+            .ok_or_else(|| format!("Agent '{}' not found", agent_id))?
+    };
+
+    let result = agent
         .ensure_session(
             &agent_id,
             &room_id,
@@ -156,7 +164,9 @@ async fn ensure_agent_session(
             discussion_mode.as_deref(),
         )
         .await
-        .map_err(|e| format!("ACP Ensure Session Error: {}", e))
+        .map_err(|e| format!("ACP Ensure Session Error: {}", e))?;
+
+    Ok(result)
 }
 
 /// Tauri Command: 清除指定 Agent 或指定会话前缀的 ACP sessionId 映射与底层沙箱状态
