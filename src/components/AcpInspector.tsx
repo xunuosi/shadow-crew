@@ -264,13 +264,19 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                 selectedAgent.status === 'accessing_workspace' ||
                 selectedAgent.status === 'querying_memory';
 
-              const isLoadSupported = selectedAgent.capabilities?.supportsLoadSession === true;
-              const isLoadUnsupported =
-                selectedAgent.capabilities?.supportsLoadSession === false ||
-                (isRunning && !isLoadSupported && selectedAgent.status !== 'starting');
+              const isResumeSupported = selectedAgent.capabilities?.supportsResumeSession === true;
+              const isLoadSupported =
+                selectedAgent.capabilities?.supportsLoadSession === true ||
+                (selectedAgent.capabilities as any)?.loadSession === true;
+              const isRecoverySupported = isResumeSupported || isLoadSupported;
+              const isRecoveryUnsupported =
+                (selectedAgent.capabilities?.supportsResumeSession === false &&
+                  (selectedAgent.capabilities?.supportsLoadSession === false ||
+                    (selectedAgent.capabilities as any)?.loadSession === false)) ||
+                (isRunning && !isRecoverySupported && selectedAgent.status !== 'starting');
 
               const jsonRpcSample =
-                isRunning || isLoadSupported || isLoadUnsupported
+                isRunning || isRecoverySupported || isRecoveryUnsupported
                   ? JSON.stringify(
                       {
                         jsonrpc: '2.0',
@@ -285,6 +291,11 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                               sse: true,
                             },
                           },
+                          sessionCapabilities: isResumeSupported
+                            ? {
+                                resume: {},
+                              }
+                            : {},
                           agentInfo: {
                             name: selectedAgent.name,
                             version: selectedAgent.protocolVersion || '1.0.4',
@@ -311,14 +322,14 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                     </span>
                     <span
                       className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-semibold border ${
-                        isLoadSupported
+                        isRecoverySupported
                           ? 'bg-emerald-50 text-emerald-800 border-emerald-300 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30'
-                          : isLoadUnsupported
+                          : isRecoveryUnsupported
                           ? 'bg-amber-50 text-amber-800 border-amber-300 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30'
                           : 'bg-surface border-border text-fg-muted'
                       }`}
                     >
-                      loadSession: {isLoadSupported ? 'true' : isLoadUnsupported ? 'false' : 'pending'}
+                      recovery: {isResumeSupported ? 'resume' : isLoadSupported ? 'load' : isRecoveryUnsupported ? 'none' : 'pending'}
                     </span>
                   </div>
 
@@ -331,12 +342,64 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                       </span>
                     </div>
 
-                    {/* 方案 1: 单行精炼能力条 */}
+                    {/* session/resume 能力行 */}
+                    <div
+                      className={`p-2 rounded-xl border flex items-center justify-between transition-all ${
+                        isResumeSupported
+                          ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-600 dark:text-emerald-300'
+                          : !isRunning
+                          ? 'bg-surface border-border text-fg-muted'
+                          : 'bg-surface-subtle border-border text-fg-secondary'
+                      }`}
+                    >
+                      <div className="flex flex-col min-w-0 pr-2">
+                        <span
+                          className={`font-mono font-semibold text-[11px] flex items-center gap-1.5 whitespace-nowrap ${
+                            isResumeSupported
+                              ? 'text-emerald-800 dark:text-emerald-300'
+                              : 'text-fg-secondary'
+                          }`}
+                        >
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              isResumeSupported
+                                ? 'bg-emerald-500 animate-pulse'
+                                : 'bg-zinc-400'
+                            }`}
+                          />
+                          <span>session/resume (轻量挂载)</span>
+                        </span>
+                        <span
+                          className={`text-[10px] mt-0.5 truncate ${
+                            isResumeSupported
+                              ? 'text-emerald-700 dark:text-emerald-400'
+                              : 'text-fg-muted'
+                          }`}
+                        >
+                          {isResumeSupported
+                            ? '本地历史完整时首选此方式，0 重放秒级续接上下文'
+                            : isRunning
+                            ? '对端未声明 sessionCapabilities.resume'
+                            : '进程未启动，握手后自动探测'}
+                        </span>
+                      </div>
+                      <span
+                        className={`font-mono text-[10px] font-semibold whitespace-nowrap shrink-0 pl-1 ${
+                          isResumeSupported
+                            ? 'text-emerald-800 dark:text-emerald-300'
+                            : 'text-fg-muted'
+                        }`}
+                      >
+                        {isResumeSupported ? '支持 ✓' : isRunning ? '未实现' : '待握手'}
+                      </span>
+                    </div>
+
+                    {/* session/load 能力行 */}
                     <div
                       className={`p-2 rounded-xl border flex items-center justify-between transition-all ${
                         isLoadSupported
                           ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-600 dark:text-emerald-300'
-                          : isLoadUnsupported
+                          : isRecoveryUnsupported
                           ? 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-300'
                           : 'bg-surface border-border'
                       }`}
@@ -346,7 +409,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                           className={`font-mono font-semibold text-[11px] flex items-center gap-1.5 whitespace-nowrap ${
                             isLoadSupported
                               ? 'text-emerald-800 dark:text-emerald-300'
-                              : isLoadUnsupported
+                              : isRecoveryUnsupported
                               ? 'text-amber-800 dark:text-amber-300'
                               : 'text-fg-secondary'
                           }`}
@@ -355,26 +418,26 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                             className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                               isLoadSupported
                                 ? 'bg-emerald-500 animate-pulse'
-                                : isLoadUnsupported
+                                : isRecoveryUnsupported
                                 ? 'bg-amber-500'
                                 : 'bg-zinc-400'
                             }`}
                           />
-                          <span>session/load (会话恢复)</span>
+                          <span>session/load (历史重载)</span>
                         </span>
                         <span
                           className={`text-[10px] mt-0.5 truncate ${
                             isLoadSupported
                               ? 'text-emerald-700 dark:text-emerald-400'
-                              : isLoadUnsupported
+                              : isRecoveryUnsupported
                               ? 'text-amber-700 dark:text-amber-400'
                               : 'text-fg-muted'
                           }`}
                         >
                           {isLoadSupported
-                            ? '支持断点续聊与会话热重载，网络开销极低'
-                            : isLoadUnsupported
-                            ? '未实现 session/load，系统自动启用全量历史追加兜底'
+                            ? '本地历史缺失时触发独立 Replay Sink 回放补齐'
+                            : isRecoveryUnsupported
+                            ? '未实现 loadSession，断联时启用全量历史追加兜底'
                             : '进程未启动，握手后自动探测对端 Capabilities'}
                         </span>
                       </div>
@@ -382,12 +445,12 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                         className={`font-mono text-[10px] font-semibold whitespace-nowrap shrink-0 pl-1 ${
                           isLoadSupported
                             ? 'text-emerald-800 dark:text-emerald-300'
-                            : isLoadUnsupported
+                            : isRecoveryUnsupported
                             ? 'text-amber-800 dark:text-amber-300'
                             : 'text-fg-muted'
                         }`}
                       >
-                        {isLoadSupported ? '支持 ✓' : isLoadUnsupported ? '仅单次 ⚠️' : '待握手'}
+                        {isLoadSupported ? '支持 ✓' : isRecoveryUnsupported ? '仅单次 ⚠️' : '待握手'}
                       </span>
                     </div>
 
@@ -416,26 +479,25 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                       <code>{jsonRpcSample}</code>
                     </pre>
                     <p className="text-[10px] text-fg-muted leading-normal">
-                      当 <code className="text-fg font-mono">loadSession === false</code>{' '}
-                      时，系统将自动高亮警示并启用会话全量历史重放机制。
+                      当 <code className="text-fg font-mono">resume</code> 与 <code className="text-fg font-mono">loadSession</code> 均不可用时，系统自动退回冷启动会话模式。
                     </p>
                   </div>
 
                   {/* Operational Action Guides */}
                   <div
                     className={`p-2.5 rounded-xl border text-[11px] space-y-1 ${
-                      isLoadSupported
+                      isRecoverySupported
                         ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-300 dark:border-emerald-500/25'
-                        : isLoadUnsupported
+                        : isRecoveryUnsupported
                         ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/25'
                         : 'bg-surface border-border'
                     }`}
                   >
                     <div
                       className={`font-semibold flex items-center gap-1 ${
-                        isLoadSupported
+                        isRecoverySupported
                           ? 'text-emerald-800 dark:text-emerald-300'
-                          : isLoadUnsupported
+                          : isRecoveryUnsupported
                           ? 'text-amber-800 dark:text-amber-300'
                           : 'text-fg'
                       }`}
@@ -444,17 +506,19 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                     </div>
                     <p
                       className={`text-[10px] leading-relaxed ${
-                        isLoadSupported
+                        isRecoverySupported
                           ? 'text-emerald-900/90 dark:text-emerald-200/90'
-                          : isLoadUnsupported
+                          : isRecoveryUnsupported
                           ? 'text-amber-900/90 dark:text-amber-200/90'
                           : 'text-fg-secondary'
                       }`}
                     >
-                      {isLoadSupported
-                        ? '当前对端已开启完整的会话恢复能力。切换房间或议题时，将自动下发旧会话的 session_id 进行无损唤醒，无需重复回放历史记录。'
-                        : isLoadUnsupported
-                        ? '⚠️ 警示：该对端未实现 session/load 协议。任何重启或议题切换都会导致对端会话丢失。系统已启用前端全量上下文历史追加模式 (Prompt Fallback) 作为兜底。'
+                      {isResumeSupported
+                        ? '当前对端已开启 session/resume 轻量挂载。本地历史完整时直接续接上下文，无需重复重放历史。'
+                        : isLoadSupported
+                        ? '当前对端已开启 session/load 会话重载。历史缺失时将通过独立 Replay Sink 回放补齐。'
+                        : isRecoveryUnsupported
+                        ? '⚠️ 警示：该对端未实现 session/resume 或 session/load。断联重启时将以 session/new 重新初始化，系统自动启用冷启动上下文注入。'
                         : '对端目前处于未连接/待探测状态。启动后系统将通过 ACP initialize 握手探针自动抓取 capabilities 并更新视觉指示栏。'}
                     </p>
                   </div>

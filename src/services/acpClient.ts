@@ -2131,6 +2131,7 @@ export interface EnsureSessionResult {
   sessionId: string;
   isNew: boolean;
   loadFailed: boolean;
+  recoveryMode?: 'resume' | 'load' | 'new';
 }
 
 /**
@@ -2145,6 +2146,7 @@ export async function ensureAcpAgentSession(options: {
   systemPrompt?: string;
   discussionMode?: string;
   isDm?: boolean;
+  localHistoryIntact?: boolean;
 }): Promise<EnsureSessionResult | null> {
   const isDm = options.isDm ?? (Boolean(!options.channelId || options.channelId === 'direct-messages' || options.channelId.startsWith('dm-') || options.roomId.startsWith('thread-dm-')));
   const barrierSessionKey = buildAgentSessionKey({
@@ -2181,6 +2183,7 @@ export async function ensureAcpAgentSession(options: {
       channelId: isDm ? null : (options.channelId || null),
       systemPrompt: options.systemPrompt || null,
       discussionMode: options.discussionMode || null,
+      localHistoryIntact: options.localHistoryIntact ?? null,
     });
     return result as EnsureSessionResult;
   } catch (err) {

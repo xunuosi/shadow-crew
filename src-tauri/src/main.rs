@@ -138,6 +138,7 @@ async fn ensure_agent_session(
     channel_id: Option<String>,
     system_prompt: Option<String>,
     discussion_mode: Option<String>,
+    local_history_intact: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<acp_manager::EnsureSessionResult, String> {
     // 关键并发隔离：在极小作用域内获取目标 Agent 的轻量级 Clone 句柄并检查存活状态，
@@ -162,6 +163,7 @@ async fn ensure_agent_session(
             channel_id.as_deref(),
             system_prompt.as_deref(),
             discussion_mode.as_deref(),
+            local_history_intact,
         )
         .await
         .map_err(|e| format!("ACP Ensure Session Error: {}", e))?;

@@ -972,11 +972,16 @@ export default function App() {
               const targetStatus = match.status === 'idle' ? 'idle' : (match.status as any);
               const targetDetail = match.status_detail || undefined;
               const remoteSupportsLoad = match.supportsLoadSession ?? match.supports_load_session;
+              const remoteSupportsResume = match.supportsResumeSession ?? match.supports_resume_session;
               const hasLoadChanged =
                 remoteSupportsLoad !== undefined &&
                 remoteSupportsLoad !== null &&
                 a.capabilities?.supportsLoadSession !== remoteSupportsLoad;
-              if (a.status !== targetStatus || a.statusDetail !== targetDetail || hasLoadChanged) {
+              const hasResumeChanged =
+                remoteSupportsResume !== undefined &&
+                remoteSupportsResume !== null &&
+                a.capabilities?.supportsResumeSession !== remoteSupportsResume;
+              if (a.status !== targetStatus || a.statusDetail !== targetDetail || hasLoadChanged || hasResumeChanged) {
                 hasChange = true;
                 return {
                   ...a,
@@ -992,6 +997,9 @@ export default function App() {
                     }),
                     ...(remoteSupportsLoad !== undefined && remoteSupportsLoad !== null
                       ? { supportsLoadSession: remoteSupportsLoad }
+                      : {}),
+                    ...(remoteSupportsResume !== undefined && remoteSupportsResume !== null
+                      ? { supportsResumeSession: remoteSupportsResume }
                       : {}),
                   },
                 };
@@ -1156,6 +1164,47 @@ export default function App() {
       unlistenSessionReset = fn;
     }).catch(() => {});
 
+    let unlistenReplaySink: (() => void) | undefined;
+    tauriListen('acp:replay_sink', (event: any) => {
+      const payload = event?.payload;
+      if (!payload || !payload.room_id || !Array.isArray(payload.messages)) return;
+      const { room_id, messages: replayedMsgs } = payload;
+      if (replayedMsgs.length === 0) return;
+
+      commitMessages((prev) => {
+        const existing = prev[room_id] || [];
+        const existingIds = new Set(existing.map((m) => m.id));
+        // 关键 Replay Sink 规约：按 messageId 严格幂等去重，仅补入本地缺少的历史条目
+        const missing = replayedMsgs.filter((rm: any) => rm.messageId && !existingIds.has(rm.messageId));
+        if (missing.length === 0) return prev;
+
+        const agentMeta = agentsRef.current.find((a) => a.id === payload.agent_id);
+        const converted: Message[] = missing.map((rm: any) => ({
+          id: rm.messageId,
+          threadId: room_id,
+          authorId: rm.role === 'user' ? 'user' : (payload.agent_id || 'agent'),
+          authorName: rm.role === 'user' ? 'User' : (agentMeta?.name || 'Agent'),
+          authorHandle: rm.role === 'user' ? undefined : agentMeta?.handle,
+          authorAvatar: rm.role === 'user' ? undefined : agentMeta?.avatar,
+          isAgent: rm.role !== 'user',
+          agentBadge: rm.role === 'user' ? undefined : `${agentMeta?.modelBadge?.split(' ')[0] || 'Local'} · Replay`,
+          timestamp: new Date(rm.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: rm.content || '',
+          isPending: false,
+        }));
+
+        // 绝不将历史回放追加到正在思考生成的 pending 消息中，与实时推演彻底解耦
+        const nonPending = existing.filter((m) => !m.isPending);
+        const pending = existing.filter((m) => m.isPending);
+        return {
+          ...prev,
+          [room_id]: [...nonPending, ...converted, ...pending],
+        };
+      });
+    }).then((fn: any) => {
+      unlistenReplaySink = fn;
+    }).catch(() => {});
+
     let unlistenHeartbeat: (() => void) | undefined;
     tauriListen('acp:thinking_heartbeat', (event: any) => {
       const payload = event?.payload;
@@ -1248,6 +1297,7 @@ export default function App() {
     return () => {
       if (unlisten) unlisten();
       if (unlistenSessionReset) unlistenSessionReset();
+      if (unlistenReplaySink) unlistenReplaySink();
       if (unlistenHeartbeat) unlistenHeartbeat();
       if (unlistenChunk) unlistenChunk();
     };
@@ -2312,6 +2362,10 @@ export default function App() {
           includeRoster: !isDm,
         });
 
+        const localHistoryIntact = (messagesRef.current[roomId] || []).some(
+          (m) => !m.isPending && (m.content?.trim() || m.thinkingProcess)
+        );
+
         let sessionPreflight: { isNew: boolean } | null = null;
         try {
           sessionPreflight = await ensureAcpAgentSession({
@@ -2320,6 +2374,7 @@ export default function App() {
             channelId: targetChannelId,
             systemPrompt: preflightSystemPrompt,
             discussionMode: currentTopicObj?.discussionMode,
+            localHistoryIntact,
           });
         } catch (err) {
           console.error(`[NormalTurn] Preflight ensureAcpAgentSession failed for ${targetAgent.name}:`, err);
@@ -5452,6 +5507,10 @@ export default function App() {
         includeRoster: true,
       });
 
+      const localHistoryIntact = (messagesRef.current[topicId] || []).some(
+        (m) => !m.isPending && (m.content?.trim() || m.thinkingProcess)
+      );
+
       let sessionPreflight: { isNew: boolean } | null = null;
       try {
         sessionPreflight = await ensureAcpAgentSession({
@@ -5460,6 +5519,7 @@ export default function App() {
           channelId: topicChannel?.id || activeTopicData?.channelId,
           systemPrompt: preflightSystemPrompt,
           discussionMode: isGameTheoretic ? 'game_theoretic' : 'standard',
+          localHistoryIntact,
         });
       } catch (err) {
         console.error(`[TopicTurn] Preflight ensureAcpAgentSession failed for ${agent.name}:`, err);
@@ -7003,6 +7063,10 @@ export default function App() {
         includeRoster: !isDmThread,
       });
 
+      const localHistoryIntact = (messagesRef.current[currentThreadId] || []).some(
+        (m) => !m.isPending && (m.content?.trim() || m.thinkingProcess)
+      );
+
       let sessionPreflight: { isNew: boolean } | null = null;
       try {
         sessionPreflight = await ensureAcpAgentSession({
@@ -7010,6 +7074,7 @@ export default function App() {
           roomId: currentThreadId,
           channelId: isDmThread ? undefined : activeChannel?.id,
           systemPrompt: preflightSystemPrompt,
+          localHistoryIntact,
         });
       } catch (err) {
         console.error(`[ThreadTurn] Preflight ensureAcpAgentSession failed for ${targetAgent.name}:`, err);

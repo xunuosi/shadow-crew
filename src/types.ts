@@ -31,6 +31,8 @@ export interface AgentRuntimeStatus {
   status_detail?: string | null;
   supports_load_session?: boolean | null;
   supportsLoadSession?: boolean | null;
+  supports_resume_session?: boolean | null;
+  supportsResumeSession?: boolean | null;
 }
 
 export interface AgentSkill {
@@ -183,6 +185,7 @@ export interface Agent {
     canDelegateToSubAgents: boolean;
     supportsStreaming: boolean;
     supportsLoadSession?: boolean;
+    supportsResumeSession?: boolean;
     loadSession?: boolean;
   };
 

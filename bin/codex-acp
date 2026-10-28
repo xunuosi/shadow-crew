@@ -131,10 +131,58 @@ function codexVersion() {
   }
   return cachedCodexVersion;
 }
-let currentCwd = process.cwd();
-let currentAdditionalDirs = [];
-let activeSessionId = `codex-sess-${Date.now()}`;
-let sessionSystemPrompt = '';
+
+// 会话状态管理与持久化缓存 (~/.shadow-crew/cache/codex_sessions.json)
+const SESSIONS_CACHE_DIR = path.join(HOME, '.shadow-crew', 'cache');
+const SESSIONS_CACHE_FILE = path.join(SESSIONS_CACHE_DIR, 'codex_sessions.json');
+
+/**
+ * @typedef {Object} SessionState
+ * @property {string} sessionId - ACP 会话 ID
+ * @property {string} cwd - 工作区目录
+ * @property {string[]} additionalDirectories - 挂载目录
+ * @property {string} systemPrompt - 注入系统提示词
+ * @property {string|null} codexThreadId - Codex CLI 底层真实 thread_id
+ * @property {number} createdAt
+ * @property {number} updatedAt
+ */
+
+/** @type {Map<string, SessionState>} */
+const sessions = new Map();
+let activeSessionId = null;
+
+function loadSessionsFromDisk() {
+  try {
+    if (fs.existsSync(SESSIONS_CACHE_FILE)) {
+      const raw = fs.readFileSync(SESSIONS_CACHE_FILE, 'utf8');
+      const data = JSON.parse(raw);
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          if (item && item.sessionId) {
+            sessions.set(item.sessionId, item);
+          }
+        }
+      }
+    }
+  } catch {
+    // 忽略缓存读取异常
+  }
+}
+
+function saveSessionsToDisk() {
+  try {
+    if (!fs.existsSync(SESSIONS_CACHE_DIR)) {
+      fs.mkdirSync(SESSIONS_CACHE_DIR, { recursive: true });
+    }
+    const list = Array.from(sessions.values());
+    fs.writeFileSync(SESSIONS_CACHE_FILE, JSON.stringify(list, null, 2), 'utf8');
+  } catch {
+    // 忽略缓存写入异常
+  }
+}
+
+// 初始化时载入磁盘缓存
+loadSessionsFromDisk();
 
 function sendRpc(msg) {
   const str = JSON.stringify(msg);
@@ -207,6 +255,9 @@ rl.on('line', async (line) => {
         tools: { listChanged: true },
         streaming: true,
       },
+      sessionCapabilities: {
+        resume: {},
+      },
       _meta: {
         codexBinary: CODEX_BIN,
       },
@@ -216,24 +267,54 @@ rl.on('line', async (line) => {
 
   // 2. session/new
   if (method === 'session/new') {
-    if (params?.cwd) {
-      currentCwd = params.cwd;
-    }
-    if (Array.isArray(params?.additionalDirectories)) {
-      currentAdditionalDirs = params.additionalDirectories.filter(Boolean);
-    } else {
-      currentAdditionalDirs = [];
-    }
-    // 强制按每次 session/new 重置系统提示词，防止跨会话/私聊残留旧公约
-    sessionSystemPrompt = params?.systemPrompt || '';
-    activeSessionId = `codex-sess-${Date.now()}`;
+    const sessionId = `codex-sess-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const sessionState = {
+      sessionId,
+      cwd: params?.cwd || process.cwd(),
+      additionalDirectories: Array.isArray(params?.additionalDirectories)
+        ? params.additionalDirectories.filter(Boolean)
+        : [],
+      systemPrompt: params?.systemPrompt || '',
+      codexThreadId: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    sessions.set(sessionId, sessionState);
+    activeSessionId = sessionId;
+    saveSessionsToDisk();
+
     sendResult(id, {
-      sessionId: activeSessionId,
+      sessionId,
     });
     return;
   }
 
-  // 3. session/prompt
+  // 3. session/resume
+  if (method === 'session/resume') {
+    const targetSessionId = params?.sessionId;
+    if (!targetSessionId) {
+      sendError(id, -32602, 'Missing sessionId parameter for session/resume');
+      return;
+    }
+    const session = sessions.get(targetSessionId);
+    if (!session) {
+      sendError(id, -32004, `Session not found: ${targetSessionId}`);
+      return;
+    }
+    if (params?.cwd) {
+      session.cwd = params.cwd;
+    }
+    if (Array.isArray(params?.additionalDirectories)) {
+      session.additionalDirectories = params.additionalDirectories.filter(Boolean);
+    }
+    session.updatedAt = Date.now();
+    activeSessionId = targetSessionId;
+    saveSessionsToDisk();
+    sendResult(id, {});
+    return;
+  }
+
+  // 4. session/prompt
   if (method === 'session/prompt') {
     if (!CODEX_BIN) {
       sendResult(id, {
@@ -243,11 +324,31 @@ rl.on('line', async (line) => {
       return;
     }
 
+    const targetSessionId = params?.sessionId || activeSessionId;
+    let session = targetSessionId ? sessions.get(targetSessionId) : null;
+    if (!session) {
+      const newSid = targetSessionId || `codex-sess-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      session = {
+        sessionId: newSid,
+        cwd: params?.cwd || process.cwd(),
+        additionalDirectories: Array.isArray(params?.additionalDirectories)
+          ? params.additionalDirectories.filter(Boolean)
+          : [],
+        systemPrompt: params?.systemPrompt || '',
+        codexThreadId: null,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      sessions.set(newSid, session);
+      activeSessionId = newSid;
+      saveSessionsToDisk();
+    }
+
     if (params?.cwd) {
-      currentCwd = params.cwd;
+      session.cwd = params.cwd;
     }
     if (Array.isArray(params?.additionalDirectories)) {
-      currentAdditionalDirs = params.additionalDirectories.filter(Boolean);
+      session.additionalDirectories = params.additionalDirectories.filter(Boolean);
     }
 
     const rawPrompt = params?.prompt;
@@ -264,36 +365,46 @@ rl.on('line', async (line) => {
       userPromptText = rawPrompt.text;
     }
 
-    const fullPrompt = sessionSystemPrompt
-      ? `${sessionSystemPrompt}\n\n${userPromptText}`
+    const fullPrompt = session.systemPrompt
+      ? `${session.systemPrompt}\n\n${userPromptText}`
       : userPromptText;
 
     // 方案 A：精准开放工作区写权限 (-s workspace-write)，保证 Agent 能正常落盘 artifacts/scratch，
-    // 同时通过 Seatbelt 沙箱阻断对外部目录的越界篡改。支持环境变量 CODEX_SANDBOX (如 danger-full-access / read-only)
-    // 或 CODEX_DANGEROUSLY_BYPASS_SANDBOX=1 进行环境级覆盖。
-    const args = ['exec', '--skip-git-repo-check', '--json'];
+    // 同时通过 Seatbelt 沙箱阻断对外部目录的越界篡改。
+    // 若 session 已成功记录真实的 codexThreadId，调用 codex exec resume 续接会话！
+    const args = ['exec'];
+    const hasThread = Boolean(session.codexThreadId);
+
+    if (hasThread) {
+      args.push('resume', session.codexThreadId, '-');
+    }
+
     if (process.env.CODEX_DANGEROUSLY_BYPASS_SANDBOX === '1') {
       args.push('--dangerously-bypass-approvals-and-sandbox');
-    } else {
+    } else if (!hasThread) {
       const sandboxMode = process.env.CODEX_SANDBOX || 'workspace-write';
       args.push('-s', sandboxMode);
     }
 
-    if (currentCwd && fs.existsSync(currentCwd)) {
-      args.push('--cd', currentCwd);
-    }
-    for (const dir of currentAdditionalDirs) {
-      if (typeof dir === 'string' && fs.existsSync(dir)) {
-        args.push('--add-dir', dir);
+    args.push('--skip-git-repo-check', '--json');
+
+    if (!hasThread) {
+      if (session.cwd && fs.existsSync(session.cwd)) {
+        args.push('--cd', session.cwd);
       }
+      for (const dir of session.additionalDirectories) {
+        if (typeof dir === 'string' && fs.existsSync(dir)) {
+          args.push('--add-dir', dir);
+        }
+      }
+      args.push('-');
     }
-    args.push('-');
 
     let fullOutput = '';
     let hasSentChunk = false;
 
     const child = spawn(CODEX_BIN, args, {
-      cwd: currentCwd && fs.existsSync(currentCwd) ? currentCwd : undefined,
+      cwd: session.cwd && fs.existsSync(session.cwd) ? session.cwd : undefined,
       env: codexChildEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -313,6 +424,14 @@ rl.on('line', async (line) => {
 
       try {
         const event = JSON.parse(outTrimmed);
+
+        // 捕获首次启动时 Codex 分配的真实 thread_id
+        if (event.type === 'thread.started' && event.thread_id) {
+          session.codexThreadId = event.thread_id;
+          session.updatedAt = Date.now();
+          saveSessionsToDisk();
+        }
+
         if (event.type === 'item.completed' && event.item) {
           if (event.item.type === 'agent_message' && event.item.text) {
             const text = event.item.text;
@@ -320,7 +439,7 @@ rl.on('line', async (line) => {
             hasSentChunk = true;
             // Emit ACP session/update chunk
             sendNotification('session/update', {
-              sessionId: activeSessionId,
+              sessionId: session.sessionId,
               update: {
                 sessionUpdate: 'agent_message_chunk',
                 content: { text },
@@ -333,7 +452,7 @@ rl.on('line', async (line) => {
         if (outTrimmed && !outTrimmed.startsWith('{')) {
           fullOutput += (fullOutput ? '\n' : '') + outTrimmed;
           sendNotification('session/update', {
-            sessionId: activeSessionId,
+            sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
               content: { text: outTrimmed },
@@ -349,6 +468,8 @@ rl.on('line', async (line) => {
     });
 
     child.on('close', (code) => {
+      session.updatedAt = Date.now();
+      saveSessionsToDisk();
       if (code !== 0 && !fullOutput) {
         sendResult(id, {
           text_response: `⚠️ Codex 执行退出 (exit code: ${code})\n${stderrBuffer.trim()}`,

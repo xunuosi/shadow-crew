@@ -76,6 +76,7 @@ pub struct AgentRuntimeStatus {
     pub status: String,     // "running" | "auth_required" | "starting" | "error" | "idle"
     pub status_detail: Option<String>,
     pub supports_load_session: Option<bool>,
+    pub supports_resume_session: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,12 +200,66 @@ pub fn check_supports_load_session(result: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
+/// 检查 ACP initialize 响应中是否声明了 session/resume 能力 (支持 sessionCapabilities.resume 或 capabilities.resume)
+pub fn check_supports_resume_session(result: &serde_json::Value) -> bool {
+    result.get("sessionCapabilities").and_then(|c| c.get("resume"))
+        .or_else(|| result.get("capabilities").and_then(|c| c.get("sessionCapabilities")).and_then(|s| s.get("resume")))
+        .or_else(|| result.get("capabilities").and_then(|c| c.get("resume")).filter(|v| v.as_bool() == Some(true)))
+        .or_else(|| result.get("agentCapabilities").and_then(|c| c.get("sessionCapabilities")).and_then(|s| s.get("resume")))
+        .or_else(|| result.get("agentCapabilities").and_then(|c| c.get("resume")).filter(|v| v.as_bool() == Some(true)))
+        .is_some()
+}
+
+/// 从 ACP session/update 载荷中提取文本内容
+pub fn extract_update_text(update: &serde_json::Value) -> Option<String> {
+    if let Some(text) = update.get("content").and_then(|c| c.get("text")).and_then(|t| t.as_str()) {
+        Some(text.to_string())
+    } else if let Some(s) = update.get("content").and_then(|c| c.as_str()) {
+        Some(s.to_string())
+    } else if let Some(arr) = update.get("content").and_then(|c| c.as_array()) {
+        let mut combined = String::new();
+        for item in arr {
+            if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
+                combined.push_str(t);
+            } else if let Some(s) = item.as_str() {
+                combined.push_str(s);
+            }
+        }
+        if !combined.is_empty() { Some(combined) } else { None }
+    } else if let Some(text) = update.get("item").and_then(|i| i.get("text")).and_then(|t| t.as_str()) {
+        Some(text.to_string())
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayMessageItem {
+    pub message_id: String,
+    pub role: String,
+    pub content: String,
+    pub timestamp: u64,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ReplaySinkState {
+    pub session_id: String,
+    pub session_key: String,
+    pub agent_id: String,
+    pub room_id: String,
+    pub messages: Vec<ReplayMessageItem>,
+    pub current_chunk_buffer: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnsureSessionResult {
     pub session_id: String,
     pub is_new: bool,
     pub load_failed: bool,
+    pub recovery_mode: Option<String>,
 }
 
 #[derive(Clone)]
@@ -219,6 +274,7 @@ pub struct RunningAgent {
     pub active_chunks: Arc<TokioMutex<HashMap<u64, String>>>,
     pub session_active_req: Arc<TokioMutex<HashMap<String, u64>>>,
     pub loading_sessions: Arc<TokioMutex<HashSet<String>>>,
+    pub replay_sinks: Arc<TokioMutex<HashMap<String, Arc<TokioMutex<ReplaySinkState>>>>>,
     pub is_alive: Arc<AtomicBool>,
     pub initialized: Arc<AtomicBool>,
     /// ACP 握手被 Agent 明确拒绝时的根因。存在即代表本进程不可用，运行态必须报 error。
@@ -227,6 +283,7 @@ pub struct RunningAgent {
     pub status_detail: Arc<TokioMutex<Option<String>>>,
     pub session_registry: Arc<TokioMutex<SessionRegistry>>,
     pub supports_load_session: Arc<AtomicBool>,
+    pub supports_resume_session: Arc<AtomicBool>,
     pub db_manager: Option<Arc<crate::db_manager::DatabaseManager>>,
     #[allow(dead_code)]
     pub cwd: String,
@@ -299,6 +356,11 @@ impl AcpProcessManager {
             } else {
                 None
             };
+            let supports_resume = if is_alive {
+                Some(agent.supports_resume_session.load(Ordering::SeqCst))
+            } else {
+                None
+            };
 
             statuses.push(AgentRuntimeStatus {
                 agent_id: id.clone(),
@@ -309,6 +371,7 @@ impl AcpProcessManager {
                 status,
                 status_detail,
                 supports_load_session: supports_load,
+                supports_resume_session: supports_resume,
             });
         }
         statuses
@@ -361,12 +424,13 @@ impl AcpProcessManager {
         channel_id: Option<&str>,
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
+        local_history_intact: Option<bool>,
     ) -> Result<EnsureSessionResult> {
         let agent = self
             .get_agent(agent_id)
             .with_context(|| format!("Agent {} not running", agent_id))?;
         agent
-            .ensure_session(agent_id, room_id, channel_id, system_prompt, discussion_mode)
+            .ensure_session(agent_id, room_id, channel_id, system_prompt, discussion_mode, local_history_intact)
             .await
     }
 
@@ -595,6 +659,8 @@ impl AcpProcessManager {
         let status_detail = Arc::new(TokioMutex::new(None::<String>));
         let session_registry = Arc::new(TokioMutex::new(SessionRegistry::new()));
         let supports_load_session = Arc::new(AtomicBool::new(false));
+        let supports_resume_session = Arc::new(AtomicBool::new(false));
+        let replay_sinks = Arc::new(TokioMutex::new(HashMap::<String, Arc<TokioMutex<ReplaySinkState>>>::new()));
         let now_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -630,6 +696,7 @@ impl AcpProcessManager {
         let active_chunks_clone = active_chunks.clone();
         let session_active_req_clone = session_active_req.clone();
         let loading_sessions_clone = loading_sessions.clone();
+        let replay_sinks_clone = replay_sinks.clone();
         let is_alive_clone = is_alive.clone();
         let stdin_tx_reader = stdin_tx.clone();
         let last_activity_clone = last_activity.clone();
@@ -670,7 +737,46 @@ impl AcpProcessManager {
                             if let Some(params) = json_val.get("params") {
                                 let sess_id = params.get("sessionId").and_then(|s| s.as_str()).unwrap_or_default();
 
-                                // 若该会话正处于 session/load 恢复回放阶段，静默丢弃历史重放 chunk，杜绝污染当前实时推演
+                                // 专用 Replay Sink 检查：若该会话正处于 session/load 恢复回放阶段，
+                                // 将历史回放 chunk 导入专用 Replay Sink，与实时输出通道 (acp:chunk) 彻底隔离，杜绝污染当前前端 pending 卡片
+                                let sink_opt = {
+                                    let sinks = replay_sinks_clone.lock().await;
+                                    sinks.get(sess_id).cloned()
+                                };
+                                if let Some(sink_arc) = sink_opt {
+                                    if let Some(update) = params.get("update") {
+                                        let mut sink = sink_arc.lock().await;
+                                        let update_type = update.get("sessionUpdate").and_then(|u| u.as_str()).unwrap_or_default();
+                                        if update_type == "agent_message_chunk" {
+                                            if let Some(text) = extract_update_text(update) {
+                                                sink.current_chunk_buffer.push_str(&text);
+                                            }
+                                        } else if update_type == "user_message" || update_type == "agent_message" {
+                                            if !sink.current_chunk_buffer.trim().is_empty() {
+                                                let msg_id = format!("msg-replay-{}-{}", sess_id, sink.messages.len());
+                                                let buffer_content = std::mem::take(&mut sink.current_chunk_buffer);
+                                                sink.messages.push(ReplayMessageItem {
+                                                    message_id: msg_id,
+                                                    role: "assistant".to_string(),
+                                                    content: buffer_content,
+                                                    timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+                                                });
+                                            }
+                                            let text = extract_update_text(update).unwrap_or_default();
+                                            let msg_id = update.get("messageId").and_then(|m| m.as_str())
+                                                .map(|s| s.to_string())
+                                                .unwrap_or_else(|| format!("msg-replay-{}-{}", sess_id, sink.messages.len()));
+                                            sink.messages.push(ReplayMessageItem {
+                                                message_id: msg_id,
+                                                role: if update_type == "user_message" { "user".to_string() } else { "assistant".to_string() },
+                                                content: text,
+                                                timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+                                            });
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 let is_loading = {
                                     let loading = loading_sessions_clone.lock().await;
                                     loading.contains(sess_id)
@@ -689,23 +795,7 @@ impl AcpProcessManager {
                                         // 仅当当前会话有明确正在执行中的 session/prompt 请求时才路由 chunk
                                         if let Some(req_id) = active_req_id {
                                             // 智能提取文本内容，兼容 string / object / array 多种结构
-                                            let text_opt = if let Some(text) = update.get("content").and_then(|c| c.get("text")).and_then(|t| t.as_str()) {
-                                                Some(text.to_string())
-                                            } else if let Some(s) = update.get("content").and_then(|c| c.as_str()) {
-                                                Some(s.to_string())
-                                            } else if let Some(arr) = update.get("content").and_then(|c| c.as_array()) {
-                                                let mut combined = String::new();
-                                                for item in arr {
-                                                    if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
-                                                        combined.push_str(t);
-                                                    } else if let Some(s) = item.as_str() {
-                                                        combined.push_str(s);
-                                                    }
-                                                }
-                                                if !combined.is_empty() { Some(combined) } else { None }
-                                            } else {
-                                                None
-                                            };
+                                            let text_opt = extract_update_text(update);
 
                                             if let Some(text) = text_opt {
                                                 let mut chunks = active_chunks_clone.lock().await;
@@ -856,6 +946,7 @@ impl AcpProcessManager {
                 active_chunks,
                 session_active_req,
                 loading_sessions,
+                replay_sinks: replay_sinks.clone(),
                 is_alive: is_alive.clone(),
                 initialized: initialized.clone(),
                 init_error: init_error.clone(),
@@ -863,6 +954,7 @@ impl AcpProcessManager {
                 status_detail: status_detail.clone(),
                 session_registry,
                 supports_load_session: supports_load_session.clone(),
+                supports_resume_session: supports_resume_session.clone(),
                 db_manager: self.db_manager.clone(),
                 cwd: shadow_crew_home_str,
                 app_handle: app_handle.clone(),
@@ -922,8 +1014,13 @@ impl AcpProcessManager {
                     if let Some(res) = resp.get("result") {
                         let supported = check_supports_load_session(res);
                         supports_load_session.store(supported, Ordering::SeqCst);
+                        let supported_resume = check_supports_resume_session(res);
+                        supports_resume_session.store(supported_resume, Ordering::SeqCst);
                         if supported {
                             tracing::info!("[Agent {}] Immediate init: Agent reports support for ACP session/load capability", agent_id);
+                        }
+                        if supported_resume {
+                            tracing::info!("[Agent {}] Immediate init: Agent reports support for ACP session/resume capability", agent_id);
                         }
                     }
                 }
@@ -1070,12 +1167,13 @@ impl RunningAgent {
         channel_id: Option<&str>,
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
+        local_history_intact: Option<bool>,
     ) -> Result<EnsureSessionResult> {
         let _prompt_guard = self.prompt_lock.lock().await;
-        self.ensure_session_locked(agent_id, room_id, channel_id, system_prompt, discussion_mode).await
+        self.ensure_session_locked(agent_id, room_id, channel_id, system_prompt, discussion_mode, local_history_intact).await
     }
 
-    /// 内部已加锁的核心逻辑：确保当前会话绑定了有效的 ACP sessionId (通过 Layer 1 session/load 或 Layer 2 session/new)
+    /// 内部已加锁的核心逻辑：确保当前会话绑定了有效的 ACP sessionId (基于本地历史完整度的动态选择)
     pub(crate) async fn ensure_session_locked(
         &self,
         agent_id: &str,
@@ -1083,6 +1181,7 @@ impl RunningAgent {
         channel_id: Option<&str>,
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
+        local_history_intact: Option<bool>,
     ) -> Result<EnsureSessionResult> {
         if !self.is_alive.load(Ordering::SeqCst) {
             anyhow::bail!("Agent {} process is dead or closed", agent_id);
@@ -1139,8 +1238,13 @@ impl RunningAgent {
                         if let Some(res) = resp.get("result") {
                             let supported = check_supports_load_session(res);
                             self.supports_load_session.store(supported, Ordering::SeqCst);
+                            let supported_resume = check_supports_resume_session(res);
+                            self.supports_resume_session.store(supported_resume, Ordering::SeqCst);
                             if supported {
                                 tracing::info!("[Agent {}] Lazy init: Agent reports support for ACP session/load capability", agent_id);
+                            }
+                            if supported_resume {
+                                tracing::info!("[Agent {}] Lazy init: Agent reports support for ACP session/resume capability", agent_id);
                             }
                         }
                         // 握手恢复成功，清除历史错误态并回正运行态
@@ -1225,6 +1329,7 @@ impl RunningAgent {
                 session_id: sid,
                 is_new: false,
                 load_failed: false,
+                recovery_mode: None,
             });
         }
 
@@ -1240,99 +1345,223 @@ impl RunningAgent {
         if let Some(persisted) = persisted_opt {
             let persona_matched = persisted.system_prompt == normalized_sp;
             let cwd_matched = persisted.workspace_cwd == workspace_cwd;
+            let metadata_matched = persona_matched && cwd_matched;
+            let supports_resume = self.supports_resume_session.load(Ordering::SeqCst);
             let supports_load = self.supports_load_session.load(Ordering::SeqCst);
+            let history_intact = local_history_intact.unwrap_or(true);
 
-            if persona_matched && cwd_matched && supports_load {
-                tracing::info!(
-                    "[Agent {}] Found persisted session {} for key {}. Attempting Layer 1 session/load recovery...",
-                    agent_id, persisted.session_id, session_key
-                );
-                let load_id = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-                let (load_tx, load_rx) = oneshot::channel();
-                {
-                    let mut map = self.pending_requests.lock().await;
-                    map.insert(load_id, load_tx);
-                }
+            if metadata_matched {
+                // 动态选择分支 1: 本地历史完整且元数据对齐 -> 优先选择 session/resume (无需重放历史流)
+                if history_intact && supports_resume {
+                    tracing::info!(
+                        "[Agent {}] Local history intact & metadata aligned. Attempting session/resume for session {}...",
+                        agent_id, persisted.session_id
+                    );
+                    let resume_id = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let (resume_tx, resume_rx) = oneshot::channel();
+                    {
+                        let mut map = self.pending_requests.lock().await;
+                        map.insert(resume_id, resume_tx);
+                    }
 
-                // 标记该会话正在加载历史，忽略 replayed chunks
-                {
-                    let mut loading = self.loading_sessions.lock().await;
-                    loading.insert(persisted.session_id.clone());
-                }
+                    let resume_params = serde_json::json!({
+                        "sessionId": &persisted.session_id,
+                        "cwd": &workspace_cwd,
+                        "mcpServers": [],
+                    });
+                    let resume_req = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": resume_id,
+                        "method": "session/resume",
+                        "params": resume_params
+                    });
+                    let _ = self.stdin_tx.send(resume_req.to_string()).await;
 
-                let mut load_params = serde_json::json!({
-                    "sessionId": &persisted.session_id,
-                    "sessionKey": &session_key,
-                    "cwd": &workspace_cwd,
-                    "mcpServers": [],
-                });
-                if is_dm {
-                    load_params["agentId"] = serde_json::Value::String(agent_id.to_string());
-                } else if let Some(c) = channel_id {
-                    load_params["channelId"] = serde_json::Value::String(c.to_string());
-                }
-                load_params["systemPrompt"] = serde_json::Value::String(enriched_sp.clone());
-
-                let load_req = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": load_id,
-                    "method": "session/load",
-                    "params": load_params
-                });
-                let _ = self.stdin_tx.send(load_req.to_string()).await;
-
-                let load_res = tokio::time::timeout(Duration::from_secs(30), load_rx).await;
-
-                // 无论成功还是失败，均从 loading_sessions 移除
-                {
-                    let mut loading = self.loading_sessions.lock().await;
-                    loading.remove(&persisted.session_id);
-                }
-
-                match load_res {
-                    Ok(Ok(resp)) if resp.get("error").is_none() => {
-                        tracing::info!(
-                            "[Agent {}] Layer 1 recovery SUCCEEDED: restored session {} via session/load",
-                            agent_id, persisted.session_id
-                        );
-                        log_acp_event(
-                            agent_id,
-                            "SESSION_RESUMED",
-                            &format!("Restored session {} via session/load", persisted.session_id),
-                        );
-                        let restored_gen = {
-                            let mut reg = self.session_registry.lock().await;
-                            reg.insert(session_key.clone(), persisted.session_id.clone(), normalized_sp.clone())
-                        };
-                        if let Some(ref db) = self.db_manager {
-                            let _ = db.save_acp_session(
+                    let resume_res = tokio::time::timeout(Duration::from_secs(15), resume_rx).await;
+                    match resume_res {
+                        Ok(Ok(resp)) if resp.get("error").is_none() => {
+                            tracing::info!(
+                                "[Agent {}] Layer 1 recovery SUCCEEDED: resumed session {} via session/resume",
+                                agent_id, persisted.session_id
+                            );
+                            log_acp_event(
                                 agent_id,
-                                &session_key,
-                                &persisted.session_id,
-                                &workspace_cwd,
-                                &normalized_sp,
-                                restored_gen,
+                                "SESSION_RESUMED",
+                                &format!("Resumed session {} via session/resume", persisted.session_id),
+                            );
+                            let restored_gen = {
+                                let mut reg = self.session_registry.lock().await;
+                                reg.insert(session_key.clone(), persisted.session_id.clone(), normalized_sp.clone())
+                            };
+                            if let Some(ref db) = self.db_manager {
+                                let _ = db.save_acp_session(
+                                    agent_id,
+                                    &session_key,
+                                    &persisted.session_id,
+                                    &workspace_cwd,
+                                    &normalized_sp,
+                                    restored_gen,
+                                );
+                            }
+                            return Ok(EnsureSessionResult {
+                                session_id: persisted.session_id,
+                                is_new: false,
+                                load_failed: false,
+                                recovery_mode: Some("resume".to_string()),
+                            });
+                        }
+                        res => {
+                            self.pending_requests.lock().await.remove(&resume_id);
+                            tracing::warn!(
+                                "[Agent {}] Layer 1 session/resume failed or timed out for session {:?} (res: {:?}). Checking load or new...",
+                                agent_id, persisted.session_id, res
                             );
                         }
-                        return Ok(EnsureSessionResult {
-                            session_id: persisted.session_id,
-                            is_new: false,
-                            load_failed: false,
-                        });
                     }
-                    res => {
-                        // 清理 pending_requests 避免超时迟到响应污染
-                        self.pending_requests.lock().await.remove(&load_id);
-                        load_failed = true;
-                        tracing::warn!(
-                            "[Agent {}] Layer 1 session/load failed or timed out for session {:?} (res: {:?}). Falling back to Layer 2 (session/new)...",
-                            agent_id, persisted.session_id, res
-                        );
-                        if let Some(ref db) = self.db_manager {
-                            let _ = db.delete_acp_session(Some(agent_id), Some(&session_key), None);
+                }
+
+                // 动态选择分支 2: 本地历史缺失、损坏或需要重建 (或 Agent 不支持 resume 但支持 loadSession / resume 失败)
+                // -> 选择 session/load 并挂载专用 Replay Sink 收集回放历史
+                if supports_load {
+                    tracing::info!(
+                        "[Agent {}] Attempting Layer 1 session/load recovery with dedicated Replay Sink for session {}...",
+                        agent_id, persisted.session_id
+                    );
+                    let load_id = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let (load_tx, load_rx) = oneshot::channel();
+                    {
+                        let mut map = self.pending_requests.lock().await;
+                        map.insert(load_id, load_tx);
+                    }
+
+                    // 挂载专用 Replay Sink 并标记 session 处于加载阶段
+                    let sink_state = Arc::new(TokioMutex::new(ReplaySinkState {
+                        session_id: persisted.session_id.clone(),
+                        session_key: session_key.clone(),
+                        agent_id: agent_id.to_string(),
+                        room_id: room_id.to_string(),
+                        messages: Vec::new(),
+                        current_chunk_buffer: String::new(),
+                    }));
+                    {
+                        let mut sinks = self.replay_sinks.lock().await;
+                        sinks.insert(persisted.session_id.clone(), sink_state.clone());
+                    }
+                    {
+                        let mut loading = self.loading_sessions.lock().await;
+                        loading.insert(persisted.session_id.clone());
+                    }
+
+                    let mut load_params = serde_json::json!({
+                        "sessionId": &persisted.session_id,
+                        "sessionKey": &session_key,
+                        "cwd": &workspace_cwd,
+                        "mcpServers": [],
+                    });
+                    if is_dm {
+                        load_params["agentId"] = serde_json::Value::String(agent_id.to_string());
+                    } else if let Some(c) = channel_id {
+                        load_params["channelId"] = serde_json::Value::String(c.to_string());
+                    }
+                    load_params["systemPrompt"] = serde_json::Value::String(enriched_sp.clone());
+
+                    let load_req = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": load_id,
+                        "method": "session/load",
+                        "params": load_params
+                    });
+                    let _ = self.stdin_tx.send(load_req.to_string()).await;
+
+                    let load_res = tokio::time::timeout(Duration::from_secs(30), load_rx).await;
+
+                    // 无论成功还是失败，均从 loading_sessions 与 replay_sinks 移除
+                    {
+                        let mut loading = self.loading_sessions.lock().await;
+                        loading.remove(&persisted.session_id);
+                    }
+                    let replayed_msgs = {
+                        let mut sinks = self.replay_sinks.lock().await;
+                        if let Some(sink_arc) = sinks.remove(&persisted.session_id) {
+                            let mut sink = sink_arc.lock().await;
+                            if !sink.current_chunk_buffer.trim().is_empty() {
+                                let msg_id = format!("msg-replay-{}-{}", &persisted.session_id, sink.messages.len());
+                                let buffer_content = std::mem::take(&mut sink.current_chunk_buffer);
+                                sink.messages.push(ReplayMessageItem {
+                                    message_id: msg_id,
+                                    role: "assistant".to_string(),
+                                    content: buffer_content,
+                                    timestamp: std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis() as u64,
+                                });
+                            }
+                            std::mem::take(&mut sink.messages)
+                        } else {
+                            Vec::new()
+                        }
+                    };
+
+                    match load_res {
+                        Ok(Ok(resp)) if resp.get("error").is_none() => {
+                            tracing::info!(
+                                "[Agent {}] Layer 1 session/load SUCCEEDED: restored session {} (replayed {} items)",
+                                agent_id, persisted.session_id, replayed_msgs.len()
+                            );
+                            if !replayed_msgs.is_empty() {
+                                let payload = serde_json::json!({
+                                    "agent_id": agent_id,
+                                    "sessionId": &persisted.session_id,
+                                    "session_key": &session_key,
+                                    "room_id": room_id,
+                                    "messages": replayed_msgs,
+                                });
+                                let _ = self.app_handle.emit("acp:replay_sink", &payload);
+                            }
+
+                            log_acp_event(
+                                agent_id,
+                                "SESSION_RESTORED",
+                                &format!("Restored session {} via session/load", persisted.session_id),
+                            );
+                            let restored_gen = {
+                                let mut reg = self.session_registry.lock().await;
+                                reg.insert(session_key.clone(), persisted.session_id.clone(), normalized_sp.clone())
+                            };
+                            if let Some(ref db) = self.db_manager {
+                                let _ = db.save_acp_session(
+                                    agent_id,
+                                    &session_key,
+                                    &persisted.session_id,
+                                    &workspace_cwd,
+                                    &normalized_sp,
+                                    restored_gen,
+                                );
+                            }
+                            return Ok(EnsureSessionResult {
+                                session_id: persisted.session_id,
+                                is_new: false,
+                                load_failed: false,
+                                recovery_mode: Some("load".to_string()),
+                            });
+                        }
+                        res => {
+                            self.pending_requests.lock().await.remove(&load_id);
+                            load_failed = true;
+                            tracing::warn!(
+                                "[Agent {}] Layer 1 session/load failed or timed out for session {:?} (res: {:?}). Falling back to Layer 2 (session/new)...",
+                                agent_id, persisted.session_id, res
+                            );
+                            if let Some(ref db) = self.db_manager {
+                                let _ = db.delete_acp_session(Some(agent_id), Some(&session_key), None);
+                            }
                         }
                     }
                 }
@@ -1452,6 +1681,7 @@ impl RunningAgent {
             session_id: sid,
             is_new: true,
             load_failed,
+            recovery_mode: Some("new".to_string()),
         })
     }
 
@@ -1470,7 +1700,7 @@ impl RunningAgent {
         let _prompt_guard = self.prompt_lock.lock().await;
 
         let ensure_res = self
-            .ensure_session_locked(agent_id, room_id, channel_id, system_prompt, discussion_mode)
+            .ensure_session_locked(agent_id, room_id, channel_id, system_prompt, discussion_mode, None)
             .await?;
         let current_session_id = ensure_res.session_id;
 
@@ -2068,6 +2298,48 @@ mod runtime_status_tests {
     }
 
     #[test]
+    fn test_check_supports_resume_session() {
+        use super::check_supports_resume_session;
+
+        let with_session_capabilities = serde_json::json!({
+            "sessionCapabilities": {
+                "resume": {}
+            }
+        });
+        assert!(check_supports_resume_session(&with_session_capabilities));
+
+        let with_session_capabilities_bool = serde_json::json!({
+            "sessionCapabilities": {
+                "resume": true
+            }
+        });
+        assert!(check_supports_resume_session(&with_session_capabilities_bool));
+
+        let with_capabilities_nested = serde_json::json!({
+            "capabilities": {
+                "sessionCapabilities": {
+                    "resume": {}
+                }
+            }
+        });
+        assert!(check_supports_resume_session(&with_capabilities_nested));
+
+        let with_capabilities_resume = serde_json::json!({
+            "capabilities": {
+                "resume": true
+            }
+        });
+        assert!(check_supports_resume_session(&with_capabilities_resume));
+
+        let without_support = serde_json::json!({
+            "capabilities": {
+                "prompts": { "listChanged": true }
+            }
+        });
+        assert!(!check_supports_resume_session(&without_support));
+    }
+
+    #[test]
     fn test_ensure_session_result_serialization() {
         use super::EnsureSessionResult;
 
@@ -2075,10 +2347,12 @@ mod runtime_status_tests {
             session_id: "sid-123".to_string(),
             is_new: true,
             load_failed: false,
+            recovery_mode: Some("resume".to_string()),
         };
         let json_val = serde_json::to_value(&res).unwrap();
         assert_eq!(json_val["sessionId"], "sid-123");
         assert_eq!(json_val["isNew"], true);
         assert_eq!(json_val["loadFailed"], false);
+        assert_eq!(json_val["recoveryMode"], "resume");
     }
 }

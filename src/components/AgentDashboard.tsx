@@ -634,27 +634,39 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
 
                   {/* 方案 1: 单行精炼能力条 */}
                   {(() => {
+                    const hasResume = Boolean(agent.capabilities?.supportsResumeSession);
                     const hasLoadSession = Boolean(
                       agent.capabilities?.supportsLoadSession ?? (agent.capabilities as any)?.loadSession
                     );
+                    const isSupported = hasResume || hasLoadSession;
                     const isIdle = agent.status === 'idle';
+
+                    const detailText = isIdle
+                      ? '待握手'
+                      : hasResume
+                      ? 'Resume ✓'
+                      : hasLoadSession
+                      ? 'Load ✓'
+                      : '仅单次 ⚠️';
+
+                    const tooltipText = isIdle
+                      ? '进程未启动。点击启动或进行连通性测试后，将自动解析对端 Capabilities。'
+                      : hasResume
+                      ? 'ACP 对端声明支持 session/resume 轻量挂载。可直接基于现有本地历史快速续接上下文。'
+                      : hasLoadSession
+                      ? 'ACP 对端声明支持 session/load 全量重载。历史缺失时可通过 Replay Sink 回放补偿。'
+                      : 'ACP 对端未实现 session/resume 或 session/load。每次重启将以 session/new 重新初始化，系统自动采用冷启动补偿。';
 
                     return (
                       <div
                         className={`mt-2 p-1.5 px-2.5 rounded-xl border flex items-center justify-between text-[11px] select-none transition-all ${
                           isIdle
                             ? 'bg-surface-subtle border-border text-fg-muted'
-                            : hasLoadSession
+                            : isSupported
                             ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-600 dark:text-emerald-300'
                             : 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-300'
                         }`}
-                        title={
-                          isIdle
-                            ? '进程未启动。点击启动或进行连通性测试后，将自动解析对端 Capabilities。'
-                            : hasLoadSession
-                            ? 'ACP 对端声明支持会话热恢复。切换房间、重连或进程重启后，可无缝恢复先前的会话上下文。'
-                            : 'ACP 对端未实现 session/load。每次重启或重连将以独立 session/new 重新初始化，系统自动采用全量历史追加兜底。'
-                        }
+                        title={tooltipText}
                       >
                         {/* 左侧：精炼主标签 */}
                         <div className="flex items-center gap-1.5 min-w-0 shrink-0">
@@ -662,7 +674,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                             className={`w-1.5 h-1.5 rounded-full ${
                               isIdle
                                 ? 'bg-zinc-400 dark:bg-zinc-500'
-                                : hasLoadSession
+                                : isSupported
                                 ? 'bg-emerald-500 animate-pulse'
                                 : 'bg-amber-500'
                             }`}
@@ -672,7 +684,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
 
                         {/* 右侧：紧凑状态短语 */}
                         <span className="font-mono text-[10px] font-semibold whitespace-nowrap shrink-0 pl-1">
-                          {isIdle ? '待握手' : hasLoadSession ? '支持 ✓' : '仅单次 ⚠️'}
+                          {detailText}
                         </span>
                       </div>
                     );
