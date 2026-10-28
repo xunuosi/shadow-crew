@@ -428,9 +428,14 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     const effectiveSupportsLoadSession =
       isRemoteMode && remoteTestResult?.ok && remoteTestResult.loadSession !== undefined
         ? remoteTestResult.loadSession
-        : isShinobiNative || selectedAcp.id === 'claude_code'
+        : selectedAcp.id === 'claude_code'
         ? true
         : initialAgent?.capabilities?.supportsLoadSession;
+
+    const effectiveSupportsResumeSession =
+      isShinobiNative || selectedAcp.id === 'codex'
+        ? true
+        : initialAgent?.capabilities?.supportsResumeSession;
 
     if (initialAgent && onUpdateAgent) {
       const trimmedName = name.trim();
@@ -461,6 +466,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           }),
           ...(effectiveSupportsLoadSession !== undefined
             ? { supportsLoadSession: effectiveSupportsLoadSession }
+            : {}),
+          ...(effectiveSupportsResumeSession !== undefined
+            ? { supportsResumeSession: effectiveSupportsResumeSession }
             : {}),
         },
         ...(healthCheck
@@ -507,6 +515,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           supportsStreaming: true,
           ...(effectiveSupportsLoadSession !== undefined
             ? { supportsLoadSession: effectiveSupportsLoadSession }
+            : {}),
+          ...(effectiveSupportsResumeSession !== undefined
+            ? { supportsResumeSession: effectiveSupportsResumeSession }
             : {}),
         },
         workspace: {

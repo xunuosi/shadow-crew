@@ -71,17 +71,21 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   const [allStopped, setAllStopped] = useState(false);
   const [sessionFilter, setSessionFilter] = useState<'all' | 'supported' | 'unsupported' | 'pending'>('all');
 
-  const hasAgentLoadSession = (a: Agent) =>
-    Boolean(a.capabilities?.supportsLoadSession ?? (a.capabilities as any)?.loadSession);
+  const hasAgentSessionRecovery = (a: Agent) =>
+    Boolean(
+      a.capabilities?.supportsResumeSession ||
+      a.capabilities?.supportsLoadSession ||
+      (a.capabilities as any)?.loadSession
+    );
 
-  const supportedCount = agents.filter((a) => a.status !== 'idle' && hasAgentLoadSession(a)).length;
-  const unsupportedCount = agents.filter((a) => a.status !== 'idle' && !hasAgentLoadSession(a)).length;
+  const supportedCount = agents.filter((a) => a.status !== 'idle' && hasAgentSessionRecovery(a)).length;
+  const unsupportedCount = agents.filter((a) => a.status !== 'idle' && !hasAgentSessionRecovery(a)).length;
   const pendingCount = agents.filter((a) => a.status === 'idle').length;
 
   const filteredAgents = agents.filter((a) => {
     if (sessionFilter === 'all') return true;
-    const isSupported = a.status !== 'idle' && hasAgentLoadSession(a);
-    const isUnsupported = a.status !== 'idle' && !hasAgentLoadSession(a);
+    const isSupported = a.status !== 'idle' && hasAgentSessionRecovery(a);
+    const isUnsupported = a.status !== 'idle' && !hasAgentSessionRecovery(a);
     const isPending = a.status === 'idle';
 
     if (sessionFilter === 'supported') return isSupported;
@@ -207,7 +211,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     ? 'bg-emerald-600 text-white shadow-xs font-semibold'
                     : 'text-emerald-700 dark:text-emerald-400 hover:text-emerald-800'
                 }`}
-                title="支持 ACP 原生 session/load 会话热恢复"
+                title="支持 ACP 原生 session/resume 或 session/load 会话恢复"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                 <span>支持 ({supportedCount})</span>
@@ -219,7 +223,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     ? 'bg-amber-600 text-white shadow-xs font-semibold'
                     : 'text-amber-700 dark:text-amber-400 hover:text-amber-800'
                 }`}
-                title="未实现 session/load，仅单次会话"
+                title="未实现 session/resume 或 session/load，仅单次会话"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                 <span>仅单次 ({unsupportedCount})</span>
