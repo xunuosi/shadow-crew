@@ -138,6 +138,20 @@ fn native_agent_resume_survives_restart_and_persists_active_updates() {
         .expect("session/new must return sessionId")
         .to_string();
 
+    let session_db = home
+        .join(".shadow-crew")
+        .join("cache")
+        .join("native-agent-sessions")
+        .join(format!("{agent_id}.sqlite"));
+    let conn = rusqlite::Connection::open(&session_db).expect("open native session db");
+    conn.execute(
+        "INSERT INTO native_agent_messages (session_id, role, content, created_at)
+         VALUES (?1, 'user', 'historical user turn', 1000)",
+        rusqlite::params![session_id],
+    )
+    .expect("insert historical message");
+    drop(conn);
+
     let outside_workspace = test_dir.path().join("outside");
     std::fs::create_dir_all(&outside_workspace).expect("create outside workspace");
     let rejected_resume = agent.rpc(
@@ -181,6 +195,14 @@ fn native_agent_resume_survives_restart_and_persists_active_updates() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("query persisted session");
+    let msg_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM native_agent_messages WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get(0),
+        )
+        .expect("count messages");
+    assert_eq!(msg_count, 1, "active resume must preserve historical messages");
     let expected_cwd =
         std::fs::canonicalize(&subtopic_workspace).expect("canonicalize subtopic workspace");
     assert_eq!(PathBuf::from(persisted_cwd), expected_cwd);
@@ -215,6 +237,17 @@ fn native_agent_resume_survives_restart_and_persists_active_updates() {
     let closed = restarted.rpc("session/close", json!({ "sessionId": session_id }));
     assert_eq!(closed["result"]["closed"], true);
     restarted.stop();
+
+    let conn = rusqlite::Connection::open(&session_db).expect("open native session db after close");
+    let closed_msg_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM native_agent_messages WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get(0),
+        )
+        .expect("count messages after close");
+    assert_eq!(closed_msg_count, 0, "session/close must clean up historical messages");
+    drop(conn);
 
     let mut after_close = AgentProc::spawn(&home, &agent_id);
     after_close.rpc(

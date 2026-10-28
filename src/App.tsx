@@ -487,9 +487,7 @@ export default function App() {
             });
             setAgents(sanitizedAgents);
             if (handleMigrated) {
-              deliveredStandingContextRef.current.clear();
-              sessionWatermarksRef.current.clear();
-              persistSessionWarmState();
+              resetAllSessionWarmState();
               await saveAgentsToDb(sanitizedAgents);
             }
           } else if (agents.length > 0) {
@@ -809,6 +807,26 @@ export default function App() {
         JSON.stringify(Array.from(sessionWatermarksRef.current.entries()))
       );
     } catch {}
+  };
+
+  const clearSessionWarmScope = (scope: Parameters<typeof matchesSessionScope>[1]) => {
+    Array.from(deliveredStandingContextRef.current).forEach((key) => {
+      if (matchesSessionScope(key, scope)) {
+        deliveredStandingContextRef.current.delete(key);
+      }
+    });
+    Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
+      if (matchesSessionScope(key, scope)) {
+        sessionWatermarksRef.current.delete(key);
+      }
+    });
+    persistSessionWarmState();
+  };
+
+  const resetAllSessionWarmState = () => {
+    deliveredStandingContextRef.current.clear();
+    sessionWatermarksRef.current.clear();
+    persistSessionWarmState();
   };
   // 记录正在执行中的三元博弈阶段交接，杜绝并发重入与重复下发 Prompt
   const inFlightHandoverRef = useRef<Set<string>>(new Set());
@@ -1184,16 +1202,8 @@ export default function App() {
             sessionWatermarksRef.current.delete(compoundKey);
           }
         } else if (payload.agent_id) {
-          deliveredStandingContextRef.current.forEach((key) => {
-            if (matchesSessionScope(key, { agentId: payload.agent_id })) {
-              deliveredStandingContextRef.current.delete(key);
-            }
-          });
-          Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
-            if (matchesSessionScope(key, { agentId: payload.agent_id })) {
-              sessionWatermarksRef.current.delete(key);
-            }
-          });
+          clearSessionWarmScope({ agentId: payload.agent_id });
+          return;
         }
         persistSessionWarmState();
       }
@@ -1671,17 +1681,7 @@ export default function App() {
     });
 
     // 清理该频道的会话水位线、交付缓存以及底层 ACP 进程中对应的 session_ids
-    deliveredStandingContextRef.current.forEach((key) => {
-      if (matchesSessionScope(key, { channelId, deletedThreadIds: deletedThreads })) {
-        deliveredStandingContextRef.current.delete(key);
-      }
-    });
-    Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
-      if (matchesSessionScope(key, { channelId, deletedThreadIds: deletedThreads })) {
-        sessionWatermarksRef.current.delete(key);
-      }
-    });
-    persistSessionWarmState();
+    clearSessionWarmScope({ channelId, deletedThreadIds: deletedThreads });
     if (activeTopicData && activeTopicData.channelId === channelId) {
       setActiveTopicId(null);
     }
@@ -2066,17 +2066,7 @@ export default function App() {
     if (hasTopicActiveExec) {
       handleAbortAll(topicId);
     }
-    deliveredStandingContextRef.current.forEach((key) => {
-      if (matchesSessionScope(key, { roomId: topicId })) {
-        deliveredStandingContextRef.current.delete(key);
-      }
-    });
-    Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
-      if (matchesSessionScope(key, { roomId: topicId })) {
-        sessionWatermarksRef.current.delete(key);
-      }
-    });
-    persistSessionWarmState();
+    clearSessionWarmScope({ roomId: topicId });
     const targetTopicChanId = editingTopicChannel?.id || activeChannel?.id;
     setEditingTopic(null);
     if (targetTopicChanId) {
@@ -6979,17 +6969,7 @@ export default function App() {
 
           // 频道自动邀请新成员入驻时，同步失效已有会话花名册缓存与底层 Session，使已有成员立即获知新成员
           bumpChannelEpoch(turnEpochTrackerRef.current, activeChannel.id, [currentThreadId]);
-          deliveredStandingContextRef.current.forEach((key) => {
-            if (matchesSessionScope(key, { channelId: activeChannel.id, deletedThreadIds: [currentThreadId] })) {
-              deliveredStandingContextRef.current.delete(key);
-            }
-          });
-          Array.from(sessionWatermarksRef.current.keys()).forEach((key) => {
-            if (matchesSessionScope(key, { channelId: activeChannel.id, deletedThreadIds: [currentThreadId] })) {
-              sessionWatermarksRef.current.delete(key);
-            }
-          });
-          persistSessionWarmState();
+          clearSessionWarmScope({ channelId: activeChannel.id, deletedThreadIds: [currentThreadId] });
           void Promise.all([
             safelyClearAcpSessions(undefined, `channel:${activeChannel.id}`, '频道自动邀请新成员'),
             safelyClearAcpSessions(undefined, `topic:${activeChannel.id}`, '频道自动邀请新成员'),
@@ -7668,6 +7648,7 @@ export default function App() {
             setIsAcpInspectorOpen(true);
           }}
           onDeleteAgent={(agentId) => {
+            clearSessionWarmScope({ agentId });
             setAgents((prev) => prev.filter((a) => a.id !== agentId));
             void clearAcpAgentSessions(agentId).catch((err) => {
               console.warn('[App] Failed to clear sessions on agent deletion:', err);
@@ -7946,9 +7927,7 @@ export default function App() {
             handleAbortAll();
             setMessages({});
             messagesRef.current = {};
-            deliveredStandingContextRef.current.clear();
-            sessionWatermarksRef.current.clear();
-            persistSessionWarmState();
+            resetAllSessionWarmState();
             clearLlmSessionHistory();
             try {
               await clearAcpAgentSessions();
@@ -8029,9 +8008,7 @@ export default function App() {
         }}
         onUpdateAgent={(agentId, updatedData) => {
           // 清空已交付公约、花名册缓存与水位线，确保后续全会话即时重装最新的人设与团队花名册
-          deliveredStandingContextRef.current.clear();
-          sessionWatermarksRef.current.clear();
-          persistSessionWarmState();
+          resetAllSessionWarmState();
           void safelyClearAcpSessions(agentId, undefined, '更新 Agent 配置');
 
           const existingAgent = agents.find((a) => a.id === agentId);

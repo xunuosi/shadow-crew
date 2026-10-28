@@ -873,6 +873,7 @@ impl DatabaseManager {
     }
 
     /// 列出指定 Agent 的所有持久化会话记录
+    #[allow(dead_code)]
     pub fn list_acp_sessions(&self, agent_id: Option<&str>) -> Result<Vec<AcpSessionRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut records = Vec::new();
