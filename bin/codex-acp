@@ -132,9 +132,10 @@ function codexVersion() {
   return cachedCodexVersion;
 }
 
-// 会话状态管理与持久化缓存 (~/.shadow-crew/cache/codex_sessions.json)
-const SESSIONS_CACHE_DIR = path.join(HOME, '.shadow-crew', 'cache');
-const SESSIONS_CACHE_FILE = path.join(SESSIONS_CACHE_DIR, 'codex_sessions.json');
+// 会话状态管理与持久化缓存 (独立会话文件存储，彻底杜绝多进程覆盖 ~/.shadow-crew/cache/codex_sessions/<sessionId>.json)
+const SESSIONS_CACHE_ROOT = path.join(HOME, '.shadow-crew', 'cache');
+const SESSIONS_DIR = path.join(SESSIONS_CACHE_ROOT, 'codex_sessions');
+const LEGACY_CACHE_FILE = path.join(SESSIONS_CACHE_ROOT, 'codex_sessions.json');
 
 /**
  * @typedef {Object} SessionState
@@ -151,38 +152,75 @@ const SESSIONS_CACHE_FILE = path.join(SESSIONS_CACHE_DIR, 'codex_sessions.json')
 const sessions = new Map();
 let activeSessionId = null;
 
-function loadSessionsFromDisk() {
+function sanitizeSessionFileName(sessionId) {
+  return sessionId.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+}
+
+function getSessionFilePath(sessionId) {
+  return path.join(SESSIONS_DIR, `${sanitizeSessionFileName(sessionId)}.json`);
+}
+
+function loadSession(sessionId) {
+  if (!sessionId) return null;
+  if (sessions.has(sessionId)) {
+    return sessions.get(sessionId);
+  }
+
+  // 1. 优先从专用单个会话独立文件读取
   try {
-    if (fs.existsSync(SESSIONS_CACHE_FILE)) {
-      const raw = fs.readFileSync(SESSIONS_CACHE_FILE, 'utf8');
+    const file = getSessionFilePath(sessionId);
+    if (fs.existsSync(file)) {
+      const raw = fs.readFileSync(file, 'utf8');
       const data = JSON.parse(raw);
-      if (Array.isArray(data)) {
-        for (const item of data) {
-          if (item && item.sessionId) {
-            sessions.set(item.sessionId, item);
-          }
+      if (data && data.sessionId) {
+        sessions.set(data.sessionId, data);
+        return data;
+      }
+    }
+  } catch {}
+
+  // 2. 回退检查遗留全局 codex_sessions.json (平滑兼容老数据)
+  try {
+    if (fs.existsSync(LEGACY_CACHE_FILE)) {
+      const raw = fs.readFileSync(LEGACY_CACHE_FILE, 'utf8');
+      const list = JSON.parse(raw);
+      if (Array.isArray(list)) {
+        const found = list.find((item) => item && item.sessionId === sessionId);
+        if (found) {
+          saveSession(found);
+          return found;
         }
       }
     }
-  } catch {
-    // 忽略缓存读取异常
-  }
+  } catch {}
+
+  return null;
 }
 
-function saveSessionsToDisk() {
+function saveSession(session) {
+  if (!session || !session.sessionId) return;
+  sessions.set(session.sessionId, session);
   try {
-    if (!fs.existsSync(SESSIONS_CACHE_DIR)) {
-      fs.mkdirSync(SESSIONS_CACHE_DIR, { recursive: true });
+    if (!fs.existsSync(SESSIONS_DIR)) {
+      fs.mkdirSync(SESSIONS_DIR, { recursive: true });
     }
-    const list = Array.from(sessions.values());
-    fs.writeFileSync(SESSIONS_CACHE_FILE, JSON.stringify(list, null, 2), 'utf8');
-  } catch {
-    // 忽略缓存写入异常
-  }
+    const targetFile = getSessionFilePath(session.sessionId);
+    const tmpFile = `${targetFile}.tmp.${process.pid}.${Date.now()}`;
+    fs.writeFileSync(tmpFile, JSON.stringify(session, null, 2), 'utf8');
+    fs.renameSync(tmpFile, targetFile);
+  } catch {}
 }
 
-// 初始化时载入磁盘缓存
-loadSessionsFromDisk();
+function deleteSession(sessionId) {
+  if (!sessionId) return;
+  sessions.delete(sessionId);
+  try {
+    const targetFile = getSessionFilePath(sessionId);
+    if (fs.existsSync(targetFile)) {
+      fs.unlinkSync(targetFile);
+    }
+  } catch {}
+}
 
 function sendRpc(msg) {
   const str = JSON.stringify(msg);
@@ -250,6 +288,14 @@ rl.on('line', async (line) => {
         version: codexVersion(),
         description: 'OpenAI Codex CLI ACP Agent',
       },
+      agentCapabilities: {
+        loadSession: false,
+        tools: { listChanged: true },
+        streaming: true,
+        sessionCapabilities: {
+          resume: {},
+        },
+      },
       capabilities: {
         prompts: { listChanged: true },
         tools: { listChanged: true },
@@ -279,9 +325,8 @@ rl.on('line', async (line) => {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
-    sessions.set(sessionId, sessionState);
     activeSessionId = sessionId;
-    saveSessionsToDisk();
+    saveSession(sessionState);
 
     sendResult(id, {
       sessionId,
@@ -296,7 +341,7 @@ rl.on('line', async (line) => {
       sendError(id, -32602, 'Missing sessionId parameter for session/resume');
       return;
     }
-    const session = sessions.get(targetSessionId);
+    const session = loadSession(targetSessionId);
     if (!session) {
       sendError(id, -32004, `Session not found: ${targetSessionId}`);
       return;
@@ -309,12 +354,25 @@ rl.on('line', async (line) => {
     }
     session.updatedAt = Date.now();
     activeSessionId = targetSessionId;
-    saveSessionsToDisk();
+    saveSession(session);
     sendResult(id, {});
     return;
   }
 
-  // 4. session/prompt
+  // 4. session/close
+  if (method === 'session/close') {
+    const targetSessionId = params?.sessionId || activeSessionId;
+    if (targetSessionId) {
+      deleteSession(targetSessionId);
+      if (activeSessionId === targetSessionId) {
+        activeSessionId = null;
+      }
+    }
+    sendResult(id, { closed: true });
+    return;
+  }
+
+  // 5. session/prompt
   if (method === 'session/prompt') {
     if (!CODEX_BIN) {
       sendResult(id, {
@@ -325,7 +383,7 @@ rl.on('line', async (line) => {
     }
 
     const targetSessionId = params?.sessionId || activeSessionId;
-    let session = targetSessionId ? sessions.get(targetSessionId) : null;
+    let session = targetSessionId ? loadSession(targetSessionId) : null;
     if (!session) {
       const newSid = targetSessionId || `codex-sess-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       session = {
@@ -339,9 +397,8 @@ rl.on('line', async (line) => {
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
-      sessions.set(newSid, session);
       activeSessionId = newSid;
-      saveSessionsToDisk();
+      saveSession(session);
     }
 
     if (params?.cwd) {
@@ -365,15 +422,17 @@ rl.on('line', async (line) => {
       userPromptText = rawPrompt.text;
     }
 
-    const fullPrompt = session.systemPrompt
-      ? `${session.systemPrompt}\n\n${userPromptText}`
-      : userPromptText;
+    const hasThread = Boolean(session.codexThreadId);
+    // 当已有底座 Codex thread 时，底层会话已记忆首次注入的系统公约与花名册，
+    // 此时仅发送增量 userPromptText，严禁重复前置长篇系统提示词以避免 Token 浪费
+    const fullPrompt = (hasThread || !session.systemPrompt)
+      ? userPromptText
+      : `${session.systemPrompt}\n\n${userPromptText}`;
 
     // 方案 A：精准开放工作区写权限 (-s workspace-write)，保证 Agent 能正常落盘 artifacts/scratch，
     // 同时通过 Seatbelt 沙箱阻断对外部目录的越界篡改。
     // 若 session 已成功记录真实的 codexThreadId，调用 codex exec resume 续接会话！
     const args = ['exec'];
-    const hasThread = Boolean(session.codexThreadId);
 
     if (hasThread) {
       args.push('resume', session.codexThreadId, '-');
@@ -429,7 +488,7 @@ rl.on('line', async (line) => {
         if (event.type === 'thread.started' && event.thread_id) {
           session.codexThreadId = event.thread_id;
           session.updatedAt = Date.now();
-          saveSessionsToDisk();
+          saveSession(session);
         }
 
         if (event.type === 'item.completed' && event.item) {
@@ -469,7 +528,7 @@ rl.on('line', async (line) => {
 
     child.on('close', (code) => {
       session.updatedAt = Date.now();
-      saveSessionsToDisk();
+      saveSession(session);
       if (code !== 0 && !fullOutput) {
         sendResult(id, {
           text_response: `⚠️ Codex 执行退出 (exit code: ${code})\n${stderrBuffer.trim()}`,

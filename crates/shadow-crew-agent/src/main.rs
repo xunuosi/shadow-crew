@@ -1239,7 +1239,27 @@ async fn main() -> Result<()> {
                     }
                 };
 
-                if active_sessions.contains_key(&requested_sid) {
+                if let Some(existing) = active_sessions.get_mut(&requested_sid) {
+                    if let Some(requested_cwd) = params.get("cwd").and_then(|v| v.as_str()) {
+                        let req_path = std::path::Path::new(requested_cwd);
+                        if let Some(valid_dir) =
+                            validate_and_resolve_workspace_dir(req_path, &shadow_crew_home)
+                        {
+                            let norm_owner = normalize_path(&existing.owner_dir);
+                            let canon_owner = std::fs::canonicalize(&existing.owner_dir)
+                                .unwrap_or_else(|_| norm_owner.clone());
+                            if valid_dir.starts_with(&norm_owner)
+                                || valid_dir.starts_with(&canon_owner)
+                            {
+                                existing.workspace_dir = valid_dir;
+                            }
+                        }
+                    }
+                    if let Some(sp) = params.get("systemPrompt").and_then(|v| v.as_str()) {
+                        if !sp.trim().is_empty() {
+                            existing.system_prompt = Some(sp.to_string());
+                        }
+                    }
                     let resp = serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -1286,39 +1306,64 @@ async fn main() -> Result<()> {
                     }
                 };
 
-                if let Some(requested_cwd) = params.get("cwd").and_then(|v| v.as_str()) {
-                    let requested_path = std::path::Path::new(requested_cwd);
-                    let requested = std::fs::canonicalize(requested_path)
-                        .unwrap_or_else(|_| normalize_path(requested_path));
-                    let stored_cwd = std::fs::canonicalize(&stored.workspace_dir)
-                        .unwrap_or_else(|_| normalize_path(&stored.workspace_dir));
-                    if requested != stored_cwd {
-                        let err_resp = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "error": {
-                                "code": -32602,
-                                "message": format!(
-                                    "Session cwd mismatch: stored {:?}, requested {:?}",
-                                    stored.workspace_dir,
-                                    requested_cwd
-                                )
+                let target_workspace = if let Some(requested_cwd) =
+                    params.get("cwd").and_then(|v| v.as_str())
+                {
+                    let req_path = std::path::Path::new(requested_cwd);
+                    match validate_and_resolve_workspace_dir(req_path, &shadow_crew_home) {
+                        Some(valid_dir) => {
+                            let norm_owner = normalize_path(&stored.owner_dir);
+                            let canon_owner = std::fs::canonicalize(&stored.owner_dir)
+                                .unwrap_or_else(|_| norm_owner.clone());
+                            if valid_dir.starts_with(&norm_owner)
+                                || valid_dir.starts_with(&canon_owner)
+                            {
+                                valid_dir
+                            } else {
+                                let err_resp = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "error": {
+                                        "code": -32602,
+                                        "message": format!(
+                                            "Security violation: requested cwd {:?} is outside owner directory {:?}",
+                                            requested_cwd, stored.owner_dir
+                                        )
+                                    }
+                                });
+                                if let Ok(mut out) = stdout_shared.lock() {
+                                    let _ = writeln!(out, "{}", err_resp.to_string());
+                                    let _ = out.flush();
+                                }
+                                continue;
                             }
-                        });
-                        if let Ok(mut out) = stdout_shared.lock() {
-                            let _ = writeln!(out, "{}", err_resp.to_string());
-                            let _ = out.flush();
                         }
-                        continue;
+                        None => {
+                            let err_resp = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {
+                                    "code": -32602,
+                                    "message": format!("Invalid workspace cwd: {:?}", requested_cwd)
+                                }
+                            });
+                            if let Ok(mut out) = stdout_shared.lock() {
+                                let _ = writeln!(out, "{}", err_resp.to_string());
+                                let _ = out.flush();
+                            }
+                            continue;
+                        }
                     }
-                }
+                } else {
+                    stored.workspace_dir
+                };
 
                 let mut restored_state = SessionState {
                     session_id: stored.session_id.clone(),
                     session_key: stored.session_key.clone(),
                     channel_id: stored.channel_id.clone(),
                     owner_dir: stored.owner_dir,
-                    workspace_dir: stored.workspace_dir,
+                    workspace_dir: target_workspace,
                     system_prompt: stored.system_prompt,
                     mcp_pool_key: stored.mcp_pool_key.clone(),
                     mcp_client: None,
@@ -2631,6 +2676,44 @@ mod tests {
         let verified = revalidate_session_workspace_dir(&restored_state, &temp_home)
             .expect("恢复的 SessionState 必须通过工作区目录复验");
         assert_eq!(verified, canonical_expected_owner);
+
+        let _ = std::fs::remove_dir_all(&temp_home);
+    }
+
+    #[test]
+    fn test_session_resume_restoration_and_workspace_revalidation() {
+        let temp_home = std::env::temp_dir().join(format!(
+            "shadow_crew_session_resume_test_{}",
+            std::process::id()
+        ));
+        let chan_id = "test-resume-chan";
+        let expected_owner = temp_home.join("channels").join(chan_id);
+        std::fs::create_dir_all(&expected_owner).unwrap();
+        let canonical_expected_owner =
+            std::fs::canonicalize(&expected_owner).unwrap_or(expected_owner.clone());
+
+        let sub_topic_dir = expected_owner.join("sub-topic");
+        std::fs::create_dir_all(&sub_topic_dir).unwrap();
+
+        // 验证合法的子目录位于 owner_dir 内部
+        let valid_opt = validate_and_resolve_workspace_dir(&sub_topic_dir, &temp_home);
+        assert!(valid_opt.is_some());
+        let valid_dir = valid_opt.unwrap();
+        assert!(
+            valid_dir.starts_with(normalize_path(&expected_owner))
+                || valid_dir.starts_with(&canonical_expected_owner)
+        );
+
+        // 验证越界目录逃逸会被拒绝
+        let outside_dir = temp_home.join("outside_chan");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let outside_opt = validate_and_resolve_workspace_dir(&outside_dir, &temp_home);
+        assert!(outside_opt.is_some());
+        let outside_resolved = outside_opt.unwrap();
+        assert!(
+            !outside_resolved.starts_with(normalize_path(&expected_owner))
+                && !outside_resolved.starts_with(&canonical_expected_owner)
+        );
 
         let _ = std::fs::remove_dir_all(&temp_home);
     }

@@ -220,11 +220,17 @@ pub fn check_supports_load_session(result: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
-/// 检查 ACP initialize 响应中是否声明了 session/resume 能力 (支持 sessionCapabilities.resume 或 capabilities.resume)
+/// 检查 ACP initialize 响应中是否声明了 session/resume 能力 (优先遵循 ACP v1 标准 agentCapabilities.sessionCapabilities.resume，同时兼容平铺拓展)
 pub fn check_supports_resume_session(result: &serde_json::Value) -> bool {
     result
-        .get("sessionCapabilities")
-        .and_then(|c| c.get("resume"))
+        .get("agentCapabilities")
+        .and_then(|c| c.get("sessionCapabilities"))
+        .and_then(|s| s.get("resume"))
+        .or_else(|| {
+            result
+                .get("sessionCapabilities")
+                .and_then(|c| c.get("resume"))
+        })
         .or_else(|| {
             result
                 .get("capabilities")
@@ -236,12 +242,6 @@ pub fn check_supports_resume_session(result: &serde_json::Value) -> bool {
                 .get("capabilities")
                 .and_then(|c| c.get("resume"))
                 .filter(|v| v.as_bool() == Some(true))
-        })
-        .or_else(|| {
-            result
-                .get("agentCapabilities")
-                .and_then(|c| c.get("sessionCapabilities"))
-                .and_then(|s| s.get("resume"))
         })
         .or_else(|| {
             result
@@ -305,6 +305,51 @@ pub struct ReplaySinkState {
     pub room_id: String,
     pub messages: Vec<ReplayMessageItem>,
     pub current_chunk_buffer: String,
+    pub current_message_id: Option<String>,
+    pub current_role: Option<String>,
+}
+
+impl ReplaySinkState {
+    pub fn new(session_id: String, session_key: String, agent_id: String, room_id: String) -> Self {
+        Self {
+            session_id,
+            session_key,
+            agent_id,
+            room_id,
+            messages: Vec::new(),
+            current_chunk_buffer: String::new(),
+            current_message_id: None,
+            current_role: None,
+        }
+    }
+
+    pub fn flush_current_chunk(&mut self) {
+        if !self.current_chunk_buffer.trim().is_empty() {
+            let role = self
+                .current_role
+                .clone()
+                .unwrap_or_else(|| "assistant".to_string());
+            let msg_id = self.current_message_id.clone().unwrap_or_else(|| {
+                format!("msg-replay-{}-{}", &self.session_id, self.messages.len())
+            });
+            let content = std::mem::take(&mut self.current_chunk_buffer);
+            self.messages.push(ReplayMessageItem {
+                message_id: msg_id,
+                role,
+                content,
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+            });
+            self.current_message_id = None;
+            self.current_role = None;
+        } else {
+            self.current_chunk_buffer.clear();
+            self.current_message_id = None;
+            self.current_role = None;
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -850,45 +895,55 @@ impl AcpProcessManager {
                                             .get("sessionUpdate")
                                             .and_then(|u| u.as_str())
                                             .unwrap_or_default();
-                                        if update_type == "agent_message_chunk" {
+
+                                        let explicit_msg_id = update
+                                            .get("messageId")
+                                            .or_else(|| update.get("id"))
+                                            .or_else(|| params.get("messageId"))
+                                            .and_then(|m| m.as_str())
+                                            .map(|s| s.to_string());
+
+                                        if update_type == "agent_message_chunk"
+                                            || update_type == "user_message_chunk"
+                                        {
+                                            let chunk_role = if update_type == "user_message_chunk" {
+                                                "user"
+                                            } else {
+                                                "assistant"
+                                            };
+                                            // 跨消息边界或跨角色切换时，自动 flush 前一条消息
+                                            let should_flush = match (&sink.current_message_id, &explicit_msg_id) {
+                                                (Some(curr_id), Some(new_id)) => curr_id != new_id,
+                                                _ => sink
+                                                    .current_role
+                                                    .as_deref()
+                                                    .map(|r| r != chunk_role)
+                                                    .unwrap_or(false),
+                                            };
+                                            if should_flush {
+                                                sink.flush_current_chunk();
+                                            }
+                                            if sink.current_message_id.is_none() {
+                                                sink.current_message_id = explicit_msg_id;
+                                            }
+                                            sink.current_role = Some(chunk_role.to_string());
                                             if let Some(text) = extract_update_text(update) {
                                                 sink.current_chunk_buffer.push_str(&text);
                                             }
                                         } else if update_type == "user_message"
                                             || update_type == "agent_message"
                                         {
-                                            if !sink.current_chunk_buffer.trim().is_empty() {
-                                                let msg_id = format!(
+                                            // 完整消息到来：先 flush 正在缓冲的 chunk 消息
+                                            sink.flush_current_chunk();
+                                            let text =
+                                                extract_update_text(update).unwrap_or_default();
+                                            let msg_id = explicit_msg_id.unwrap_or_else(|| {
+                                                format!(
                                                     "msg-replay-{}-{}",
                                                     sess_id,
                                                     sink.messages.len()
-                                                );
-                                                let buffer_content =
-                                                    std::mem::take(&mut sink.current_chunk_buffer);
-                                                sink.messages.push(ReplayMessageItem {
-                                                    message_id: msg_id,
-                                                    role: "assistant".to_string(),
-                                                    content: buffer_content,
-                                                    timestamp: std::time::SystemTime::now()
-                                                        .duration_since(std::time::UNIX_EPOCH)
-                                                        .unwrap_or_default()
-                                                        .as_millis()
-                                                        as u64,
-                                                });
-                                            }
-                                            let text =
-                                                extract_update_text(update).unwrap_or_default();
-                                            let msg_id = update
-                                                .get("messageId")
-                                                .and_then(|m| m.as_str())
-                                                .map(|s| s.to_string())
-                                                .unwrap_or_else(|| {
-                                                    format!(
-                                                        "msg-replay-{}-{}",
-                                                        sess_id,
-                                                        sink.messages.len()
-                                                    )
-                                                });
+                                                )
+                                            });
                                             sink.messages.push(ReplayMessageItem {
                                                 message_id: msg_id,
                                                 role: if update_type == "user_message" {
@@ -1666,14 +1721,12 @@ impl RunningAgent {
                     }
 
                     // 挂载专用 Replay Sink 并标记 session 处于加载阶段
-                    let sink_state = Arc::new(TokioMutex::new(ReplaySinkState {
-                        session_id: persisted.session_id.clone(),
-                        session_key: session_key.clone(),
-                        agent_id: agent_id.to_string(),
-                        room_id: room_id.to_string(),
-                        messages: Vec::new(),
-                        current_chunk_buffer: String::new(),
-                    }));
+                    let sink_state = Arc::new(TokioMutex::new(ReplaySinkState::new(
+                        persisted.session_id.clone(),
+                        session_key.clone(),
+                        agent_id.to_string(),
+                        room_id.to_string(),
+                    )));
                     {
                         let mut sinks = self.replay_sinks.lock().await;
                         sinks.insert(persisted.session_id.clone(), sink_state.clone());
@@ -1715,24 +1768,7 @@ impl RunningAgent {
                         let mut sinks = self.replay_sinks.lock().await;
                         if let Some(sink_arc) = sinks.remove(&persisted.session_id) {
                             let mut sink = sink_arc.lock().await;
-                            if !sink.current_chunk_buffer.trim().is_empty() {
-                                let msg_id = format!(
-                                    "msg-replay-{}-{}",
-                                    &persisted.session_id,
-                                    sink.messages.len()
-                                );
-                                let buffer_content = std::mem::take(&mut sink.current_chunk_buffer);
-                                sink.messages.push(ReplayMessageItem {
-                                    message_id: msg_id,
-                                    role: "assistant".to_string(),
-                                    content: buffer_content,
-                                    timestamp: std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_millis()
-                                        as u64,
-                                });
-                            }
+                            sink.flush_current_chunk();
                             std::mem::take(&mut sink.messages)
                         } else {
                             Vec::new()
@@ -2606,6 +2642,15 @@ mod runtime_status_tests {
     #[test]
     fn test_check_supports_resume_session() {
         use super::check_supports_resume_session;
+
+        let with_standard_agent_capabilities = serde_json::json!({
+            "agentCapabilities": {
+                "sessionCapabilities": {
+                    "resume": {}
+                }
+            }
+        });
+        assert!(check_supports_resume_session(&with_standard_agent_capabilities));
 
         let with_session_capabilities = serde_json::json!({
             "sessionCapabilities": {

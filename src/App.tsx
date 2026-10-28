@@ -764,12 +764,51 @@ export default function App() {
     });
   };
 
-  // 对标 Buzz: 记录每个会话/房间与 Agent 之间的立足上下文 (Standing Context) 交付状态
-  // 保证整套平台公约与团队花名册只在 Session 建立时/第 1 轮传递，后续日常交互均为纯净指令
-  const deliveredStandingContextRef = useRef<Set<string>>(new Set());
+  // 对标 Buzz: 记录每个会话/房间与 Agent 之间的立足上下文 (Standing Context) 交付状态与持久化
+  // 保证整套平台公约与团队花名册只在 Session 建立时/第 1 轮传递，后续日常交互与应用重启恢复均为纯净指令
+  const loadSavedDeliveredStandingContext = (): Set<string> => {
+    try {
+      const raw = localStorage.getItem('shinobi_delivered_standing_context');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return new Set(parsed);
+        }
+      }
+    } catch {}
+    return new Set();
+  };
+
+  const loadSavedSessionWatermarks = (): Map<string, string> => {
+    try {
+      const raw = localStorage.getItem('shinobi_session_watermarks');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return new Map(parsed);
+        }
+      }
+    } catch {}
+    return new Map();
+  };
+
+  const deliveredStandingContextRef = useRef<Set<string>>(loadSavedDeliveredStandingContext());
   // 对标 Buzz queue.rs: 记录每个 (roomId:agentId) 会话已投递的最新消息水位线 ID (Watermark)
-  // 热会话后续唤醒时仅冲刷水位线之后的未读增量事件批次 (<delta-events>)，避免重复复读历史背景
-  const sessionWatermarksRef = useRef<Map<string, string>>(new Map());
+  // 热会话后续唤醒与重启 resume 时仅冲刷水位线之后的未读增量事件批次 (<delta-events>)，避免重复复读历史背景
+  const sessionWatermarksRef = useRef<Map<string, string>>(loadSavedSessionWatermarks());
+
+  const persistSessionWarmState = () => {
+    try {
+      localStorage.setItem(
+        'shinobi_delivered_standing_context',
+        JSON.stringify(Array.from(deliveredStandingContextRef.current))
+      );
+      localStorage.setItem(
+        'shinobi_session_watermarks',
+        JSON.stringify(Array.from(sessionWatermarksRef.current.entries()))
+      );
+    } catch {}
+  };
   // 记录正在执行中的三元博弈阶段交接，杜绝并发重入与重复下发 Prompt
   const inFlightHandoverRef = useRef<Set<string>>(new Set());
   // 记录各阶段 Self-Refine 重试次数 (硬门禁: 上限为 STAGE_CONTRACT_MAX_RETRIES)
@@ -1155,6 +1194,7 @@ export default function App() {
             }
           });
         }
+        persistSessionWarmState();
       }
     }).then((fn: any) => {
       unlistenSessionReset = fn;
@@ -2358,11 +2398,13 @@ export default function App() {
           includeRoster: !isDm,
         });
 
-        const localHistoryIntact = (messagesRef.current[roomId] || []).some(
-          (m) => !m.isPending && (m.content?.trim() || m.thinkingProcess)
+        const triggerMsgIds = new Set(sourceMessageIds || []);
+        const priorRoomMessages = (messagesRef.current[roomId] || []).filter(
+          (m) => !m.isPending && (m.content?.trim() || m.thinkingProcess) && !triggerMsgIds.has(m.id)
         );
+        const localHistoryIntact = priorRoomMessages.length > 0;
 
-        let sessionPreflight: { isNew: boolean } | null = null;
+        let sessionPreflight: { isNew: boolean; recoveryMode?: 'resume' | 'load' | 'new' } | null = null;
         try {
           sessionPreflight = await ensureAcpAgentSession({
             agentId: targetAgent.id,
@@ -2408,9 +2450,23 @@ export default function App() {
           return;
         }
 
-        if (sessionPreflight?.isNew) {
+        if (sessionPreflight?.isNew || sessionPreflight?.recoveryMode === 'new') {
           deliveredStandingContextRef.current.delete(sessionKey);
           sessionWatermarksRef.current.delete(sessionKey);
+          persistSessionWarmState();
+        } else if (sessionPreflight?.recoveryMode === 'resume') {
+          deliveredStandingContextRef.current.add(sessionKey);
+          if (!sessionWatermarksRef.current.has(sessionKey)) {
+            const transcript = messagesRef.current[roomId] || [];
+            const lastPriorMsg = transcript
+              .slice()
+              .reverse()
+              .find((m) => !m.isPending && !triggerMsgIds.has(m.id));
+            if (lastPriorMsg) {
+              sessionWatermarksRef.current.set(sessionKey, lastPriorMsg.id);
+            }
+          }
+          persistSessionWarmState();
         }
 
         const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
@@ -2420,6 +2476,7 @@ export default function App() {
           includeRoster: !isStandingContextDelivered,
         });
         deliveredStandingContextRef.current.add(sessionKey);
+        persistSessionWarmState();
 
         // 对标 Buzz queue.rs: 基于该 Agent 在当前会话的水位线提取未读增量事件批次 (<delta-events>)
         // 同时将本轮触发输出 effectiveTurnOutputs 显式合并入快照（按消息 ID 幂等去重），彻底消除异步批处理导致的漏读竞态
@@ -2434,6 +2491,7 @@ export default function App() {
         });
         if (deltaBatch.latestWatermarkMessageId) {
           sessionWatermarksRef.current.set(sessionKey, deltaBatch.latestWatermarkMessageId);
+          persistSessionWarmState();
         }
 
         const latestTriggerReplyContent =
@@ -5503,11 +5561,12 @@ export default function App() {
         includeRoster: true,
       });
 
-      const localHistoryIntact = (messagesRef.current[topicId] || []).some(
-        (m) => !m.isPending && (m.content?.trim() || m.thinkingProcess)
+      const priorTopicMessages = (messagesRef.current[topicId] || []).filter(
+        (m) => !m.isPending && (m.content?.trim() || m.thinkingProcess) && m.id !== userMsg.id
       );
+      const localHistoryIntact = priorTopicMessages.length > 0;
 
-      let sessionPreflight: { isNew: boolean } | null = null;
+      let sessionPreflight: { isNew: boolean; recoveryMode?: 'resume' | 'load' | 'new' } | null = null;
       try {
         sessionPreflight = await ensureAcpAgentSession({
           agentId: agent.id,
@@ -5568,9 +5627,23 @@ export default function App() {
         return null;
       }
 
-      if (sessionPreflight?.isNew) {
+      if (sessionPreflight?.isNew || sessionPreflight?.recoveryMode === 'new') {
         deliveredStandingContextRef.current.delete(sessionKey);
         sessionWatermarksRef.current.delete(sessionKey);
+        persistSessionWarmState();
+      } else if (sessionPreflight?.recoveryMode === 'resume') {
+        deliveredStandingContextRef.current.add(sessionKey);
+        if (!sessionWatermarksRef.current.has(sessionKey)) {
+          const currentTopicTranscript = messagesRef.current[topicId] || [];
+          const lastPriorMsg = currentTopicTranscript
+            .slice()
+            .reverse()
+            .find((m) => !m.isPending && m.id !== userMsg.id);
+          if (lastPriorMsg) {
+            sessionWatermarksRef.current.set(sessionKey, lastPriorMsg.id);
+          }
+        }
+        persistSessionWarmState();
       }
 
       const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
@@ -5600,6 +5673,7 @@ export default function App() {
         });
         if (deltaBatch.latestWatermarkMessageId) {
           sessionWatermarksRef.current.set(sessionKey, deltaBatch.latestWatermarkMessageId);
+          persistSessionWarmState();
         }
         finalPrompt = buildNormalModeTurnPrompt({
           targetAgent: agent,
@@ -5617,6 +5691,7 @@ export default function App() {
       }
 
       deliveredStandingContextRef.current.add(sessionKey);
+      persistSessionWarmState();
 
       const cascadeId = isGameTheoretic
         ? `cascade-topic-${Date.now()}-${agent.id}`
@@ -7059,11 +7134,12 @@ export default function App() {
         includeRoster: !isDmThread,
       });
 
-      const localHistoryIntact = (messagesRef.current[currentThreadId] || []).some(
-        (m) => !m.isPending && (m.content?.trim() || m.thinkingProcess)
+      const priorThreadMessages = (messagesRef.current[currentThreadId] || []).filter(
+        (m) => !m.isPending && (m.content?.trim() || m.thinkingProcess) && m.id !== userMsg.id
       );
+      const localHistoryIntact = priorThreadMessages.length > 0;
 
-      let sessionPreflight: { isNew: boolean } | null = null;
+      let sessionPreflight: { isNew: boolean; recoveryMode?: 'resume' | 'load' | 'new' } | null = null;
       try {
         sessionPreflight = await ensureAcpAgentSession({
           agentId: targetAgent.id,
@@ -7106,9 +7182,23 @@ export default function App() {
         return null;
       }
 
-      if (sessionPreflight?.isNew) {
+      if (sessionPreflight?.isNew || sessionPreflight?.recoveryMode === 'new') {
         deliveredStandingContextRef.current.delete(sessionKey);
         sessionWatermarksRef.current.delete(sessionKey);
+        persistSessionWarmState();
+      } else if (sessionPreflight?.recoveryMode === 'resume') {
+        deliveredStandingContextRef.current.add(sessionKey);
+        if (!sessionWatermarksRef.current.has(sessionKey)) {
+          const roomTranscript = messagesRef.current[currentThreadId] || [];
+          const lastPriorMsg = roomTranscript
+            .slice()
+            .reverse()
+            .find((m) => !m.isPending && m.id !== userMsg.id);
+          if (lastPriorMsg) {
+            sessionWatermarksRef.current.set(sessionKey, lastPriorMsg.id);
+          }
+        }
+        persistSessionWarmState();
       }
 
       const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
@@ -7148,6 +7238,7 @@ export default function App() {
       if (deltaBatch.latestWatermarkMessageId) {
         sessionWatermarksRef.current.set(sessionKey, deltaBatch.latestWatermarkMessageId);
       }
+      persistSessionWarmState();
 
       logRpc(targetAgent.name, 'client_to_agent', 'session/prompt', {
         jsonrpc: '2.0',
@@ -7844,6 +7935,7 @@ export default function App() {
             messagesRef.current = {};
             deliveredStandingContextRef.current.clear();
             sessionWatermarksRef.current.clear();
+            persistSessionWarmState();
             clearLlmSessionHistory();
             try {
               await clearAcpAgentSessions();
@@ -7926,6 +8018,7 @@ export default function App() {
           // 清空已交付公约、花名册缓存与水位线，确保后续全会话即时重装最新的人设与团队花名册
           deliveredStandingContextRef.current.clear();
           sessionWatermarksRef.current.clear();
+          persistSessionWarmState();
           void safelyClearAcpSessions(agentId, undefined, '更新 Agent 配置');
 
           const existingAgent = agents.find((a) => a.id === agentId);
