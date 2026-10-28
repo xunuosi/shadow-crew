@@ -2109,3 +2109,46 @@ export async function clearAcpAgentSessions(
   }
 }
 
+export interface EnsureSessionResult {
+  sessionId: string;
+  isNew: boolean;
+  loadFailed: boolean;
+}
+
+/**
+ * 在编译 Prompt 前预检并确保底层 Agent 拥有就绪的 ACP Session。
+ * 若返回 isNew: true，代表底层刚刚分配了全新 Session（或 Layer 1 session/load 恢复失败已 Fallback），
+ * 调用方必须重置该 Agent 在当前会话的水位线与协同公约挂载标记，确保编译出完整的 Cold-Start Prompt！
+ */
+export async function ensureAcpAgentSession(options: {
+  agentId: string;
+  roomId: string;
+  channelId?: string;
+  systemPrompt?: string;
+  discussionMode?: string;
+}): Promise<EnsureSessionResult | null> {
+  const tauriInvoke =
+    typeof window !== 'undefined'
+      ? (window as any).__TAURI_INTERNALS__?.invoke ||
+        (window as any).__TAURI__?.core?.invoke
+      : null;
+
+  if (!tauriInvoke) {
+    return null;
+  }
+
+  try {
+    const result = await tauriInvoke('ensure_agent_session', {
+      agentId: options.agentId,
+      roomId: options.roomId,
+      channelId: options.channelId || null,
+      systemPrompt: options.systemPrompt || null,
+      discussionMode: options.discussionMode || null,
+    });
+    return result as EnsureSessionResult;
+  } catch (err) {
+    console.warn(`[ACP Client] ensure_agent_session preflight failed for agent ${options.agentId}:`, err);
+    return null;
+  }
+}
+

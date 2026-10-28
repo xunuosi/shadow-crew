@@ -130,6 +130,35 @@ async fn send_prompt_to_agent(
     Ok(response)
 }
 
+/// Tauri Command: 预检并确保指定 Agent 在当前会话下拥有已建立或已恢复的 ACP sessionId
+#[tauri::command]
+async fn ensure_agent_session(
+    agent_id: String,
+    room_id: String,
+    channel_id: Option<String>,
+    system_prompt: Option<String>,
+    discussion_mode: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<acp_manager::EnsureSessionResult, String> {
+    let manager = state.acp_manager.lock().await;
+    if !manager.is_agent_running(&agent_id) {
+        return Err(format!(
+            "Agent '{}' 尚未开启通信。请先在 Agent 控制面板点击「Start」启动进程并建立 ACP 握手连接。",
+            agent_id
+        ));
+    }
+    manager
+        .ensure_session(
+            &agent_id,
+            &room_id,
+            channel_id.as_deref(),
+            system_prompt.as_deref(),
+            discussion_mode.as_deref(),
+        )
+        .await
+        .map_err(|e| format!("ACP Ensure Session Error: {}", e))
+}
+
 /// Tauri Command: 清除指定 Agent 或指定会话前缀的 ACP sessionId 映射与底层沙箱状态
 #[tauri::command]
 async fn clear_agent_sessions(
@@ -145,7 +174,8 @@ async fn clear_agent_sessions(
             session_key_prefix.as_deref(),
             clear_generation,
         )
-        .await;
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -733,6 +763,7 @@ async fn main() {
             get_running_agent_ids,
             get_agents_runtime_status,
             send_prompt_to_agent,
+            ensure_agent_session,
             clear_agent_sessions,
             read_workspace_file_sandboxed,
             apply_workspace_patch,

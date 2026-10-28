@@ -69,6 +69,7 @@ const MemoryImportModal = lazy(() => import('./components/MemoryImportModal').th
 import {
   sendPromptToAcpAgent,
   clearAcpAgentSessions,
+  ensureAcpAgentSession,
   buildUnifiedSessionKey,
   buildAgentSessionKey,
   matchesSessionScope,
@@ -1116,7 +1117,13 @@ export default function App() {
         if (payload.session_key) {
           deliveredStandingContextRef.current.delete(payload.session_key);
           sessionWatermarksRef.current.delete(payload.session_key);
-        } else if (payload.agent_id) {
+          if (payload.agent_id) {
+            const compoundKey = `${payload.session_key}:${payload.agent_id}`;
+            deliveredStandingContextRef.current.delete(compoundKey);
+            sessionWatermarksRef.current.delete(compoundKey);
+          }
+        }
+        if (payload.agent_id) {
           deliveredStandingContextRef.current.forEach((key) => {
             if (matchesSessionScope(key, { agentId: payload.agent_id })) {
               deliveredStandingContextRef.current.delete(key);
@@ -2281,6 +2288,23 @@ export default function App() {
           isDm: activeThread?.type === 'dm',
           discussionMode: currentTopicObj?.discussionMode,
         });
+
+        const baseSystemPrompt = buildCompositeSystemPrompt({
+          agent: targetAgent,
+          availableAgents: candidateAgents,
+          includeRoster: false,
+        });
+        const sessionPreflight = await ensureAcpAgentSession({
+          agentId: targetAgent.id,
+          roomId,
+          channelId: targetChannelId,
+          systemPrompt: baseSystemPrompt,
+          discussionMode: currentTopicObj?.discussionMode,
+        });
+        if (sessionPreflight?.isNew) {
+          deliveredStandingContextRef.current.delete(sessionKey);
+          sessionWatermarksRef.current.delete(sessionKey);
+        }
 
         const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
         const systemPrompt = buildCompositeSystemPrompt({
@@ -5356,7 +5380,7 @@ export default function App() {
     const standardTurnOutputs: TurnAgentOutput[] = [];
     const topicTurnSnapshot = captureTurnEpoch(topicId, topicChannel?.id || activeTopicData?.channelId);
 
-    const agentTurnPromises = onlineAgents.map((agent) => {
+    const agentTurnPromises = onlineAgents.map(async (agent) => {
       const execKey = `${topicId}:${agent.id}`;
       const sessionKey = buildAgentSessionKey({
         agentId: agent.id,
@@ -5365,6 +5389,24 @@ export default function App() {
         isDm: false,
         discussionMode: isGameTheoretic ? 'game_theoretic' : 'standard',
       });
+
+      const baseSystemPrompt = buildCompositeSystemPrompt({
+        agent,
+        availableAgents: candidateAgents,
+        includeRoster: false,
+      });
+      const sessionPreflight = await ensureAcpAgentSession({
+        agentId: agent.id,
+        roomId: topicId,
+        channelId: topicChannel?.id || activeTopicData?.channelId,
+        systemPrompt: baseSystemPrompt,
+        discussionMode: isGameTheoretic ? 'game_theoretic' : 'standard',
+      });
+      if (sessionPreflight?.isNew) {
+        deliveredStandingContextRef.current.delete(sessionKey);
+        sessionWatermarksRef.current.delete(sessionKey);
+      }
+
       const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
       const systemPrompt = buildCompositeSystemPrompt({
         agent,
@@ -6837,13 +6879,30 @@ export default function App() {
     const threadTurnSnapshot = captureTurnEpoch(currentThreadId, targetChannelId);
 
     // Hop 1 并发 Fan-out：所有在线 Agent 同时推演，并在 Turn Barrier 汇合
-    const hop1Promises = onlineAgents.map((targetAgent, idx) => {
+    const hop1Promises = onlineAgents.map(async (targetAgent, idx) => {
       const sessionKey = buildAgentSessionKey({
         agentId: targetAgent.id,
         roomId: currentThreadId,
         channelId: isDmThread ? undefined : activeChannel?.id,
         isDm: isDmThread,
       });
+
+      const baseSystemPrompt = buildCompositeSystemPrompt({
+        agent: targetAgent,
+        availableAgents: candidateAgents,
+        includeRoster: false,
+      });
+      const sessionPreflight = await ensureAcpAgentSession({
+        agentId: targetAgent.id,
+        roomId: currentThreadId,
+        channelId: isDmThread ? undefined : activeChannel?.id,
+        systemPrompt: baseSystemPrompt,
+      });
+      if (sessionPreflight?.isNew) {
+        deliveredStandingContextRef.current.delete(sessionKey);
+        sessionWatermarksRef.current.delete(sessionKey);
+      }
+
       const isStandingContextDelivered = deliveredStandingContextRef.current.has(sessionKey);
 
       // 对标 Buzz: 组合 Agent 自身专精人设与频道级花名册公约
@@ -7298,6 +7357,9 @@ export default function App() {
           }}
           onDeleteAgent={(agentId) => {
             setAgents((prev) => prev.filter((a) => a.id !== agentId));
+            void clearAcpAgentSessions(agentId).catch((err) => {
+              console.warn('[App] Failed to clear sessions on agent deletion:', err);
+            });
           }}
           onDeleteTeam={(teamId) => {
             setTeams((prev) => prev.filter((t) => t.id !== teamId));

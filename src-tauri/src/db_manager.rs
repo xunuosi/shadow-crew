@@ -100,6 +100,14 @@ pub fn get_default_db_path() -> String {
     target_db.to_string_lossy().to_string()
 }
 
+/// 转义 SQL LIKE 查询中的通配符 (% 与 _)
+pub fn escape_sql_like(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 impl DatabaseManager {
     /// 初始化 SQLite 数据库连接并确保必要数据表与索引就绪
     pub fn new(db_path: &str) -> Result<Self> {
@@ -766,14 +774,15 @@ impl DatabaseManager {
         let (select_sql, delete_sql, params_vec): (String, String, Vec<String>) = match (agent_id, session_key_or_prefix) {
             (Some(a), Some(p)) => {
                 let clean_p = p.trim();
-                let colon_prefix = if clean_p.ends_with(':') {
-                    format!("{}%", clean_p)
+                let escaped_p = escape_sql_like(clean_p);
+                let colon_prefix = if escaped_p.ends_with(':') {
+                    format!("{}%", escaped_p)
                 } else {
-                    format!("{}:%", clean_p)
+                    format!("{}:%", escaped_p)
                 };
                 (
-                    "SELECT session_id FROM acp_sessions WHERE agent_id = ?1 AND (session_key = ?2 OR session_key LIKE ?3)".to_string(),
-                    "DELETE FROM acp_sessions WHERE agent_id = ?1 AND (session_key = ?2 OR session_key LIKE ?3)".to_string(),
+                    "SELECT session_id FROM acp_sessions WHERE agent_id = ?1 AND (session_key = ?2 OR session_key LIKE ?3 ESCAPE '\\')".to_string(),
+                    "DELETE FROM acp_sessions WHERE agent_id = ?1 AND (session_key = ?2 OR session_key LIKE ?3 ESCAPE '\\')".to_string(),
                     vec![a.to_string(), clean_p.to_string(), colon_prefix],
                 )
             }
@@ -784,14 +793,15 @@ impl DatabaseManager {
             ),
             (None, Some(p)) => {
                 let clean_p = p.trim();
-                let colon_prefix = if clean_p.ends_with(':') {
-                    format!("{}%", clean_p)
+                let escaped_p = escape_sql_like(clean_p);
+                let colon_prefix = if escaped_p.ends_with(':') {
+                    format!("{}%", escaped_p)
                 } else {
-                    format!("{}:%", clean_p)
+                    format!("{}:%", escaped_p)
                 };
                 (
-                    "SELECT session_id FROM acp_sessions WHERE session_key = ?1 OR session_key LIKE ?2".to_string(),
-                    "DELETE FROM acp_sessions WHERE session_key = ?1 OR session_key LIKE ?2".to_string(),
+                    "SELECT session_id FROM acp_sessions WHERE session_key = ?1 OR session_key LIKE ?2 ESCAPE '\\'".to_string(),
+                    "DELETE FROM acp_sessions WHERE session_key = ?1 OR session_key LIKE ?2 ESCAPE '\\'".to_string(),
                     vec![clean_p.to_string(), colon_prefix],
                 )
             }
@@ -978,6 +988,21 @@ mod tests {
         assert_eq!(deleted, vec!["sess_topic_01"]);
         assert!(mgr.get_acp_session("agent_alpha", "topic:chan_1:topic_3:standard").unwrap().is_none());
         assert!(mgr.get_acp_session("agent_alpha", "channel:chan_1:thread_2").unwrap().is_some());
+
+        // 验证 LIKE 转义：下划线 '_' 绝不作为单字符通配符误删其它频道 (如 chanA1)
+        mgr.save_acp_session(
+            "agent_alpha",
+            "channel:chanA1:thread_2",
+            "sess_chan_other",
+            "/tmp/chanA1",
+            "system_prompt_v1",
+        ).expect("save chanA1 session failed");
+
+        let deleted_wildcard = mgr.delete_acp_session(Some("agent_alpha"), Some("channel:chan_1:"))
+            .expect("delete by exact prefix failed");
+        assert_eq!(deleted_wildcard, vec!["sess_chan_01"]);
+        // chanA1 必须完好保留，未被当成 chan_1 误删
+        assert!(mgr.get_acp_session("agent_alpha", "channel:chanA1:thread_2").unwrap().is_some());
 
         // 5. 按 Agent 全量清理
         let deleted_all = mgr.delete_acp_session(Some("agent_alpha"), None)

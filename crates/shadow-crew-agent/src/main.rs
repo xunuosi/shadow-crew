@@ -1047,14 +1047,19 @@ async fn main() -> Result<()> {
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": {
-                        "protocolVersion": "2025-01-01",
+                        "protocolVersion": 1,
                         "agentInfo": { "name": "shadow-crew-agent", "version": "0.1.0" },
+                        "agentCapabilities": {
+                            "prompts": { "listChanged": true },
+                            "tools": { "listChanged": true },
+                            "memory": { "persistent": true, "backend": "sqlite" },
+                            "workspace": { "canDirectExec": true }
+                        },
                         "capabilities": {
                             "prompts": { "listChanged": true },
                             "tools": { "listChanged": true },
                             "memory": { "persistent": true, "backend": "sqlite" },
-                            "workspace": { "canDirectExec": true },
-                            "loadSession": true
+                            "workspace": { "canDirectExec": true }
                         }
                     }
                 });
@@ -1152,130 +1157,19 @@ async fn main() -> Result<()> {
                     out.flush()?;
                 }
             } else if method == "session/load" {
-                let requested_sid = match params.get("sessionId").and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                    Some(s) => s.to_string(),
-                    None => {
-                        let err_resp = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "error": {
-                                "code": -32602,
-                                "message": "Invalid params: missing sessionId for session/load"
-                            }
-                        });
-                        if let Ok(mut out) = stdout_shared.lock() {
-                            writeln!(out, "{}", err_resp.to_string())?;
-                            out.flush()?;
-                        }
-                        continue;
-                    }
-                };
-
-                // 若当前内存中已存在该活跃 session，直接复用并更新 systemPrompt（若提供）
-                if let Some(existing) = active_sessions.get_mut(&requested_sid) {
-                    if let Some(sp) = params.get("systemPrompt").and_then(|v| v.as_str()).map(|s| s.to_string()) {
-                        existing.system_prompt = Some(sp);
-                    }
-                    let resp = serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": {
-                            "sessionId": requested_sid
-                        }
-                    });
-                    if let Ok(mut out) = stdout_shared.lock() {
-                        writeln!(out, "{}", resp.to_string())?;
-                        out.flush()?;
-                    }
-                    continue;
-                }
-
-                // 若因 Agent 进程重启等导致内存缺失，依据 params 恢复 Session 状态与 MCP 客户端池
-                let env_agent_id = std::env::var("SHADOW_CREW_AGENT_ID").ok();
-                let resolved_cfg = match resolve_new_session_config(
-                    &params,
-                    &shadow_crew_home,
-                    env_agent_id.as_deref(),
-                ) {
-                    Ok(cfg) => cfg,
-                    Err((code, message)) => {
-                        let err_resp = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "error": {
-                                "code": code,
-                                "message": message
-                            }
-                        });
-                        if let Ok(mut out) = stdout_shared.lock() {
-                            writeln!(out, "{}", err_resp.to_string())?;
-                            out.flush()?;
-                        }
-                        continue;
-                    }
-                };
-
-                let session_channel_id = resolved_cfg.session_channel_id;
-                let is_dm = resolved_cfg.is_dm;
-                let target_workspace_dir = resolved_cfg.target_workspace_dir;
-                let channel_cwd_str = target_workspace_dir.to_string_lossy().to_string();
-                let _ = enter_workspace_dir_safe(&target_workspace_dir);
-
-                let meta_file = target_workspace_dir.join("meta.json");
-                let now_secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let meta_obj = serde_json::json!({
-                    "channelId": session_channel_id,
-                    "createdAt": now_secs,
-                    "lastActive": now_secs,
-                    "workspaceDir": channel_cwd_str,
-                    "artifactsDir": target_workspace_dir.join("artifacts").to_string_lossy(),
-                    "scratchDir": target_workspace_dir.join("scratch").to_string_lossy(),
-                });
-                let _ = std::fs::write(&meta_file, meta_obj.to_string());
-
-                let sp = params
-                    .get("systemPrompt")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-
-                let mcp_key = resolved_cfg.mcp_key;
-                let mcp_pool_key = resolved_cfg.mcp_pool_key;
-                let chan_param = if is_dm { None } else { Some(session_channel_id.as_str()) };
-                let session_mcp = mcp_pool
-                    .get_or_spawn(&mcp_pool_key, &mcp_key, Some(&channel_cwd_str), chan_param)
-                    .await;
-                prune_dead_session_mcp_refs(&mut active_sessions, &mut mcp_pool);
-
-                let effective_key = resolved_cfg.effective_key;
-
-                active_sessions.insert(
-                    requested_sid.clone(),
-                    SessionState {
-                        session_id: requested_sid.clone(),
-                        session_key: effective_key,
-                        channel_id: session_channel_id.clone(),
-                        owner_dir: resolved_cfg.owner_dir,
-                        workspace_dir: target_workspace_dir,
-                        system_prompt: sp,
-                        mcp_pool_key,
-                        mcp_client: session_mcp,
-                    },
-                );
-
-                let resp = serde_json::json!({
+                let err_resp = serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": id,
-                    "result": {
-                        "sessionId": requested_sid
+                    "error": {
+                        "code": -32601,
+                        "message": "Method not found: shadow-crew-agent does not support session/load and relies on host context compensation"
                     }
                 });
                 if let Ok(mut out) = stdout_shared.lock() {
-                    writeln!(out, "{}", resp.to_string())?;
+                    writeln!(out, "{}", err_resp.to_string())?;
                     out.flush()?;
                 }
+                continue;
             } else if method == "session/close" {
                 if let Some(close_sid) = params.get("sessionId").and_then(|v| v.as_str()) {
                     if let Some(removed_session) = active_sessions.remove(close_sid) {
@@ -1744,6 +1638,8 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_base);
     }
+
+    static TEST_CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn test_fallback_workspace_dir_blocks_symlink_escape() {
@@ -2264,6 +2160,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_fallback_session_lifecycle_runs_session_prompt_successfully() {
+        let _lock = TEST_CWD_LOCK.lock().unwrap();
+        let orig_cwd = std::env::current_dir().ok();
+
         let temp_base = std::env::temp_dir().join(format!(
             "shadow_crew_fallback_lifecycle_test_{}",
             std::process::id()
@@ -2365,11 +2264,17 @@ mod tests {
             .expect("DM 回退会话必须顺利通过 session/prompt 的 TOCTOU 复验");
         enter_workspace_dir_safe(&verified_dm_ws).expect("DM 安全回退目录原子进入应成功");
 
+        if let Some(orig) = orig_cwd {
+            let _ = std::env::set_current_dir(orig);
+        }
         let _ = std::fs::remove_dir_all(&temp_base);
     }
 
     #[test]
     fn test_atomic_workspace_enter_blocks_symlink_replacement() {
+        let _lock = TEST_CWD_LOCK.lock().unwrap();
+        let orig_cwd = std::env::current_dir().ok();
+
         let temp_base = std::env::temp_dir().join(format!(
             "shadow_crew_atomic_enter_test_{}",
             std::process::id()
@@ -2399,6 +2304,9 @@ mod tests {
             err
         );
 
+        if let Some(orig) = orig_cwd {
+            let _ = std::env::set_current_dir(orig);
+        }
         let _ = std::fs::remove_dir_all(&temp_base);
     }
 

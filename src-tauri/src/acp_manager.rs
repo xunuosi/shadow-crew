@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -198,6 +198,14 @@ pub fn check_supports_load_session(result: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnsureSessionResult {
+    pub session_id: String,
+    pub is_new: bool,
+    pub load_failed: bool,
+}
+
 #[derive(Clone)]
 pub struct RunningAgent {
     pub agent_id: String,
@@ -209,6 +217,7 @@ pub struct RunningAgent {
     #[allow(dead_code)]
     pub active_chunks: Arc<TokioMutex<HashMap<u64, String>>>,
     pub session_active_req: Arc<TokioMutex<HashMap<String, u64>>>,
+    pub loading_sessions: Arc<TokioMutex<HashSet<String>>>,
     pub is_alive: Arc<AtomicBool>,
     pub initialized: Arc<AtomicBool>,
     /// ACP 握手被 Agent 明确拒绝时的根因。存在即代表本进程不可用，运行态必须报 error。
@@ -300,9 +309,9 @@ impl AcpProcessManager {
 
     /// 清空指定 Agent 或指定前缀的所有会话 sessionId 映射，重置底层 ACP 会话沙箱
     #[allow(dead_code)]
-    pub async fn clear_agent_sessions(&self, agent_id: Option<&str>, session_key_prefix: Option<&str>) {
+    pub async fn clear_agent_sessions(&self, agent_id: Option<&str>, session_key_prefix: Option<&str>) -> Result<()> {
         self.clear_agent_sessions_with_generation(agent_id, session_key_prefix, None)
-            .await;
+            .await
     }
 
     /// 带代际令牌 (clear_generation) 的会话清理：若迟到请求的 generation 小于已执行的最新代际，或目标会话创建于该 generation 之后，则跳过误删
@@ -311,29 +320,46 @@ impl AcpProcessManager {
         agent_id: Option<&str>,
         session_key_prefix: Option<&str>,
         clear_generation: Option<u64>,
-    ) {
+    ) -> Result<()> {
         if let Some(aid) = agent_id {
             if let Some(agent) = self.agents.get(aid) {
                 agent
                     .clear_sessions_with_generation(session_key_prefix, clear_generation)
                     .await;
-            } else if let Some(ref db) = self.db_manager {
-                // Agent 进程当前未在运行，但收到显式会话清理请求，直接同步清理 SQLite 持久化记录
-                let _ = db.delete_acp_session(Some(aid), session_key_prefix);
+            }
+            if let Some(ref db) = self.db_manager {
+                db.delete_acp_session(Some(aid), session_key_prefix)
+                    .with_context(|| format!("Failed to delete ACP session for agent '{}'", aid))?;
             }
         } else {
-            if self.agents.is_empty() {
-                if let Some(ref db) = self.db_manager {
-                    let _ = db.delete_acp_session(None, session_key_prefix);
-                }
-            } else {
-                for agent in self.agents.values() {
-                    agent
-                        .clear_sessions_with_generation(session_key_prefix, clear_generation)
-                        .await;
-                }
+            for agent in self.agents.values() {
+                agent
+                    .clear_sessions_with_generation(session_key_prefix, clear_generation)
+                    .await;
+            }
+            if let Some(ref db) = self.db_manager {
+                db.delete_acp_session(None, session_key_prefix)
+                    .with_context(|| "Failed to delete ACP sessions globally".to_string())?;
             }
         }
+        Ok(())
+    }
+
+    /// 预检并确保指定 Agent 在当前会话下拥有已建立或已恢复的 ACP sessionId
+    pub async fn ensure_session(
+        &self,
+        agent_id: &str,
+        room_id: &str,
+        channel_id: Option<&str>,
+        system_prompt: Option<&str>,
+        discussion_mode: Option<&str>,
+    ) -> Result<EnsureSessionResult> {
+        let agent = self
+            .get_agent(agent_id)
+            .with_context(|| format!("Agent {} not running", agent_id))?;
+        agent
+            .ensure_session(agent_id, room_id, channel_id, system_prompt, discussion_mode)
+            .await
     }
 
     /// 终止指定 Agent 进程并释放资源
@@ -552,6 +578,8 @@ impl AcpProcessManager {
             Arc::new(TokioMutex::new(HashMap::new()));
         let session_active_req: Arc<TokioMutex<HashMap<String, u64>>> =
             Arc::new(TokioMutex::new(HashMap::new()));
+        let loading_sessions: Arc<TokioMutex<HashSet<String>>> =
+            Arc::new(TokioMutex::new(HashSet::new()));
         let is_alive = Arc::new(AtomicBool::new(true));
         let initialized = Arc::new(AtomicBool::new(false));
         let init_error = Arc::new(TokioMutex::new(None::<String>));
@@ -593,6 +621,7 @@ impl AcpProcessManager {
         let pending_requests_clone = pending_requests.clone();
         let active_chunks_clone = active_chunks.clone();
         let session_active_req_clone = session_active_req.clone();
+        let loading_sessions_clone = loading_sessions.clone();
         let is_alive_clone = is_alive.clone();
         let stdin_tx_reader = stdin_tx.clone();
         let last_activity_clone = last_activity.clone();
@@ -632,6 +661,16 @@ impl AcpProcessManager {
                         if method == "session/update" {
                             if let Some(params) = json_val.get("params") {
                                 let sess_id = params.get("sessionId").and_then(|s| s.as_str()).unwrap_or_default();
+
+                                // 若该会话正处于 session/load 恢复回放阶段，静默丢弃历史重放 chunk，杜绝污染当前实时推演
+                                let is_loading = {
+                                    let loading = loading_sessions_clone.lock().await;
+                                    loading.contains(sess_id)
+                                };
+                                if is_loading {
+                                    continue;
+                                }
+
                                 let session_active = session_active_req_clone.lock().await;
                                 let active_req_id = session_active.get(sess_id).cloned();
                                 drop(session_active);
@@ -639,46 +678,41 @@ impl AcpProcessManager {
                                 if let Some(update) = params.get("update") {
                                     let update_type = update.get("sessionUpdate").and_then(|u| u.as_str()).unwrap_or_default();
                                     if update_type == "agent_message_chunk" {
-                                        // 智能提取文本内容，兼容 string / object / array 多种结构
-                                        let text_opt = if let Some(text) = update.get("content").and_then(|c| c.get("text")).and_then(|t| t.as_str()) {
-                                            Some(text.to_string())
-                                        } else if let Some(s) = update.get("content").and_then(|c| c.as_str()) {
-                                            Some(s.to_string())
-                                        } else if let Some(arr) = update.get("content").and_then(|c| c.as_array()) {
-                                            let mut combined = String::new();
-                                            for item in arr {
-                                                if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
-                                                    combined.push_str(t);
-                                                } else if let Some(s) = item.as_str() {
-                                                    combined.push_str(s);
+                                        // 仅当当前会话有明确正在执行中的 session/prompt 请求时才路由 chunk
+                                        if let Some(req_id) = active_req_id {
+                                            // 智能提取文本内容，兼容 string / object / array 多种结构
+                                            let text_opt = if let Some(text) = update.get("content").and_then(|c| c.get("text")).and_then(|t| t.as_str()) {
+                                                Some(text.to_string())
+                                            } else if let Some(s) = update.get("content").and_then(|c| c.as_str()) {
+                                                Some(s.to_string())
+                                            } else if let Some(arr) = update.get("content").and_then(|c| c.as_array()) {
+                                                let mut combined = String::new();
+                                                for item in arr {
+                                                    if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
+                                                        combined.push_str(t);
+                                                    } else if let Some(s) = item.as_str() {
+                                                        combined.push_str(s);
+                                                    }
                                                 }
-                                            }
-                                            if !combined.is_empty() { Some(combined) } else { None }
-                                        } else {
-                                            None
-                                        };
-
-                                        if let Some(text) = text_opt {
-                                            let target_req_id = if let Some(req_id) = active_req_id {
-                                                Some(req_id)
+                                                if !combined.is_empty() { Some(combined) } else { None }
                                             } else {
-                                                let pending = pending_requests_clone.lock().await;
-                                                pending.keys().cloned().max()
+                                                None
                                             };
 
-                                            if let Some(req_id) = target_req_id {
+                                            if let Some(text) = text_opt {
                                                 let mut chunks = active_chunks_clone.lock().await;
                                                 chunks.entry(req_id).or_default().push_str(&text);
+
+                                                // 触发前端细粒度 chunk 事件与全局通用 chunk 事件
+                                                let chunk_event = format!("acp:chunk:{}", agent_id_clone);
+                                                let payload = serde_json::json!({
+                                                    "agent_id": &agent_id_clone,
+                                                    "sessionId": sess_id,
+                                                    "chunk": text
+                                                });
+                                                let _ = app_handle_clone.emit(&chunk_event, &payload);
+                                                let _ = app_handle_clone.emit("acp:chunk", &payload);
                                             }
-                                            // 触发前端细粒度 chunk 事件与全局通用 chunk 事件
-                                            let chunk_event = format!("acp:chunk:{}", agent_id_clone);
-                                            let payload = serde_json::json!({
-                                                "agent_id": &agent_id_clone,
-                                                "sessionId": sess_id,
-                                                "chunk": text
-                                            });
-                                            let _ = app_handle_clone.emit(&chunk_event, &payload);
-                                            let _ = app_handle_clone.emit("acp:chunk", &payload);
                                         }
                                     }
                                 }
@@ -813,6 +847,7 @@ impl AcpProcessManager {
                 pending_requests: pending_requests.clone(),
                 active_chunks,
                 session_active_req,
+                loading_sessions,
                 is_alive: is_alive.clone(),
                 initialized: initialized.clone(),
                 init_error: init_error.clone(),
@@ -974,11 +1009,9 @@ impl RunningAgent {
             reg.prune_with_generation(key_or_prefix, clear_generation)
         };
 
-        // 仅在真实发生裁剪移除时同步清理 SQLite 持久化表，避免迟到的旧代际清理误删新会话记录
-        if !removed_sessions.is_empty() {
-            if let Some(ref db) = self.db_manager {
-                let _ = db.delete_acp_session(Some(&self.agent_id), key_or_prefix);
-            }
+        // 同步清理 SQLite 持久化表
+        if let Some(ref db) = self.db_manager {
+            let _ = db.delete_acp_session(Some(&self.agent_id), key_or_prefix);
         }
 
         // 异步向底层 ACP 进程发送 session/close，使 Agent 进程释放底层会话资源
@@ -1019,31 +1052,38 @@ fn normalize_system_prompt_for_sync(prompt: &str) -> String {
 
 impl RunningAgent {
 
-    /// 发送 Prompt 请求并等待当前 Agent 返回 (符合标准 ACP 规范)
-    /// 内部持有 self.prompt_lock，保证对同一 Agent 的指令按序下发，杜绝 stdio 管道竞态；
-    /// 不同 Agent 拥有独立的 RunningAgent 实例与子进程，完全并发、互不阻塞！
-    pub async fn send_session_prompt(
+    /// 预检并确保指定 Agent 在当前会话下拥有已建立或已恢复的 ACP sessionId (加锁保护)
+    pub async fn ensure_session(
         &self,
         agent_id: &str,
         room_id: &str,
         channel_id: Option<&str>,
-        prompt: &str,
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<EnsureSessionResult> {
         let _prompt_guard = self.prompt_lock.lock().await;
-        let agent = self;
+        self.ensure_session_locked(agent_id, room_id, channel_id, system_prompt, discussion_mode).await
+    }
 
-        if !agent.is_alive.load(Ordering::SeqCst) {
+    /// 内部已加锁的核心逻辑：确保当前会话绑定了有效的 ACP sessionId (通过 Layer 1 session/load 或 Layer 2 session/new)
+    pub(crate) async fn ensure_session_locked(
+        &self,
+        agent_id: &str,
+        room_id: &str,
+        channel_id: Option<&str>,
+        system_prompt: Option<&str>,
+        discussion_mode: Option<&str>,
+    ) -> Result<EnsureSessionResult> {
+        if !self.is_alive.load(Ordering::SeqCst) {
             anyhow::bail!("Agent {} process is dead or closed", agent_id);
         }
 
         // 1. 确保已完成 ACP initialize 握手
-        if !agent.initialized.load(Ordering::SeqCst) {
+        if !self.initialized.load(Ordering::SeqCst) {
             let init_id = 1001u64;
             let (init_tx, init_rx) = oneshot::channel();
             {
-                let mut map = agent.pending_requests.lock().await;
+                let mut map = self.pending_requests.lock().await;
                 map.insert(init_id, init_tx);
             }
             let init_req = serde_json::json!({
@@ -1062,7 +1102,7 @@ impl RunningAgent {
                     }
                 }
             });
-            let _ = agent.stdin_tx.send(init_req.to_string()).await;
+            let _ = self.stdin_tx.send(init_req.to_string()).await;
             match tokio::time::timeout(Duration::from_secs(5), init_rx).await {
                 Ok(Ok(resp)) => {
                     if let Some(err) = resp.get("error") {
@@ -1073,9 +1113,9 @@ impl RunningAgent {
                         let detail = format!("ACP initialize 握手被拒绝: {}", err_msg);
                         tracing::error!("[Agent {}] lazy {}", agent_id, detail);
                         log_acp_event(agent_id, "INIT_REJECTED", &detail);
-                        *agent.init_error.lock().await = Some(detail.clone());
-                        *agent.status_detail.lock().await = Some(detail.clone());
-                        let _ = agent.app_handle.emit(
+                        *self.init_error.lock().await = Some(detail.clone());
+                        *self.status_detail.lock().await = Some(detail.clone());
+                        let _ = self.app_handle.emit(
                             "acp:status_change",
                             serde_json::json!({
                                 "agent_id": agent_id,
@@ -1085,18 +1125,18 @@ impl RunningAgent {
                         );
                     } else {
                         tracing::info!("[Agent {}] initialize succeeded: {:?}", agent_id, resp);
-                        agent.initialized.store(true, Ordering::SeqCst);
+                        self.initialized.store(true, Ordering::SeqCst);
                         if let Some(res) = resp.get("result") {
                             let supported = check_supports_load_session(res);
-                            agent.supports_load_session.store(supported, Ordering::SeqCst);
+                            self.supports_load_session.store(supported, Ordering::SeqCst);
                             if supported {
                                 tracing::info!("[Agent {}] Lazy init: Agent reports support for ACP session/load capability", agent_id);
                             }
                         }
                         // 握手恢复成功，清除历史错误态并回正运行态
-                        if agent.init_error.lock().await.take().is_some() {
-                            *agent.status_detail.lock().await = None;
-                            let _ = agent.app_handle.emit(
+                        if self.init_error.lock().await.take().is_some() {
+                            *self.status_detail.lock().await = None;
+                            let _ = self.app_handle.emit(
                                 "acp:status_change",
                                 serde_json::json!({
                                     "agent_id": agent_id,
@@ -1109,22 +1149,19 @@ impl RunningAgent {
                 }
                 _ => {
                     tracing::warn!("[Agent {}] initialize timed out or skipped, marking initialized", agent_id);
-                    agent.initialized.store(true, Ordering::SeqCst);
+                    self.initialized.store(true, Ordering::SeqCst);
                 }
             }
         }
 
         // 2. 区分当前交互场景：是当前 Agent 的 1-on-1 私聊，还是多 Agent 频道研讨
-        // 私聊判定：未指定频道、属于私聊标记（如 dm-*、direct-messages）或 room_id 属于 thread-dm-*
         let is_dm = channel_id.is_none()
             || channel_id.map(|c| c.trim().is_empty() || c == "direct-messages" || c.starts_with("dm-")).unwrap_or(false)
             || room_id.starts_with("thread-dm-");
 
         let (target_workspace_dir, session_key, workspace_notice) = if is_dm {
-            // Agent 个人专属私有空间：~/.shadow-crew/agents/<agent_id>/
             let agent_dir = crate::db_manager::get_agent_dir(agent_id);
             let agent_cwd = agent_dir.to_string_lossy().to_string();
-            // 规范统一协议: dm:{agent_id}:{thread_id}
             let key = format!("dm:{}:{}", agent_id, room_id);
             let notice = format!(
                 "\n\n[当前 Agent 个人专属独立工作空间环境]:\n- Agent ID: {}\n- Agent 独立工作区根目录 (Working Directory / cwd): {}\n- 专属落地产物目录 (Artifacts): {}/artifacts\n- 专属临时调试目录 (Scratch): {}/scratch\n提示: 您当前处于与用户的 1-on-1 私聊中，沉淀的技术推演文档、方案或代码 Patch 将安全保存至您个人的专属产物目录中，与频道(channels)业务及其他 Agent 物理隔离。",
@@ -1132,12 +1169,10 @@ impl RunningAgent {
             );
             (agent_dir, key, notice)
         } else {
-            // 频道公共研讨空间：~/.shadow-crew/channels/<channel_id>/
             let effective_chan_id = channel_id.map(|c| c.trim()).filter(|c| !c.is_empty()).unwrap_or(room_id);
             let chan_dir = crate::db_manager::get_channel_dir(effective_chan_id);
             let chan_cwd = chan_dir.to_string_lossy().to_string();
             let is_topic = room_id != effective_chan_id && !room_id.starts_with("chan-");
-            // 规范统一协议: 议题 topic:{channel_id}:{topic_id}:{discussion_mode}，频道 channel:{channel_id}:{thread_id}
             let key = if is_topic {
                 let mode = discussion_mode.unwrap_or("standard").trim();
                 let effective_mode = if mode.is_empty() { "standard" } else { mode };
@@ -1157,12 +1192,9 @@ impl RunningAgent {
             _ => workspace_notice,
         };
 
-        // 3. 确保当前会话绑定了有效的 ACP sessionId (通过 session/new 创建，并将 cwd 绑定至对应独立工作区)
-        // 关键状态同步治理：比对当前基础人设是否发生演进变更 (模式切换/人设更新)
-        // 剥离冷启动首轮动态挂载的团队花名册 (Roster Guidance)，确保第 2 轮起的 warm-session 不会被误判为变更而意外重建导致上下文丢失
         let normalized_sp = normalize_system_prompt_for_sync(&enriched_sp);
-        let mut session_id = {
-            let reg = agent.session_registry.lock().await;
+        let cached_sid = {
+            let reg = self.session_registry.lock().await;
             if let Some(entry) = reg.get(&session_key) {
                 if entry.system_prompt == normalized_sp {
                     Some(entry.session_id.clone())
@@ -1178,192 +1210,273 @@ impl RunningAgent {
             }
         };
 
+        if let Some(sid) = cached_sid {
+            return Ok(EnsureSessionResult {
+                session_id: sid,
+                is_new: false,
+                load_failed: false,
+            });
+        }
+
         // Layer 1 (协议级恢复优先): 若内存中未命中 session_id，检查 SQLite 持久化记录
-        // 若历史记录存在、人设与工作区对齐且 Agent 声明支持 loadSession，优先尝试 session/load
-        if session_id.is_none() {
-            let persisted_opt = if let Some(ref db) = agent.db_manager {
-                db.get_acp_session(agent_id, &session_key).ok().flatten()
-            } else {
-                None
-            };
+        let persisted_opt = if let Some(ref db) = self.db_manager {
+            db.get_acp_session(agent_id, &session_key).ok().flatten()
+        } else {
+            None
+        };
 
-            if let Some(persisted) = persisted_opt {
-                let persona_matched = persisted.system_prompt == normalized_sp;
-                let cwd_matched = persisted.workspace_cwd == workspace_cwd;
-                let supports_load = agent.supports_load_session.load(Ordering::SeqCst);
+        let mut load_failed = false;
 
-                if persona_matched && cwd_matched && supports_load {
-                    tracing::info!(
-                        "[Agent {}] Found persisted session {} for key {}. Attempting Layer 1 session/load recovery...",
-                        agent_id, persisted.session_id, session_key
-                    );
-                    let load_id = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    let (load_tx, load_rx) = oneshot::channel();
-                    {
-                        let mut map = agent.pending_requests.lock().await;
-                        map.insert(load_id, load_tx);
-                    }
-                    let mut load_params = serde_json::json!({
-                        "sessionId": &persisted.session_id,
-                        "sessionKey": &session_key,
-                        "cwd": &workspace_cwd,
-                    });
-                    if is_dm {
-                        load_params["agentId"] = serde_json::Value::String(agent_id.to_string());
-                    } else if let Some(c) = channel_id {
-                        load_params["channelId"] = serde_json::Value::String(c.to_string());
-                    }
-                    load_params["systemPrompt"] = serde_json::Value::String(enriched_sp.clone());
+        if let Some(persisted) = persisted_opt {
+            let persona_matched = persisted.system_prompt == normalized_sp;
+            let cwd_matched = persisted.workspace_cwd == workspace_cwd;
+            let supports_load = self.supports_load_session.load(Ordering::SeqCst);
 
-                    let load_req = serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": load_id,
-                        "method": "session/load",
-                        "params": load_params
-                    });
-                    let _ = agent.stdin_tx.send(load_req.to_string()).await;
-                    match tokio::time::timeout(Duration::from_secs(5), load_rx).await {
-                        Ok(Ok(resp)) if resp.get("error").is_none() => {
-                            tracing::info!(
-                                "[Agent {}] Layer 1 recovery SUCCEEDED: restored session {} via session/load",
-                                agent_id, persisted.session_id
-                            );
-                            log_acp_event(
-                                agent_id,
-                                "SESSION_RESUMED",
-                                &format!("Restored session {} via session/load", persisted.session_id),
-                            );
-                            {
-                                let mut reg = agent.session_registry.lock().await;
-                                reg.insert(session_key.clone(), persisted.session_id.clone(), normalized_sp.clone());
-                            }
-                            session_id = Some(persisted.session_id);
+            if persona_matched && cwd_matched && supports_load {
+                tracing::info!(
+                    "[Agent {}] Found persisted session {} for key {}. Attempting Layer 1 session/load recovery...",
+                    agent_id, persisted.session_id, session_key
+                );
+                let load_id = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let (load_tx, load_rx) = oneshot::channel();
+                {
+                    let mut map = self.pending_requests.lock().await;
+                    map.insert(load_id, load_tx);
+                }
+
+                // 标记该会话正在加载历史，忽略 replayed chunks
+                {
+                    let mut loading = self.loading_sessions.lock().await;
+                    loading.insert(persisted.session_id.clone());
+                }
+
+                let mut load_params = serde_json::json!({
+                    "sessionId": &persisted.session_id,
+                    "sessionKey": &session_key,
+                    "cwd": &workspace_cwd,
+                    "mcpServers": [],
+                });
+                if is_dm {
+                    load_params["agentId"] = serde_json::Value::String(agent_id.to_string());
+                } else if let Some(c) = channel_id {
+                    load_params["channelId"] = serde_json::Value::String(c.to_string());
+                }
+                load_params["systemPrompt"] = serde_json::Value::String(enriched_sp.clone());
+
+                let load_req = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": load_id,
+                    "method": "session/load",
+                    "params": load_params
+                });
+                let _ = self.stdin_tx.send(load_req.to_string()).await;
+
+                let load_res = tokio::time::timeout(Duration::from_secs(30), load_rx).await;
+
+                // 无论成功还是失败，均从 loading_sessions 移除
+                {
+                    let mut loading = self.loading_sessions.lock().await;
+                    loading.remove(&persisted.session_id);
+                }
+
+                match load_res {
+                    Ok(Ok(resp)) if resp.get("error").is_none() => {
+                        tracing::info!(
+                            "[Agent {}] Layer 1 recovery SUCCEEDED: restored session {} via session/load",
+                            agent_id, persisted.session_id
+                        );
+                        log_acp_event(
+                            agent_id,
+                            "SESSION_RESUMED",
+                            &format!("Restored session {} via session/load", persisted.session_id),
+                        );
+                        {
+                            let mut reg = self.session_registry.lock().await;
+                            reg.insert(session_key.clone(), persisted.session_id.clone(), normalized_sp.clone());
                         }
-                        _ => {
-                            tracing::warn!(
-                                "[Agent {}] Layer 1 session/load failed or timed out for session {}. Falling back to Layer 2 (session/new)...",
-                                agent_id, persisted.session_id
-                            );
-                            if let Some(ref db) = agent.db_manager {
-                                let _ = db.delete_acp_session(Some(agent_id), Some(&session_key));
-                            }
+                        return Ok(EnsureSessionResult {
+                            session_id: persisted.session_id,
+                            is_new: false,
+                            load_failed: false,
+                        });
+                    }
+                    res => {
+                        // 清理 pending_requests 避免超时迟到响应污染
+                        self.pending_requests.lock().await.remove(&load_id);
+                        load_failed = true;
+                        tracing::warn!(
+                            "[Agent {}] Layer 1 session/load failed or timed out for session {:?} (res: {:?}). Falling back to Layer 2 (session/new)...",
+                            agent_id, persisted.session_id, res
+                        );
+                        if let Some(ref db) = self.db_manager {
+                            let _ = db.delete_acp_session(Some(agent_id), Some(&session_key));
                         }
                     }
-                } else if !persona_matched || !cwd_matched {
-                    tracing::info!(
-                        "[Agent {}] Persisted session {} invalidated due to persona/cwd change. Purging stale record.",
-                        agent_id, persisted.session_id
-                    );
-                    if let Some(ref db) = agent.db_manager {
-                        let _ = db.delete_acp_session(Some(agent_id), Some(&session_key));
-                    }
+                }
+            } else if !persona_matched || !cwd_matched {
+                tracing::info!(
+                    "[Agent {}] Persisted session {} invalidated due to persona/cwd change. Purging stale record.",
+                    agent_id, persisted.session_id
+                );
+                if let Some(ref db) = self.db_manager {
+                    let _ = db.delete_acp_session(Some(agent_id), Some(&session_key));
                 }
             }
         }
 
         // Layer 2 (平台层增量兜底): 若无法原地恢复，则发起 session/new 建立新会话并持久化
-        if session_id.is_none() {
-            // 若原先已存在旧 sessionId，先发送 session/close 关闭释放旧会话资源
-            let old_sid = {
-                let mut reg = agent.session_registry.lock().await;
-                reg.remove(&session_key).map(|e| e.session_id)
-            };
-            if let Some(old_id) = old_sid {
-                let close_req = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "session/close",
-                    "params": {
-                        "sessionId": old_id
-                    }
-                });
-                let _ = agent.stdin_tx.send(close_req.to_string()).await;
-            }
-
-            let new_sess_id = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            let (sess_tx, sess_rx) = oneshot::channel();
-            {
-                let mut map = agent.pending_requests.lock().await;
-                map.insert(new_sess_id, sess_tx);
-            }
-            let mut params = serde_json::json!({
-                "cwd": &workspace_cwd,
-                "mcpServers": [],
-                "sessionKey": &session_key,
-            });
-            if is_dm {
-                params["agentId"] = serde_json::Value::String(agent_id.to_string());
-            } else if let Some(c) = channel_id {
-                params["channelId"] = serde_json::Value::String(c.to_string());
-            }
-            params["systemPrompt"] = serde_json::Value::String(enriched_sp.clone());
-            params["_meta"] = serde_json::json!({
-                "systemPrompt": {
-                    "append": enriched_sp.clone()
-                }
-            });
-            let new_req = serde_json::json!({
+        let old_sid = {
+            let mut reg = self.session_registry.lock().await;
+            reg.remove(&session_key).map(|e| e.session_id)
+        };
+        if let Some(old_id) = old_sid {
+            let close_req = serde_json::json!({
                 "jsonrpc": "2.0",
-                "id": new_sess_id,
-                "method": "session/new",
-                "params": params
+                "method": "session/close",
+                "params": {
+                    "sessionId": old_id
+                }
             });
-            let _ = agent.stdin_tx.send(new_req.to_string()).await;
-            let sid = match tokio::time::timeout(Duration::from_secs(5), sess_rx).await {
-                Ok(Ok(resp)) => {
-                    let sid_val = resp.get("result")
-                        .and_then(|r| r.get("sessionId"))
-                        .and_then(|s| s.as_str())
-                        .map(|s| s.to_string());
-                    sid_val.unwrap_or_else(|| format!("session-{}", session_key))
-                }
-                _ => {
-                    format!("session-{}", session_key)
-                }
-            };
-            tracing::info!(
-                "[Agent {}] Obtained sessionId for key {} (room {}): {} (cwd: {})",
-                agent_id,
-                session_key,
-                room_id,
-                sid,
-                workspace_cwd
-            );
-            {
-                let mut reg = agent.session_registry.lock().await;
-                reg.insert(session_key.clone(), sid.clone(), normalized_sp.clone());
-            }
-            // 持久化到 SQLite
-            if let Some(ref db) = agent.db_manager {
-                if let Err(e) = db.save_acp_session(
-                    agent_id,
-                    &session_key,
-                    &sid,
-                    &workspace_cwd,
-                    &normalized_sp,
-                ) {
-                    tracing::warn!("[Agent {}] Failed to save acp session to sqlite: {}", agent_id, e);
-                }
-            }
-            // 通知前端会话已重新分配 (Layer 2 兜底水位线重置)
-            let _ = agent.app_handle.emit(
-                "acp:session_reset",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "session_key": &session_key
-                }),
-            );
-            session_id = Some(sid);
+            let _ = self.stdin_tx.send(close_req.to_string()).await;
         }
 
-        let current_session_id = session_id.unwrap_or_else(|| format!("session-{}", session_key));
+        let new_sess_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let (sess_tx, sess_rx) = oneshot::channel();
+        {
+            let mut map = self.pending_requests.lock().await;
+            map.insert(new_sess_id, sess_tx);
+        }
+        let mut params = serde_json::json!({
+            "cwd": &workspace_cwd,
+            "mcpServers": [],
+            "sessionKey": &session_key,
+        });
+        if is_dm {
+            params["agentId"] = serde_json::Value::String(agent_id.to_string());
+        } else if let Some(c) = channel_id {
+            params["channelId"] = serde_json::Value::String(c.to_string());
+        }
+        params["systemPrompt"] = serde_json::Value::String(enriched_sp.clone());
+        params["_meta"] = serde_json::json!({
+            "systemPrompt": {
+                "append": enriched_sp.clone()
+            }
+        });
+        let new_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": new_sess_id,
+            "method": "session/new",
+            "params": params
+        });
+        let _ = self.stdin_tx.send(new_req.to_string()).await;
 
-        // 4. 构造标准 ACP session/prompt 请求 (携带独立工作区 cwd 与 channelId/agentId/sessionKey)
+        let sess_result = tokio::time::timeout(Duration::from_secs(30), sess_rx).await;
+
+        let sid = match sess_result {
+            Ok(Ok(resp)) => {
+                if let Some(err) = resp.get("error") {
+                    anyhow::bail!("ACP session/new error from agent {}: {:?}", agent_id, err);
+                }
+                resp.get("result")
+                    .and_then(|r| r.get("sessionId"))
+                    .and_then(|s| s.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| anyhow::anyhow!("ACP session/new missing result.sessionId in response: {:?}", resp))?
+            }
+            Ok(Err(_)) => {
+                anyhow::bail!("ACP agent channel closed during session/new for agent {}", agent_id);
+            }
+            Err(_) => {
+                self.pending_requests.lock().await.remove(&new_sess_id);
+                anyhow::bail!("ACP session/new timed out after 30s for agent {}", agent_id);
+            }
+        };
+
+        tracing::info!(
+            "[Agent {}] Created new sessionId for key {} (room {}): {} (cwd: {})",
+            agent_id, session_key, room_id, sid, workspace_cwd
+        );
+
+        {
+            let mut reg = self.session_registry.lock().await;
+            reg.insert(session_key.clone(), sid.clone(), normalized_sp.clone());
+        }
+        if let Some(ref db) = self.db_manager {
+            if let Err(e) = db.save_acp_session(
+                agent_id,
+                &session_key,
+                &sid,
+                &workspace_cwd,
+                &normalized_sp,
+            ) {
+                tracing::warn!("[Agent {}] Failed to save acp session to sqlite: {}", agent_id, e);
+            }
+        }
+        let _ = self.app_handle.emit(
+            "acp:session_reset",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "session_key": &session_key
+            }),
+        );
+
+        Ok(EnsureSessionResult {
+            session_id: sid,
+            is_new: true,
+            load_failed,
+        })
+    }
+
+    /// 发送 Prompt 请求并等待当前 Agent 返回 (符合标准 ACP 规范)
+    /// 内部持有 self.prompt_lock，保证对同一 Agent 的指令按序下发，杜绝 stdio 管道竞态；
+    /// 不同 Agent 拥有独立的 RunningAgent 实例与子进程，完全并发、互不阻塞！
+    pub async fn send_session_prompt(
+        &self,
+        agent_id: &str,
+        room_id: &str,
+        channel_id: Option<&str>,
+        prompt: &str,
+        system_prompt: Option<&str>,
+        discussion_mode: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let _prompt_guard = self.prompt_lock.lock().await;
+
+        let ensure_res = self
+            .ensure_session_locked(agent_id, room_id, channel_id, system_prompt, discussion_mode)
+            .await?;
+        let current_session_id = ensure_res.session_id;
+
+        let is_dm = room_id.starts_with("dm-")
+            || channel_id.map(|c| c.trim().is_empty() || c == "direct-messages" || c.starts_with("dm-")).unwrap_or(false)
+            || room_id.starts_with("thread-dm-");
+
+        let (target_workspace_dir, session_key) = if is_dm {
+            let agent_dir = crate::db_manager::get_agent_dir(agent_id);
+            let key = format!("dm:{}:{}", agent_id, room_id);
+            (agent_dir, key)
+        } else {
+            let effective_chan_id = channel_id.map(|c| c.trim()).filter(|c| !c.is_empty()).unwrap_or(room_id);
+            let chan_dir = crate::db_manager::get_channel_dir(effective_chan_id);
+            let is_topic = room_id != effective_chan_id && !room_id.starts_with("chan-");
+            let key = if is_topic {
+                let mode = discussion_mode.unwrap_or("standard").trim();
+                let effective_mode = if mode.is_empty() { "standard" } else { mode };
+                format!("topic:{}:{}:{}", effective_chan_id, room_id, effective_mode)
+            } else {
+                format!("channel:{}:{}", effective_chan_id, room_id)
+            };
+            (chan_dir, key)
+        };
+        let workspace_cwd = target_workspace_dir.to_string_lossy().to_string();
+
+        // 构造标准 ACP session/prompt 请求 (携带独立工作区 cwd 与 channelId/agentId/sessionKey)
         let req_id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1371,14 +1484,14 @@ impl RunningAgent {
 
         let (resp_tx, resp_rx) = oneshot::channel();
         {
-            let mut map = agent.pending_requests.lock().await;
+            let mut map = self.pending_requests.lock().await;
             map.insert(req_id, resp_tx);
-            let mut active_reqs = agent.session_active_req.lock().await;
+            let mut active_reqs = self.session_active_req.lock().await;
             active_reqs.insert(current_session_id.clone(), req_id);
         }
 
         let mut prompt_params = serde_json::json!({
-            "sessionId": current_session_id,
+            "sessionId": &current_session_id,
             "sessionKey": &session_key,
             "cwd": &workspace_cwd,
             "prompt": [
@@ -1401,23 +1514,18 @@ impl RunningAgent {
             "params": prompt_params
         });
 
-        if let Err(e) = agent.stdin_tx.send(request.to_string()).await {
-            agent.is_alive.store(false, Ordering::SeqCst);
+        if let Err(e) = self.stdin_tx.send(request.to_string()).await {
+            self.is_alive.store(false, Ordering::SeqCst);
             anyhow::bail!("Failed to write to agent stdin channel: {}", e);
         }
 
-        // 关键修复：重置 agent.last_activity 为当前发送时间戳！
-        // 只有在当前轮次发出 prompt 之后、Agent 没有任何 stdout 吐字/日志的持续空闲时间，
-        // 才能被计入空闲超时。若不重置，当 Agent 两次对话之间停顿超过 idle_timeout (默认 300s) 时，
-        // 等待循环在第 1 帧就会把“两轮对话之间的用户/系统静默时间”误判为“当前轮次响应超时”，导致毫秒级闪退假告警。
         let prompt_start_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        agent.last_activity.store(prompt_start_ms, Ordering::Relaxed);
+        self.last_activity.store(prompt_start_ms, Ordering::Relaxed);
 
-        // 4. 等待 Agent 响应 (对标 Buzz 架构: 动态空闲超时 300s~1500s + 最大硬上限 1800s)
-        // 允许通过环境变量 SHADOW_CREW_ACP_IDLE_TIMEOUT 与 SHADOW_CREW_ACP_MAX_DURATION 动态配置
+        // 等待 Agent 响应 (对标 Buzz 架构: 动态空闲超时 300s~1500s + 最大硬上限 1800s)
         let idle_timeout_secs = std::env::var("SHADOW_CREW_ACP_IDLE_TIMEOUT")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -1441,7 +1549,7 @@ impl RunningAgent {
                 break Err(format!("Agent response exceeded maximum turn duration ({}s)", max_duration_secs));
             }
 
-            let last_act_ms = agent.last_activity.load(Ordering::Relaxed);
+            let last_act_ms = self.last_activity.load(Ordering::Relaxed);
             let current_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -1456,7 +1564,7 @@ impl RunningAgent {
             let total_sec = total_elapsed.as_secs();
             if total_sec > last_heartbeat_sec + 3 {
                 last_heartbeat_sec = total_sec;
-                let _ = agent.app_handle.emit("acp:thinking_heartbeat", serde_json::json!({
+                let _ = self.app_handle.emit("acp:thinking_heartbeat", serde_json::json!({
                     "agent_id": agent_id,
                     "sessionId": current_session_id,
                     "elapsed_seconds": total_sec,
@@ -1465,7 +1573,7 @@ impl RunningAgent {
             }
 
             // 检查子进程是否已非正常退出
-            if !agent.is_alive.load(Ordering::SeqCst) {
+            if !self.is_alive.load(Ordering::SeqCst) {
                 match resp_rx.try_recv() {
                     Ok(val) => break Ok(val),
                     Err(oneshot::error::TryRecvError::Empty) => {
@@ -1505,32 +1613,40 @@ impl RunningAgent {
 
         let response = match wait_result {
             Ok(resp) => {
-                // 若出现特定 session 错误，清除缓存触发重新 session/new
+                // 仅当出现明确未找到会话或失效的错误码/提示时，才作废会话缓存与 SQLite 持久化记录
                 if let Some(err) = resp.get("error") {
-                    agent.session_registry.lock().await.remove(&session_key);
-                    if let Some(ref db) = agent.db_manager {
-                        let _ = db.delete_acp_session(Some(agent_id), Some(&session_key));
+                    let is_session_invalid = is_session_invalid_error(err);
+
+                    if is_session_invalid {
+                        tracing::warn!(
+                            "[Agent {}] Invalid session detected for session_key {}: {:?}. Evicting.",
+                            agent_id, session_key, err
+                        );
+                        self.session_registry.lock().await.remove(&session_key);
+                        if let Some(ref db) = self.db_manager {
+                            let _ = db.delete_acp_session(Some(agent_id), Some(&session_key));
+                        }
                     }
 
                     let err_msg = err.get("message").and_then(|m| m.as_str()).unwrap_or_default();
                     if err_msg.contains("Authentication required") || err_msg.to_lowercase().contains("authentication") {
-                        *agent.auth_state.lock().await = "auth_required".to_string();
-                        *agent.status_detail.lock().await = Some(err_msg.to_string());
-                        let _ = agent.app_handle.emit("acp:status_change", serde_json::json!({
+                        *self.auth_state.lock().await = "auth_required".to_string();
+                        *self.status_detail.lock().await = Some(err_msg.to_string());
+                        let _ = self.app_handle.emit("acp:status_change", serde_json::json!({
                             "agent_id": agent_id,
                             "status": "auth_required",
                             "auth_state": "auth_required",
                             "status_detail": err_msg,
-                            "pid": agent.pid
+                            "pid": self.pid
                         }));
                     }
                 }
                 Ok(resp)
             }
             Err(timeout_err_msg) => {
-                let mut map = agent.pending_requests.lock().await;
+                let mut map = self.pending_requests.lock().await;
                 map.remove(&req_id);
-                let mut active_reqs = agent.session_active_req.lock().await;
+                let mut active_reqs = self.session_active_req.lock().await;
                 if active_reqs.get(&current_session_id) == Some(&req_id) {
                     active_reqs.remove(&current_session_id);
                 }
@@ -1543,7 +1659,7 @@ impl RunningAgent {
 
         // 清理 session_active_req (仅当本请求依然为该 session 当前绑定的活跃请求时才执行清理，严防覆盖后被早退请求误删)
         {
-            let mut active_reqs = agent.session_active_req.lock().await;
+            let mut active_reqs = self.session_active_req.lock().await;
             if active_reqs.get(&current_session_id) == Some(&req_id) {
                 active_reqs.remove(&current_session_id);
             }
@@ -1551,6 +1667,23 @@ impl RunningAgent {
 
         response
     }
+}
+
+/// 判断 session/prompt 返回的 JSON-RPC 错误是否属于明确的会话失效/不存在。
+/// 仅当错误码为 -32001 (Session not found) 或 -32002 (Invalid session)，
+/// 或错误提示包含 session not found / invalid session / unknown session / session expired 时，
+/// 才认定底层会话已失效并执行作废。瞬态网络、鉴权、限流或工具调用错误绝不作废会话。
+pub fn is_session_invalid_error(err: &serde_json::Value) -> bool {
+    if let Some(code) = err.get("code").and_then(|c| c.as_i64()) {
+        if code == -32001 || code == -32002 {
+            return true;
+        }
+    }
+    let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or_default().to_lowercase();
+    msg.contains("session not found")
+        || msg.contains("invalid session")
+        || msg.contains("unknown session")
+        || msg.contains("session expired")
 }
 
 /// 由「进程存活 / 鉴权 / ACP 握手」三要素推导对外运行态。
@@ -1825,5 +1958,105 @@ mod runtime_status_tests {
             }
         });
         assert!(!check_supports_load_session(&without_support));
+    }
+
+    #[test]
+    fn test_is_session_invalid_error_detection() {
+        use super::is_session_invalid_error;
+
+        // 1. 标准错误码 -32001 (Session not found)
+        let err_32001 = serde_json::json!({
+            "code": -32001,
+            "message": "Session not found: session-abc"
+        });
+        assert!(is_session_invalid_error(&err_32001));
+
+        // 2. 标准错误码 -32002 (Invalid session)
+        let err_32002 = serde_json::json!({
+            "code": -32002,
+            "message": "Session invalid or closed"
+        });
+        assert!(is_session_invalid_error(&err_32002));
+
+        // 3. 错误码为通用错误，但文案明确提示 session unknown / expired
+        let err_msg_unknown = serde_json::json!({
+            "code": -32603,
+            "message": "Unknown session identifier session-123"
+        });
+        assert!(is_session_invalid_error(&err_msg_unknown));
+
+        let err_msg_expired = serde_json::json!({
+            "code": -32000,
+            "message": "The session expired due to timeout"
+        });
+        assert!(is_session_invalid_error(&err_msg_expired));
+
+        // 4. 瞬态错误（限流、鉴权、工具失败、语法错误等）绝不误判为会话失效
+        let err_rate_limit = serde_json::json!({
+            "code": 429,
+            "message": "Rate limit exceeded, please retry later"
+        });
+        assert!(!is_session_invalid_error(&err_rate_limit));
+
+        let err_auth = serde_json::json!({
+            "code": -32000,
+            "message": "Authentication required: missing ANTHROPIC_API_KEY"
+        });
+        assert!(!is_session_invalid_error(&err_auth));
+
+        let err_tool = serde_json::json!({
+            "code": -32603,
+            "message": "Tool execution failed: cargo check failed"
+        });
+        assert!(!is_session_invalid_error(&err_tool));
+    }
+
+    #[tokio::test]
+    async fn test_clear_agent_sessions_with_generation_deletes_db_even_if_memory_empty() {
+        use crate::db_manager::DatabaseManager;
+        use super::AcpProcessManager;
+        use std::sync::Arc;
+
+        let db = Arc::new(DatabaseManager::new(":memory:").expect("in-memory db init"));
+        db.save_acp_session(
+            "agent-offline",
+            "topic:chan-1:thread-1:standard",
+            "sid-persisted-1",
+            "/tmp/fake-cwd",
+            "sp-test",
+        )
+        .expect("save session");
+
+        // 验证 SQLite 中已写入该持久化记录
+        let loaded = db.get_acp_session("agent-offline", "topic:chan-1:thread-1:standard").unwrap();
+        assert!(loaded.is_some());
+
+        // 构造 AcpProcessManager，内存中无任何运行中 Agent 实例
+        let manager = AcpProcessManager::with_db(db.clone());
+
+        // 执行清理：针对指定离线 Agent
+        manager
+            .clear_agent_sessions_with_generation(Some("agent-offline"), Some("topic:chan-1"), None)
+            .await
+            .expect("clear sessions should succeed");
+
+        // 核心断言：即使内存中无任何 Agent 实例，SQLite 记录也必须被成功清理！
+        let after_clear = db.get_acp_session("agent-offline", "topic:chan-1:thread-1:standard").unwrap();
+        assert!(after_clear.is_none(), "离线 Agent 的持久化 Session 必须被无条件删除");
+    }
+
+    #[test]
+    fn test_ensure_session_result_serialization() {
+        use super::EnsureSessionResult;
+
+        let res = EnsureSessionResult {
+            session_id: "sid-123".to_string(),
+            is_new: true,
+            load_failed: false,
+        };
+        let json_val = serde_json::to_value(&res).unwrap();
+        assert_eq!(json_val["sessionId"], "sid-123");
+        assert_eq!(json_val["isNew"], true);
+        assert_eq!(json_val["loadFailed"], false);
     }
 }
