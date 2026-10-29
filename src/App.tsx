@@ -5,7 +5,6 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from 'react';
 import { 
-  Project,
   Agent, 
   AgentTeam, 
   Channel, 
@@ -31,7 +30,6 @@ import {
   ModularOrchestrationState
 } from './types';
 import { 
-  INITIAL_PROJECTS,
   INITIAL_AGENTS, 
   INITIAL_TEAMS, 
   INITIAL_CHANNELS, 
@@ -86,7 +84,6 @@ import {
   saveMessagesBatchToDb,
   loadMessagesFromDb,
   loadFullWorkspaceDataFromDb,
-  saveProjectsToDb,
   saveChannelsToDb,
   saveThreadsToDb,
   saveAgentsToDb,
@@ -157,6 +154,21 @@ export default function App() {
 
   // 关键防回滚锁：首轮从 SQLite 加载完成前，严禁各 entity 的初始挂载触发 useEffect 覆盖底层数据库
   const isWorkspaceHydratedRef = useRef(false);
+  const sanitizeMessages = useCallback((list: Message[]): Message[] => {
+    return list.map((message) => {
+      const migrated = { ...message } as Message & { projectId?: string };
+      delete migrated.projectId;
+      return migrated;
+    });
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.removeItem('shinobi_projects');
+      localStorage.removeItem('shinobi_active_project_id');
+      localStorage.removeItem('shinobi_activeProjectId');
+    } catch {}
+  }, []);
 
   // Core Entities State with Local Storage Persistence
   const [agents, setAgents] = useState<Agent[]>(() => {
@@ -272,7 +284,6 @@ export default function App() {
     saveTeamsToDb(teams);
   }, [teams]);
 
-  // L0 Projects State with Local Storage Persistence
   // Mock data ID blacklist to purge contaminated cache from previous sessions
   const MOCK_CHANNEL_IDS = new Set([
     'channel-acp-dev',
@@ -286,47 +297,6 @@ export default function App() {
     'topic-acp-auth-spec',
   ]);
 
-  // L0 Projects State with Local Storage Persistence
-  const [projects, setProjects] = useState<Project[]>(() => {
-    try {
-      const saved = localStorage.getItem('shinobi_projects');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const filtered = parsed
-            .filter((p: any) => p.id !== 'project-buzz-mesh')
-            .map((p: any) => ({
-              ...p,
-              localWorkspaceRoot:
-                !p.localWorkspaceRoot || p.localWorkspaceRoot.includes('/shadow-crew') || p.localWorkspaceRoot.includes('/.shinobi')
-                  ? '~/.shadow-crew'
-                  : p.localWorkspaceRoot,
-            }));
-          if (filtered.length > 0) return filtered;
-        }
-      }
-    } catch {}
-    return INITIAL_PROJECTS;
-  });
-
-  const [activeProjectId, setActiveProjectId] = useState<string>(() => {
-    try {
-      const saved = localStorage.getItem('shinobi_active_project_id');
-      if (saved && saved !== 'project-buzz-mesh') return saved;
-    } catch {}
-    return INITIAL_PROJECTS[0]?.id || 'project-shadow-crew';
-  });
-
-  useEffect(() => {
-    if (!isWorkspaceHydratedRef.current) return;
-    saveProjectsToDb(projects);
-  }, [projects]);
-
-  useEffect(() => {
-    if (!isWorkspaceHydratedRef.current) return;
-    saveWorkspaceStateToDb('activeProjectId', activeProjectId);
-  }, [activeProjectId]);
-
   // Channels State with Local Storage Persistence & Channel-Scoped Workspace Migration
   const [channels, setChannels] = useState<Channel[]>(() => {
     try {
@@ -337,14 +307,16 @@ export default function App() {
           const filtered = parsed
             .filter((c: any) => !MOCK_CHANNEL_IDS.has(c.id) && c.status !== 'deleted')
             .map((c: any) => {
-              const channelWorkspaceRoot = `~/.shadow-crew/channels/${c.id}`;
-              const currentRoot = c.mountedWorkspace?.rootPath;
+              const migratedChannel = { ...c };
+              delete migratedChannel.projectId;
+              const channelWorkspaceRoot = `~/.shadow-crew/channels/${migratedChannel.id}`;
+              const currentRoot = migratedChannel.mountedWorkspace?.rootPath;
               const migratedRoot =
                 !currentRoot || currentRoot === '.' || currentRoot.includes('/shadow-crew') || currentRoot.includes('/.shinobi')
                   ? channelWorkspaceRoot
                   : currentRoot;
               return {
-                ...c,
+                ...migratedChannel,
                 mountedWorkspace: {
                   rootPath: migratedRoot,
                 },
@@ -438,7 +410,12 @@ export default function App() {
               });
             }
           }
-          return parsed;
+          return Object.fromEntries(
+            Object.entries(parsed).map(([threadId, threadMessages]) => [
+              threadId,
+              sanitizeMessages((threadMessages || []) as Message[]),
+            ])
+          );
         }
       }
     } catch {}
@@ -454,12 +431,6 @@ export default function App() {
         if (!isMounted) return;
 
         if (fullData) {
-          if (Array.isArray(fullData.projects) && fullData.projects.length > 0) {
-            setProjects(fullData.projects);
-          } else if (projects.length > 0) {
-            await saveProjectsToDb(projects);
-          }
-
           if (Array.isArray(fullData.channels) && fullData.channels.length > 0) {
             setChannels(fullData.channels);
           } else if (channels.length > 0) {
@@ -501,9 +472,6 @@ export default function App() {
           }
 
           const wsState = fullData.workspaceState || {};
-          if (wsState.activeProjectId) {
-            setActiveProjectId(wsState.activeProjectId);
-          }
           if (wsState.activeChannelId) {
             setActiveChannelId(wsState.activeChannelId);
           }
@@ -519,10 +487,11 @@ export default function App() {
         const dbMsgs = await loadMessagesFromDb();
         if (!isMounted) return;
         if (dbMsgs && dbMsgs.length > 0) {
+          const sanitizedDbMsgs = sanitizeMessages(dbMsgs);
           setMessages((prev) => {
             const next = { ...prev };
             let hasNew = false;
-            for (const msg of dbMsgs) {
+            for (const msg of sanitizedDbMsgs) {
               const key = msg.threadId || msg.channelId || 'general';
               if (!next[key]) next[key] = [];
               if (!next[key].some((m) => m.id === msg.id)) {
@@ -545,7 +514,7 @@ export default function App() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [sanitizeMessages]);
 
   // 消息持久化 (原生 SQLite 优先，同步防护 LocalStorage)
   useEffect(() => {
@@ -841,10 +810,7 @@ export default function App() {
   const currentUserId = 'user-norris';
 
   // Computed Context
-  const activeProject = projects.find((p) => p.id === activeProjectId) || projects[0];
-  const projectChannels = activeProjectId
-    ? channels.filter((c) => (!c.projectId || c.projectId === activeProjectId) && c.status !== 'deleted')
-    : channels.filter((c) => c.status !== 'deleted');
+  const visibleChannels = channels.filter((c) => c.status !== 'deleted');
 
   // 1. 判断当前是否处于显式私聊模式 (Direct Message Mode)
   const isDirectMessageSelected = activeThreadId.startsWith('thread-dm-') || threads.find((t) => t.id === activeThreadId)?.type === 'dm';
@@ -852,7 +818,7 @@ export default function App() {
   // 2. 频道解析：若在私聊模式下，强制清空 activeChannel，杜绝任何频道上下文与成员名单穿透至私聊
   const activeChannel = isDirectMessageSelected
     ? null
-    : (channels.find((c) => c.id === activeChannelId && c.status !== 'deleted') || projectChannels[0] || null);
+    : (channels.find((c) => c.id === activeChannelId && c.status !== 'deleted') || visibleChannels[0] || null);
 
   // 3. 线程解析：
   // - 若为私聊模式，严格锁定对应 dmThread，严禁回退至任何频道线程；
@@ -1123,7 +1089,7 @@ export default function App() {
           await tauriInvoke('spawn_acp_agent', {
             agentId: agent.id,
             command: agent.acpCommandOrUrl,
-            cwd: agent.workspace?.rootPath || activeProject?.localWorkspaceRoot || '.',
+            cwd: agent.workspace?.rootPath || '~/.shadow-crew',
             envVars: buildAgentLaunchEnv(agent),
           });
           syncRunningAgentsWithBackend();
@@ -1152,7 +1118,7 @@ export default function App() {
         }, 500);
       }
     },
-    [activeProject?.localWorkspaceRoot, syncRunningAgentsWithBackend]
+    [syncRunningAgentsWithBackend]
   );
 
   // Listen for real-time ACP status changes from Tauri backend
@@ -1607,25 +1573,6 @@ export default function App() {
     setMainView('chat');
   };
 
-  // Handle Project Selection (L0 Project -> L1 Channel)
-  const handleSelectProject = (projectId: string) => {
-    setActiveProjectId(projectId);
-    const projChannels = channels.filter((c) => (!c.projectId || c.projectId === projectId) && c.status !== 'deleted');
-    if (projChannels.length > 0) {
-      setActiveChannelId(projChannels[0].id);
-      const chThreads = threads.filter((t) => t.channelId === projChannels[0].id);
-      if (chThreads.length > 0) {
-        setActiveThreadId(chThreads[0].id);
-      } else {
-        setActiveThreadId('');
-      }
-    } else {
-      setActiveChannelId('');
-      setActiveThreadId('');
-    }
-    setActiveTopicId(null);
-  };
-
   // Handle Channel Members Update (Invite / Remove Agent or Human)
   const handleUpdateChannelMembers = async (channelId: string, updatedMemberIds: string[]) => {
     await executeUpdateChannelMembersOrchestration({
@@ -1651,10 +1598,9 @@ export default function App() {
     const remaining = channels.filter((c) => c.id !== channelId);
     setChannels(remaining);
 
-    // If active channel was deleted, redirect to first channel of current project or fallback
+    // If active channel was deleted, redirect to the first remaining channel.
     if (activeChannelId === channelId) {
-      const projChannels = remaining.filter((c) => (!c.projectId || c.projectId === activeProjectId) && c.status !== 'deleted');
-      const fallback = projChannels[0] || remaining[0];
+      const fallback = remaining.find((c) => c.status !== 'deleted');
       if (fallback) {
         setActiveChannelId(fallback.id);
         const fbThreads = threads.filter((t) => t.channelId === fallback.id);
@@ -2515,7 +2461,6 @@ export default function App() {
             agent: targetAgent,
             roomId,
             prompt: cascadePrompt,
-            projectId: activeProjectId,
             channelId: targetChannelId,
             systemPrompt,
             discussionMode: currentTopicObj?.discussionMode,
@@ -2847,7 +2792,6 @@ export default function App() {
           agent: proposerAgent,
           roomId: topicId,
           prompt: proposalPrompt,
-          projectId: activeProjectId,
           channelId: topicChannel?.id,
           systemPrompt: buildCompositeSystemPrompt({
             agent: proposerAgent,
@@ -3178,7 +3122,6 @@ export default function App() {
           agent: challengerAgent,
           roomId: topicId,
           prompt: challengePrompt,
-          projectId: activeProjectId,
           channelId: topicChannel?.id,
           systemPrompt: buildCompositeSystemPrompt({
             agent: challengerAgent,
@@ -3711,7 +3654,6 @@ export default function App() {
           agent: verifierAgent,
           roomId: topicId,
           prompt: verifierPrompt,
-          projectId: activeProjectId,
           channelId: topicChannel?.id,
           systemPrompt: buildCompositeSystemPrompt({
             agent: verifierAgent,
@@ -4266,7 +4208,6 @@ export default function App() {
           agent: proposerAgent,
           roomId: topicId,
           prompt: defensePrompt,
-          projectId: activeProjectId,
           channelId: topicChannel?.id,
           systemPrompt: buildCompositeSystemPrompt({
             agent: proposerAgent,
@@ -4923,7 +4864,6 @@ export default function App() {
             agent: arbiterAgent,
             roomId: topicId,
             prompt: arbiterPrompt,
-            projectId: activeProjectId,
             channelId: topicChannel?.id,
             systemPrompt: buildCompositeSystemPrompt({
               agent: arbiterAgent,
@@ -5777,7 +5717,6 @@ export default function App() {
         agent,
         roomId: topicId,
         prompt: finalPrompt,
-        projectId: activeProjectId,
         channelId: topicChannel?.id,
         systemPrompt,
         discussionMode: activeTopicData?.discussionMode,
@@ -6394,7 +6333,6 @@ export default function App() {
         agent: executorAgent,
         roomId: topicId,
         prompt: execPrompt,
-        projectId: activeProjectId,
         channelId: topicChannel?.id,
         systemPrompt: buildAgentPersonaPrompt(executorAgent),
         discussionMode: 'game_theoretic',
@@ -7252,7 +7190,6 @@ export default function App() {
         agent: targetAgent,
         roomId: currentThreadId,
         prompt: finalPrompt,
-        projectId: activeProjectId,
         channelId: targetChannelId,
         systemPrompt: compositeSystemPrompt,
         isDm: isDmThread,
@@ -7477,9 +7414,6 @@ export default function App() {
         onTransitionEnd={() => setIsSidebarTransitioning(false)}
       >
         <Sidebar
-          projects={projects}
-          activeProjectId={activeProjectId}
-          onSelectProject={handleSelectProject}
           channels={channels}
           activeChannelId={activeChannel ? activeChannel.id : ''}
           onSelectChannel={handleSelectChannel}
@@ -7534,7 +7468,7 @@ export default function App() {
               envVars: agent.envVars ? agent.envVars.map((v) => ({ ...v })) : [],
               workspace: {
                 ...(agent.workspace || {
-                  rootPath: activeProject?.localWorkspaceRoot || '~/.shadow-crew',
+                  rootPath: '~/.shadow-crew',
                   repoName: 'shadow-crew-workspace',
                   gitBranch: 'main',
                   permissionMode: 'full_read_write',
@@ -7693,7 +7627,7 @@ export default function App() {
                   onEditTopic={(topic) => setEditingTopic(topic)}
                   isSidebarCollapsed={isSidebarCollapsed}
                   onToggleSidebar={() => toggleSidebar()}
-                  currentWorkspace={activeProject?.name || 'shadow-crew'}
+                  currentWorkspace="shadow-crew"
                 />
 
                 <MessageInput
@@ -7726,9 +7660,9 @@ export default function App() {
                 <div className="w-16 h-16 rounded-2xl bg-surface border border-border flex items-center justify-center text-accent mb-4 shadow-sm">
                   <Hash className="w-8 h-8 opacity-75" />
                 </div>
-                <h3 className="text-base font-semibold text-fg mb-1.5">当前项目暂无活跃频道</h3>
+                <h3 className="text-base font-semibold text-fg mb-1.5">暂无活跃频道</h3>
                 <p className="text-xs text-fg-muted max-w-md mb-6 leading-relaxed">
-                  已清空旧版测试数据。您可以在当前项目（<span className="text-accent font-mono font-medium">{activeProject?.name || '当前工作区'}</span>）下创建需求、功能或任务频道，与专职 Agent 共同推演与开发。
+                  创建一个需求、功能或任务频道，与专职 Agent 共同推演与开发。
                 </p>
                 <button
                   type="button"
@@ -7952,7 +7886,6 @@ export default function App() {
         <CreateChannelModal
           isOpen={isCreateChannelOpen}
           onClose={() => setIsCreateChannelOpen(false)}
-          activeProjectId={activeProjectId}
           currentUserId={currentUserId}
           teams={teams}
           agents={agents}
@@ -8000,7 +7933,7 @@ export default function App() {
         }}
         initialAgent={editingAgent}
         duplicateAgent={duplicatingAgent}
-        defaultWorkspaceRoot={activeProject?.localWorkspaceRoot || '~/.shadow-crew'}
+        defaultWorkspaceRoot="~/.shadow-crew"
         onOpenImportModal={() => {
           setIsConnectModalOpen(false);
           setEditingAgent(null);
@@ -8178,7 +8111,7 @@ export default function App() {
               supportsStreaming: true,
             },
             workspace: {
-              rootPath: agentData.workspace?.rootPath || activeProject?.localWorkspaceRoot || '~/.shadow-crew',
+              rootPath: agentData.workspace?.rootPath || '~/.shadow-crew',
               repoName: 'shadow-crew-workspace',
               gitBranch: 'main',
               permissionMode: agentData.readOnlyGuard ? 'read_only' : 'full_read_write',
@@ -8247,7 +8180,7 @@ export default function App() {
           isOpen={isMemoryImportModalOpen}
           agents={agents}
           defaultAgentId={selectedAgentId || undefined}
-          defaultWorkspaceRoot={activeProject?.localWorkspaceRoot || '~/.shadow-crew'}
+          defaultWorkspaceRoot="~/.shadow-crew"
           onClose={() => setIsMemoryImportModalOpen(false)}
           onMountCartridge={handleMountCartridge}
           onCloneGuestAgent={handleCloneGuestAgent}

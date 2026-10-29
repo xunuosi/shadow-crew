@@ -249,24 +249,12 @@ export interface AgentTeam {
   color: string;
 }
 
-// L0 项目实体 (顶级工作空间边界)
-export interface Project {
-  id: string;
-  name: string;
-  description: string;
-  repoUrl?: string;
-  localWorkspaceRoot: string;
-  assignedAgentIds: string[];
-  createdAt: number;
-}
-
 export type ChannelKind = 'general' | 'feature' | 'requirement' | 'task';
 export type ChannelStatus = 'active' | 'archived' | 'deleted';
 
-// L1 协同频道 (通用实时交流与协作流)
+// L0 协同频道 (通用实时交流与协作流)
 export interface Channel {
   id: string;
-  projectId: string;
   creatorId: string; // 拥有者与删除权限人
   name: string;
   kind?: ChannelKind;
@@ -778,7 +766,6 @@ export type MessageKind = 'normal' | 'system_control' | 'rollup' | 'guard' | 'er
 export interface Message {
   id: string;
   threadId: string;
-  projectId?: string;
   channelId?: string;
   type?: 'normal' | 'topic';
   kind?: MessageKind;

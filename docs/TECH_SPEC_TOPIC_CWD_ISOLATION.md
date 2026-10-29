@@ -21,6 +21,7 @@
 4. ACP Session Key、SQLite 会话记录、MCP Pool、产物目录、Patch 合入和清理屏障全部以 `workspaceBindingId` 为作用域。
 5. 同一 Agent 在同一 Channel 的不同 Topic 中拥有独立 ACP Session 和独立 `cwd`。
 6. 当前阶段保留“同一 Agent 串行 Prompt”安全策略；未来并行执行必须先完成逐调用 `cwd` 改造，不能直接解除串行锁。
+7. Channel 是系统最外层业务实体，不再归属 Project；Channel 与 Topic 之间只保留组织关系，不共享运行工作空间。
 
 核心不变量：
 
@@ -120,7 +121,6 @@ type WorkspaceBindingOrigin =
 
 interface WorkspaceBinding {
   id: string;
-  projectId: string;
   ownerType: WorkspaceOwnerType;
   ownerId: string;
   mode: WorkspaceBindingMode;
@@ -162,7 +162,6 @@ Topic 使用独立 Binding，不保存“继承 Channel”的动态引用。若�
 ```sql
 CREATE TABLE IF NOT EXISTS workspace_bindings (
     id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL,
     owner_type TEXT NOT NULL,
     owner_id TEXT NOT NULL,
     mode TEXT NOT NULL,
@@ -172,9 +171,6 @@ CREATE TABLE IF NOT EXISTS workspace_bindings (
     created_at INTEGER NOT NULL,
     UNIQUE(owner_type, owner_id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_workspace_bindings_project
-ON workspace_bindings(project_id);
 ```
 
 `acp_sessions` 增加：
@@ -324,7 +320,6 @@ Host 统一解析以下结构：
 ```ts
 interface SessionWorkspaceScope {
   scopeType: 'channel' | 'topic' | 'dm';
-  projectId: string;
   channelId?: string;
   ownerId: string;
   agentId: string;

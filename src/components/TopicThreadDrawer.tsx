@@ -1977,7 +1977,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                           <span>{msg.pendingHint || '正在进行私有检索与技术推演...'}</span>
                         </div>
                         <div className="text-[11px] text-fg-muted leading-relaxed font-sans pl-6">
-                          💡 提示：深度思考与反例边界证伪耗时较长（通常需要 1~5 分钟）。ACP 正在分析项目上下文，生成内容将实时流式渲染于此处。
+                          💡 提示：深度思考与反例边界证伪耗时较长（通常需要 1~5 分钟）。ACP 正在分析工作空间上下文，生成内容将实时流式渲染于此处。
                         </div>
                       </div>
                     )}

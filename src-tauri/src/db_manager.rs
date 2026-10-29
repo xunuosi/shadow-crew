@@ -109,10 +109,66 @@ pub fn escape_sql_like(input: &str) -> String {
         .replace('_', "\\_")
 }
 
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// 一次性移除旧 Project 领域概念及其持久化残留。
+fn migrate_remove_project_concept(conn: &mut Connection) -> Result<()> {
+    let migration_name = "20261029_remove_project_concept";
+    let already_applied: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = ?1)",
+        params![migration_name],
+        |row| row.get(0),
+    )?;
+    if already_applied {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    tx.execute("DROP INDEX IF EXISTS idx_channels_project", [])?;
+
+    if table_has_column(&tx, "channels", "project_id")? {
+        tx.execute("ALTER TABLE channels DROP COLUMN project_id", [])?;
+    }
+    if table_has_column(&tx, "messages", "project_id")? {
+        tx.execute("ALTER TABLE messages DROP COLUMN project_id", [])?;
+    }
+
+    tx.execute(
+        "UPDATE channels
+         SET data_json = json_remove(data_json, '$.projectId')
+         WHERE json_type(data_json, '$.projectId') IS NOT NULL",
+        [],
+    )?;
+    tx.execute(
+        "UPDATE messages
+         SET message_json = json_remove(message_json, '$.projectId')
+         WHERE json_type(message_json, '$.projectId') IS NOT NULL",
+        [],
+    )?;
+    tx.execute("DELETE FROM workspace_state WHERE key = 'activeProjectId'", [])?;
+    tx.execute("DROP TABLE IF EXISTS projects", [])?;
+    tx.execute(
+        "INSERT INTO schema_migrations (name) VALUES (?1)",
+        params![migration_name],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 impl DatabaseManager {
     /// 初始化 SQLite 数据库连接并确保必要数据表与索引就绪
     pub fn new(db_path: &str) -> Result<Self> {
-        let conn = match Connection::open(db_path) {
+        let mut conn = match Connection::open(db_path) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("Failed to open SQLite file at {}, fallback to in-memory: {}", db_path, e);
@@ -139,7 +195,6 @@ impl DatabaseManager {
                 id TEXT PRIMARY KEY,
                 thread_id TEXT NOT NULL,
                 channel_id TEXT,
-                project_id TEXT,
                 author_id TEXT NOT NULL,
                 author_name TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
@@ -153,21 +208,12 @@ impl DatabaseManager {
             CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
 
             -- 3. 核心领域实体表 (工作区与实体状态唯一真值来源)
-            CREATE TABLE IF NOT EXISTS projects (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                data_json TEXT NOT NULL,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-
             CREATE TABLE IF NOT EXISTS channels (
                 id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 data_json TEXT NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE INDEX IF NOT EXISTS idx_channels_project ON channels(project_id);
 
             CREATE TABLE IF NOT EXISTS threads (
                 id TEXT PRIMARY KEY,
@@ -213,10 +259,16 @@ impl DatabaseManager {
                 PRIMARY KEY (agent_id, session_key)
             );
             CREATE INDEX IF NOT EXISTS idx_acp_sessions_agent ON acp_sessions(agent_id);
+
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
         ");
 
         // 平滑升级已有历史数据库结构
         let _ = conn.execute("ALTER TABLE acp_sessions ADD COLUMN created_gen INTEGER DEFAULT 0", []);
+        migrate_remove_project_concept(&mut conn)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -233,7 +285,6 @@ impl DatabaseManager {
 
         let thread_id = val.get("threadId").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let channel_id = val.get("channelId").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let project_id = val.get("projectId").and_then(|v| v.as_str()).map(|s| s.to_string());
         let author_id = val.get("authorId").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let author_name = val.get("authorName").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let timestamp = val.get("timestamp").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -242,12 +293,11 @@ impl DatabaseManager {
 
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO messages (id, thread_id, channel_id, project_id, author_id, author_name, timestamp, content, message_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO messages (id, thread_id, channel_id, author_id, author_name, timestamp, content, message_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(id) DO UPDATE SET
                 thread_id = excluded.thread_id,
                 channel_id = excluded.channel_id,
-                project_id = excluded.project_id,
                 author_id = excluded.author_id,
                 author_name = excluded.author_name,
                 timestamp = excluded.timestamp,
@@ -257,7 +307,6 @@ impl DatabaseManager {
                 id,
                 thread_id,
                 channel_id,
-                project_id,
                 author_id,
                 author_name,
                 timestamp,
@@ -277,12 +326,11 @@ impl DatabaseManager {
 
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO messages (id, thread_id, channel_id, project_id, author_id, author_name, timestamp, content, message_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                "INSERT INTO messages (id, thread_id, channel_id, author_id, author_name, timestamp, content, message_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT(id) DO UPDATE SET
                     thread_id = excluded.thread_id,
                     channel_id = excluded.channel_id,
-                    project_id = excluded.project_id,
                     author_id = excluded.author_id,
                     author_name = excluded.author_name,
                     timestamp = excluded.timestamp,
@@ -297,7 +345,6 @@ impl DatabaseManager {
                     }
                     let thread_id = val.get("threadId").and_then(|v| v.as_str()).unwrap_or("");
                     let channel_id = val.get("channelId").and_then(|v| v.as_str());
-                    let project_id = val.get("projectId").and_then(|v| v.as_str());
                     let author_id = val.get("authorId").and_then(|v| v.as_str()).unwrap_or("");
                     let author_name = val.get("authorName").and_then(|v| v.as_str()).unwrap_or("");
                     let timestamp = val.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
@@ -308,7 +355,6 @@ impl DatabaseManager {
                         id,
                         thread_id,
                         channel_id,
-                        project_id,
                         author_id,
                         author_name,
                         timestamp,
@@ -478,42 +524,6 @@ impl DatabaseManager {
         Ok(freed_bytes)
     }
 
-    /// 保存项目列表
-    pub fn save_projects(&self, projects: &[serde_json::Value]) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        tx.execute("DELETE FROM projects", [])?;
-        {
-            let mut stmt = tx.prepare(
-                "INSERT INTO projects (id, name, data_json) VALUES (?1, ?2, ?3)",
-            )?;
-            for val in projects {
-                let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                if !id.is_empty() {
-                    let json_str = serde_json::to_string(val)?;
-                    let _ = stmt.execute(params![id, name, json_str]);
-                }
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// 查询项目列表
-    pub fn get_projects(&self) -> Result<Vec<serde_json::Value>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT data_json FROM projects ORDER BY updated_at ASC")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        let mut list = Vec::new();
-        for r in rows.flatten() {
-            if let Ok(v) = serde_json::from_str(&r) {
-                list.push(v);
-            }
-        }
-        Ok(list)
-    }
-
     /// 保存频道列表
     pub fn save_channels(&self, channels: &[serde_json::Value]) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
@@ -521,15 +531,14 @@ impl DatabaseManager {
         tx.execute("DELETE FROM channels", [])?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO channels (id, project_id, name, data_json) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO channels (id, name, data_json) VALUES (?1, ?2, ?3)",
             )?;
             for val in channels {
                 let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let project_id = val.get("projectId").and_then(|v| v.as_str()).unwrap_or("");
                 let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 if !id.is_empty() {
                     let json_str = serde_json::to_string(val)?;
-                    let _ = stmt.execute(params![id, project_id, name, json_str]);
+                    let _ = stmt.execute(params![id, name, json_str]);
                 }
             }
         }
@@ -661,7 +670,7 @@ impl DatabaseManager {
         Ok(list)
     }
 
-    /// 保存工作区状态键值对 (activeProjectId, activeChannelId, activeThreadId, globalModelConfig, subThreads)
+    /// 保存工作区状态键值对 (activeChannelId, activeThreadId, globalModelConfig, subThreads)
     pub fn save_workspace_state(&self, key: &str, value: &serde_json::Value) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let json_str = serde_json::to_string(value)?;
@@ -689,7 +698,6 @@ impl DatabaseManager {
 
     /// 聚合获取工作区全部核心资产（一次调用毫秒级全量返回）
     pub fn get_full_workspace_data(&self) -> Result<serde_json::Value> {
-        let projects = self.get_projects()?;
         let channels = self.get_channels()?;
         let threads = self.get_threads()?;
         let agents = self.get_agents()?;
@@ -711,7 +719,6 @@ impl DatabaseManager {
         }
 
         Ok(serde_json::json!({
-            "projects": projects,
             "channels": channels,
             "threads": threads,
             "agents": agents,
@@ -928,51 +935,148 @@ mod tests {
     fn test_workspace_entities_persistence() {
         let mgr = DatabaseManager::new(":memory:").expect("Failed to create in-memory db");
 
-        // 1. Projects
-        let projects = vec![serde_json::json!({ "id": "p1", "name": "Project Alpha" })];
-        mgr.save_projects(&projects).expect("save_projects failed");
-        let loaded_projects = mgr.get_projects().expect("get_projects failed");
-        assert_eq!(loaded_projects.len(), 1);
-        assert_eq!(loaded_projects[0]["name"], "Project Alpha");
-
-        // 2. Channels
-        let channels = vec![serde_json::json!({ "id": "c1", "projectId": "p1", "name": "general" })];
+        // 1. Channels
+        let channels = vec![serde_json::json!({ "id": "c1", "name": "general" })];
         mgr.save_channels(&channels).expect("save_channels failed");
         let loaded_channels = mgr.get_channels().expect("get_channels failed");
         assert_eq!(loaded_channels.len(), 1);
         assert_eq!(loaded_channels[0]["name"], "general");
 
-        // 3. Threads
+        // 2. Threads
         let threads = vec![serde_json::json!({ "id": "t1", "channelId": "c1", "title": "Topic 1" })];
         mgr.save_threads(&threads).expect("save_threads failed");
         let loaded_threads = mgr.get_threads().expect("get_threads failed");
         assert_eq!(loaded_threads.len(), 1);
 
-        // 4. Agents
+        // 3. Agents
         let agents = vec![serde_json::json!({ "id": "a1", "name": "Agent 1", "handle": "@agent1" })];
         mgr.save_agents(&agents).expect("save_agents failed");
         let loaded_agents = mgr.get_agents().expect("get_agents failed");
         assert_eq!(loaded_agents.len(), 1);
 
-        // 5. Teams
+        // 4. Teams
         let teams = vec![serde_json::json!({ "id": "team1", "name": "Core Squad" })];
         mgr.save_teams(&teams).expect("save_teams failed");
         let loaded_teams = mgr.get_teams().expect("get_teams failed");
         assert_eq!(loaded_teams.len(), 1);
 
-        // 6. Workspace State
-        mgr.save_workspace_state("activeProjectId", &serde_json::json!("p1")).expect("save_workspace_state failed");
-        let state_val = mgr.get_workspace_state("activeProjectId").expect("get_workspace_state failed");
-        assert_eq!(state_val, Some(serde_json::json!("p1")));
+        // 5. Workspace State
+        mgr.save_workspace_state("activeChannelId", &serde_json::json!("c1")).expect("save_workspace_state failed");
+        let state_val = mgr.get_workspace_state("activeChannelId").expect("get_workspace_state failed");
+        assert_eq!(state_val, Some(serde_json::json!("c1")));
 
-        // 7. Full Workspace Aggregate
+        // 6. Full Workspace Aggregate
         let full = mgr.get_full_workspace_data().expect("get_full_workspace_data failed");
-        assert_eq!(full["projects"].as_array().unwrap().len(), 1);
+        assert!(full.get("projects").is_none());
         assert_eq!(full["channels"].as_array().unwrap().len(), 1);
         assert_eq!(full["threads"].as_array().unwrap().len(), 1);
         assert_eq!(full["agents"].as_array().unwrap().len(), 1);
         assert_eq!(full["teams"].as_array().unwrap().len(), 1);
-        assert_eq!(full["workspaceState"]["activeProjectId"], "p1");
+        assert_eq!(full["workspaceState"]["activeChannelId"], "c1");
+    }
+
+    #[test]
+    fn test_remove_project_concept_migration_is_complete_and_idempotent() {
+        let mut conn = Connection::open_in_memory().expect("Failed to create in-memory db");
+        conn.execute_batch(
+            "
+            CREATE TABLE messages (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                channel_id TEXT,
+                project_id TEXT,
+                author_id TEXT NOT NULL,
+                author_name TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                content TEXT NOT NULL,
+                message_json TEXT NOT NULL
+            );
+            CREATE TABLE channels (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                data_json TEXT NOT NULL
+            );
+            CREATE INDEX idx_channels_project ON channels(project_id);
+            CREATE TABLE workspace_state (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL
+            );
+            CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                data_json TEXT NOT NULL
+            );
+            CREATE TABLE schema_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            ",
+        ).expect("Failed to create legacy schema");
+        conn.execute(
+            "INSERT INTO channels (id, project_id, name, data_json) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "c1",
+                "p1",
+                "general",
+                serde_json::json!({ "id": "c1", "projectId": "p1", "name": "general" }).to_string()
+            ],
+        ).expect("Failed to seed legacy channel");
+        conn.execute(
+            "INSERT INTO messages (id, thread_id, channel_id, project_id, author_id, author_name, timestamp, content, message_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                "m1",
+                "c1",
+                "c1",
+                "p1",
+                "user",
+                "User",
+                "now",
+                "hello",
+                serde_json::json!({ "id": "m1", "threadId": "c1", "projectId": "p1", "content": "hello" }).to_string()
+            ],
+        ).expect("Failed to seed legacy message");
+        conn.execute(
+            "INSERT INTO workspace_state (key, value_json) VALUES ('activeProjectId', ?1)",
+            params![serde_json::json!("p1").to_string()],
+        ).expect("Failed to seed legacy workspace state");
+
+        migrate_remove_project_concept(&mut conn).expect("Migration failed");
+        migrate_remove_project_concept(&mut conn).expect("Idempotent migration failed");
+
+        assert!(!table_has_column(&conn, "channels", "project_id").unwrap());
+        assert!(!table_has_column(&conn, "messages", "project_id").unwrap());
+
+        let channel_json: String = conn.query_row(
+            "SELECT data_json FROM channels WHERE id = 'c1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        let channel: serde_json::Value = serde_json::from_str(&channel_json).unwrap();
+        assert!(channel.get("projectId").is_none());
+
+        let message_json: String = conn.query_row(
+            "SELECT message_json FROM messages WHERE id = 'm1'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        let message: serde_json::Value = serde_json::from_str(&message_json).unwrap();
+        assert!(message.get("projectId").is_none());
+
+        let project_table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'projects'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(project_table_count, 0);
+
+        let legacy_state_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM workspace_state WHERE key = 'activeProjectId'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(legacy_state_count, 0);
     }
 
     #[test]

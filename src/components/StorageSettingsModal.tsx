@@ -393,7 +393,7 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-fg-secondary">
-                目前存放主题设置、面板拖拽宽度、选中的项目 ID，以及未发送草稿暂存（频道/私聊/议题三维隔离，当前共 {draftStats.count} 处草稿，约 {formatBytes(draftStats.sizeBytes)}）。聊天消息已移入原生 SQLite，彻底远离配额上限。
+                目前存放主题设置、面板拖拽宽度，以及未发送草稿暂存（频道/私聊/议题三维隔离，当前共 {draftStats.count} 处草稿，约 {formatBytes(draftStats.sizeBytes)}）。聊天消息已移入原生 SQLite，彻底远离配额上限。
               </p>
               <div className="flex justify-end gap-2 pt-1">
                 {draftStats.count > 0 && (

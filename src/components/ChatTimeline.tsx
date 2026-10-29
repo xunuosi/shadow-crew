@@ -793,7 +793,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                   </span>
                 </div>
                 <div className="text-[11px] text-fg-secondary mt-0.5">
-                  默认仅创建者入驻。点击右侧按钮拉入专职 Agent，开启项目需求推演与代码实现协作。
+                  默认仅创建者入驻。点击右侧按钮拉入专职 Agent，开启频道需求推演与代码实现协作。
                 </div>
               </div>
             </div>

@@ -1376,7 +1376,6 @@ async function runEpochAndBarrierTests() {
     const initialChannels: Channel[] = [
       {
         id: 'ch-1',
-        projectId: 'proj-1',
         name: 'arch-review',
         description: 'Architecture Review',
         creatorId: 'user-1',
@@ -1389,7 +1388,6 @@ async function runEpochAndBarrierTests() {
       },
       {
         id: 'ch-2',
-        projectId: 'proj-1',
         name: 'other-chan',
         description: 'Other Channel',
         creatorId: 'user-1',

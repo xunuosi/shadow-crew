@@ -491,16 +491,10 @@ fn db_clear_safe_cache(state: State<'_, AppState>) -> Result<u64, String> {
     state.db_manager.clear_safe_cache(&log_path).map_err(|e| e.to_string())
 }
 
-/// Tauri Command: 获取完整工作区聚合数据 (projects, channels, threads, agents, teams, workspaceState)
+/// Tauri Command: 获取完整工作区聚合数据 (channels, threads, agents, teams, workspaceState)
 #[tauri::command]
 fn db_get_full_workspace_data(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     state.db_manager.get_full_workspace_data().map_err(|e| e.to_string())
-}
-
-/// Tauri Command: 保存项目列表
-#[tauri::command]
-fn db_save_projects(projects: Vec<serde_json::Value>, state: State<'_, AppState>) -> Result<(), String> {
-    state.db_manager.save_projects(&projects).map_err(|e| e.to_string())
 }
 
 /// Tauri Command: 保存频道列表
@@ -789,7 +783,6 @@ async fn main() {
             db_get_storage_stats,
             db_clear_safe_cache,
             db_get_full_workspace_data,
-            db_save_projects,
             db_save_channels,
             db_save_threads,
             db_save_agents,

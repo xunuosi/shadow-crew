@@ -10,7 +10,6 @@ import {
 interface CreateChannelModalProps {
   isOpen: boolean;
   onClose: () => void;
-  activeProjectId: string;
   teams: AgentTeam[];
   agents: Agent[];
   currentUserId?: string;
@@ -20,7 +19,6 @@ interface CreateChannelModalProps {
 export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
   isOpen,
   onClose,
-  activeProjectId,
   teams,
   agents,
   currentUserId = 'user-developer',
@@ -77,7 +75,6 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
     const memberIds = Array.from(new Set([currentUserId, ...initialInvitedAgentIds]));
 
     onCreateChannel({
-      projectId: activeProjectId,
       creatorId: currentUserId,
       name: cleanName,
       kind: 'general',

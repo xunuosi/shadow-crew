@@ -1,4 +1,4 @@
-import { Message, Project, Channel, Thread, Agent, AgentTeam } from '../types';
+import { Message, Channel, Thread, Agent, AgentTeam } from '../types';
 
 export interface StorageStats {
   databasePath: string;
@@ -340,7 +340,6 @@ export async function getAgentDirInfo(agentId: string): Promise<ChannelDirInfo |
 }
 
 export interface FullWorkspaceData {
-  projects: Project[];
   channels: Channel[];
   threads: Thread[];
   agents: Agent[];
@@ -364,24 +363,6 @@ export async function loadFullWorkspaceDataFromDb(): Promise<FullWorkspaceData |
     }
   }
   return null;
-}
-
-/**
- * 保存项目列表至 SQLite
- */
-export async function saveProjectsToDb(projects: Project[]): Promise<void> {
-  const invoke = getTauriInvoke();
-  if (invoke) {
-    try {
-      await invoke('db_save_projects', { projects });
-    } catch (e) {
-      console.error('[dbClient] db_save_projects failed:', e);
-    }
-    return;
-  }
-  try {
-    localStorage.setItem('shinobi_projects', JSON.stringify(projects));
-  } catch {}
 }
 
 /**
@@ -457,7 +438,7 @@ export async function saveTeamsToDb(teams: AgentTeam[]): Promise<void> {
 }
 
 /**
- * 保存单个工作区状态项至 SQLite (如 activeProjectId, activeChannelId, activeThreadId, subThreads)
+ * 保存单个工作区状态项至 SQLite (如 activeChannelId, activeThreadId, subThreads)
  */
 export async function saveWorkspaceStateToDb(key: string, value: any): Promise<void> {
   const invoke = getTauriInvoke();
@@ -471,7 +452,6 @@ export async function saveWorkspaceStateToDb(key: string, value: any): Promise<v
   }
   try {
     localStorage.setItem(`shinobi_${key}`, JSON.stringify(value));
-    if (key === 'activeProjectId') localStorage.setItem('shinobi_active_project_id', typeof value === 'string' ? value : JSON.stringify(value));
     if (key === 'activeChannelId') localStorage.setItem('shinobi_active_channel_id', typeof value === 'string' ? value : JSON.stringify(value));
     if (key === 'activeThreadId') localStorage.setItem('shinobi_active_thread_id', typeof value === 'string' ? value : JSON.stringify(value));
   } catch {}

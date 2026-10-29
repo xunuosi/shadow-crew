@@ -7,7 +7,6 @@ export interface AcpSendPromptOptions {
   agent: Agent;
   roomId: string;
   prompt: string;
-  projectId?: string;
   channelId?: string;
   systemPrompt?: string;
   isDm?: boolean;

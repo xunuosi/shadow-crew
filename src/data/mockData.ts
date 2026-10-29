@@ -1,5 +1,4 @@
 import { 
-  Project,
   Agent, 
   AgentTeam, 
   Channel, 
@@ -9,18 +8,6 @@ import {
   AcpRpcLog, 
   WorkspaceFile 
 } from '../types';
-
-export const INITIAL_PROJECTS: Project[] = [
-  {
-    id: 'project-shadow-crew',
-    name: 'shadow-crew',
-    description: '基于 ACP 的多 Agent 替身协作工作台 (Rust + Tauri + Nostr)',
-    repoUrl: 'https://github.com/shinobi-workspace/shadow-crew',
-    localWorkspaceRoot: '~/.shadow-crew',
-    assignedAgentIds: ['agent-1789029918725', 'agent-shinobi-core'],
-    createdAt: Date.now() - 86400000 * 7,
-  },
-];
 
 // 本地 Shinobi Native Agent 与 OpenClaw Agent
 export const INITIAL_AGENTS: Agent[] = [

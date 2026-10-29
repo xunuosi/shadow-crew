@@ -1,17 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// 项目实体 (顶级工作空间边界)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectEntity {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub repo_url: Option<String>,
-    pub local_workspace_root: String,
-    pub assigned_agent_pubkeys: Vec<String>,
-    pub created_at: u64,
-}
-
 /// 频道分类 (功能特性 / 需求分析 / 具体任务)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -34,7 +22,6 @@ pub enum ChannelStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelEntity {
     pub id: String,
-    pub project_id: String,
     pub creator_pubkey: String,           // 创建者公钥 (拥有 Owner 权限)
     pub name: String,
     pub kind: ChannelKind,
@@ -61,7 +48,6 @@ pub enum TopicStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelMessage {
     pub id: String,
-    pub project_id: String,
     pub channel_id: String,
     pub pubkey: String,
     pub author_name: String,

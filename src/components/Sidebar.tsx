@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Channel, Agent, AgentTeam, Project, ActiveAgentExecution } from '../types';
+import { Channel, Agent, AgentTeam, ActiveAgentExecution } from '../types';
 import { 
   Hash, 
   Lock, 
@@ -24,7 +24,6 @@ import {
   UserPlus,
   HardDrive
 } from 'lucide-react';
-import { ProjectSwitcher } from './ProjectSwitcher';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { NinjaIcon } from './NinjaIcon';
 import { useResizablePanel } from '../hooks/useResizablePanel';
@@ -33,9 +32,6 @@ import { useAllDrafts } from '../services/draftService';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
 
 interface SidebarProps {
-  projects?: Project[];
-  activeProjectId?: string;
-  onSelectProject?: (projectId: string) => void;
   channels: Channel[];
   activeChannelId: string;
   onSelectChannel: (channelId: string) => void;
@@ -52,16 +48,12 @@ interface SidebarProps {
   activeThreadId?: string;
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
-  currentWorkspace?: string;
   currentMainView?: 'chat' | 'agents';
   onSelectMainView?: (view: 'chat' | 'agents') => void;
   onOpenStorageModal?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
-  projects,
-  activeProjectId,
-  onSelectProject,
   channels,
   activeChannelId,
   onSelectChannel,
@@ -78,7 +70,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeThreadId,
   isCollapsed = false,
   onToggleCollapse,
-  currentWorkspace = 'shadow-crew',
   currentMainView = 'chat',
   onSelectMainView,
   onOpenStorageModal,
@@ -93,6 +84,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const drafts = useAllDrafts();
   const isChatView = currentMainView === 'chat';
+  const visibleChannels = channels.filter((channel) => channel.status !== 'deleted');
 
   return (
     <aside
@@ -141,30 +133,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      {/* 1.1 Project Switcher (L0 项目空间切换) */}
-      {projects && activeProjectId && onSelectProject ? (
-        <ProjectSwitcher
-          projects={projects}
-          activeProjectId={activeProjectId}
-          onSelectProject={onSelectProject}
-          agents={agents}
-        />
-      ) : (
-        <div className="px-3 py-2 border-b border-border bg-surface-subtle flex items-center justify-between">
-          <div className="flex items-center gap-2 truncate">
-            <div className="w-6 h-6 rounded-lg bg-purple-500/20 text-purple-600 dark:text-purple-300 flex items-center justify-center text-xs font-bold shrink-0 border border-purple-500/30">
-              🥷
-            </div>
-            <div className="truncate">
-              <div className="font-bold text-fg text-xs truncate flex items-center gap-1">
-                <span>{currentWorkspace}</span>
-              </div>
-              <div className="text-[9px] text-fg-muted font-mono truncate">Active Project Space</div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* 2. Global Search Pill */}
       <div className="p-2.5">
         <div className="relative flex items-center bg-surface-subtle border border-border rounded-lg px-2.5 py-1.5 focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/30 transition-all">
@@ -203,11 +171,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
       </div>
 
-      {/* 4. Channels Section (功能、需求与任务频道 - 按当前项目过滤) */}
+      {/* 4. Channels Section (功能、需求与任务频道) */}
       <div className="flex-1 overflow-y-auto px-2 space-y-4">
         <div>
           <div className="px-2.5 mb-1.5 flex items-center justify-between text-[11px] text-fg-muted uppercase tracking-wider font-semibold">
-            <span>Channels ({channels.filter((c) => (!activeProjectId || !c.projectId || c.projectId === activeProjectId) && c.status !== 'deleted').length})</span>
+            <span>Channels ({visibleChannels.length})</span>
             <button
               onClick={onOpenCreateChannel}
               className="text-fg-muted hover:text-accent p-0.5 rounded hover:bg-surface-hover transition-colors cursor-pointer"
@@ -218,7 +186,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
 
           <div className="space-y-0.5">
-            {channels.filter((c) => (!activeProjectId || !c.projectId || c.projectId === activeProjectId) && c.status !== 'deleted').length === 0 ? (
+            {visibleChannels.length === 0 ? (
               <button
                 type="button"
                 onClick={onOpenCreateChannel}
@@ -228,9 +196,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span className="text-[11px] font-medium block">暂无频道，点击新建</span>
               </button>
             ) : (
-              channels
-                .filter((c) => (!activeProjectId || !c.projectId || c.projectId === activeProjectId) && c.status !== 'deleted')
-                .map((channel) => {
+              visibleChannels.map((channel) => {
                 const isActive = isChatView && channel.id === activeChannelId;
                 const memberCount = channel.memberIds?.length || 1;
 
@@ -485,7 +451,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <ThemeSwitcher variant="compact" placement="top-end" />
             <div 
               className="p-1 text-fg-muted hover:text-accent transition-colors cursor-pointer"
-              title={`当前关联仓库: ${currentWorkspace}`}
+              title="本地工作空间"
             >
               <NinjaIcon className="w-4 h-4 text-accent" />
             </div>

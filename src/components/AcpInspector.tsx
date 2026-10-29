@@ -1001,7 +1001,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                 </span>
               </div>
               <p className="text-[10px] text-fg-muted leading-relaxed">
-                所有底层原始 stdio 通信报文（发送、返回、报错）已持久化写入当前项目：
+                所有底层原始 stdio 通信报文（发送、返回、报错）已持久化写入当前工作空间：
               </p>
               <div className="flex items-center justify-between bg-surface border border-border px-2 py-1 rounded font-mono text-[10px] text-fg">
                 <span className="truncate select-all text-emerald-600 dark:text-emerald-400">logs/acp.log</span>

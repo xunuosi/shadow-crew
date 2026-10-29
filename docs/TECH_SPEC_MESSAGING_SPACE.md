@@ -15,7 +15,7 @@ Shinobi 采用 **Rust 内核 + Tauri 桌面端 + Axum Nostr Relay + ACP (Agent C
 │                                Shinobi Desktop (Tauri v2)                                │
 │   ┌──────────────────────────────────────────────────────────────────────────────────┐   │
 │   │ UI 层 (React 19 + Tailwind CSS + Lucide)                                         │   │
-│   │  • Project / Channel 导航树                                                      │   │
+│   │  • Channel / Topic 导航树                                                        │   │
 │   │  • Main Stream (普通消息 + Topic 议题卡片)                                       │   │
 │   │  • Topic Thread Drawer (单层闭环推演面板 + Unified Diff 审查)                    │   │
 │   └────────────────────────────────────────┬─────────────────────────────────────────┘   │
@@ -30,7 +30,7 @@ Shinobi 采用 **Rust 内核 + Tauri 桌面端 + Axum Nostr Relay + ACP (Agent C
                                         ▼
 ┌──────────────────────────────────────────────────────────────────────────────────────────┐
 │                     Shinobi 本地/团队 Relay (Axum + Tokio Broadcast)                     │
-│  • 基于 Nostr NIP-01 / NIP-29 事件模型，存储与分发 Project / Channel / Thread 消息       │
+│  • 基于 Nostr NIP-01 / NIP-29 事件模型，存储与分发 Channel / Topic / Thread 消息         │
 │  • secp256k1 签名鉴权，保证人机行为全链路可溯源、不可伪造                                │
 └──────────────────────────────────────────────────────────────────────────────────────────┘
                                         ▲
@@ -59,19 +59,7 @@ Shinobi 采用 **Rust 内核 + Tauri 桌面端 + Axum Nostr Relay + ACP (Agent C
 ```rust
 use serde::{Deserialize, Serialize};
 
-/// 1. 项目实体 (顶级工作空间边界)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectEntity {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub repo_url: Option<String>,
-    pub local_workspace_root: String,
-    pub assigned_agent_pubkeys: Vec<String>,
-    pub created_at: u64,
-}
-
-/// 2. 频道实体与生命周期状态
+/// 1. 频道实体与生命周期状态
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelStatus {
@@ -83,7 +71,6 @@ pub enum ChannelStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelEntity {
     pub id: String,
-    pub project_id: String,
     pub creator_pubkey: String,           // [准入核心] 频道创建者公钥 (拥有管理与删除权限)
     pub name: String,
     pub kind: ChannelKind,
@@ -96,7 +83,7 @@ pub struct ChannelEntity {
     pub deleted_at: Option<u64>,          // 销毁时间戳 (软删除审计与级联清理)
 }
 
-/// 3. Topic 议题状态机
+/// 2. Topic 议题状态机
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TopicStatus {
@@ -106,11 +93,10 @@ pub enum TopicStatus {
     Archived,      // 已归档
 }
 
-/// 4. 结构化消息实体
+/// 3. 结构化消息实体
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelMessage {
     pub id: String,
-    pub project_id: String,
     pub channel_id: String,
     pub pubkey: String,
     pub author_name: String,
@@ -139,21 +125,10 @@ pub struct ChannelMessage {
 export type ChannelKind = 'feature' | 'requirement' | 'task';
 export type TopicStatus = 'open' | 'investigating' | 'resolved' | 'archived';
 
-export interface Project {
-  id: string;
-  name: string;
-  description: string;
-  repoUrl?: string;
-  localWorkspaceRoot: string;
-  assignedAgentIds: string[];
-  createdAt: number;
-}
-
 export type ChannelStatus = 'active' | 'archived' | 'deleted';
 
 export interface Channel {
   id: string;
-  projectId: string;
   creatorId: string;           // 频道创建者 ID (Owner，具备删除权限)
   name: string;
   kind: ChannelKind;
@@ -169,7 +144,6 @@ export interface Channel {
 
 export interface Message {
   id: string;
-  projectId: string;
   channelId: string;
   authorId: string;
   authorName: string;
@@ -310,28 +284,23 @@ export interface Message {
 
 ## 4. 上下文沙盒与隔离引擎 (Context Sandboxing Engine)
 
-系统解决“多 Agent 协作时上下文膨胀与串台”的核心机制是 **三级上下文沙盒 (Three-Tier Sandbox)**：
+系统解决“多 Agent 协作时上下文膨胀与串台”的核心机制是 **Channel 顶层边界 + Topic 独立 ACP Session**：
 
 ```mermaid
 graph LR
-    subgraph Level1 ["L1 项目层 (只读基线)"]
-        P_Spec["Project Rules<br/>编码规范 · 架构分层约定 · 仓库索引"]
-    end
-
-    subgraph Level2 ["L2 频道层 (工作空间沙盒)"]
+    subgraph Level1 ["L0 频道层 (工作空间沙盒)"]
         C_Work["Active Git Branch<br/>当前功能特性分支 · 挂载的工作目录"]
     end
 
-    subgraph Level3 ["L3 议题层 (独立 ACP Session)"]
+    subgraph Level2 ["L1 议题层 (独立 ACP Session)"]
         direction TB
         T_Head["Topic 议题头消息<br/>(业务背景与目标陈述)"]
         T_Replies["Thread 回复列表<br/>(1..N 轮推演与问答)"]
         T_Head --> T_Replies
     end
 
-    P_Spec --> Assembly["Context Assembly Engine<br/>(动态组装器)"]
     C_Work --> Assembly
-    Level3 --> Assembly
+    Level2 --> Assembly
     Assembly --> LLM["LLM 推理执行<br/>(无任何无关闲聊消息污染)"]
 ```
 
@@ -346,7 +315,7 @@ graph LR
 ### 4.2 提示词组装算法 (Prompt Assembly Formula)
 当用户在某个 Topic Thread 内呼叫 Agent 时，宿主内核构建的上下文由且仅由以下部分组成：
 
-$$\text{Final Prompt} = \text{System Prompt}_{\text{Project}} + \text{Workspace Preamble}_{\text{Channel}} + \text{Topic Head} + \sum_{i=1}^{N} \text{Thread Reply}_i$$
+$$\text{Final Prompt} = \text{Workspace Preamble}_{\text{Channel}} + \text{Topic Head} + \sum_{i=1}^{N} \text{Thread Reply}_i$$
 
 * **严格排除项**：
   1. ❌ **主频道历史聊天**：主流里团队成员的任何闲聊、通知、其他 Topic 卡片一律不装入；
@@ -356,7 +325,7 @@ $$\text{Final Prompt} = \text{System Prompt}_{\text{Project}} + \text{Workspace 
 ### 4.3 ACP Session 标识符生成契约
 宿主与底层的 ACP Agent 守护进程交互时，动态计算并下发隔离的 `session_id`：
 ```rust
-let session_id = format!("shinobi:{}:{}:{}", project_id, channel_id, topic_head_id);
+let session_id = format!("shinobi:{}:{}", channel_id, topic_head_id);
 ```
 Agent 进程针对不同 `session_id` 分配独立的内部会话缓存（Conversation Memory）和工具会话状态，保证物理级隔离。
 
@@ -370,13 +339,13 @@ Agent 进程针对不同 `session_id` 分配独立的内部会话缓存（Conver
 ### 4.5 频道销毁时的级联回收与进程清理 (Cascading Teardown on Deletion)
 当频道被 Owner 或 Admin 执行删除并经 Relay 校验合法后，系统执行三级级联资源释放：
 1. **ACP Session 强制熔断**：
-   - 宿主 `acp_manager` 检索当前所有匹配 `shinobi:<project_id>:<channel_id>:*` 的活动 Session。
+   - 宿主 `acp_manager` 检索当前所有匹配 `shinobi:<channel_id>:*` 的活动 Session。
    - 向所有相关 Agent 进程发送 JSON-RPC 2.0 取消调用并断开 stdio 读写流；若存在卡死或高负载计算，下发 `kill` 信号回收子进程。
 2. **本地文件句柄与 Git 锁释放**：
    - 释放该频道对应工作目录（`workspace_root`）下的所有文件编辑锁定（File Locks）。
 3. **前端状态清空与自动路由**：
    - 客户端收到 `channel_tombstone` 事件后，从侧边栏导航安全移除该频道，并清空该频道下所有消息与 Topic 内存缓存；
-   - 若用户当前正聚焦于被删除的频道或其 Topic 抽屉，系统自动平滑将视图导向 Project 默认主频道。
+   - 若用户当前正聚焦于被删除的频道或其 Topic 抽屉，系统自动平滑将视图导向首个剩余频道。
 
 ---
 
@@ -388,7 +357,6 @@ Agent 进程针对不同 `session_id` 分配独立的内部会话缓存（Conver
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcpSessionPromptParams {
     pub session_id: String,
-    pub project_id: String,       // [新增] 项目上下文
     pub channel_id: String,       // [新增] 频道/功能上下文
     pub topic_head_id: Option<String>, // [新增] 议题头 ID (Thread Scope)
     pub workspace_cwd: String,
@@ -403,7 +371,7 @@ pub struct AcpSessionPromptParams {
 
 | 阶段 | 任务内容 | 影响模块 | 预期产出 |
 | :--- | :--- | :--- | :--- |
-| **Phase 1** | **协议与类型扩展** | `crates/shinobi-protocol`<br/>`src/types.ts` | 增加 `Project`、更新 `ChannelKind`、`is_topic_head` 及 Nostr Tags 规范。 |
-| **Phase 2** | **Nostr Relay 存储与过滤** | `crates/shinobi-server` | 实现按 `project_id`、`channel_id`、`topic_id` 的多路事件索引与过滤查询。 |
+| **Phase 1** | **协议与类型扩展** | `crates/shinobi-protocol`<br/>`src/types.ts` | 以 Channel 为最外层实体，更新 `ChannelKind`、`is_topic_head` 及 Nostr Tags 规范。 |
+| **Phase 2** | **Nostr Relay 存储与过滤** | `crates/shinobi-server` | 实现按 `channel_id`、`topic_id` 的多路事件索引与过滤查询。 |
 | **Phase 3** | **会话沙盒引擎实现** | `crates/shinobi-agent`<br/>`src-tauri` | 实现 `SessionScope::Thread` 组装器，确保调用 ACP 时仅装配 Topic 范围上下文。 |
-| **Phase 4** | **桌面端 UI 重构** | `src/components`<br/>`src/App.tsx` | 实现三栏布局：Project 切换器、Channel 列表、主频道 Topic 卡片与右侧 Thread 抽屉面板。 |
+| **Phase 4** | **桌面端 UI 重构** | `src/components`<br/>`src/App.tsx` | 实现三栏布局：Channel 列表、主频道 Topic 卡片与右侧 Thread 抽屉面板。 |
