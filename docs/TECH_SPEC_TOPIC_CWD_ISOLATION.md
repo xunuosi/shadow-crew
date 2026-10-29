@@ -15,7 +15,7 @@
 
 本方案将 Channel 与 Topic 的执行目录彻底解耦：
 
-1. Channel、Topic 和 DM 都拥有自己的 `Workspace Binding`。
+1. Channel、Channel Topic 和 DM Topic 都拥有自己的不可变 `Workspace Binding`；DM 主会话使用固定的 Agent 专属目录。
 2. `cwd` 在实体创建时一次性确定，创建后永久不可修改。
 3. Topic 不再从 Channel 动态推导 `cwd`，也不再隐式回退到 Channel 目录。
 4. ACP Session Key、SQLite 会话记录、MCP Pool、产物目录、Patch 合入和清理屏障全部以 `workspaceBindingId` 为作用域。
@@ -34,33 +34,33 @@ Topic 默认工作目录定稿为：
 核心不变量：
 
 ```text
-一个实体（Channel / Topic / DM）
+一个 Channel / Topic / DM Topic
   = 一个不可变 Workspace Binding
   = 一个确定的 cwd
   = 一个确定的 artifactRoot
+
+DM 主会话
+  = ~/.shadow-crew/agents/<agentId>/
+  = ~/.shadow-crew/agents/<agentId>/artifacts/
+  = 不创建可变 Workspace Binding
 ```
 
 ---
 
 ## 2. 背景与约束
 
-### 2.1 当前实现现状
+### 2.1 当前实现
 
-当前系统已经具备 Session 隔离基础：
+当前系统已经具备：
 
 - 前端 Session Key 区分 Channel、Topic、DM、讨论模式和 Agent。
+- Channel、Channel Topic、DM Topic 分别持久化 Workspace Binding。
+- DM 主会话固定使用 `~/.shadow-crew/agents/<agentId>/`，DM Topic 使用独立 Binding。
 - 同一 Agent 使用独立 ACP 进程，不同 Agent 可以并行。
 - 同一 Agent 的 Prompt 由 `prompt_lock` 串行下发。
 - ACP Session 在 SQLite 中持久化 `workspace_cwd`，恢复时校验路径。
-
-但当前仍存在以下缺口：
-
-1. Channel 主消息流和其下所有 Topic 都使用 `~/.shadow-crew/channels/<channelId>` 作为 cwd。
-2. Topic 没有独立 Workspace Binding。
-3. Patch 归档目录只根据 `channelId + topicId` 推导。
-4. MCP Pool 主要按 Channel 隔离，没有 Topic 工作空间维度。
-5. 原生 Agent 仍以进程当前目录作为部分工具执行上下文。
-6. 远程 ACP Prompt 未传递 Topic Workspace 信息。
+- 本地和远程 ACP Prompt 均显式传递 `workspaceBindingId`、`workspaceUri/cwd` 与 `scopeType`。
+- Topic Binding 缺失时 Fail-Closed，不猜测或回退到 Channel cwd。
 
 ### 2.2 ACP 协议约束
 
@@ -218,7 +218,7 @@ cwd          = ~/.shadow-crew/channels/<channelId>/topics/<topicId>/
 artifactRoot = ~/.shadow-crew/channels/<channelId>/topics/<topicId>/artifacts/
 ```
 
-Topic 默认目录虽然在物理上位于 Channel 目录内部，但其执行作用域是 Topic 自己的 Binding。原生 Agent 的 Topic `ownerRoot` 必须设置为 Topic cwd，而不是 Channel cwd。
+Topic 默认目录虽然在物理上位于 Channel 目录内部，但其执行作用域是 Topic 自己的 Binding。ACP Session 的 `cwd` 与 `ownerRoot` 必须设置为 Topic cwd，而不是 Channel cwd。
 
 该路径为本方案的最终定稿：
 
@@ -230,12 +230,21 @@ $HOME/.shadow-crew/channels/<channelId>/topics/<topicId>/
 
 ### 5.3 DM 默认路径
 
+DM 主会话：
+
 ```text
 cwd          = ~/.shadow-crew/agents/<agentId>/
 artifactRoot = ~/.shadow-crew/agents/<agentId>/artifacts/
 ```
 
-若未来支持一个 Agent 拥有多段私聊，应改为 `dm/<conversationId>`，不能继续只用 `agentId`。
+DM Topic：
+
+```text
+cwd          = ~/.shadow-crew/agents/<agentId>/topics/<topicId>/
+artifactRoot = ~/.shadow-crew/agents/<agentId>/topics/<topicId>/artifacts/
+```
+
+DM 主会话与每个 DM Topic 必须创建不同 ACP Session。
 
 ### 5.4 自定义 cwd
 
@@ -322,12 +331,13 @@ Topic 默认目录
 统一定义：
 
 ```text
-channel:{channelId}:{roomId}:{agentId}:{workspaceBindingId}
-topic:{channelId}:{topicId}:{discussionMode}:{agentId}:{workspaceBindingId}
-dm:{agentId}:{dmThreadId}:{workspaceBindingId}
+channel:{channelId}:{roomId}:ws-{workspaceBindingId}:{agentId}
+topic:{channelId}:{topicId}:{discussionMode}:ws-{workspaceBindingId}:{agentId}
+dm:{agentId}:{dmThreadId}
+dmtopic:{agentId}:{topicId}:{discussionMode}:ws-{workspaceBindingId}
 ```
 
-若 Host 内部按 Agent 隔离 `RunningAgent`，`agentId` 仍需保留在统一 Session Key 中，避免前端、SQLite、清理屏障和 MCP Pool 使用不同命名空间。
+Host 内部已经按 Agent 隔离 `RunningAgent`；上述前两类 Key 中的末尾 `agentId` 是前端水位线与执行状态复合键，Host 统一 Key 可省略该后缀。DM Topic Key 自身包含 Agent ID，用于跨 Agent 清理与解析。
 
 ### 7.2 Session Workspace Scope
 
@@ -335,7 +345,7 @@ Host 统一解析以下结构：
 
 ```ts
 interface SessionWorkspaceScope {
-  scopeType: 'channel' | 'topic' | 'dm';
+  scopeType: 'channel' | 'topic' | 'dm' | 'dm_topic';
   channelId?: string;
   ownerId: string;
   agentId: string;
@@ -352,7 +362,8 @@ interface SessionWorkspaceScope {
 ```text
 Channel Session → Channel Binding
 Topic Session   → Topic Binding
-DM Session      → DM Binding
+DM Session      → ~/.shadow-crew/agents/<agentId>/
+DM Topic Session → Topic Binding
 ```
 
 禁止规则：
@@ -368,7 +379,7 @@ Binding 缺失、损坏或路径不可用时必须 Fail-Closed。
 
 ### 7.3 Session 生命周期
 
-- Channel / Topic / DM 的作用域必须由显式 `scopeType` 传递，禁止根据 ID 前缀猜测。
+- Channel / Topic / DM / DM Topic 的作用域必须由显式 `scopeType` 传递，禁止根据 ID 前缀猜测。
 - Topic 创建后首次调用 Agent 时创建 ACP Session。
 - Session 创建后，`workspaceBindingId + cwd` 永久稳定。
 - Session 恢复只允许在同一 Binding 中进行。
@@ -422,15 +433,15 @@ Prompt 派发必须携带完整 Scope：
 不同 Agent：可以并行
 ```
 
-串行化只保证当前原生运行时不会发生进程级 cwd 竞态，不能被误认为 Session 已具备并行 cwd 隔离能力。
+串行化只保证当前 ACP Promise 与 stdio 交互顺序稳定，不能被误认为同一 Agent 已具备并行 Prompt 能力。
 
 ---
 
-## 9. 原生 Agent 运行时
+## 9. ACP Endpoint 与 Session 运行时
 
 ### 9.1 Session State
 
-原生 Agent 的 Session State 至少保存：
+Shadow Crew 持久化的 ACP Session State 至少保存：
 
 ```text
 session_id
@@ -444,7 +455,7 @@ mcp_pool_key
 
 ### 9.2 Topic ownerRoot
 
-Topic Session 的 `ownerRoot` 必须等于 Topic cwd。
+ACP `session/new`、`session/load`、`session/resume` 与 Prompt 元数据中的 `ownerRoot/cwd` 必须等于 Topic cwd。
 
 以下行为禁止：
 
@@ -454,27 +465,21 @@ Topic Session 的 `ownerRoot` 必须等于 Topic cwd。
 
 ### 9.3 文件与工具调用
 
-最终实现不得将进程当前目录作为业务路径真值。
+Agent 端点的文件与工具执行由 ACP 端点负责，Shadow Crew 不实现内置工具循环，但必须传递显式 Workspace Context：
 
 要求：
 
-- 文件读写使用 `workspaceDir.join(relativePath)`。
-- Shell 执行使用命令级 `.current_dir(workspaceDir)`。
-- Patch、Search、Git、MCP 和产物写入都显式接收 Workspace Context。
-- 所有路径操作再次校验 `ownerRoot`。
-- 进程级 `chdir` 只能作为外部工具兼容层使用，不能决定 Session 所属工作空间。
-
-如果暂时保留进程级 `chdir`：
-
-- 必须继续保证同一 Agent Prompt 串行。
-- 禁止在未完成逐调用 cwd 改造前解除 `prompt_lock`。
-- 必须新增并发 cwd 回归测试，验证不同 Session 不会互相覆盖目录。
+- `session/new` 明确传 `cwd`、`workspaceRoot`、`workspaceBindingId`、`artifactRoot`。
+- `session/prompt` 重放相同 Workspace Context，并传 `scopeType`。
+- 远程 ACP 传 `workspaceBindingId`、`workspaceUri`、`scopeType`。
+- Agent 端点若返回 Diff 或 Artifact，Host 只允许归档到当前 Binding 的 artifactRoot。
+- Shadow Crew 不尝试在 Session 建立后修改 ACP 端点的真实进程 cwd。
 
 ### 9.4 并发扩展方案
 
 若未来要求同一 Agent 并行处理多个 Topic，按优先级选择：
 
-1. **首选**：原生运行时支持逐 Session、逐工具调用的显式 cwd。
+1. **首选**：确认目标 ACP 端点支持并发 Session 与逐 Session cwd。
 2. **兼容回退**：ACP 进程池按 `agentId + workspaceBindingId` 分片。
 3. **禁止**：多个 Session 共享一个进程级 cwd 并并发执行。
 
@@ -681,10 +686,10 @@ Topic 创建：
 - Session 恢复校验 Binding 与 cwd。
 - 清理屏障按 Binding 和 Topic 精确作用。
 
-### Phase 3：原生 Agent 与 MCP
+### Phase 3：ACP Endpoint 与 MCP
 
 - Topic ownerRoot 切换为 Topic cwd。
-- 文件、Shell、Git、Search 工具改为显式 Workspace Context。
+- ACP Session 显式传递 Workspace Context。
 - MCP Pool Key 加入 Binding。
 - 产物工具由 Channel 维度切换到 Binding 维度。
 
@@ -758,8 +763,8 @@ Topic 创建：
 | Host Session 创建、恢复与 Prompt | `src-tauri/src/acp_manager.rs` |
 | Binding、Session 持久化 | `src-tauri/src/db_manager.rs` |
 | Patch 合入与归档 | `src-tauri/src/main.rs`、`src/services/acpClient.ts` |
-| 原生 Agent Session 与 cwd | `crates/shadow-crew-agent/src/main.rs` |
-| MCP Pool 与产物工具 | `crates/shadow-crew-agent/src/main.rs`、`crates/shadow-crew-dev-mcp/src/tools/fs.rs` |
+| ACP 端点 Session 与 cwd | `src-tauri/src/acp_manager.rs`、外部 ACP 实现 |
+| MCP 产物工具 | `crates/shadow-crew-dev-mcp/src/tools/fs.rs` |
 | 远程 ACP Workspace 声明 | `src/services/acpClient.ts`、远程 Bridge |
 
 ---

@@ -592,6 +592,7 @@ async function runAllVerifications() {
     () => {
       const mockTopic: TopicMessageData = {
         id: 'adr-001',
+        scopeType: 'channel',
         channelId: 'ch-1',
         workspaceBindingId: 'ws-topic-adr-001',
         title: '订单幂等防重与分布式锁架构决议',

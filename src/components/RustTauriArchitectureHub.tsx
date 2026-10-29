@@ -68,7 +68,6 @@ export const RustTauriArchitectureHub: React.FC<RustTauriArchitectureHubProps> =
       if (testType === 'spawn') {
         setSimLogs(prev => [
           ...prev,
-          { timestamp: now, level: 'INFO', tag: 'shinobi_desktop::acp_manager', message: 'tokio::process::Command spawning "cargo run --bin shinobi-agent" in cwd: /workspace/shinobi' },
           { timestamp: now, level: 'INFO', tag: 'shinobi_agent::init', message: 'ACP agent online (PID: 41982). Stdio piped. Attached SQLite memory bank.' },
         ]);
         setSimMetrics(prev => ({ ...prev, activeSubprocesses: prev.activeSubprocesses + 1 }));

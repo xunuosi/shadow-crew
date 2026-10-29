@@ -418,7 +418,6 @@ export function resolveAgentModelConfig(agent: Agent): AgentModelConfig {
   const fallback = { ...globalConfig };
   if (
     agent.modelBadge &&
-    agent.modelBadge !== 'Rust Native' &&
     agent.modelBadge !== 'Local ACP' &&
     agent.modelBadge !== 'Remote ACP' &&
     agent.modelBadge !== 'ACP Stdio' &&

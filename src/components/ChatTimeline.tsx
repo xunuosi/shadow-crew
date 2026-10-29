@@ -277,9 +277,6 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
 
   // Compute parallel landing topics and blast-radius file overlap map across the channel
   const { parallelLandingTopics, topicOverlapMap } = useMemo(() => {
-    if (activeThread?.type === 'dm') {
-      return { parallelLandingTopics: [] as TopicMessageData[], topicOverlapMap: {} as Record<string, string[]> };
-    }
     const topics = messages
       .filter((m) => m.type === 'topic' && m.topicData)
       .map((m) => m.topicData!);
@@ -324,9 +321,8 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   }, [messages, activeThread?.type]);
 
   const filteredMessages = messages.filter((m) => {
-    // 私聊模式防御性过滤：绝对不渲染议题卡片、共识卡片、频道准入拦截提示等频道专属系统消息
     if (activeThread?.type === 'dm') {
-      if (m.type === 'topic' || m.agentBadge === 'Consensus Rollup' || m.agentBadge === 'Channel Guard') {
+      if (m.agentBadge === 'Channel Guard') {
         return false;
       }
     }
@@ -335,7 +331,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     return true;
   });
 
-  const topicCount = activeThread?.type === 'dm' ? 0 : messages.filter((m) => m.type === 'topic').length;
+  const topicCount = messages.filter((m) => m.type === 'topic').length;
 
   if (!activeThread) {
     return (
@@ -441,7 +437,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           </div>
 
           {/* Filter Pill Tabs */}
-          {activeThread.type !== 'dm' && (
+          {topicCount > 0 && (
             <div className="hidden @2xl:flex items-center bg-surface rounded-lg p-0.5 border border-border gap-0.5 ml-1 shrink-0">
               <button
                 onClick={() => setFilter('all')}
@@ -485,11 +481,11 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           )}
 
           {/* + New Topic Button */}
-          {onOpenNewTopicModal && activeThread.type !== 'dm' && (
+          {onOpenNewTopicModal && (
             <button
               onClick={onOpenNewTopicModal}
               className="px-2 sm:px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium text-[11px] shadow-xs flex items-center gap-1 transition-all cursor-pointer whitespace-nowrap shrink-0"
-              title="在当前频道发起独立推演议题"
+              title={activeThread.type === 'dm' ? '在私聊中发起独立推演议题' : '在当前频道发起独立推演议题'}
             >
               <Plus className="w-3.5 h-3.5 shrink-0" />
               <span className="hidden @sm:inline">新建议题</span>

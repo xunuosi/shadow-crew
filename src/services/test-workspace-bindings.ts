@@ -4,6 +4,8 @@ import { buildAgentSessionKey, parseSessionKey } from './acpClient';
 import {
   createChannelBinding,
   createTopicBinding,
+  createDmTopicBinding,
+  getDefaultDmTopicCwd,
   migrateWorkspaceGraph,
 } from './workspaceBindings';
 
@@ -114,6 +116,26 @@ const channelSessionKey = buildAgentSessionKey({
   scopeType: 'channel',
 });
 assert.equal(parseSessionKey(channelSessionKey).type, 'channel');
+
+const dmTopicCwd = getDefaultDmTopicCwd('agent-1', 'dm-topic-1');
+assert.equal(dmTopicCwd, '~/.shadow-crew/agents/agent-1/topics/dm-topic-1');
+const dmTopicBinding = createDmTopicBinding({
+  topicId: 'dm-topic-1',
+  agentId: 'agent-1',
+  mode: 'default',
+});
+assert.equal(dmTopicBinding.cwd, dmTopicCwd);
+const dmTopicKey = buildAgentSessionKey({
+  agentId: 'agent-1',
+  roomId: 'dm-topic-1',
+  workspaceBindingId: dmTopicBinding.id,
+  discussionMode: 'game_theoretic',
+  scopeType: 'dm_topic',
+});
+const parsedDmTopic = parseSessionKey(dmTopicKey);
+assert.equal(parsedDmTopic.type, 'dm_topic');
+assert.equal(parsedDmTopic.agentId, 'agent-1');
+assert.equal(parsedDmTopic.workspaceBindingId, dmTopicBinding.id);
 
 const bindings: WorkspaceBinding[] = [channelBinding, topicBinding, snapshotBinding];
 assert.equal(new Set(bindings.map((binding) => binding.cwd)).size >= 2, true);

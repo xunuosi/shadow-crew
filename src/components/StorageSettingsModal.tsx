@@ -30,7 +30,6 @@ interface StorageSettingsModalProps {
   onClose: () => void;
   messages: Message[];
   onMessagesCleared?: () => void | Promise<void>;
-  onOpenMemoryExport?: () => void;
 }
 
 export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
@@ -38,7 +37,6 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
   onClose,
   messages,
   onMessagesCleared,
-  onOpenMemoryExport,
 }) => {
   const [stats, setStats] = useState<StorageStats | null>(null);
   const [loading, setLoading] = useState(false);
@@ -355,24 +353,12 @@ export const StorageSettingsModal: React.FC<StorageSettingsModalProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-fg-muted leading-relaxed">
-                保存在 SQLite 的 <code>acp_memories</code> 表中，记录了主人的代码命名习惯、工程规约与踩坑备忘。即便切换频道或重置历史，该层资产永久存在。
+                长期 Memory 由各 ACP 端点自行管理。Shadow Crew 仅展示连接状态，不自动压缩、注入或迁移 Agent 的长期记忆。
               </p>
               <div className="flex items-center justify-between pt-1 text-[10px] text-fg-secondary">
                 <span className="font-mono truncate max-w-sm" title={stats?.databasePath}>
                   数据库: {stats?.databasePath}
                 </span>
-                {onOpenMemoryExport && (
-                  <button
-                    onClick={() => {
-                      onClose();
-                      onOpenMemoryExport();
-                    }}
-                    className="px-2.5 py-1 rounded-lg bg-surface border border-border hover:border-accent text-accent text-xs transition-colors flex items-center gap-1 cursor-pointer shrink-0"
-                  >
-                    <Sliders className="w-3 h-3" />
-                    <span>记忆卡带导出/导入 (.acpmem)</span>
-                  </button>
-                )}
               </div>
             </div>
 

@@ -92,9 +92,6 @@ export const IDENTIFIER_CHAR_REGEX = /[a-zA-Z0-9_\-]/;
 export function normalizeAgentHandle(name: string, agentId?: string): string {
   const trimmed = (name || '').trim();
   if (!trimmed) return '@agent';
-  if (agentId === 'agent-shinobi-core' && trimmed === 'Shinobi Core (Rust)') {
-    return '@shinobi-core';
-  }
   const clean = trimmed.replace(/^@+/, '').toLowerCase().replace(/\s+/g, '-');
   return `@${clean}`;
 }

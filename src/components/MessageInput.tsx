@@ -358,7 +358,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     >
       <div className="max-w-3xl mx-auto space-y-2">
         {/* 1. Top Quick-Mention Agent Pills + New Topic Trigger (Scenario-Adaptive & Collapsible - Only in Channel) */}
-        {!isDm && (activeAgents.length > 0 || onOpenNewTopicModal) && (
+        {(activeAgents.length > 0 || onOpenNewTopicModal) && (
           <div className="flex items-center gap-1.5 pb-0.5 text-[11px] relative">
             {onOpenNewTopicModal && (
               <button
@@ -371,8 +371,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               </button>
             )}
 
-            {/* In Channel mode, render active agents pills (up to 3) */}
-            {!isDm && (
+            {/* Render active agent pills (channel or DM Agent) */}
+            {(
               <>
                 {displayedAgents.map((agent) => (
                   <button

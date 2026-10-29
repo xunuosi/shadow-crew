@@ -99,22 +99,6 @@ function localAcpDiscoveryPlugin(): Plugin {
 
           const presets = [
             {
-              id: 'shinobi_core',
-              name: 'Shadow Crew Native Agent (Rust)',
-              description: 'Local ultra-fast native agent runtime with private SQLite memory bank',
-              transport: 'stdio',
-              command: 'cargo run --bin shadow-crew-agent -- --acp',
-              default_args: [],
-              availability: 'available',
-              binary_path: 'cargo (workspace shadow-crew-agent)',
-              install_hint: 'Shadow Crew native agent is bundled within this workspace and ready to run.',
-              install_url: null,
-              recommended_env: [
-                ['SHADOW_CREW_LOG', 'debug'],
-                ['MEMORY_STORE', 'sqlite'],
-              ],
-            },
-            {
               id: 'claude_code',
               name: 'Claude Code (Anthropic)',
               description: 'Anthropic Claude Code agent running via official claude-acp adapter',
@@ -204,9 +188,6 @@ function localAcpDiscoveryPlugin(): Plugin {
           ];
 
           const results = presets.map((p) => {
-            if (p.id === 'shinobi_core') {
-              return p;
-            }
             const foundAcp = resolve(p.candidate_cmds || []);
             if (foundAcp) {
               return {

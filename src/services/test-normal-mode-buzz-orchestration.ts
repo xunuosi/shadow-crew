@@ -1112,8 +1112,10 @@ async function runEpochAndBarrierTests() {
       prompt: 'new prompt after retry clear',
     });
     assert(
-      !promptResAfterRetry.isError && hasActiveAcpSessionForKey(newSessionKey),
-      '迟到清理竞态步骤 3：解锁后新 Prompt 正常发送并登记新建活跃 Session'
+      promptResAfterRetry.isError === true &&
+        promptResAfterRetry.textResponse.includes('ACP') &&
+        hasActiveAcpSessionForKey(newSessionKey),
+      '迟到清理竞态步骤 3：解锁后新 Prompt 已穿过屏障进入 ACP 派发，并在无 ACP 通道时显式失败且登记新建活跃 Session'
     );
 
     // 步骤 4：等待第 1 次超时请求在 80ms 后迟到完成，验证其已被取消且未误删刚才新建的 Session
@@ -1249,11 +1251,12 @@ async function runEpochAndBarrierTests() {
       agent: mockAgentA,
       roomId: 'thread-1',
       channelId: 'ch-supersede',
+      scopeType: 'channel',
       prompt: 'hello after supersede clear',
     });
     assert(
-      !promptRes.isError,
-      '旧挂起任务被取代取消后，新 Prompt 必须顺利通过屏障并执行成功'
+      promptRes.isError === true && promptRes.textResponse.includes('ACP'),
+      '旧挂起任务被取代取消后，新 Prompt 必须穿过屏障进入 ACP 派发；无 ACP 通道时按 ACP-only 策略显式失败'
     );
 
     resetAcpSessionClearBarrierState();
@@ -1467,6 +1470,7 @@ async function runEpochAndBarrierTests() {
           type: 'topic',
           topicData: {
             id: 'topic-ch-1',
+            scopeType: 'channel',
             channelId: 'ch-1',
             workspaceBindingId: 'ws-topic-topic-ch-1',
             title: 'Sub-topic in ch-1',

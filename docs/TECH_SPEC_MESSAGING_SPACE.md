@@ -373,5 +373,5 @@ pub struct AcpSessionPromptParams {
 | :--- | :--- | :--- | :--- |
 | **Phase 1** | **协议与类型扩展** | `crates/shinobi-protocol`<br/>`src/types.ts` | 以 Channel 为最外层实体，更新 `ChannelKind`、`is_topic_head` 及 Nostr Tags 规范。 |
 | **Phase 2** | **Nostr Relay 存储与过滤** | `crates/shinobi-server` | 实现按 `channel_id`、`topic_id` 的多路事件索引与过滤查询。 |
-| **Phase 3** | **会话沙盒引擎实现** | `crates/shinobi-agent`<br/>`src-tauri` | 实现 `SessionScope::Thread` 组装器，确保调用 ACP 时仅装配 Topic 范围上下文。 |
+| **Phase 3** | **会话沙盒引擎实现** | `src-tauri`<br/>外部 ACP | 实现 `SessionScope::Thread` 组装器，确保调用 ACP 时仅装配 Topic 范围上下文。 |
 | **Phase 4** | **桌面端 UI 重构** | `src/components`<br/>`src/App.tsx` | 实现三栏布局：Channel 列表、主频道 Topic 卡片与右侧 Thread 抽屉面板。 |

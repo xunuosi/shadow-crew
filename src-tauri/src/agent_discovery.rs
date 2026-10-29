@@ -41,23 +41,6 @@ pub struct PresetHarness {
 
 pub const PRESET_HARNESSES: &[PresetHarness] = &[
     PresetHarness {
-        id: "shinobi_core",
-        name: "Shadow Crew Native Agent (Rust)",
-        description: "Local ultra-fast native agent runtime with private SQLite memory bank",
-        transport: "stdio",
-        command_candidates: &[
-            "cargo run --bin shadow-crew-agent -- --acp",
-            "shadow-crew-agent",
-            "cargo run --bin shinobi-agent -- --acp",
-            "shinobi-agent",
-        ],
-        default_args: &[],
-        underlying_cli_candidates: &[],
-        install_hint: "Shadow Crew native agent is bundled within this workspace and ready to run.",
-        install_url: None,
-        recommended_env: &[("SHADOW_CREW_LOG", "debug"), ("MEMORY_STORE", "sqlite")],
-    },
-    PresetHarness {
         id: "claude_code",
         name: "Claude Code (Anthropic)",
         description: "Anthropic Claude Code agent running via official claude-acp adapter",
@@ -199,28 +182,6 @@ pub fn discover_presets() -> Vec<AcpRuntimeCatalogEntry> {
     PRESET_HARNESSES
         .iter()
         .map(|def| {
-            // 特殊处理 Shadow Crew / Shinobi 本地核心：只要是在此代码仓库中，始终认为可用
-            if def.id == "shinobi_core" {
-                return AcpRuntimeCatalogEntry {
-                    id: def.id.to_string(),
-                    name: def.name.to_string(),
-                    description: def.description.to_string(),
-                    transport: def.transport.to_string(),
-                    command: def.command_candidates[0].to_string(),
-                    default_args: def.default_args.iter().map(|s| s.to_string()).collect(),
-                    underlying_cli: None,
-                    availability: AcpAvailabilityStatus::Available,
-                    binary_path: Some("cargo (workspace shadow-crew-agent)".to_string()),
-                    install_hint: def.install_hint.to_string(),
-                    install_url: def.install_url.map(|s| s.to_string()),
-                    recommended_env: def
-                        .recommended_env
-                        .iter()
-                        .map(|(k, v)| (k.to_string(), v.to_string()))
-                        .collect(),
-                };
-            }
-
             // 1. 尝试解析候选 ACP 命令
             let mut found_acp: Option<(String, PathBuf)> = None;
             for candidate in def.command_candidates {

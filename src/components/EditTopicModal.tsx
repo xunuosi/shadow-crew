@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Agent, Channel, TopicMessageData, DiscussionMode, GameRolesConfig, GameRoleType } from '../types';
+import { Agent, Channel, TopicMessageData, DiscussionMode, DuelRolesConfig, GameRolesConfig, GameRoleType } from '../types';
 import { X, Save, Bot, Check, GitBranch, Maximize2, Minimize2, Edit3, Swords, Scale, Sparkles } from 'lucide-react';
 import { ResizeHandle } from './ResizeHandle';
+import { normalizeDuelRoles } from '../services/workspaceBindings';
 
 interface EditTopicModalProps {
   isOpen: boolean;
@@ -17,6 +18,7 @@ interface EditTopicModalProps {
       assignedAgentIds: string[];
       discussionMode?: DiscussionMode;
       gameRoles?: GameRolesConfig;
+      duelRoles?: DuelRolesConfig;
     }
   ) => void;
 }
@@ -35,7 +37,12 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
   const [discussionMode, setDiscussionMode] = useState<DiscussionMode>('standard');
   const [agentRoles, setAgentRoles] = useState<Record<string, GameRoleType>>({});
   const [humanIsArbiter, setHumanIsArbiter] = useState<boolean>(true);
+  const [duelRoles, setDuelRoles] = useState<DuelRolesConfig>({
+    proposer: 'human',
+    challenger: 'agent',
+  });
   const prevTopicIdRef = useRef<string | null>(null);
+  const dmScope = topic?.scopeType === 'dm';
 
   // 当弹窗打开或 topic 变更时预填表单
   useEffect(() => {
@@ -45,6 +52,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
       setSelectedAgentIds(topic.participatingAgentIds || []);
       setDiscussionMode(topic.discussionMode || 'standard');
       setHumanIsArbiter(topic.gameRoles?.humanIsArbiter ?? true);
+      setDuelRoles(topic.duelRoles ?? { proposer: 'human', challenger: 'agent' });
 
       const roles: Record<string, GameRoleType> = {};
       if (topic.gameRoles) {
@@ -156,17 +164,27 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
     if (!title.trim() || !topic) return;
 
     const isGame = discussionMode === 'game_theoretic';
-    const proposers = selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'proposer');
-    const challengers = selectedAgentIds.filter((id) => agentRoles[id] === 'challenger');
-    const verifiers = selectedAgentIds.filter((id) => agentRoles[id] === 'verifier');
-    const arbiters = selectedAgentIds.filter((id) => agentRoles[id] === 'arbiter');
+    const normalizedDuelRoles = isGame && dmScope ? normalizeDuelRoles(duelRoles) : undefined;
+    const dmAgentId = selectedAgentIds[0];
+    const proposers = dmScope
+      ? normalizedDuelRoles?.proposer === 'agent' && dmAgentId
+        ? [dmAgentId]
+        : []
+      : selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'proposer');
+    const challengers = dmScope
+      ? normalizedDuelRoles?.challenger === 'agent' && dmAgentId
+        ? [dmAgentId]
+        : []
+      : selectedAgentIds.filter((id) => agentRoles[id] === 'challenger');
+    const verifiers = dmScope ? [] : selectedAgentIds.filter((id) => agentRoles[id] === 'verifier');
+    const arbiters = dmScope ? [] : selectedAgentIds.filter((id) => agentRoles[id] === 'arbiter');
 
     onUpdateTopic(topic.id, {
       title: title.trim(),
       description: description.trim(),
       assignedAgentIds: selectedAgentIds,
       discussionMode,
-      gameRoles: isGame
+      gameRoles: isGame && !dmScope
         ? {
             proposers,
             challengers,
@@ -175,6 +193,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
             humanIsArbiter,
           }
         : undefined,
+      duelRoles: normalizedDuelRoles,
     });
 
     onClose();
@@ -215,7 +234,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
             <div className="min-w-0 flex-1">
               <h2 className="font-bold text-fg text-sm truncate">编辑议题信息 (Edit Topic)</h2>
               <p className="text-[10px] text-fg-muted font-mono truncate">
-                {channel ? `#${channel.name} · ` : ''}ID: {topic ? topic.id : ''}
+                {dmScope ? '私聊 Topic · ' : channel ? `#${channel.name} · ` : ''}ID: {topic ? topic.id : ''}
               </p>
             </div>
           </div>
@@ -254,7 +273,11 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
             <label className="block text-xs font-semibold text-fg mb-1.5 flex items-center justify-between">
               <span>讨论模式选择</span>
               <span className="text-[10px] text-fg-muted font-normal">
-                {discussionMode === 'game_theoretic' ? '♟️ 4+1 认知协同攻防决策 (提案/红队/接地/综合 + 人类法槌)' : '💬 轮流自由发言推演'}
+                {discussionMode === 'game_theoretic'
+                  ? dmScope
+                    ? '⚔️ 双方对抗博弈 (提案方 + 对抗方)'
+                    : '♟️ 4+1 认知协同攻防决策 (提案/红队/接地/综合 + 人类法槌)'
+                  : '💬 轮流自由发言推演'}
               </span>
             </label>
             <div className="grid grid-cols-2 gap-2">
@@ -297,11 +320,15 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
-                    <span>4+1博弈决策模式</span>
-                    <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-mono">推荐</span>
+                    <span>{dmScope ? '双方博弈模式' : '4+1博弈决策模式'}</span>
+                    {!dmScope && (
+                      <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-mono">推荐</span>
+                    )}
                     {discussionMode === 'game_theoretic' && <Check className="w-3 h-3 text-amber-500 stroke-[2.5]" />}
                   </div>
-                  <p className="text-[10px] text-fg-muted mt-0.5 leading-snug">提案-红队-接地-综合四元协同，高保真架构决策</p>
+                  <p className="text-[10px] text-fg-muted mt-0.5 leading-snug">
+                    {dmScope ? '仅设提案方与对抗方，角色由人类和 Agent 分别担任' : '提案-红队-接地-综合四元协同，高保真架构决策'}
+                  </p>
                 </div>
               </button>
             </div>
@@ -343,7 +370,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
           </div>
 
           {/* Game-Theoretic: Human Arbiter Privilege Toggle */}
-          {discussionMode === 'game_theoretic' && (
+          {discussionMode === 'game_theoretic' && !dmScope && (
             <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 min-w-0 flex-1">
                 <div className="w-7 h-7 rounded-lg bg-amber-500/20 flex items-center justify-center text-amber-600 dark:text-amber-400 shrink-0">
@@ -373,12 +400,47 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
             </div>
           )}
 
+          {discussionMode === 'game_theoretic' && dmScope && (
+            <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 dark:bg-amber-500/10 dark:border-amber-500/30 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-amber-800 dark:text-amber-300">双方博弈角色</span>
+                <span className="text-[10px] text-fg-muted">固定两个席位：提案方 + 对抗方</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDuelRoles({ proposer: 'human', challenger: 'agent' })}
+                  className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                    duelRoles.proposer === 'human'
+                      ? 'bg-blue-50 border-blue-300 text-blue-800 dark:bg-blue-500/15 dark:border-blue-500/30 dark:text-blue-300'
+                      : 'bg-surface border-border text-fg-secondary'
+                  }`}
+                >
+                  <span className="block text-[11px] font-semibold">👤 我提案 · Agent 对抗</span>
+                  <span className="block text-[10px] text-fg-muted mt-0.5">人类负责立论，ACP Agent 负责质询</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDuelRoles({ proposer: 'agent', challenger: 'human' })}
+                  className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                    duelRoles.proposer === 'agent'
+                      ? 'bg-purple-50 border-purple-300 text-purple-800 dark:bg-purple-500/15 dark:border-purple-500/30 dark:text-purple-300'
+                      : 'bg-surface border-border text-fg-secondary'
+                  }`}
+                >
+                  <span className="block text-[11px] font-semibold">🤖 Agent 提案 · 我对抗</span>
+                  <span className="block text-[10px] text-fg-muted mt-0.5">ACP Agent 负责立论，人类负责质询与决策</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Participating Agents Checkbox List */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-semibold text-fg flex items-center gap-1.5">
-                <span>指派协同推演 Agent</span>
-                {discussionMode === 'game_theoretic' && (
+                <span>{dmScope ? '私聊 ACP Agent' : '指派协同推演 Agent'}</span>
+                {discussionMode === 'game_theoretic' && !dmScope && (
                   <span className="text-[10px] text-amber-600 dark:text-amber-400 font-normal">
                     (可为各 Agent 指派专业博弈角色：提案/红队/接地/综合)
                   </span>
@@ -407,7 +469,9 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
                   return (
                     <div
                       key={agent.id}
-                      onClick={() => toggleAgent(agent.id)}
+                      onClick={() => {
+                        if (!dmScope) toggleAgent(agent.id);
+                      }}
                       className={`flex flex-col p-2.5 rounded-xl border transition-all cursor-pointer select-none min-w-0 ${
                         isSelected
                           ? discussionMode === 'game_theoretic'
@@ -452,7 +516,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
                       </div>
 
                       {/* Game-Theoretic: Per-Agent Role Switcher */}
-                      {discussionMode === 'game_theoretic' && isSelected && (
+                      {discussionMode === 'game_theoretic' && isSelected && !dmScope && (
                         <div
                           className="flex items-center gap-1 mt-2 pt-1.5 border-t border-border/40 overflow-x-auto"
                           onClick={(e) => e.stopPropagation()}

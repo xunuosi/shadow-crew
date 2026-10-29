@@ -9,54 +9,8 @@ import {
   WorkspaceFile 
 } from '../types';
 
-// 本地 Shinobi Native Agent 与 OpenClaw Agent
+// 外部 ACP Agent 示例；影子替身必须由用户连接本地或远程 ACP 端点。
 export const INITIAL_AGENTS: Agent[] = [
-  {
-    id: 'agent-shinobi-core',
-    name: 'Shinobi Core (Rust)',
-    handle: '@shinobi-core',
-    avatar: '🥷',
-    role: 'High-Performance Rust Native Agent',
-    description: 'Local ultra-fast native agent runtime with private SQLite memory bank',
-    color: '#10b981',
-    status: 'idle',
-    statusDetail: undefined,
-    modelBadge: 'DeepSeek V3',
-    modelConfig: {
-      provider: 'deepseek',
-      modelId: 'deepseek-chat',
-      modelName: 'DeepSeek V3',
-      baseUrl: 'https://api.deepseek.com/v1',
-      useGlobalDefault: true,
-    },
-    isManagedByYou: true,
-    acpTransport: 'stdio',
-    acpCommandOrUrl: './target/debug/shadow-crew-agent',
-    protocolVersion: '2025-01-01 (ACP v1.0.4)',
-    capabilities: {
-      canUseInternalMemory: true,
-      canAccessWorkspaceFiles: true,
-      canExecuteSkills: true,
-      canDelegateToSubAgents: true,
-      supportsStreaming: true,
-      supportsLoadSession: true,
-      supportsResumeSession: true,
-    },
-    workspace: {
-      rootPath: '~/.shadow-crew',
-      repoName: 'shinobi-workspace',
-      gitBranch: 'main',
-      permissionMode: 'full_read_write',
-      activeFiles: ['~/.shadow-crew/global_memory.sqlite'],
-    },
-    skills: [],
-    memory: {
-      internalMemoryPath: '~/.shadow-crew/global_memory.sqlite',
-      persistentType: 'sqlite',
-      persistentItems: [],
-      sessionCacheCount: 0,
-    },
-  },
   {
     id: 'agent-1789029918725',
     name: 'OpenClaw Mantis',
@@ -132,7 +86,7 @@ export const INITIAL_TEAMS: AgentTeam[] = [
     name: 'Shadow Crew Squad',
     description: 'Autonomous multi-agent development & alter-ego squad',
     icon: '⚡',
-    agentIds: ['agent-1789029918725', 'agent-shinobi-core'],
+    agentIds: ['agent-1789029918725'],
     color: '#06b6d4',
   },
 ];

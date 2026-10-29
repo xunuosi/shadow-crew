@@ -574,6 +574,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   }, [isOpen, messages.length, topicExecutions.length, hasPendingMessage, lastMessageContentLength, scrollToBottom]);
 
   if (!isOpen || !topic) return null;
+  const isDmDuel = topic.scopeType === 'dm' && topic.discussionMode === 'game_theoretic';
 
   const isResolved = topic.status === 'resolved';
 
@@ -895,6 +896,15 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     <span>🟢 已达成共识 (Resolved)</span>
                   </span>
                 )
+              ) : isDmDuel ? (
+                <span className="text-amber-700 dark:text-amber-300 font-semibold flex items-center gap-1 shrink-0">
+                  <Swords className="w-3 h-3" />
+                  <span>
+                    {topic.duelRoles?.proposer === 'human' ? '👤 人类提案' : '🤖 Agent 提案'}
+                    {' · '}
+                    {topic.duelRoles?.challenger === 'human' ? '👤 人类对抗' : '🤖 Agent 对抗'}
+                  </span>
+                </span>
               ) : topic.discussionMode === 'game_theoretic' && topic.gameRoles ? (
                 <span className="text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1 shrink-0">
                   <Swords className="w-3 h-3" />
@@ -1043,8 +1053,21 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               {topic.description || topic.title}
             </div>
 
-        {/* 博弈模式 4+1 角色配置概览卡片 */}
-        {topic.discussionMode === 'game_theoretic' && topic.gameRoles && (
+        {isDmDuel && topic.duelRoles && (
+          <div className="grid grid-cols-2 gap-1.5 pt-1 text-[10px] font-mono">
+            <div className="p-1.5 rounded-lg bg-blue-50 border border-blue-300 text-blue-800 dark:bg-blue-500/15 dark:border-blue-500/30 dark:text-blue-300">
+              <div className="font-semibold">🏛️ 提案方</div>
+              <div>{topic.duelRoles.proposer === 'human' ? '👤 人类' : `🤖 ${agents.find((a) => a.id === topic.dmAgentId)?.name || 'Agent'}`}</div>
+            </div>
+            <div className="p-1.5 rounded-lg bg-rose-50 border border-rose-300 text-rose-800 dark:bg-rose-500/15 dark:border-rose-500/30 dark:text-rose-300">
+              <div className="font-semibold">⚔️ 对抗方</div>
+              <div>{topic.duelRoles.challenger === 'human' ? '👤 人类' : `🤖 ${agents.find((a) => a.id === topic.dmAgentId)?.name || 'Agent'}`}</div>
+            </div>
+          </div>
+        )}
+
+        {/* Channel 4+1 角色配置概览卡片 */}
+        {!isDmDuel && topic.discussionMode === 'game_theoretic' && topic.gameRoles && (
           <div className={`grid ${topic.gameRoles.verifiers && topic.gameRoles.verifiers.length > 0 ? 'grid-cols-4' : 'grid-cols-3'} gap-1.5 pt-1 text-[10px] font-mono`}>
             <div className="p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-700 dark:text-blue-300">
               <div className="font-semibold flex items-center gap-1 mb-0.5">
@@ -1094,8 +1117,19 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         )}
       </div>
 
-      {/* 博弈推演阶段状态机指示器 (Game Theoretic Phase Stepper: 4-Stage or 5-Stage with Grounding Verifier) */}
-      {topic.discussionMode === 'game_theoretic' && (
+      {isDmDuel && (
+        <div className="px-3.5 py-2 bg-surface-subtle/70 border-b border-border flex items-center gap-1.5 text-[10px]">
+          {['🏛️ 提案立论', '⚔️ 对抗质询', '🛡️ 提案方回应', '👤 人类决策'].map((label, index) => (
+            <div key={label} className="flex items-center gap-1.5 min-w-0 flex-1">
+              <span className="rounded-lg border border-border bg-surface px-2 py-1.5 truncate flex-1 text-fg-secondary">{label}</span>
+              {index < 3 && <ArrowRight className="w-3 h-3 text-fg-muted shrink-0 opacity-40" />}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Channel 4+1 博弈推演阶段状态机指示器 */}
+      {!isDmDuel && topic.discussionMode === 'game_theoretic' && (
         <div className="px-3.5 py-2 bg-surface-subtle/70 border-b border-border text-[11px]">
           <div className="flex items-center justify-between gap-1 select-none">
             {/* Step 1: 方案立论 */}
@@ -1266,7 +1300,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       )}
 
       {/* CognoNexus 运行态看板 (G-Frame 模块沙箱矩阵、SPRT 自适应调控、LMAD 局部冲突切片、谄媚度治理与异构模型多样性) */}
-      {topic.discussionMode === 'game_theoretic' && (
+      {!isDmDuel && topic.discussionMode === 'game_theoretic' && (
         topic.gameTheoreticState?.modularState?.enabled ||
         topic.gameTheoreticState?.cognoNexus?.modularState?.enabled ||
         topic.gameTheoreticState?.sprtState ||
@@ -2741,7 +2775,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               )}
             </div>
           </div>
-        ) : topic.discussionMode === 'game_theoretic' ? (
+        ) : topic.discussionMode === 'game_theoretic' && !isDmDuel ? (
           (topic.gameRoles?.humanIsArbiter ?? true) ? (
             <div className="space-y-2 p-2.5 rounded-xl bg-amber-50/90 dark:bg-amber-950/25 border border-amber-300/80 dark:border-amber-700/50 shadow-xs">
               <div className="flex items-center justify-between text-[11px]">

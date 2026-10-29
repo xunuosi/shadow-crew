@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Agent, LocalAcpRuntime, AcpTransport, AgentModelConfig } from '../types';
+import { Agent, LocalAcpRuntime, AcpTransport } from '../types';
 import {
   X,
   ChevronDown,
@@ -16,10 +16,7 @@ import {
   Globe,
   Wifi,
   Radio,
-  Layers,
   ShieldCheck,
-  Cpu,
-  Key,
   Loader2,
   Copy,
 } from 'lucide-react';
@@ -27,10 +24,7 @@ import { AgentAvatarArtwork } from './AgentAvatarArtwork';
 import { discoverLocalAcpRuntimes, FALLBACK_PRESET_RUNTIMES } from '../services/acpDiscovery';
 import { probeRemoteAcpConnection } from '../services/acpClient';
 import { DEFAULT_MODEL_NAME } from '../config/models';
-import { PROVIDER_PRESETS, getGlobalModelConfig, getActiveProviderPreset, testModelConnection } from '../services/llmService';
 import { normalizeAgentHandle } from '../services/agentCollaboration';
-import { ModelSelectorCombobox } from './ModelSelectorCombobox';
-import { ModelContextConfigPanel } from './ModelContextConfigPanel';
 import { AgentRuntimeStatus } from '../types';
 
 interface ConnectAgentModalProps {
@@ -41,7 +35,6 @@ interface ConnectAgentModalProps {
   initialAgent?: Agent | null;
   duplicateAgent?: Agent | null;
   onUpdateAgent?: (agentId: string, updatedData: Partial<Agent>) => void;
-  onOpenImportModal?: () => void;
 }
 
 interface EnvVarItem {
@@ -70,20 +63,19 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   initialAgent,
   duplicateAgent,
   onUpdateAgent,
-  onOpenImportModal,
 }) => {
   if (!isOpen) return null;
 
   const isDuplicateMode = Boolean(duplicateAgent && !initialAgent);
 
-  // Connection Tab: 'local' | 'remote' | 'clone'
-  const [connectTab, setConnectTab] = useState<'local' | 'remote' | 'clone'>('local');
+  // Connection Tab: 'local' | 'remote'
+  const [connectTab, setConnectTab] = useState<'local' | 'remote'>('local');
 
   // Form Fields
-  const [name, setName] = useState('Shinobi Native Agent');
-  const [role, setRole] = useState('High-Performance Native Agent');
+  const [name, setName] = useState('New ACP Agent');
+  const [role, setRole] = useState('ACP Endpoint');
   const [description, setDescription] = useState(
-    'Local ultra-fast native agent runtime with private SQLite memory bank.'
+    'Local or remote Agent Client Protocol endpoint.'
   );
   const [selectedIconId, setSelectedIconId] = useState('shinobi');
   const [customEmoji, setCustomEmoji] = useState('');
@@ -107,21 +99,14 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   // Local ACP Runtimes & Discovery
   const [runtimes, setRuntimes] = useState<LocalAcpRuntime[]>(FALLBACK_PRESET_RUNTIMES);
   const [isLoadingRuntimes, setIsLoadingRuntimes] = useState(false);
-  const [selectedAcpId, setSelectedAcpId] = useState<string>('shinobi_core');
+  const [selectedAcpId, setSelectedAcpId] = useState<string>('');
   const [isAcpDropdownOpen, setIsAcpDropdownOpen] = useState(false);
 
   // Dynamic Environment Variables (ENV)
-  const [envVars, setEnvVars] = useState<EnvVarItem[]>([
-    { id: '1', key: 'SHINOBI_LOG', value: 'debug' },
-    { id: '2', key: 'MEMORY_STORE', value: 'sqlite' },
-  ]);
+  const [envVars, setEnvVars] = useState<EnvVarItem[]>([]);
 
   // Visual Theme support
   const [isLightMode, setIsLightMode] = useState(true);
-
-  // Model & Inference Engine Configuration
-  const [useGlobalDefaultModel, setUseGlobalDefaultModel] = useState(true);
-  const [modelConfig, setModelConfig] = useState<AgentModelConfig>(() => getGlobalModelConfig());
 
   // Saving & Re-verification State
   const [isSavingAndVerifying, setIsSavingAndVerifying] = useState(false);
@@ -136,25 +121,12 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     const agentChanged = isOpen && currentTargetId !== prevAgentIdRef.current;
 
     if (justOpened || agentChanged) {
-      const globalCfg = getGlobalModelConfig();
       const target = initialAgent || duplicateAgent;
       if (target) {
         setName(duplicateAgent ? `${target.name} 副本` : (target.name || ''));
         setRole(target.role || '');
         setDescription(target.description || '');
         setCustomCommand(target.acpCommandOrUrl || '');
-
-        if (target.modelConfig) {
-          setUseGlobalDefaultModel(target.modelConfig.useGlobalDefault ?? false);
-          const effectiveCfg = {
-            ...globalCfg,
-            ...target.modelConfig,
-          };
-          setModelConfig(effectiveCfg);
-        } else {
-          setUseGlobalDefaultModel(true);
-          setModelConfig({ ...globalCfg, useGlobalDefault: true });
-        }
 
         if (target.isRemote || target.acpTransport === 'websocket') {
           setConnectTab('remote');
@@ -222,24 +194,19 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           setSelectedAcpId(matched.id);
         }
       } else {
-        setName('Shinobi Native Agent');
-        setRole('High-Performance Native Agent');
-        setDescription('Local ultra-fast native agent runtime with private SQLite memory bank.');
-        setSelectedIconId('shinobi');
+        setName('New ACP Agent');
+        setRole('ACP Endpoint');
+        setDescription('Local or remote Agent Client Protocol endpoint.');
+        setSelectedIconId(PRESET_ICONS[0]?.id || 'custom');
         setCustomEmoji('');
-        setSelectedAcpId('shinobi_core');
-        setCustomCommand('./target/debug/shadow-crew-agent');
+        setSelectedAcpId(FALLBACK_PRESET_RUNTIMES[0]?.id || '');
+        setCustomCommand(FALLBACK_PRESET_RUNTIMES[0]?.command || '');
         setConnectTab('local');
         setRemoteUrl('ws://127.0.0.1:9000');
         setAuthToken('');
         setReadOnlyGuard(true);
         setRemoteTestResult(null);
-        setUseGlobalDefaultModel(true);
-        setModelConfig({ ...globalCfg, useGlobalDefault: true });
-        setEnvVars([
-          { id: '1', key: 'SHADOW_CREW_LOG', value: 'debug' },
-          { id: '2', key: 'MEMORY_STORE', value: 'sqlite' },
-        ]);
+        setEnvVars([]);
       }
     }
 
@@ -322,7 +289,6 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       if (option.id === 'claude_code') setSelectedIconId('claudecode');
       else if (option.id === 'openclaw') setSelectedIconId('openclaw');
       else if (option.id === 'codex') setSelectedIconId('codex');
-      else if (option.id === 'shinobi_core') setSelectedIconId('shinobi');
       else setSelectedIconId('palette');
     }
 
@@ -357,9 +323,6 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
   const isReady = selectedAcp.availability === 'available';
   const isRemoteMode = connectTab === 'remote';
-  // 仅 Shinobi 原生 Agent 由平台网关驱动推理；外部 ACP Agent 自管理模型配置
-  const isShinobiNative = !isRemoteMode && selectedAcp.id === 'shinobi_core';
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || isSavingAndVerifying) return;
@@ -380,15 +343,6 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
     const transport: AcpTransport = isRemoteMode ? 'websocket' : selectedAcp.transport;
 
-    const globalCfg = getGlobalModelConfig();
-    const effectiveModelBadge = useGlobalDefaultModel
-      ? (globalCfg.modelName || 'DeepSeek V3')
-      : (modelConfig.modelName || modelConfig.modelId || 'DeepSeek V3');
-
-    const finalModelConfig: AgentModelConfig = useGlobalDefaultModel
-      ? { ...globalCfg, useGlobalDefault: true }
-      : { ...modelConfig, useGlobalDefault: false };
-
     // ENV is user-owned agent startup data. Do not resurrect deleted entries
     // from the model configuration when saving.
     const finalEnvVars = envVars
@@ -400,15 +354,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       !!initialAgent && initialAgent.status !== 'idle' && initialAgent.status !== 'error';
     let healthCheck: { ok: boolean; latencyMs?: number; error?: string } | null = null;
     if (initialAgent && wasOnline) {
-      if (isShinobiNative) {
-        // Shinobi 原生 Agent：校验平台模型网关连通性
-        try {
-          const res = await testModelConnection(finalModelConfig);
-          healthCheck = { ok: res.ok, latencyMs: res.latencyMs, error: res.ok ? undefined : res.error };
-        } catch (err: any) {
-          healthCheck = { ok: false, error: err?.message || '模型网关连通校验失败' };
-        }
-      } else if (isRemoteMode && remoteUrl.trim()) {
+      if (isRemoteMode && remoteUrl.trim()) {
         // 远程 ACP：校验 WebSocket 端点连通性
         try {
           const res = await probeRemoteAcpConnection(remoteUrl.trim(), authToken.trim() || undefined);
@@ -420,10 +366,10 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       // 本地 stdio 外部 ACP：连通性由进程重启握手自证，无需网关探测
     }
 
-    // 模型网关配置仅对 Shinobi 原生 Agent 生效；外部自主 ACP Agent 标识为进程协议类型
-    const modelPayload = isShinobiNative
-      ? { modelBadge: effectiveModelBadge, modelConfig: finalModelConfig }
-      : { modelBadge: isRemoteMode ? 'Remote ACP' : 'ACP Stdio', modelConfig: undefined };
+    const modelPayload = {
+      modelBadge: isRemoteMode ? 'Remote ACP' : 'ACP Stdio',
+      modelConfig: undefined,
+    };
 
     const effectiveSupportsLoadSession =
       isRemoteMode && remoteTestResult?.ok && remoteTestResult.loadSession !== undefined
@@ -433,7 +379,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         : initialAgent?.capabilities?.supportsLoadSession;
 
     const effectiveSupportsResumeSession =
-      isShinobiNative || selectedAcp.id === 'codex'
+      selectedAcp.id === 'codex'
         ? true
         : initialAgent?.capabilities?.supportsResumeSession;
 
@@ -633,8 +579,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
               type="button"
               onClick={() => {
                 setConnectTab('local');
-                setName('Shinobi Native Agent');
-                setDescription('Local ultra-fast native agent runtime with private SQLite memory bank.');
+                const firstRuntime = runtimes[0] || FALLBACK_PRESET_RUNTIMES[0];
+                setName(firstRuntime?.name || 'New ACP Agent');
+                setDescription(firstRuntime?.description || 'Local Agent Client Protocol endpoint.');
               }}
               className={`pb-2.5 border-b-2 flex items-center gap-1.5 transition-all cursor-pointer ${
                 connectTab === 'local'
@@ -649,7 +596,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
               type="button"
               onClick={() => {
                 setConnectTab('remote');
-                setName('Remote Claude / Shinobi');
+                setName('Remote ACP Agent');
                 setDescription('Remote ACP process connected via WebSocket / Relay Hub.');
               }}
               className={`pb-2.5 border-b-2 flex items-center gap-1.5 transition-all cursor-pointer ${
@@ -662,19 +609,6 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
               <span>🌐 远程连接 (Remote WebSocket)</span>
             </button>
 
-            {onOpenImportModal && (
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onOpenImportModal();
-                }}
-                className={`pb-2.5 border-b-2 flex items-center gap-1.5 transition-all cursor-pointer border-transparent text-purple-600 dark:text-purple-400 hover:opacity-80`}
-              >
-                <Layers className="w-3.5 h-3.5" />
-                <span>📥 从记忆包克隆 (.acpmem)</span>
-              </button>
-            )}
           </div>
         )}
 
@@ -820,7 +754,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Shinobi Native Agent"
+                  placeholder="例如：Claude Code、Codex ACP、团队架构 Agent"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   className={`w-full rounded-xl px-3.5 py-2 text-xs focus:outline-none transition-all ${inputBg}`}
@@ -854,197 +788,6 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
               </div>
             </div>
           </div>
-
-          {/* Section: LLM Model & Inference Engine Configuration — 仅 Shinobi 原生 Agent 显示 */}
-          {isShinobiNative && (
-          <div className={`p-4 rounded-2xl border space-y-3.5 ${
-            isLightMode ? 'bg-blue-50/40 border-blue-200' : 'bg-blue-950/20 border-blue-900/40'
-          }`}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className={`w-7 h-7 rounded-xl flex items-center justify-center ${
-                  isLightMode ? 'bg-blue-100 text-blue-600' : 'bg-blue-900/40 text-blue-400'
-                }`}>
-                  <Cpu className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="font-bold text-xs text-fg flex items-center gap-2">
-                    <span>底座推理大模型 (Inference Model)</span>
-                    <span className="text-[10px] font-mono px-2 py-0.2 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/25">
-                      {useGlobalDefaultModel ? `${getGlobalModelConfig().modelName || 'DeepSeek V3'} (继承)` : (modelConfig.modelName || modelConfig.modelId)}
-                    </span>
-                  </div>
-                  <div className="text-[10px] text-fg-muted">为该 Agent 指定驱动推理的大语言模型与 API 密钥</div>
-                </div>
-              </div>
-
-              <label className="flex items-center gap-1.5 cursor-pointer text-[11px] font-medium text-fg-secondary">
-                <input
-                  type="checkbox"
-                  checked={useGlobalDefaultModel}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    setUseGlobalDefaultModel(checked);
-                    if (checked) {
-                      setModelConfig({ ...getGlobalModelConfig(), useGlobalDefault: true });
-                    } else {
-                      const globalCfg = getGlobalModelConfig();
-                      setModelConfig((prev) => ({
-                        ...prev,
-                        apiKey: prev.apiKey || globalCfg.apiKey,
-                        baseUrl: prev.baseUrl || globalCfg.baseUrl,
-                        useGlobalDefault: false,
-                      }));
-                    }
-                  }}
-                  className="rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
-                />
-                <span>继承全局默认</span>
-              </label>
-            </div>
-
-            {useGlobalDefaultModel ? (
-              <div className={`p-3 rounded-xl border text-xs flex items-center justify-between ${
-                isLightMode ? 'bg-white/80 border-blue-100 text-blue-900' : 'bg-[#151c2b] border-[#223048] text-blue-200'
-              }`}>
-                <div className="flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-blue-500 shrink-0" />
-                  <div>
-                    <span className="font-semibold text-fg">
-                      已启用全局模型：{getGlobalModelConfig().modelName || 'DeepSeek V3'}
-                    </span>
-                    <div className="text-[10px] text-fg-muted mt-0.5">
-                      端点: <code className="font-mono">{getGlobalModelConfig().baseUrl}</code> · 自动复用全局密钥，无需重复配置
-                    </div>
-                  </div>
-                </div>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/25 shrink-0">
-                  Global Default
-                </span>
-              </div>
-            ) : (
-              <div className="space-y-3 pt-1 border-t border-border/50 animate-in fade-in duration-150">
-                {/* Provider select */}
-                <div>
-                  <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
-                    模型服务厂商 (Provider)
-                  </label>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-                    {PROVIDER_PRESETS.map((p) => {
-                      const currentPreset = getActiveProviderPreset(modelConfig);
-                      const isSelected = p.id === currentPreset.id;
-
-                      const label =
-                        p.id === 'deepseek'
-                          ? '🐳 DeepSeek'
-                          : p.id === 'zhipu'
-                          ? '🧠 智谱 GLM'
-                          : p.id === 'anthropic'
-                          ? '✨ Claude'
-                          : p.id === 'openai'
-                          ? '🤖 OpenAI'
-                          : p.id === 'ollama'
-                          ? '🦙 Ollama'
-                          : p.id === 'siliconflow'
-                          ? '⚡ 硅基流动'
-                          : '⚙️ 自定义 (Custom)';
-
-                      return (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => {
-                            const firstModel = p.models[0];
-                            const globalCfg = getGlobalModelConfig();
-                            const targetKey = modelConfig.apiKey || globalCfg.apiKey;
-                            setModelConfig((prev) => ({
-                              ...prev,
-                              provider: p.provider,
-                              baseUrl: p.defaultBaseUrl,
-                              modelId: firstModel?.id || 'deepseek-chat',
-                              modelName: firstModel?.name || 'DeepSeek V3',
-                              apiKey: targetKey,
-                            }));
-                          }}
-                          className={`px-2 py-1.5 rounded-xl border text-left text-[11px] transition-all cursor-pointer truncate ${
-                            isSelected
-                              ? 'border-blue-500 bg-surface font-semibold text-blue-600 dark:text-blue-400 shadow-2xs ring-1 ring-blue-500/20'
-                              : 'border-border bg-surface/50 hover:bg-surface text-fg-secondary hover:text-fg'
-                          }`}
-                        >
-                          <div className="truncate font-medium">{label}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Unified Model Selector Combobox (Direct Input + Dropdown Sync + Quick Chips) */}
-                <ModelSelectorCombobox
-                  modelConfig={modelConfig}
-                  onChangeModel={(modelId, modelName) => {
-                    setModelConfig((prev) => ({
-                      ...prev,
-                      modelId,
-                      modelName: modelName || modelId,
-                    }));
-                  }}
-                  isLightMode={isLightMode}
-                />
-
-                {/* API Key */}
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className={`text-[11px] font-semibold flex items-center gap-1 ${labelColor}`}>
-                      <Key className="w-3 h-3 text-blue-500" />
-                      <span>API Key (密钥)</span>
-                    </label>
-                  </div>
-                  <div className="relative">
-                    <input
-                      type="password"
-                      value={modelConfig.apiKey || ''}
-                      onChange={(e) =>
-                        setModelConfig((prev) => ({
-                          ...prev,
-                          apiKey: e.target.value,
-                        }))
-                      }
-                      placeholder="sk-..."
-                      className={`w-full rounded-xl pl-3 pr-9 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
-                    />
-                  </div>
-                </div>
-
-                {/* Base URL */}
-                <div>
-                  <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
-                    API Base URL
-                  </label>
-                  <input
-                    type="text"
-                    value={modelConfig.baseUrl || ''}
-                    onChange={(e) =>
-                      setModelConfig((prev) => ({
-                        ...prev,
-                        baseUrl: e.target.value,
-                      }))
-                    }
-                    className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
-                  />
-                </div>
-
-                {/* 上下文窗口与 Token 预算参数配置 */}
-                <ModelContextConfigPanel
-                  modelConfig={modelConfig}
-                  onChange={(updated) => setModelConfig((prev) => ({ ...prev, ...updated }))}
-                  isLightMode={isLightMode}
-                />
-
-              </div>
-            )}
-          </div>
-          )}
 
           {/* Middle Section: Remote ACP or Local ACP */}
           {connectTab === 'remote' ? (

@@ -1,13 +1,17 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Agent, Channel, DiscussionMode, GameRolesConfig, GameRoleType } from '../types';
+import { Agent, Channel, DiscussionMode, DuelRolesConfig, GameRolesConfig, GameRoleType, TopicScopeType } from '../types';
 import { X, Sparkles, Plus, Bot, Shield, Check, GitBranch, Maximize2, Minimize2, Swords, Scale, Crown, AlertTriangle, HardDrive } from 'lucide-react';
 import { ResizeHandle } from './ResizeHandle';
 import { calculateModelDiversity } from '../services/cogno';
+import { normalizeDuelRoles } from '../services/workspaceBindings';
 
 interface NewTopicModalProps {
   isOpen: boolean;
   onClose: () => void;
   channel?: Channel;
+  scopeType?: TopicScopeType;
+  dmAgent?: Agent;
+  dmThreadId?: string;
   channelWorkspaceCwd?: string;
   agents: Agent[];
   onCreateTopic: (
@@ -17,13 +21,14 @@ interface NewTopicModalProps {
       assignedAgentIds: string[];
       discussionMode?: DiscussionMode;
       gameRoles?: GameRolesConfig;
+      duelRoles?: DuelRolesConfig;
     },
     workspace: TopicWorkspaceSelection
   ) => Promise<void> | void;
 }
 
 export interface TopicWorkspaceSelection {
-  mode: 'default' | 'channel_snapshot' | 'custom';
+  mode: 'default' | 'channel_snapshot' | 'agent_snapshot' | 'custom';
   cwd?: string;
 }
 
@@ -31,16 +36,24 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
   isOpen,
   onClose,
   channel,
+  scopeType,
+  dmAgent,
+  dmThreadId,
   channelWorkspaceCwd,
   agents,
   onCreateTopic,
 }) => {
+  const dmScope = scopeType === 'dm';
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
   const [discussionMode, setDiscussionMode] = useState<DiscussionMode>('standard');
   const [agentRoles, setAgentRoles] = useState<Record<string, GameRoleType>>({});
   const [humanIsArbiter, setHumanIsArbiter] = useState<boolean>(true);
+  const [duelRoles, setDuelRoles] = useState<DuelRolesConfig>({
+    proposer: 'human',
+    challenger: 'agent',
+  });
   const [workspaceMode, setWorkspaceMode] = useState<TopicWorkspaceSelection['mode']>('default');
   const [customCwd, setCustomCwd] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -59,9 +72,9 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
   }), [selectedAgentIds, agentRoles, humanIsArbiter]);
 
   const modelDiversity = useMemo(() => {
-    if (discussionMode !== 'game_theoretic') return null;
+    if (discussionMode !== 'game_theoretic' || dmScope) return null;
     return calculateModelDiversity(agents, currentRolesConfig);
-  }, [discussionMode, agents, currentRolesConfig]);
+  }, [discussionMode, dmScope, agents, currentRolesConfig]);
 
   const autoMapRoles = (agentList: Agent[]) => {
     const mapping: Record<string, GameRoleType> = {};
@@ -97,6 +110,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
       setSelectedAgentIds(agentsRef.current.map((a) => a.id));
       setDiscussionMode('standard');
       setHumanIsArbiter(true);
+      setDuelRoles({ proposer: 'human', challenger: 'agent' });
       setAgentRoles(autoMapRoles(agentsRef.current));
       setWorkspaceMode('default');
       setCustomCwd('');
@@ -190,7 +204,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
     } catch {}
   };
 
-  if (!isOpen || !channel) return null;
+  if (!isOpen || (!channel && !dmAgent)) return null;
 
   const toggleAgent = (agentId: string) => {
     setSelectedAgentIds((prev) =>
@@ -209,10 +223,17 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
     }
 
     const isGame = discussionMode === 'game_theoretic';
-    const proposers = selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'proposer');
-    const challengers = selectedAgentIds.filter((id) => agentRoles[id] === 'challenger');
-    const verifiers = selectedAgentIds.filter((id) => agentRoles[id] === 'verifier');
-    const arbiters = selectedAgentIds.filter((id) => agentRoles[id] === 'arbiter');
+    const effectiveSelectedAgentIds = dmAgent ? [dmAgent.id] : selectedAgentIds;
+    const dmAgentRole = duelRoles.proposer === 'agent' ? 'proposer' : 'challenger';
+    const normalizedDuelRoles = dmScope && isGame ? normalizeDuelRoles(duelRoles) : undefined;
+    const proposers = dmScope
+      ? (dmAgentRole === 'proposer' ? effectiveSelectedAgentIds : [])
+      : effectiveSelectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'proposer');
+    const challengers = dmScope
+      ? (dmAgentRole === 'challenger' ? effectiveSelectedAgentIds : [])
+      : effectiveSelectedAgentIds.filter((id) => agentRoles[id] === 'challenger');
+    const verifiers = dmScope ? [] : effectiveSelectedAgentIds.filter((id) => agentRoles[id] === 'verifier');
+    const arbiters = dmScope ? [] : effectiveSelectedAgentIds.filter((id) => agentRoles[id] === 'arbiter');
 
     setIsSubmitting(true);
     setError(null);
@@ -220,17 +241,18 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
       await onCreateTopic({
         title: title.trim(),
         description: description.trim(),
-        assignedAgentIds: selectedAgentIds,
+        assignedAgentIds: effectiveSelectedAgentIds,
         discussionMode,
-        gameRoles: isGame
+        gameRoles: isGame && !dmScope
           ? {
               proposers,
               challengers,
               verifiers,
               arbiters,
-              humanIsArbiter,
+              humanIsArbiter: dmScope ? true : humanIsArbiter,
             }
           : undefined,
+        duelRoles: normalizedDuelRoles,
       }, {
         mode: workspaceMode,
         cwd: workspaceMode === 'custom' ? customCwd.trim() : undefined,
@@ -240,6 +262,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
       setDescription('');
       onClose();
     } catch (err) {
+      console.error('[NewTopicModal] Create DM/Channel Topic failed:', err);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsSubmitting(false);
@@ -280,7 +303,11 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
             </div>
             <div className="min-w-0 flex-1">
               <h2 className="font-bold text-fg text-sm truncate">发起新议题 (New Topic)</h2>
-              <p className="text-[10px] text-fg-muted font-mono truncate">在 #{channel.name} 频道内开启单层推演空间</p>
+              <p className="text-[10px] text-fg-muted font-mono truncate">
+                {dmScope
+                  ? `与 ${dmAgent?.name || '私聊 Agent'} 开启独立单层推演空间`
+                  : `在 #${channel?.name || 'channel'} 频道内开启单层推演空间`}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -318,7 +345,9 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
             <label className="block text-xs font-semibold text-fg mb-1.5 flex items-center justify-between">
               <span>讨论模式选择</span>
               <span className="text-[10px] text-fg-muted font-normal">
-                {discussionMode === 'game_theoretic' ? '♟️ 4+1 认知协同攻防决策 (提案/红队/接地/综合 + 人类法槌)' : '💬 轮流自由发言推演'}
+                {discussionMode === 'game_theoretic'
+                  ? (dmScope ? '⚔️ 双方对抗博弈 (提案方 + 对抗方)' : '♟️ 4+1 认知协同攻防决策 (提案/红队/接地/综合 + 人类法槌)')
+                  : '💬 轮流自由发言推演'}
               </span>
             </label>
             <div className="grid grid-cols-2 gap-2">
@@ -361,11 +390,13 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
-                    <span>4+1博弈决策模式</span>
-                    <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-mono">推荐</span>
+                    <span>{dmScope ? '双方博弈模式' : '4+1博弈决策模式'}</span>
+                    {!dmScope && <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-mono">推荐</span>}
                     {discussionMode === 'game_theoretic' && <Check className="w-3 h-3 text-amber-500 stroke-[2.5]" />}
                   </div>
-                  <p className="text-[10px] text-fg-muted mt-0.5 leading-snug">提案-红队-接地-综合四元协同，高保真架构决策</p>
+                  <p className="text-[10px] text-fg-muted mt-0.5 leading-snug">
+                    {dmScope ? '仅设提案方与对抗方，角色由人类和 Agent 选择' : '提案-红队-接地-综合四元协同，高保真架构决策'}
+                  </p>
                 </div>
               </button>
             </div>
@@ -417,8 +448,16 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
             </div>
             <div className="grid grid-cols-3 gap-1.5">
               {[
-                { mode: 'default' as const, label: '议题默认目录', detail: 'topics/<topicId>/' },
-                { mode: 'channel_snapshot' as const, label: '复制频道目录', detail: channelWorkspaceCwd || '频道当前 cwd' },
+                {
+                  mode: 'default' as const,
+                  label: '议题默认目录',
+                  detail: dmScope ? 'agents/<agentId>/topics/<topicId>/' : 'channels/<channelId>/topics/<topicId>/',
+                },
+                {
+                  mode: (dmScope ? 'agent_snapshot' : 'channel_snapshot') as TopicWorkspaceSelection['mode'],
+                  label: dmScope ? '复制私聊目录' : '复制频道目录',
+                  detail: channelWorkspaceCwd || (dmScope ? 'Agent 当前 cwd' : '频道当前 cwd'),
+                },
                 { mode: 'custom' as const, label: '自定义目录', detail: '已有绝对路径' },
               ].map((option) => (
                 <button
@@ -432,7 +471,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
                     workspaceMode === option.mode
                       ? option.mode === 'default'
                         ? 'bg-blue-50 border-blue-300 text-blue-800 dark:bg-blue-500/15 dark:border-blue-500/30 dark:text-blue-300'
-                        : option.mode === 'channel_snapshot'
+                        : option.mode === 'channel_snapshot' || option.mode === 'agent_snapshot'
                           ? 'bg-purple-50 border-purple-300 text-purple-800 dark:bg-purple-500/15 dark:border-purple-500/30 dark:text-purple-300'
                           : 'bg-emerald-50 border-emerald-300 text-emerald-800 dark:bg-emerald-500/15 dark:border-emerald-500/30 dark:text-emerald-300'
                       : 'bg-surface border-border text-fg-secondary hover:border-fg-muted'
@@ -445,10 +484,12 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
             </div>
             {workspaceMode === 'default' && (
               <div className="text-[10px] font-mono text-fg-muted break-all">
-                ~/.shadow-crew/channels/{channel.id}/topics/&lt;topicId&gt;/
+                {dmScope
+                  ? `~/.shadow-crew/agents/${dmAgent?.id}/topics/<topicId>/`
+                  : `~/.shadow-crew/channels/${channel?.id}/topics/<topicId>/`}
               </div>
             )}
-            {workspaceMode === 'channel_snapshot' && channelWorkspaceCwd && (
+            {(workspaceMode === 'channel_snapshot' || workspaceMode === 'agent_snapshot') && channelWorkspaceCwd && (
               <div className="text-[10px] font-mono text-fg-muted break-all">{channelWorkspaceCwd}</div>
             )}
             {workspaceMode === 'custom' && (
@@ -469,8 +510,46 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
             </div>
           )}
 
-          {/* Game-Theoretic: Human Arbiter Privilege Toggle */}
-          {discussionMode === 'game_theoretic' && (
+          {discussionMode === 'game_theoretic' && dmScope && (
+            <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 dark:bg-amber-500/10 dark:border-amber-500/30 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-amber-800 dark:text-amber-300">双方博弈角色</span>
+                <span className="text-[10px] text-fg-muted">固定两个席位：提案方 + 对抗方</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDuelRoles({ proposer: 'human', challenger: 'agent' })}
+                  className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                    duelRoles.proposer === 'human'
+                      ? 'bg-blue-50 border-blue-300 text-blue-800 dark:bg-blue-500/15 dark:border-blue-500/30 dark:text-blue-300'
+                      : 'bg-surface border-border text-fg-secondary'
+                  }`}
+                >
+                  <span className="block text-[11px] font-semibold">👤 我提案 · Agent 对抗</span>
+                  <span className="block text-[10px] text-fg-muted mt-0.5">{dmAgent?.name || 'Agent'} 担任对抗方</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDuelRoles({ proposer: 'agent', challenger: 'human' })}
+                  className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                    duelRoles.proposer === 'agent'
+                      ? 'bg-rose-50 border-rose-300 text-rose-800 dark:bg-rose-500/15 dark:border-rose-500/30 dark:text-rose-300'
+                      : 'bg-surface border-border text-fg-secondary'
+                  }`}
+                >
+                  <span className="block text-[11px] font-semibold">🤖 Agent 提案 · 我对抗</span>
+                  <span className="block text-[10px] text-fg-muted mt-0.5">{dmAgent?.name || 'Agent'} 担任提案方</span>
+                </button>
+              </div>
+              <p className="text-[10px] text-fg-muted">
+                人类接受或驳回结论属于最终决策控制，不占用第三个 Agent 角色。
+              </p>
+            </div>
+          )}
+
+          {/* Channel 4+1 Human Arbiter Toggle */}
+          {discussionMode === 'game_theoretic' && !dmScope && (
             <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 min-w-0 flex-1">
                 <div className="w-7 h-7 rounded-lg bg-amber-500/20 flex items-center justify-center text-amber-600 dark:text-amber-400 shrink-0">
@@ -500,7 +579,23 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
             </div>
           )}
 
-          {/* Participating Agents Checkbox List */}
+          {/* Participating Agents */}
+          {dmScope ? (
+            <div className="p-3 rounded-xl bg-surface border border-border flex items-center gap-2.5">
+              <span className="text-base">{dmAgent?.avatar || '🤖'}</span>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-semibold text-fg truncate">{dmAgent?.name || '私聊 Agent'}</div>
+                <div className="text-[10px] text-fg-muted truncate">
+                  {discussionMode === 'game_theoretic'
+                    ? `本私聊固定为两方博弈：${duelRoles.proposer === 'agent' ? 'Agent 提案 / 人类对抗' : '人类提案 / Agent 对抗'}`
+                    : '该 Agent 是本私聊议题的唯一 ACP 参与者'}
+                </div>
+              </div>
+              <span className="text-[9px] font-mono rounded-full px-1.5 py-0.5 bg-emerald-50 border border-emerald-300 text-emerald-800 dark:bg-emerald-500/15 dark:border-emerald-500/30 dark:text-emerald-300">
+                ACP
+              </span>
+            </div>
+          ) : (
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-semibold text-fg flex items-center gap-1.5">
@@ -626,9 +721,10 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
               </div>
             )}
           </div>
+          )}
 
           {/* Wave 2 P0-5: 异构模型多样性指数与同质化偏见预警 (ReConcile) */}
-          {discussionMode === 'game_theoretic' && modelDiversity && (
+          {discussionMode === 'game_theoretic' && !dmScope && modelDiversity && (
             <div className={`p-2.5 rounded-xl border text-xs space-y-1.5 ${
               modelDiversity.isHomogeneous
                 ? 'bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-300'

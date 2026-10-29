@@ -171,7 +171,6 @@ export interface Agent {
   isModelHealthy?: boolean;
   isManagedByYou?: boolean;
   baselineSycophancyScore?: number; // BSS 静态历史附和分 (0.0~1.0, P0-4)
-  runtimeKind?: 'shinobi_native' | 'acp_custom' | 'claude_code';
   defaultGameRole?: GameRoleType;
   
   // ACP Protocol Config
@@ -200,8 +199,6 @@ export interface Agent {
   authToken?: string;
   remoteLatencyMs?: number;
   readOnlyGuard?: boolean;
-  isGuestClone?: boolean;
-  guestCloneFrom?: string;
 
   // Three Core Pillars
   workspace: AgentWorkspaceConfig;
@@ -295,6 +292,13 @@ export interface WorkspaceBinding {
 export type TopicStatus = 'open' | 'investigating' | 'resolved';
 
 export type DiscussionMode = 'standard' | 'game_theoretic';
+
+export type TopicScopeType = 'channel' | 'dm';
+export type DuelParticipantRole = 'human' | 'agent';
+
+export type DuelRolesConfig =
+  | { proposer: 'human'; challenger: 'agent' }
+  | { proposer: 'agent'; challenger: 'human' };
 
 export type GameRoleType = 'proposer' | 'challenger' | 'verifier' | 'arbiter';
 
@@ -688,13 +692,17 @@ export interface DecisionRecord {
 
 export interface TopicMessageData {
   id: string;
-  channelId: string;
+  scopeType: TopicScopeType;
+  channelId?: string;
+  dmAgentId?: string;
+  dmThreadId?: string;
   workspaceBindingId: string;
   title: string;
   description?: string;
   status: TopicStatus;
   discussionMode?: DiscussionMode;
   gameRoles?: GameRolesConfig;
+  duelRoles?: DuelRolesConfig;
   gameStage?: GameTheoreticStage;
   gameTheoreticState?: GameTheoreticState;
   rulingRecord?: RulingRecord;

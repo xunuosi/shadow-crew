@@ -5,7 +5,6 @@ members = [
     "crates/shadow-crew-protocol",
     "crates/shadow-crew-server",
     "src-tauri",
-    "crates/shadow-crew-agent",
     "crates/shadow-crew-dev-mcp"
 ]
 

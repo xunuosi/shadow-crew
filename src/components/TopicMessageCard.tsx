@@ -48,6 +48,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
   const isInvestigating = topic.status === 'investigating';
   const isOpen = topic.status === 'open';
   const isGame = topic.discussionMode === 'game_theoretic';
+  const isDmDuel = topic.scopeType === 'dm' && isGame;
   const ruling = topic.rulingRecord;
 
   const execState = topic.gameTheoreticState;
@@ -165,7 +166,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
             ) : isGame ? (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 shrink-0 whitespace-nowrap">
                 <Swords className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                <span>博弈推演中 · Game Mode</span>
+                <span>{isDmDuel ? '双方博弈中 · Duel Mode' : '博弈推演中 · Game Mode'}</span>
               </span>
             ) : isInvestigating ? (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-purple-50 dark:bg-purple-500/15 text-purple-800 dark:text-purple-300 border border-purple-300 dark:border-purple-500/30 shrink-0 whitespace-nowrap">
@@ -182,7 +183,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
             {/* Mode indicator pill */}
             {isGame && !isResolved && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono font-medium bg-surface-subtle text-fg-secondary border border-border shrink-0">
-                <span>三元博弈</span>
+                <span>{isDmDuel ? '双方博弈' : '三元博弈'}</span>
               </span>
             )}
 
@@ -571,7 +572,16 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
             </div>
 
             {/* Role Breakdown Pill for Game Mode */}
-            {isGame && topic.gameRoles ? (
+            {isDmDuel && topic.duelRoles ? (
+              <div className="flex items-center gap-1 text-[10px] font-mono font-medium ml-1 flex-wrap">
+                <span className="px-1.5 py-0.2 rounded bg-blue-50 dark:bg-blue-500/15 text-blue-800 dark:text-blue-300 border border-blue-200 dark:border-blue-500/25 whitespace-nowrap">
+                  提案 {topic.duelRoles.proposer === 'human' ? '👤' : '🤖'}
+                </span>
+                <span className="px-1.5 py-0.2 rounded bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-500/25 whitespace-nowrap">
+                  对抗 {topic.duelRoles.challenger === 'human' ? '👤' : '🤖'}
+                </span>
+              </div>
+            ) : isGame && topic.gameRoles ? (
               <div className="flex items-center gap-1 text-[10px] font-mono font-medium ml-1 flex-wrap">
                 <span className="px-1.5 py-0.2 rounded bg-blue-50 dark:bg-blue-500/15 text-blue-800 dark:text-blue-300 border border-blue-200 dark:border-blue-500/25 whitespace-nowrap">
                   主导 {proposers.length}

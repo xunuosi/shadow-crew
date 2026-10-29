@@ -1,5 +1,4 @@
-import { Agent, CartridgeCitation, MemoryCartridgeItem, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem, TopicExecutionUiMeta, ModuleDecompositionDraft, ModuleComplexityLevel } from '../types';
-import { resolveAgentModelConfig, isModelConfigReady, callLlmModel, clearLlmSessionHistory } from './llmService';
+import { Agent, CartridgeCitation, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem, TopicExecutionUiMeta, ModuleDecompositionDraft, ModuleComplexityLevel } from '../types';
 import { isAgentOffline } from '../utils/agentRuntime';
 import { buildAgentPersonaPrompt } from './agentCollaboration';
 
@@ -12,7 +11,7 @@ export interface AcpSendPromptOptions {
   channelId?: string;
   systemPrompt?: string;
   isDm?: boolean;
-  scopeType?: 'channel' | 'topic' | 'dm';
+  scopeType?: 'channel' | 'topic' | 'dm' | 'dm_topic';
   discussionMode?: 'standard' | 'game_theoretic';
 }
 
@@ -70,13 +69,26 @@ export function buildUnifiedSessionKey(options: {
   isDm?: boolean;
   discussionMode?: string;
   workspaceBindingId?: string;
-  scopeType?: 'channel' | 'topic' | 'dm';
+  scopeType?: 'channel' | 'topic' | 'dm' | 'dm_topic';
 }): string {
   const validRoomId = validateSessionSegment(options.roomId, 'roomId');
   const trimmedChannelId = options.channelId?.trim();
   const validChannelId = trimmedChannelId
     ? validateSessionSegment(trimmedChannelId, 'channelId')
     : undefined;
+
+  if (options.scopeType === 'dm_topic') {
+    const aid = validateSessionSegment(options.agentId || 'default', 'agentId');
+    const topicId = validateSessionSegment(options.roomId, 'topicId');
+    const mode = validateSessionSegment(
+      options.discussionMode || 'standard',
+      'discussionMode'
+    );
+    const workspaceSegment = options.workspaceBindingId
+      ? `:ws-${validateSessionSegment(options.workspaceBindingId, 'workspaceBindingId')}`
+      : '';
+    return `dmtopic:${aid}:${topicId}:${mode}${workspaceSegment}`;
+  }
 
   const isDm = options.isDm ?? (
     options.scopeType
@@ -124,19 +136,19 @@ export function buildAgentSessionKey(options: {
   isDm?: boolean;
   discussionMode?: string;
   workspaceBindingId?: string;
-  scopeType?: 'channel' | 'topic' | 'dm';
+  scopeType?: 'channel' | 'topic' | 'dm' | 'dm_topic';
 }): string {
   const validAgentId = validateSessionSegment(options.agentId, 'agentId');
   const baseKey = buildUnifiedSessionKey({ ...options, agentId: validAgentId });
   // 私聊 baseKey 已经包含 agentId (dm:{agentId}:{threadId})，无需重复追加
-  if (baseKey.startsWith('dm:')) {
+  if (baseKey.startsWith('dm:') || baseKey.startsWith('dmtopic:')) {
     return baseKey;
   }
   return `${baseKey}:${validAgentId}`;
 }
 
 export interface ParsedSessionKey {
-  type: 'dm' | 'topic' | 'channel' | 'legacy';
+  type: 'dm' | 'dm_topic' | 'topic' | 'channel' | 'legacy';
   agentId?: string;
   channelId?: string;
   roomId?: string;
@@ -147,6 +159,26 @@ export interface ParsedSessionKey {
 export function parseSessionKey(key: string): ParsedSessionKey {
   if (!key) return { type: 'legacy' };
   const parts = key.split(':');
+  if (parts[0] === 'dmtopic') {
+    const hasWorkspace = Boolean(parts[4]?.startsWith('ws-'));
+    if (
+      (parts.length !== 4 && parts.length !== 5) ||
+      !isValidSessionSegment(parts[1]) ||
+      !isValidSessionSegment(parts[2]) ||
+      !isValidSessionSegment(parts[3]) ||
+      (parts.length === 5 && !hasWorkspace) ||
+      (parts.length === 5 && !isValidSessionSegment(parts[4]))
+    ) {
+      return { type: 'legacy' };
+    }
+    return {
+      type: 'dm_topic',
+      agentId: parts[1],
+      roomId: parts[2],
+      discussionMode: parts[3],
+      workspaceBindingId: hasWorkspace ? parts[4].slice(3) : undefined,
+    };
+  }
   if (parts[0] === 'dm') {
     if (parts.length !== 3 || !isValidSessionSegment(parts[1]) || !isValidSessionSegment(parts[2])) {
       return { type: 'legacy' };
@@ -221,7 +253,11 @@ export function matchesSessionScope(
 
   // 1. 按 Agent ID 过滤（如 agent 停止时清空相关会话与交付缓存）
   if (filter.agentId) {
-    if (key.endsWith(`:${filter.agentId}`) || key.startsWith(`dm:${filter.agentId}:`)) {
+    if (
+      key.endsWith(`:${filter.agentId}`) ||
+      key.startsWith(`dm:${filter.agentId}:`) ||
+      key.startsWith(`dmtopic:${filter.agentId}:`)
+    ) {
       return true;
     }
   }
@@ -547,111 +583,6 @@ export function buildThinkingProcessFromAcp(
 }
 
 /**
- * 有限上下文 JIT 外挂记忆召回引擎 (4-Stage Funnel Just-In-Time Recall)
- * 在不污染本地主数据库的前提下，按需精准召回 Top-3 相关条目，并将 Token 预算控制在 600 Tokens 以内。
- */
-export function recallRelevantCartridgeMemories(
-  agent: Agent,
-  prompt: string
-): {
-  enhancedPrompt: string;
-  citation?: CartridgeCitation;
-} {
-  const cartridges = agent.memory?.cartridges || [];
-  const enabledCartridges = cartridges.filter((c) => c.isEnabled && c.memories && c.memories.length > 0);
-
-  if (enabledCartridges.length === 0) {
-    return { enhancedPrompt: prompt };
-  }
-
-  // 分词提取关键词
-  const promptWords = prompt
-    .toLowerCase()
-    .replace(/[^\w\s\u4e00-\u9fa5]/g, ' ')
-    .split(/\s+/)
-    .filter((w) => w.length >= 2);
-
-  const matchedCandidates: Array<{
-    item: MemoryCartridgeItem;
-    cartridgeName: string;
-    score: number;
-  }> = [];
-
-  for (const cartridge of enabledCartridges) {
-    for (const item of cartridge.memories) {
-      const targetText = `${item.key} ${item.content} ${item.category}`.toLowerCase();
-      let score = 0;
-
-      for (const word of promptWords) {
-        if (targetText.includes(word)) {
-          score += 1;
-        }
-      }
-
-      // 如果有重点加权
-      if (item.importance) {
-        score *= 1 + item.importance;
-      }
-
-      if (score > 0) {
-        matchedCandidates.push({
-          item,
-          cartridgeName: cartridge.name,
-          score,
-        });
-      }
-    }
-  }
-
-  // 若无强匹配，但外挂卡带总数较少（1-2条特定规约），并且用户提问了代码或架构，召回首要规约
-  if (matchedCandidates.length === 0 && (prompt.includes('代码') || prompt.includes('架构') || prompt.includes('rust') || prompt.length > 10)) {
-    const firstCartridge = enabledCartridges[0];
-    const topItem = firstCartridge.memories[0];
-    if (topItem) {
-      matchedCandidates.push({
-        item: topItem,
-        cartridgeName: firstCartridge.name,
-        score: 0.5,
-      });
-    }
-  }
-
-  if (matchedCandidates.length === 0) {
-    return { enhancedPrompt: prompt };
-  }
-
-  // 排序并取 Top-3（严格配额保护：硬上限 600 Tokens，约 1800 字符）
-  matchedCandidates.sort((a, b) => b.score - a.score);
-  const selected = matchedCandidates.slice(0, 3);
-
-  const primaryCartridgeName = selected[0].cartridgeName;
-  const citationItems = selected.map((c) => ({
-    key: c.item.key,
-    content: c.item.content,
-  }));
-
-  const totalChars = citationItems.reduce((acc, cur) => acc + cur.key.length + cur.content.length, 0);
-  const estimatedTokens = Math.max(40, Math.round(totalChars / 3.2));
-
-  const citation: CartridgeCitation = {
-    cartridgeName: primaryCartridgeName,
-    recalledCount: citationItems.length,
-    tokenCost: estimatedTokens,
-    items: citationItems,
-  };
-
-  // 生成非侵入式提示词注入块
-  const memoryInjection =
-    `\n\n[💡 引用外挂记忆卡带「${primaryCartridgeName}」的架构规约与避坑经验 (只读挂载)]:\n` +
-    citationItems.map((item, idx) => `${idx + 1}. [${item.key}]: ${item.content}`).join('\n');
-
-  return {
-    enhancedPrompt: `${prompt}${memoryInjection}`,
-    citation,
-  };
-}
-
-/**
  * 探测远程 ACP WebSocket 连接状态与端点延迟
  */
 export async function probeRemoteAcpConnection(
@@ -775,7 +706,7 @@ export async function sendPromptToRemoteAcpWebSocket(
   systemPrompt?: string,
   workspaceBindingId?: string,
   workspaceUri?: string,
-  scopeType?: 'channel' | 'topic' | 'dm'
+  scopeType?: 'channel' | 'topic' | 'dm' | 'dm_topic'
 ): Promise<AcpAgentResponse> {
   const startTime = Date.now();
 
@@ -950,35 +881,15 @@ export async function sendPromptToRemoteAcpWebSocket(
   });
 }
 
-/**
- * 构造本地 ACP 进程的启动环境变量。
- * 内置自研 shadow-crew-agent (兼容 shinobi-agent) 自身不持有模型配置，由宿主将「Agent 私有模型 > 全局默认模型」
- * 解析结果通过 SHADOW_CREW_LLM_* 注入；外部独立 ACP 运行时（如 Claude Code）沿用其自身 ENV，不做注入。
- */
+/** 构造 ACP 进程启动环境变量；模型与记忆配置完全由 ACP 端点自身管理。 */
 export function buildAgentLaunchEnv(agent: Agent): Array<{ key: string; value: string }> {
-  const envVars = [...(agent.envVars || [])];
-  const command = agent.acpCommandOrUrl || './target/debug/shadow-crew-agent';
-  if (command.includes('shadow-crew-agent') || command.includes('shinobi-agent')) {
-    const cfg = resolveAgentModelConfig(agent);
-    envVars.push(
-      { key: 'SHADOW_CREW_LLM_PROVIDER', value: cfg.provider },
-      { key: 'SHADOW_CREW_LLM_MODEL_ID', value: cfg.modelId },
-      { key: 'SHADOW_CREW_LLM_BASE_URL', value: cfg.baseUrl || '' },
-      { key: 'SHADOW_CREW_LLM_API_KEY', value: cfg.apiKey || '' },
-      { key: 'SHADOW_CREW_LLM_TEMPERATURE', value: String(cfg.temperature ?? 0.7) },
-      { key: 'SHADOW_CREW_LLM_MAX_TOKENS', value: String(cfg.maxTokens ?? 4096) }
-    );
-  }
-  return envVars;
+  return [...(agent.envVars || [])];
 }
 
 /**
  * 统一多模态 ACP 通信入口
- * 具备：
- * 1. JIT 外挂记忆智能检索与引用构建
- * 2. 远程 WebSocket / 团队 Hub 连接分流
- * 3. 本地 Tauri stdio 进程驱动
- * 4. 浏览器预览模式下的拟真响应
+ * 仅通过远程 WebSocket 或本地 Tauri stdio ACP 端点执行；
+ * 缺少可用端点时显式失败，不降级到直连模型或模拟回答。
  */
 export async function sendPromptToAcpAgent(
   options: AcpSendPromptOptions
@@ -1023,8 +934,8 @@ export async function sendPromptToAcpAgent(
         : `${personaPrompt}\n\n${options.systemPrompt}`)
     : personaPrompt;
 
-  // 1. JIT 动态外挂记忆召回 (有限上下文防塞爆)
-  const { enhancedPrompt, citation } = recallRelevantCartridgeMemories(agent, prompt);
+  // ACP 上下文、长期记忆和压缩均由 Agent 端点自行管理。
+  const enhancedPrompt = prompt;
 
   // 1.1 严格通信准入：若 Agent 未由用户点击 Start 开启通信（idle），或进程/握手异常（error），拒绝发起通信
   if (isAgentOffline(agent)) {
@@ -1034,7 +945,6 @@ export async function sendPromptToAcpAgent(
         : '当前处于离线未连接状态';
     return {
       textResponse: `🔌 **Agent 通信不可用**：【${agent.name}】${reason}，本轮指令未派发给该 Agent。\n\n请先在 **Agents & 编队** 控制面板点击该 Agent 头像下方的【Start】按钮开启 ACP 通信连接；若显示连接异常，请先修复其运行环境后重新 Start。`,
-      cartridgeCitation: citation,
       durationMs: Date.now() - startTime,
       isRealProcess: false,
     };
@@ -1062,10 +972,7 @@ export async function sendPromptToAcpAgent(
       options.workspaceCwd,
       options.scopeType
     );
-    return {
-      ...remoteRes,
-      cartridgeCitation: citation,
-    };
+    return remoteRes;
   }
 
   // 3. 检查是否处于 Tauri 桌面端环境 (本地 stdio 进程)
@@ -1079,9 +986,21 @@ export async function sendPromptToAcpAgent(
     try {
       console.log(`[ACP Client] Invoking real ACP agent process: ${agent.id} (${agent.name})`);
 
-      const launchCommand = agent.acpCommandOrUrl || './target/debug/shadow-crew-agent';
+      const launchCommand = agent.acpCommandOrUrl;
+      if (!launchCommand?.trim()) {
+        return {
+          textResponse: `⚠️【${agent.name}】未配置本地 ACP 启动命令。请在 Agent 配置中填写可执行的 ACP 命令。`,
+          durationMs: Date.now() - startTime,
+          isRealProcess: false,
+          isError: true,
+        };
+      }
       const launchEnvVars = buildAgentLaunchEnv(agent);
-      const isDm = options.isDm ?? (Boolean(!options.channelId || options.channelId === 'direct-messages' || options.channelId.startsWith('dm-') || roomId.startsWith('thread-dm-')));
+      const isDm = options.isDm ?? (
+        options.scopeType
+          ? options.scopeType === 'dm'
+          : Boolean(!options.channelId || options.channelId === 'direct-messages' || options.channelId.startsWith('dm-') || roomId.startsWith('thread-dm-'))
+      );
       const targetCwd = options.workspaceCwd || (isDm
         ? `~/.shadow-crew/agents/${agent.id}`
         : `~/.shadow-crew/channels/${options.channelId || roomId}`);
@@ -1121,7 +1040,6 @@ export async function sendPromptToAcpAgent(
           stopReason: res.stopReason,
           memoryActions: res.memory_actions || [],
           mcpToolCalls: res.mcp_tool_calls || [],
-          cartridgeCitation: citation,
           workspaceDiffs: nativeDiffs,
           executionMeta,
           durationMs,
@@ -1137,7 +1055,6 @@ export async function sendPromptToAcpAgent(
           textResponse: cleanedText,
           memoryActions: response.memory_actions || [],
           mcpToolCalls: response.mcp_tool_calls || [],
-          cartridgeCitation: citation,
           workspaceDiffs: nativeDiffs,
           executionMeta,
           durationMs,
@@ -1174,8 +1091,7 @@ export async function sendPromptToAcpAgent(
         }
 
         return {
-          textResponse: `⚠️【${agent.name}】ACP 通信告警：${rawErrMsg}${formattedHelp}\n\n• **本地日志落盘**：底层原始 stdio 报文已持久化落盘至 \`logs/acp.log\`。\n• **实时跟踪**：可在终端运行 \`tail -f logs/acp.log\` 查看实时流。\n• **关联命令**：\`${agent.acpCommandOrUrl || './target/debug/shadow-crew-agent'}\`。`,
-          cartridgeCitation: citation,
+          textResponse: `⚠️【${agent.name}】ACP 通信告警：${rawErrMsg}${formattedHelp}\n\n• **本地日志落盘**：底层原始 stdio 报文已持久化落盘至 \`logs/acp.log\`。\n• **实时跟踪**：可在终端运行 \`tail -f logs/acp.log\` 查看实时流。\n• **关联命令**：\`${agent.acpCommandOrUrl || '(未配置)'}\`。`,
           durationMs,
           isRealProcess: true,
           isError: true,
@@ -1183,178 +1099,22 @@ export async function sendPromptToAcpAgent(
         };
       }
     } catch (err) {
-      console.warn('[ACP Client] Tauri IPC invocation error or process offline, fallback to simulation:', err);
-    }
-  }
-
-  // 4. Web 预览、直连大模型运行时或进程离线时的智能处理
-  const modelConfig = resolveAgentModelConfig(agent);
-  if (isModelConfigReady(modelConfig)) {
-    try {
-      console.log(`[ACP Client] Invoking direct LLM runtime for ${agent.name} with model: ${modelConfig.modelName || modelConfig.modelId}`);
-      const sessionKey = buildAgentSessionKey({
-        agentId: agent.id,
-        roomId,
-        channelId: options.channelId,
-        isDm: options.isDm,
-        discussionMode: options.discussionMode,
-        workspaceBindingId: options.workspaceBindingId,
-        scopeType: options.scopeType,
-      });
-      const llmResult = await callLlmModel(modelConfig, enhancedPrompt, resolvedSystemPrompt, sessionKey);
-      const durationMs = Date.now() - startTime;
-      const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(llmResult.textResponse);
-      const extractedDiffs = extractWorkspaceDiffsFromText(cleanedText);
-
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[ACP Client] ACP invocation failed:', err);
       return {
-        textResponse: cleanedText,
-        memoryActions: [
-          {
-            action: 'recall',
-            key: 'llm_inference',
-            detail: `底座模型「${modelConfig.modelName || modelConfig.modelId}」推演完成 (${llmResult.durationMs}ms)`,
-          },
-        ],
-        cartridgeCitation: citation,
-        workspaceDiffs: extractedDiffs,
-        executionMeta,
-        durationMs,
-        isRealProcess: true,
+        textResponse: `⚠️【${agent.name}】ACP 调用失败：${message}\n\n本版本不再降级到直连 LLM 或模拟响应，请检查本地/远程 ACP 连接后重试。`,
+        durationMs: Date.now() - startTime,
+        isRealProcess: false,
+        isError: true,
       };
-    } catch (llmErr: any) {
-      console.warn('[ACP Client] Real LLM call failed:', llmErr);
-      const errMsg = llmErr?.message || String(llmErr);
-      // 若属于鉴权或配额硬错误，直接向用户展示精准排障面板
-      if (
-        errMsg.toLowerCase().includes('key') ||
-        errMsg.includes('401') ||
-        errMsg.toLowerCase().includes('auth') ||
-        errMsg.toLowerCase().includes('unauthorized') ||
-        errMsg.includes('403') ||
-        errMsg.toLowerCase().includes('quota')
-      ) {
-        return {
-          textResponse: `⚠️【${agent.name}】底座大模型认证或调用失败：${errMsg}\n\n💡 **排障建议**：\n• 当前模型：\`${modelConfig.modelName || modelConfig.modelId}\` (提供商: \`${modelConfig.provider}\`)\n• 当前 Base URL: \`${modelConfig.baseUrl || '默认'}\`\n• 请点击当前 Agent 卡片右侧【配置】或右上角【Set agent defaults】重新校验 API Key 与网络连接。`,
-          cartridgeCitation: citation,
-          durationMs: Date.now() - startTime,
-          isRealProcess: false,
-          isError: true,
-        };
-      }
     }
   }
-
-  // 5. 兜底拟真响应 (无 Key 或调试模拟态)
-  await new Promise((resolve) => setTimeout(resolve, 2000 + Math.random() * 500));
-  const durationMs = Date.now() - startTime;
-
-  let simulatedText = '';
-  const memoryActions: Array<{ action: string; key: string; detail: string }> = [];
-
-  if (prompt.includes('[🛠️ 议题定案决议落地执行任务') || prompt.includes('[🛠️ 议题仲裁定案代码落地实施任务')) {
-    const fileMatch = prompt.match(/• `([^`]+)`/);
-    const targetFile = fileMatch ? fileMatch[1] : 'src/services/consensusImpl.ts';
-    const topicTitleMatch = prompt.match(/【所属议题】:\s*【([^】]+)】/);
-    const topicShortTitle = (topicTitleMatch?.[1] || '定案决议').slice(0, 14);
-    simulatedText =
-      `### 🛠️ 「${topicShortTitle}」落地执行成果交付\n\n` +
-      `已由 **${agent.name}** 严格按照终局定案要求完成落地实现：\n\n` +
-      `\`\`\`diff\n` +
-      `--- a/${targetFile}\n` +
-      `+++ b/${targetFile}\n` +
-      `@@ -1,4 +1,24 @@\n` +
-      `-export function legacyHandler() {\n` +
-      `-  return false;\n` +
-      `-}\n` +
-      `+// 依据定案决议自动落地的工程实现\n` +
-      `+export interface ArbitrationEnforcedOptions {\n` +
-      `+  requestId: string;\n` +
-      `+  signature: string;\n` +
-      `+  timestamp: number;\n` +
-      `+}\n` +
-      `+\n` +
-      `+export function enforceArbitratedGuard(opts: ArbitrationEnforcedOptions): boolean {\n` +
-      `+  if (!opts.requestId || !opts.signature) {\n` +
-      `+    throw new Error('Arbitration Guard: missing required signature or requestId');\n` +
-      `+  }\n` +
-      `+  const driftMs = Math.abs(Date.now() - opts.timestamp);\n` +
-      `+  if (driftMs > 30_000) {\n` +
-      `+    return false;\n` +
-      `+  }\n` +
-      `+  return true;\n` +
-      `+}\n` +
-      `\`\`\`\n\n` +
-      `• **交付校验**：已通过边界条件校验与幂等保护检查，可点击下方按钮审查变更并合入本地工作区。\n\n` +
-      `<<<EXECUTION_META>>>\n` +
-      JSON.stringify({
-        sectionTitle: `${topicShortTitle} · 落地实现与变更交付`,
-        podTitle: `🛠️ ${topicShortTitle.slice(0, 6)}落地交付`,
-        statusSummary: `已完成 ${targetFile} 的定案落地变更与边界校验`,
-        deliverableKind: 'workspace_files',
-        reviewActionLabel: '审查变更 Diff',
-        applyActionLabel: '一键合入本地工作区',
-      }) +
-      `\n<<<EXECUTION_META_END>>>`;
-    memoryActions.push({
-      action: 'write',
-      key: 'execution_deliverable',
-      detail: `已针对 ${targetFile} 生成落地变更与 UI 描述契约`,
-    });
-  } else if (agent.isGuestClone) {
-    simulatedText =
-      `【${agent.name} (🪪 访客替身)】已基于外挂知识库完成推演：\n` +
-      `针对研讨议题：「${prompt}」，我调取了原宿主 ${agent.guestCloneFrom || '原专家'} 沉淀的架构公理。\n` +
-      `• **外部专家建议**：严密保持代码结构整洁，防止异步边界锁竞争与循环依赖。\n` +
-      `• **协同视角**：我作为沙盒只读替身，可以在此与主 Agent 交叉审查此方案。`;
-
-    memoryActions.push({
-      action: 'recall',
-      key: 'guest_clone_snapshot',
-      detail: `召回 ${agent.guestCloneFrom || '原专家'} 的高密原子知识卡片`,
-    });
-  } else if (agent.id === 'agent-shinobi-core') {
-    simulatedText =
-      `【${agent.name}】已就绪并完成需求分析：\n` +
-      `针对关于「${prompt.slice(0, 40)}${prompt.length > 40 ? '...' : ''}」的指令，已调取私有 SQLite 记忆库与外挂卡带。\n` +
-      `• **架构策略**：遵循单一职责与零拷贝设计，中间件层全面基于 Tokio 异步通道挂载。\n` +
-      `• **下一步建议**：随时可在当前频道发起单层独立推演议题（Topic），或直接分派 Unified Diff 变更任务。\n\n` +
-      `*(💡 提示：当前 Agent 处于拟真回放模式。点击卡片右侧「配置模型」或右上角「Set agent defaults」填入 API Key 即可接入真实 DeepSeek / Claude / OpenAI / Ollama 等大模型)*`;
-
-    memoryActions.push({
-      action: 'recall',
-      key: 'rust_guidelines',
-      detail: '严禁 unwrap，优先使用 anyhow/thiserror；异步操作一律基于 Tokio 运行时',
-    });
-  } else if (agent.id === 'agent-1789029918725') {
-    simulatedText =
-      `【${agent.name}】ACP 网关协同响应：\n` +
-      `收到开发指令：\`${prompt}\`。\n` +
-      `已连接到 OpenClaw Gateway 进程，模型参数 \`${agent.modelBadge || 'deepseek'}\` 已加载，已完成上下文对齐。\n\n` +
-      `*(💡 提示：当前 Agent 处于拟真回放模式。可在卡片配置中填入真实模型 API Key)*`;
-
-    memoryActions.push({
-      action: 'query',
-      key: 'openclaw_acp_bridge',
-      detail: 'OpenClaw Gateway connects on ws://127.0.0.1:18789 via stdio protocol',
-    });
-  } else {
-    simulatedText =
-      `【${agent.name} (${agent.role})】推演反馈：\n` +
-      `已接收到来自研讨频道的指令：「${prompt}」。\n` +
-      `ACP 独立推演就绪，已融合上下文信息。随时可以开展代码审查与方案校验。\n\n` +
-      `*(💡 提示：当前 Agent 处于拟真回放模式。可在卡片配置中填入真实模型 API Key)*`;
-  }
-
-  const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(simulatedText);
 
   return {
-    textResponse: cleanedText,
-    memoryActions,
-    cartridgeCitation: citation,
-    workspaceDiffs: extractWorkspaceDiffsFromText(cleanedText),
-    executionMeta,
-    durationMs,
+    textResponse: `⚠️【${agent.name}】当前运行环境未提供 ACP 调用通道。请使用桌面端连接本地 ACP，或在 Agent 配置中连接远程 ACP。`,
+    durationMs: Date.now() - startTime,
     isRealProcess: false,
+    isError: true,
   };
 }
 
@@ -2026,7 +1786,6 @@ export async function clearAcpAgentSessions(
   };
 
   const runClear = async () => {
-    clearLlmSessionHistory(agentId || sessionKeyPrefix);
     purgeActiveAcpSessionsByScope(scopeKey, clearGeneration);
 
     const tauriInvoke =
@@ -2191,11 +1950,15 @@ export async function ensureAcpAgentSession(options: {
   discussionMode?: string;
   workspaceBindingId?: string;
   workspaceCwd?: string;
-  scopeType?: 'channel' | 'topic' | 'dm';
+  scopeType?: 'channel' | 'topic' | 'dm' | 'dm_topic';
   isDm?: boolean;
   localHistoryIntact?: boolean;
 }): Promise<EnsureSessionResult | null> {
-  const isDm = options.isDm ?? (Boolean(!options.channelId || options.channelId === 'direct-messages' || options.channelId.startsWith('dm-') || options.roomId.startsWith('thread-dm-')));
+  const isDm = options.isDm ?? (
+    options.scopeType
+      ? options.scopeType === 'dm'
+      : Boolean(!options.channelId || options.channelId === 'direct-messages' || options.channelId.startsWith('dm-') || options.roomId.startsWith('thread-dm-'))
+  );
   const barrierSessionKey = buildAgentSessionKey({
     agentId: options.agentId,
     roomId: options.roomId,

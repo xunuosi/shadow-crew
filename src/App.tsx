@@ -18,7 +18,6 @@ import {
   TopicStatus,
   ActiveAgentExecution,
   AgentRuntimeStatus,
-  MemoryCartridge,
   DiscussionMode,
   GameRolesConfig,
   GameRoleType,
@@ -28,7 +27,8 @@ import {
   SprtGovernorState,
   FastTrackConvergenceEvidence,
   ModularOrchestrationState,
-  WorkspaceBinding
+  WorkspaceBinding,
+  DuelRolesConfig
 } from './types';
 import { 
   INITIAL_AGENTS, 
@@ -63,8 +63,6 @@ const AgentDefaultsModal = lazy(() => import('./components/AgentDefaultsModal').
 const StorageSettingsModal = lazy(() => import('./components/StorageSettingsModal').then((m) => ({ default: m.StorageSettingsModal })));
 const RustTauriArchitectureHub = lazy(() => import('./components/RustTauriArchitectureHub').then((m) => ({ default: m.RustTauriArchitectureHub })));
 const AgentDashboard = lazy(() => import('./components/AgentDashboard').then((m) => ({ default: m.AgentDashboard })));
-const MemoryExportModal = lazy(() => import('./components/MemoryExportModal').then((m) => ({ default: m.MemoryExportModal })));
-const MemoryImportModal = lazy(() => import('./components/MemoryImportModal').then((m) => ({ default: m.MemoryImportModal })));
 import {
   sendPromptToAcpAgent,
   clearAcpAgentSessions,
@@ -98,14 +96,16 @@ import {
 import {
   createChannelBinding,
   createTopicBinding,
+  createDmTopicBinding,
   findWorkspaceBinding,
   getDefaultChannelCwd,
   getDefaultTopicCwd,
+  getDefaultDmTopicCwd,
   migrateWorkspaceGraph,
+  normalizeDuelRoles,
   WORKSPACE_BINDING_SCHEMA_VERSION,
 } from './services/workspaceBindings';
-import { DEFAULT_MODEL_NAME } from './config/models';
-import { resolveAgentModelConfig, setGlobalModelConfig, clearLlmSessionHistory } from './services/llmService';
+import { setGlobalModelConfig, clearLlmSessionHistory } from './services/llmService';
 import {
   CollaborationCascade,
   normalizeAgentHandle,
@@ -197,7 +197,10 @@ export default function App() {
                 a.id !== 'agent-alex-ego' &&
                 a.id !== 'agent-architect' &&
                 a.id !== 'agent-security' &&
-                a.id !== 'agent-devops'
+                a.id !== 'agent-devops' &&
+                a.id !== 'agent-shinobi-core' &&
+                !String(a.acpCommandOrUrl || '').includes('shadow-crew-agent') &&
+                !String(a.acpCommandOrUrl || '').includes('shinobi-agent')
             )
             .map((a: any) => {
               let updatedWorkspace = a.workspace;
@@ -233,27 +236,6 @@ export default function App() {
                 status: 'idle', // 启动默认未开启通信，需用户在面板点击 Start
                 statusDetail: undefined,
               };
-              if (a.id === 'agent-shinobi-core') {
-                return {
-                  ...baseAgent,
-                  modelBadge: a.modelBadge === 'Rust Native' ? 'DeepSeek V3' : (a.modelBadge || 'DeepSeek V3'),
-                  modelConfig: a.modelConfig || {
-                    provider: 'deepseek',
-                    modelId: 'deepseek-chat',
-                    modelName: 'DeepSeek V3',
-                    baseUrl: 'https://api.deepseek.com/v1',
-                    useGlobalDefault: true,
-                  },
-                  acpCommandOrUrl: './target/debug/shadow-crew-agent',
-                  workspace: updatedWorkspace || {
-                    rootPath: '~/.shadow-crew',
-                    repoName: 'shadow-crew-workspace',
-                    gitBranch: 'main',
-                    permissionMode: 'full_read_write',
-                    activeFiles: ['~/.shadow-crew/global_memory.sqlite'],
-                  },
-                };
-              }
               // 针对外部自主 ACP Agent，清理历史脏数据中把 Agent 名字错赋给 modelBadge 或 role 的情况
               if (baseAgent.modelBadge === baseAgent.name || baseAgent.modelBadge === baseAgent.localAcpProfile) {
                 baseAgent.modelBadge = baseAgent.isRemote ? 'Remote ACP' : 'ACP Stdio';
@@ -263,7 +245,6 @@ export default function App() {
               }
               return updatedWorkspace ? { ...baseAgent, workspace: updatedWorkspace } : baseAgent;
             });
-          filtered.sort((a: any, b: any) => (a.id === 'agent-shinobi-core' ? -1 : b.id === 'agent-shinobi-core' ? 1 : 0));
           if (filtered.length > 0) return filtered;
       }
     } catch {}
@@ -434,7 +415,6 @@ export default function App() {
               const agentId = k.replace('thread-dm-', '');
               parsed[k] = (parsed[k] || []).filter((m: Message) => {
                 if (
-                  m.type === 'topic' ||
                   m.kind === 'rollup' ||
                   m.kind === 'guard' ||
                   m.agentBadge === 'Consensus Rollup' ||
@@ -745,9 +725,6 @@ export default function App() {
   const [isConnectModalOpen, setIsConnectModalOpen] = useState<boolean>(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [duplicatingAgent, setDuplicatingAgent] = useState<Agent | null>(null);
-  const [isMemoryExportModalOpen, setIsMemoryExportModalOpen] = useState<boolean>(false);
-  const [exportingAgent, setExportingAgent] = useState<Agent | null>(null);
-  const [isMemoryImportModalOpen, setIsMemoryImportModalOpen] = useState<boolean>(false);
   const [isRustTauriHubOpen, setIsRustTauriHubOpen] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [activeExecutions, setActiveExecutionsState] = useState<Record<string, ActiveAgentExecution>>({});
@@ -983,17 +960,21 @@ export default function App() {
   // 当编辑议题时，计算该议题所属频道及该频道的可用 Agent 成员列表 (严格限定在对应频道准入成员)
   const editingTopicChannel = useMemo(() => {
     if (!editingTopic) return activeChannel;
+    if (editingTopic.scopeType === 'dm') return null;
     return channels.find((c) => c.id === editingTopic.channelId) || activeChannel;
   }, [editingTopic, channels, activeChannel]);
 
   const editingTopicAgents = useMemo(() => {
+    if (editingTopic?.scopeType === 'dm') {
+      return agents.filter((agent) => agent.id === editingTopic.dmAgentId);
+    }
     if (!editingTopicChannel) return currentChannelAgents;
     const channelIds = new Set([
       ...(editingTopicChannel.assignedAgentIds || []),
       ...(editingTopicChannel.memberIds || []),
     ]);
     return agents.filter((a) => channelIds.has(a.id));
-  }, [editingTopicChannel, currentChannelAgents, agents]);
+  }, [editingTopic, editingTopicChannel, currentChannelAgents, agents]);
 
   // Auto sync active IDs if state drifted (私聊模式下不自动回弹 channel ID)
   useEffect(() => {
@@ -1037,7 +1018,6 @@ export default function App() {
 
           if (isTestChannel) {
             changed = true;
-            // Exclude shinobi-core
             const newAssigned = (channel.assignedAgentIds || []).filter(
               (id) => id !== 'agent-shinobi-core'
             );
@@ -1187,8 +1167,6 @@ export default function App() {
   // 启动本地 ACP Agent 进程（Tauri stdio 拉起 / Web 运行时平滑转入）
   const spawnLocalAcpAgent = useCallback(
     async (agent: Agent) => {
-      const resolvedConfig = resolveAgentModelConfig(agent);
-
       // 启动 Agent 进程: 初始设为 starting 握手过渡态
       setAgents((prev) =>
         prev.map((a) =>
@@ -1216,20 +1194,17 @@ export default function App() {
           );
         }
       } else {
-        // Web 浏览器环境：平滑转入 running，接入 Web LLM 运行时
-        setTimeout(() => {
-          setAgents((prev) =>
-            prev.map((a) =>
-              a.id === agent.id
-                ? {
-                    ...a,
-                    status: 'running',
-                    statusDetail: `就绪 · ${resolvedConfig.modelName || resolvedConfig.modelId} (Web 运行时)`,
-                  }
-                : a
-            )
-          );
-        }, 500);
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.id === agent.id
+              ? {
+                  ...a,
+                  status: 'error',
+                  statusDetail: '当前环境没有本地 ACP 进程通道，请使用桌面端或连接远程 ACP。',
+                }
+              : a
+          )
+        );
       }
     },
     [syncRunningAgentsWithBackend]
@@ -1613,7 +1588,9 @@ export default function App() {
             authorAvatar: agent.avatar,
             isAgent: true,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `你好！我是 **${agent.name}**。ACP 独立进程已就绪，当前挂载协议通道：\`${agent.acpTransport}\`，专属产物工作区：\`~/.shadow-crew/agents/${agent.id}/artifacts/\`。随时可以开始讨论。`,
+            content: isAgentOffline(agent)
+              ? `你好！我是 **${agent.name}**。当前 ACP 端点尚未启动。请在 Agents & 编队中点击 Start 建立本地或远程 ACP 连接。你也可以先在私聊中创建独立 Topic，后续消息与产物会隔离保存。`
+              : `你好！我是 **${agent.name}**。ACP 端点已连接，协议通道：\`${agent.acpTransport}\`。你可以直接讨论，也可以创建独立 Topic 隔离长任务上下文。`,
           },
         ],
       }));
@@ -1771,101 +1748,6 @@ export default function App() {
     ]);
   };
 
-  // External Memory Cartridge & Guest Alter-Ego Handlers (Non-Invasive Import)
-  const handleToggleCartridge = (agentId: string, cartridgeId: string) => {
-    setAgents((prev) =>
-      prev.map((a) => {
-        if (a.id !== agentId) return a;
-        const cartridges = (a.memory?.cartridges || []).map((c) =>
-          c.id === cartridgeId ? { ...c, isEnabled: !c.isEnabled } : c
-        );
-        return {
-          ...a,
-          memory: {
-            ...a.memory,
-            cartridges,
-          },
-        };
-      })
-    );
-  };
-
-  const handleEjectCartridge = (agentId: string, cartridgeId: string) => {
-    setAgents((prev) =>
-      prev.map((a) => {
-        if (a.id !== agentId) return a;
-        const cartridges = (a.memory?.cartridges || []).filter((c) => c.id !== cartridgeId);
-        return {
-          ...a,
-          memory: {
-            ...a.memory,
-            cartridges,
-          },
-        };
-      })
-    );
-  };
-
-  const handleMountCartridge = (targetAgentId: string, cartridge: MemoryCartridge) => {
-    setAgents((prev) =>
-      prev.map((a) => {
-        if (a.id !== targetAgentId) return a;
-        const existing = a.memory?.cartridges || [];
-        const filtered = existing.filter((c) => c.id !== cartridge.id);
-        return {
-          ...a,
-          memory: {
-            ...a.memory,
-            cartridges: [...filtered, cartridge],
-          },
-        };
-      })
-    );
-  };
-
-  const handleCloneGuestAgent = (guestAgent: Partial<Agent>) => {
-    const fullAgent: Agent = {
-      id: `guest-${Date.now()}`,
-      name: guestAgent.name || 'Guest Agent',
-      handle: guestAgent.handle || `@guest_${Date.now().toString().slice(-4)}`,
-      avatar: guestAgent.avatar || '🪪',
-      role: guestAgent.role || 'Guest Alter-Ego',
-      description: guestAgent.description || 'Imported Guest Alter-Ego Agent',
-      color: '#10b981',
-      status: 'idle',
-      modelBadge: guestAgent.modelBadge || DEFAULT_MODEL_NAME,
-      isManagedByYou: true,
-      isGuestClone: true,
-      guestCloneFrom: guestAgent.guestCloneFrom,
-      acpTransport: guestAgent.acpTransport || 'stdio',
-      acpCommandOrUrl: guestAgent.acpCommandOrUrl || './target/debug/shadow-crew-agent',
-      protocolVersion: '2025-01-01 (ACP v1.0.4)',
-      capabilities: guestAgent.capabilities || {
-        canUseInternalMemory: true,
-        canAccessWorkspaceFiles: true,
-        canExecuteSkills: true,
-        canDelegateToSubAgents: true,
-        supportsStreaming: true,
-      },
-      workspace: guestAgent.workspace || {
-        rootPath: '~/.shadow-crew',
-        repoName: 'shadow-crew-workspace',
-        gitBranch: 'main',
-        permissionMode: 'full_read_write',
-        activeFiles: ['~/.shadow-crew/global_memory.sqlite'],
-      },
-      envVars: guestAgent.envVars || [],
-      skills: [],
-      memory: guestAgent.memory || {
-        internalMemoryPath: '~/.shadow-crew/global_memory.sqlite',
-        persistentType: 'sqlite',
-        persistentItems: [],
-        sessionCacheCount: 0,
-      },
-    };
-    setAgents((prev) => [...prev, fullAgent]);
-  };
-
   // Handle Creation of New Channel
   const handleCreateChannel = async (
     newChan: Omit<Channel, 'id' | 'unreadCount' | 'workspaceBindingId'>,
@@ -1938,7 +1820,7 @@ export default function App() {
     const threadId = `thread-${Date.now()}`;
     const newThread: Thread = {
       id: threadId,
-      channelId: activeChannel.id,
+      channelId: activeChannel?.id,
       channelName: activeChannel.name,
       type: 'thread',
       title: '新发起的工程研讨议题',
@@ -1983,36 +1865,68 @@ export default function App() {
       assignedAgentIds: string[];
       discussionMode?: DiscussionMode;
       gameRoles?: GameRolesConfig;
+      duelRoles?: DuelRolesConfig;
     },
-    workspace: { mode: 'default' | 'channel_snapshot' | 'custom'; cwd?: string }
+    workspace: { mode: 'default' | 'channel_snapshot' | 'agent_snapshot' | 'custom'; cwd?: string }
   ) => {
-    if (!activeChannel) return; // 私聊模式下不创建频道议题
-    const channelBinding = findWorkspaceBinding(workspaceBindings, 'channel', activeChannel.id);
-    if (!channelBinding) {
-      throw new Error(`频道 ${activeChannel.name} 缺少 Workspace Binding，无法创建议题`);
+    const isDmScope = activeThread?.type === 'dm';
+    const dmThread = isDmScope ? activeThread : null;
+    if (isDmScope && !dmThread) {
+      throw new Error('私聊线程上下文已失效，请重新打开私聊');
+    }
+    const dmAgent = dmThread
+      ? agents.find((agent) => agent.id === dmThread.authorId) || null
+      : null;
+    if (!activeChannel && !dmAgent) {
+      throw new Error('当前上下文既不是 Channel 也不是有效私聊 Agent');
+    }
+    const channelBinding = activeChannel
+      ? findWorkspaceBinding(workspaceBindings, 'channel', activeChannel.id)
+      : undefined;
+    if (!isDmScope && !channelBinding) {
+      throw new Error(`频道 ${activeChannel?.name || 'unknown'} 缺少 Workspace Binding，无法创建议题`);
     }
     const topicId = `topic-${Date.now()}`;
     const requestedCwd = workspace.mode === 'default'
-      ? getDefaultTopicCwd(activeChannel.id, topicId)
+      ? (isDmScope && dmAgent
+          ? getDefaultDmTopicCwd(dmAgent.id, topicId)
+          : getDefaultTopicCwd(activeChannel!.id, topicId))
       : workspace.mode === 'channel_snapshot'
-        ? channelBinding.cwd
-        : workspace.cwd || '';
+        ? channelBinding!.cwd
+        : workspace.mode === 'agent_snapshot'
+          ? `~/.shadow-crew/agents/${dmAgent?.id}`
+          : workspace.cwd || '';
     const resolvedCwd = await resolveWorkspaceCwd(requestedCwd, workspace.mode === 'default');
-    const topicBinding = createTopicBinding({
-      topicId,
-      channelId: activeChannel.id,
-      mode: workspace.mode,
-      channelBinding,
-      cwd: resolvedCwd,
-    });
-    const validAssignedAgentIds = topicData.assignedAgentIds.filter((id) =>
-      currentChannelAgents.some((a) => a.id === id)
+    const topicBinding = isDmScope && dmAgent
+      ? createDmTopicBinding({
+          topicId,
+          agentId: dmAgent.id,
+          mode: workspace.mode === 'agent_snapshot' ? 'agent_snapshot' : workspace.mode === 'custom' ? 'custom' : 'default',
+          cwd: resolvedCwd,
+        })
+      : createTopicBinding({
+          topicId,
+          channelId: activeChannel!.id,
+          mode: workspace.mode === 'channel_snapshot' || workspace.mode === 'agent_snapshot'
+            ? 'channel_snapshot'
+            : workspace.mode,
+          channelBinding: channelBinding!,
+          cwd: resolvedCwd,
+        });
+    const validAssignedAgentIds = (isDmScope && dmAgent ? [dmAgent.id] : topicData.assignedAgentIds).filter((id) =>
+      (isDmScope ? agents : currentChannelAgents).some((a) => a.id === id)
     );
     const isGame = topicData.discussionMode === 'game_theoretic';
+    const normalizedDuelRoles = isDmScope && isGame && topicData.duelRoles
+      ? normalizeDuelRoles(topicData.duelRoles)
+      : undefined;
+    if (isDmScope && isGame && !normalizedDuelRoles) {
+      throw new Error('私聊双方博弈议题缺少角色配置');
+    }
     const modelDiversity = isGame && topicData.gameRoles
       ? calculateModelDiversity(agents, topicData.gameRoles)
       : undefined;
-    const initialModularState = isGame
+    const initialModularState = isGame && !isDmScope
       ? initializeModularOrchestrationState(
           buildDefaultDecompositionFromTopic(topicData.title, topicData.description)
         )
@@ -2020,13 +1934,16 @@ export default function App() {
 
     const newTopic: TopicMessageData = {
       id: topicId,
-      channelId: activeChannel.id,
+      scopeType: isDmScope ? 'dm' : 'channel',
+      ...(activeChannel ? { channelId: activeChannel.id } : {}),
+      ...(dmAgent && dmThread ? { dmAgentId: dmAgent.id, dmThreadId: dmThread.id } : {}),
       workspaceBindingId: topicBinding.id,
       title: topicData.title,
       description: topicData.description,
       status: 'open',
       discussionMode: topicData.discussionMode || 'standard',
       gameRoles: topicData.gameRoles,
+      duelRoles: isDmScope ? normalizedDuelRoles : undefined,
       gameStage: isGame ? 'proposal' : undefined,
       gameTheoreticState: isGame
         ? {
@@ -2055,14 +1972,15 @@ export default function App() {
     await saveWorkspaceBindingsToDb(nextBindings);
     setWorkspaceBindings(nextBindings);
 
-    // 确保将议题卡片插入属于当前频道的专属线程中，绝不渗入 DM 线程
-    const targetChannelThread = threads.find((t) => t.channelId === activeChannel.id && t.type !== 'dm') || activeThread;
+    const targetChannelThread = isDmScope
+      ? dmThread
+      : threads.find((t) => t.channelId === activeChannel?.id && t.type !== 'dm') || activeThread;
     if (!targetChannelThread) return;
 
     const topicCardMsg: Message = {
       id: `msg-${Date.now()}`,
       threadId: targetChannelThread.id,
-      channelId: activeChannel.id,
+      channelId: activeChannel?.id,
       type: 'topic',
       topicData: newTopic,
       authorId: 'user-norris',
@@ -2070,6 +1988,14 @@ export default function App() {
       authorHandle: '@Norris_M5Pro',
       authorAvatar: '👨‍💻',
       isAgent: false,
+      gameRole:
+        activeTopicData?.scopeType === 'dm' && activeTopicData.discussionMode === 'game_theoretic'
+          ? (activeTopicData.duelRoles?.proposer === 'human' ? 'proposer' : 'challenger')
+          : undefined,
+      gameStage:
+        activeTopicData?.scopeType === 'dm' && activeTopicData.discussionMode === 'game_theoretic'
+          ? (activeTopicData.duelRoles?.proposer === 'human' ? 'proposal' : 'challenge')
+          : undefined,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       content: '',
     };
@@ -2082,9 +2008,12 @@ export default function App() {
       ? `\n\n${modelDiversity.warnings[0]}`
       : '';
 
-    const initContent = isGame && topicData.gameRoles
+    const dmDuelSummary = isDmScope && isGame && topicData.duelRoles
+      ? `已发起私聊双方博弈议题【${topicData.title}】。\n目标背景：${topicData.description || '开始双方攻防推演。'}\n- ${topicData.duelRoles.proposer === 'human' ? '👤 人类担任提案方' : `🤖 ${dmAgent?.name || 'Agent'} 担任提案方`}\n- ${topicData.duelRoles.challenger === 'human' ? '👤 人类担任对抗方' : `🤖 ${dmAgent?.name || 'Agent'} 担任对抗方`}`
+      : null;
+    const initContent = dmDuelSummary || (isGame && topicData.gameRoles
       ? `已发起 4+1 认知协同决策议题【${topicData.title}】。\n目标背景：${topicData.description || '开始架构决策攻防推演。'}\n【4+1 协同角色配置】：\n- 🏛️ 提案者：${topicData.gameRoles.proposers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- ⚔️ 红队对抗：${topicData.gameRoles.challengers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}${verifiersSummary}\n- ⚖️ 流程综合：${topicData.gameRoles.arbiters.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- 👤 终局裁判：${topicData.gameRoles.humanIsArbiter ? 'Norris_M5Pro (人类首席仲裁官, 持法槌)' : '已委派 AI 综合仲裁'}${diversityWarning}`
-      : `已发起议题【${topicData.title}】。\n目标背景：${topicData.description || '开始方案推演。'}\n指派 Agent：${validAssignedAgentIds.length > 0 ? validAssignedAgentIds.map(id => agents.find(a => a.id === id)?.name).filter(Boolean).join('、') : '暂无 (可在抽屉中指派)'}。`;
+      : `已发起议题【${topicData.title}】。\n目标背景：${topicData.description || '开始方案推演。'}\n指派 Agent：${validAssignedAgentIds.length > 0 ? validAssignedAgentIds.map(id => agents.find(a => a.id === id)?.name).filter(Boolean).join('、') : '暂无 (可在抽屉中指派)'}。`);
 
     const initTopicMsg: Message = {
       id: `topic-msg-init-${Date.now()}`,
@@ -2121,12 +2050,24 @@ export default function App() {
       assignedAgentIds: string[];
       discussionMode?: DiscussionMode;
       gameRoles?: GameRolesConfig;
+      duelRoles?: DuelRolesConfig;
     }
   ) => {
     // 过滤出该议题频道内合法的 Agent ID，避免越界
     const validAssignedAgentIds = updatedData.assignedAgentIds.filter((id) =>
       editingTopicAgents.some((a) => a.id === id)
     );
+
+    const isDmTopic = editingTopic?.scopeType === 'dm';
+    const nextDiscussionMode =
+      updatedData.discussionMode ?? editingTopic?.discussionMode ?? 'standard';
+    const normalizedDuelRoles =
+      isDmTopic && nextDiscussionMode === 'game_theoretic' && updatedData.duelRoles
+        ? normalizeDuelRoles(updatedData.duelRoles)
+        : undefined;
+    if (isDmTopic && nextDiscussionMode === 'game_theoretic' && !normalizedDuelRoles) {
+      throw new Error('私聊双方博弈议题缺少合法的双方角色配置');
+    }
 
     setMessages((prev) => {
       const next = { ...prev };
@@ -2142,8 +2083,13 @@ export default function App() {
             title: updatedData.title,
             description: updatedData.description,
             participatingAgentIds: validAssignedAgentIds,
-            discussionMode: updatedData.discussionMode ?? oldTopic.discussionMode,
-            gameRoles: updatedData.gameRoles !== undefined ? updatedData.gameRoles : oldTopic.gameRoles,
+            discussionMode: nextDiscussionMode,
+            gameRoles: isDmTopic ? undefined : updatedData.gameRoles !== undefined ? updatedData.gameRoles : oldTopic.gameRoles,
+            duelRoles: isDmTopic
+              ? nextDiscussionMode === 'game_theoretic'
+                ? normalizedDuelRoles
+                : undefined
+              : oldTopic.duelRoles,
           };
           const newMsgList = [...msgList];
           newMsgList[idx] = {
@@ -2189,8 +2135,15 @@ export default function App() {
     }
     clearSessionWarmScope({ roomId: topicId });
     const targetTopicChanId = editingTopicChannel?.id || activeChannel?.id;
+    const editingIsDmTopic = editingTopic?.scopeType === 'dm';
     setEditingTopic(null);
-    if (targetTopicChanId) {
+    if (editingIsDmTopic) {
+      void safelyClearAcpSessions(
+        undefined,
+        `dmtopic:${editingTopic?.dmAgentId}:${topicId}`,
+        '更新议题成员'
+      );
+    } else if (targetTopicChanId) {
       void safelyClearAcpSessions(
         undefined,
         `topic:${targetTopicChanId}:${topicId}`,
@@ -5353,6 +5306,175 @@ export default function App() {
       };
     });
 
+    const dmTopicAgentId = activeTopicData?.scopeType === 'dm' ? activeTopicData.dmAgentId : undefined;
+    if (dmTopicAgentId) {
+      const dmAgent = agents.find((agent) => agent.id === dmTopicAgentId);
+      const topicBinding = getTopicWorkspaceBinding(topicId);
+      if (!dmAgent || !topicBinding) {
+        setMessages((prev) => ({
+          ...prev,
+          [topicId]: [
+            ...(prev[topicId] || []),
+            {
+              id: `dm-topic-error-${Date.now()}`,
+              threadId: topicId,
+              authorId: 'system',
+              authorName: 'Shadow Crew DM Topic',
+              authorHandle: '@dm-topic-guard',
+              authorAvatar: '⚠️',
+              isAgent: true,
+              kind: 'error',
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: '私聊议题缺少可用的 ACP Agent 或 Workspace Binding，本轮未派发。',
+            },
+          ],
+        }));
+        return;
+      }
+      if (isAgentOffline(dmAgent)) {
+        setMessages((prev) => ({
+          ...prev,
+          [topicId]: [
+            ...(prev[topicId] || []),
+            {
+              id: `dm-topic-offline-${Date.now()}`,
+              threadId: topicId,
+              authorId: 'system',
+              authorName: 'Shadow Crew ACP Guard',
+              authorHandle: '@connection-guard',
+              authorAvatar: '🔌',
+              isAgent: true,
+              kind: 'guard',
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              content: `ACP Agent ${dmAgent.name} 当前未连接。请先启动该本地或远程 ACP 端点。`,
+            },
+          ],
+        }));
+        return;
+      }
+
+      const isGame = activeTopicData?.discussionMode === 'game_theoretic';
+      const isHumanProposer = activeTopicData?.duelRoles?.proposer === 'human';
+      const agentRole: GameRoleType = isGame
+        ? (isHumanProposer ? 'challenger' : 'proposer')
+        : 'proposer';
+      const stage: GameTheoreticStage = isGame
+        ? (agentRole === 'proposer' ? 'proposal' : 'challenge')
+        : 'proposal';
+      const sessionKey = buildAgentSessionKey({
+        agentId: dmAgent.id,
+        roomId: topicId,
+        workspaceBindingId: topicBinding.id,
+        discussionMode: activeTopicData?.discussionMode || 'standard',
+        scopeType: 'dm_topic',
+      });
+      const priorTopicMessages = (messagesRef.current[topicId] || []).filter(
+        (message) => !message.isPending && message.id !== userMsg.id && message.content?.trim()
+      );
+      const roomTranscript = priorTopicMessages
+        .slice(-8)
+        .map((message) => `${message.authorName}${message.isAgent ? ' (Agent)' : ' (Human)'}: ${message.content}`)
+        .join('\n\n');
+      const systemPrompt = buildCompositeSystemPrompt({
+        agent: dmAgent,
+        availableAgents: [dmAgent],
+        includeRoster: false,
+      });
+      const prompt = isGame
+        ? `[私聊双方博弈议题]\n标题：${activeTopicData?.title}\n背景：${activeTopicData?.description || activeTopicData?.title}\n\n[角色约束]\n你固定担任：${agentRole === 'proposer' ? '提案方' : '对抗方'}\n人类固定担任：${isHumanProposer ? '提案方' : '对抗方'}\n只允许两个角色，不得引入验证官、仲裁官或其他 Agent 角色。\n\n[最近讨论]\n${roomTranscript || '（暂无）'}\n\n[人类本轮发言]\n${content}\n\n请基于你的固定角色回复。提案方给出方案与约束，对抗方给出具体反例、风险和可证伪条件。`
+        : `[私聊议题]\n标题：${activeTopicData?.title}\n背景：${activeTopicData?.description || activeTopicData?.title}\n\n[最近讨论]\n${roomTranscript || '（暂无）'}\n\n[人类本轮发言]\n${content}\n\n请直接回应并推进当前议题。`;
+      const execKey = `${topicId}:${dmAgent.id}`;
+      setActiveExecutions((prev) => ({
+        ...prev,
+        [execKey]: {
+          agentId: dmAgent.id,
+          agentName: dmAgent.name,
+          agentAvatar: dmAgent.avatar,
+          threadId: topicId,
+          topicId,
+          status: 'thinking',
+          currentActionDetail: isGame
+            ? (agentRole === 'proposer' ? '正在以提案方身份立论...' : '正在以对抗方身份质询...')
+            : '正在处理私聊议题...',
+          startedAt: Date.now(),
+        },
+      }));
+
+      void (async () => {
+        try {
+          await ensureAcpAgentSession({
+            agentId: dmAgent.id,
+            roomId: topicId,
+            systemPrompt,
+            discussionMode: activeTopicData?.discussionMode,
+            workspaceBindingId: topicBinding.id,
+            workspaceCwd: topicBinding.cwd,
+            scopeType: 'dm_topic',
+            localHistoryIntact: priorTopicMessages.length > 0,
+          });
+          const response = await sendPromptToAcpAgent({
+            agent: dmAgent,
+            roomId: topicId,
+            prompt,
+            workspaceBindingId: topicBinding.id,
+            workspaceCwd: topicBinding.cwd,
+            scopeType: 'dm_topic',
+            systemPrompt,
+            discussionMode: activeTopicData?.discussionMode,
+          });
+          const agentReply: Message = {
+            id: `dm-topic-reply-${Date.now()}-${dmAgent.id}`,
+            threadId: topicId,
+            authorId: dmAgent.id,
+            authorName: dmAgent.name,
+            authorHandle: dmAgent.handle,
+            authorAvatar: dmAgent.avatar,
+            isAgent: true,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: response.textResponse,
+            thinkingProcess: buildThinkingProcessFromAcp(response, '已处理私聊议题上下文'),
+            gameRole: isGame ? agentRole : undefined,
+            gameStage: isGame ? stage : undefined,
+            agentBadge: isGame
+              ? (agentRole === 'proposer' ? '🏛️ 私聊提案方' : '⚔️ 私聊对抗方')
+              : 'ACP · DM Topic',
+            diffView: response.workspaceDiffs?.[0],
+            diffViews: response.workspaceDiffs,
+          };
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: [...(prev[topicId] || []), agentReply],
+          }));
+        } catch (error) {
+          setMessages((prev) => ({
+            ...prev,
+            [topicId]: [
+              ...(prev[topicId] || []),
+              {
+                id: `dm-topic-reply-error-${Date.now()}`,
+                threadId: topicId,
+                authorId: 'system',
+                authorName: 'ACP DM Topic Error',
+                authorHandle: '@acp-error',
+                authorAvatar: '⚠️',
+                isAgent: true,
+                kind: 'error',
+                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                content: error instanceof Error ? error.message : String(error),
+              },
+            ],
+          }));
+        } finally {
+          setActiveExecutions((prev) => {
+            const next = { ...prev };
+            delete next[execKey];
+            return next;
+          });
+        }
+      })();
+      return;
+    }
+
     const topicChannel = channels.find((c) => c.id === activeTopicData?.channelId) || activeChannel;
     const currentChannelAgentIds = Array.from(
       new Set([
@@ -7725,13 +7847,6 @@ export default function App() {
             setDuplicatingAgent(null);
             setIsConnectModalOpen(true);
           }}
-          onExportAgentMemory={(agent) => {
-            setExportingAgent(agent);
-            setIsMemoryExportModalOpen(true);
-          }}
-          onImportMemoryCartridge={() => {
-            setIsMemoryImportModalOpen(true);
-          }}
           onToggleAgentStatus={(agentId) => {
             const currentAgent = agents.find((a) => a.id === agentId);
             if (!currentAgent) return;
@@ -7836,7 +7951,7 @@ export default function App() {
                     setIsAcpInspectorOpen(true);
                   }}
                   onOpenTopic={handleOpenTopic}
-                  onOpenNewTopicModal={activeThread.type === 'dm' ? undefined : () => setIsNewTopicModalOpen(true)}
+                  onOpenNewTopicModal={() => setIsNewTopicModalOpen(true)}
                   onOpenSubThread={(subId) => setActiveSubThreadId(subId)}
                   onOpenCodexDiff={(diff) => {
                     setActiveDiff(diff);
@@ -7860,7 +7975,7 @@ export default function App() {
                     : currentChannelAgents}
                   isGenerating={isCurrentThreadGenerating}
                   channelName={activeThread.type === 'dm' ? (activeThread.authorName || 'Agent') : (activeChannel?.name || 'chat')}
-                  onOpenNewTopicModal={activeThread.type === 'dm' ? undefined : () => setIsNewTopicModalOpen(true)}
+                  onOpenNewTopicModal={() => setIsNewTopicModalOpen(true)}
                   quotingMessage={quotingMessage}
                   onCancelQuote={() => setQuotingMessage(null)}
                   isDm={activeThread.type === 'dm'}
@@ -7905,7 +8020,11 @@ export default function App() {
                 isOpen={Boolean(activeTopicId && activeTopicData)}
                 topic={activeTopicData}
                 messages={activeTopicMessages}
-                agents={currentChannelAgents}
+                agents={
+                  activeTopicData?.scopeType === 'dm'
+                    ? agents.filter((agent) => agent.id === activeTopicData.dmAgentId)
+                    : currentChannelAgents
+                }
                 activeExecutions={activeTopicId ? Object.values(activeExecutions).filter((e: any) => e.threadId === activeTopicId || e.topicId === activeTopicId) : []}
                 allActiveExecutions={Object.values(activeExecutions)}
                 onAbortAgent={(agentId) => activeTopicId && handleAbortAgent(agentId, activeTopicId)}
@@ -7987,24 +8106,6 @@ export default function App() {
           selectedAgent={selectedAgent}
           rpcLogs={rpcLogs}
           workspaceFiles={workspaceFiles}
-          onAddAgentMemoryItem={(agentId, cat, key, content) => {
-            setAgents((prev) =>
-              prev.map((a) =>
-                a.id === agentId
-                  ? {
-                      ...a,
-                      memory: {
-                        ...a.memory,
-                        persistentItems: [
-                          { id: `mem-${Date.now()}`, category: cat, key, content, lastAccessed: 'Just added' },
-                          ...a.memory.persistentItems,
-                        ],
-                      },
-                    }
-                  : a
-              )
-            );
-          }}
           onRunAgentSkill={(agentId, skillId) => {
             const ag = agents.find((a) => a.id === agentId);
             if (ag) {
@@ -8016,15 +8117,6 @@ export default function App() {
             setEditingAgent(agent);
             setDuplicatingAgent(null);
             setIsConnectModalOpen(true);
-          }}
-          onToggleCartridge={handleToggleCartridge}
-          onEjectCartridge={handleEjectCartridge}
-          onOpenExportModal={(agent) => {
-            setExportingAgent(agent);
-            setIsMemoryExportModalOpen(true);
-          }}
-          onOpenImportModal={() => {
-            setIsMemoryImportModalOpen(true);
           }}
           onClose={() => setIsAcpInspectorOpen(false)}
         />
@@ -8097,10 +8189,6 @@ export default function App() {
               throw err;
             }
           }}
-          onOpenMemoryExport={() => {
-            setExportingAgent(agents[0] || null);
-            setIsMemoryExportModalOpen(true);
-          }}
         />
       )}
 
@@ -8157,12 +8245,6 @@ export default function App() {
         initialAgent={editingAgent}
         duplicateAgent={duplicatingAgent}
         defaultWorkspaceRoot="~/.shadow-crew"
-        onOpenImportModal={() => {
-          setIsConnectModalOpen(false);
-          setEditingAgent(null);
-          setDuplicatingAgent(null);
-          setIsMemoryImportModalOpen(true);
-        }}
         onUpdateAgent={(agentId, updatedData) => {
           // 清空已交付公约、花名册缓存与水位线，确保后续全会话即时重装最新的人设与团队花名册
           resetAllSessionWarmState();
@@ -8308,7 +8390,7 @@ export default function App() {
             description: agentData.description || agentData.role || 'Custom ACP Agent',
             color: '#06b6d4',
             status: agentData.status || 'idle',
-            modelBadge: agentData.modelBadge || DEFAULT_MODEL_NAME,
+            modelBadge: agentData.modelBadge || (agentData.isRemote ? 'Remote ACP' : 'ACP Stdio'),
             modelConfig: agentData.modelConfig,
             isModelHealthy: agentData.isModelHealthy,
             modelLatencyMs: agentData.modelLatencyMs,
@@ -8321,8 +8403,6 @@ export default function App() {
             authToken: agentData.authToken,
             remoteLatencyMs: agentData.remoteLatencyMs,
             readOnlyGuard: agentData.readOnlyGuard,
-            isGuestClone: agentData.isGuestClone,
-            guestCloneFrom: agentData.guestCloneFrom,
             acpTransport: agentData.acpTransport || (agentData.isRemote ? 'websocket' : 'stdio'),
             acpCommandOrUrl: agentData.acpCommandOrUrl || (agentData.isRemote ? (agentData.remoteUrl || 'ws://127.0.0.1:9090/acp') : 'cargo run --bin custom-agent -- --acp'),
             protocolVersion: '2025-01-01 (ACP v1.0.4)',
@@ -8360,13 +8440,26 @@ export default function App() {
         <NewTopicModal
           isOpen={isNewTopicModalOpen}
           onClose={() => setIsNewTopicModalOpen(false)}
-          channel={activeChannel}
-          channelWorkspaceCwd={
-            activeChannel
-              ? findWorkspaceBinding(workspaceBindings, 'channel', activeChannel.id)?.cwd
+          scopeType={activeThread?.type === 'dm' ? 'dm' : 'channel'}
+          channel={activeThread?.type === 'dm' ? undefined : activeChannel}
+          dmAgent={
+            activeThread?.type === 'dm'
+              ? agents.find((agent) => agent.id === activeThread.authorId)
               : undefined
           }
-          agents={currentChannelAgents}
+          dmThreadId={activeThread?.type === 'dm' ? activeThread.id : undefined}
+          channelWorkspaceCwd={
+            activeThread?.type === 'dm'
+              ? `~/.shadow-crew/agents/${activeThread.authorId}`
+              : activeChannel
+                ? findWorkspaceBinding(workspaceBindings, 'channel', activeChannel.id)?.cwd
+                : undefined
+          }
+          agents={
+            activeThread?.type === 'dm'
+              ? agents.filter((agent) => agent.id === activeThread.authorId)
+              : currentChannelAgents
+          }
           onCreateTopic={handleCreateTopic}
         />
       )}
@@ -8391,29 +8484,6 @@ export default function App() {
         />
       )}
 
-      {/* 11. Memory Export & Import Modals */}
-      {isMemoryExportModalOpen && exportingAgent && (
-        <MemoryExportModal
-          isOpen={isMemoryExportModalOpen}
-          agent={exportingAgent}
-          onClose={() => {
-            setIsMemoryExportModalOpen(false);
-            setExportingAgent(null);
-          }}
-        />
-      )}
-
-      {isMemoryImportModalOpen && (
-        <MemoryImportModal
-          isOpen={isMemoryImportModalOpen}
-          agents={agents}
-          defaultAgentId={selectedAgentId || undefined}
-          defaultWorkspaceRoot="~/.shadow-crew"
-          onClose={() => setIsMemoryImportModalOpen(false)}
-          onMountCartridge={handleMountCartridge}
-          onCloneGuestAgent={handleCloneGuestAgent}
-        />
-      )}
       </Suspense>
 
       {sessionCleanupNotice && (

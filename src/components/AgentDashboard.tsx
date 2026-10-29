@@ -13,8 +13,6 @@ import {
   Trash2,
   Pencil,
   Globe,
-  Upload,
-  Download,
   Layers,
   PanelLeft,
   Cpu,
@@ -23,7 +21,6 @@ import {
 } from 'lucide-react';
 import { AgentAvatarArtwork, TeamArtwork } from './AgentAvatarArtwork';
 import { ThemeSwitcher } from './ThemeSwitcher';
-import { resolveAgentModelConfig, isModelConfigReady } from '../services/llmService';
 
 interface AgentDashboardProps {
   agents: Agent[];
@@ -40,8 +37,6 @@ interface AgentDashboardProps {
   onDuplicateAgent?: (agent: Agent) => void;
   onDeleteAgent?: (agentId: string) => void;
   onDeleteTeam?: (teamId: string) => void;
-  onExportAgentMemory?: (agent: Agent) => void;
-  onImportMemoryCartridge?: () => void;
   isSidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
 }
@@ -61,8 +56,6 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   onDuplicateAgent,
   onDeleteAgent,
   onDeleteTeam,
-  onExportAgentMemory,
-  onImportMemoryCartridge,
   isSidebarCollapsed = false,
   onToggleSidebar,
 }) => {
@@ -266,8 +259,6 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
               agent.status === 'accessing_workspace' ||
               agent.status === 'querying_memory';
             const isMenuOpen = activeMenuId === agent.id;
-            const resolvedConfig = resolveAgentModelConfig(agent);
-            const isModelReady = isModelConfigReady(resolvedConfig);
 
             return (
               <div
@@ -277,24 +268,14 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                 {/* Top Card Row: Online Status Badge (Left) & Menu (Right) */}
                 <div className="flex items-center justify-between h-6">
                   <div className="flex items-center gap-1.5 min-w-0 pr-1">
-                    {/* Guest Clone Badge */}
-                    {agent.isGuestClone && (
-                      <span
-                        className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-500/15 border border-purple-500/30 text-purple-600 dark:text-purple-300 text-[10px] font-medium shrink-0"
-                        title={`基于 ${agent.guestCloneFrom || '外部'} 经验的独立访客替身`}
-                      >
-                        <span>🪪 Guest</span>
-                      </span>
-                    )}
-
                     {/* Badge State */}
-                    {agent.isModelHealthy === false || agent.status === 'error' ? (
+                    {agent.status === 'error' ? (
                       <span
                         className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/25 text-rose-600 dark:text-rose-400 text-[11px] font-medium"
-                        title={agent.statusDetail || "连通性校验未通过或异常"}
+                        title={agent.statusDetail || "ACP 连通异常"}
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                        <span>{agent.status === 'error' ? 'error' : 'model error'}</span>
+                        <span>error</span>
                       </span>
                     ) : agent.status === 'idle' ? (
                       <span
@@ -429,34 +410,6 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                             <span>查看能力与记忆 (ACP)</span>
                           </button>
 
-                          {/* Memory Export */}
-                          {onExportAgentMemory && (
-                            <button
-                              onClick={() => {
-                                onExportAgentMemory(agent);
-                                setActiveMenuId(null);
-                              }}
-                              className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-emerald-600 dark:text-emerald-400 flex items-center gap-2 cursor-pointer"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                              <span>导出记忆卡带 (.acpmem)</span>
-                            </button>
-                          )}
-
-                          {/* Memory Import */}
-                          {onImportMemoryCartridge && (
-                            <button
-                              onClick={() => {
-                                onImportMemoryCartridge();
-                                setActiveMenuId(null);
-                              }}
-                              className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-accent flex items-center gap-2 cursor-pointer"
-                            >
-                              <Upload className="w-3.5 h-3.5" />
-                              <span>挂载外挂记忆卡带</span>
-                            </button>
-                          )}
-
                           <button
                             onClick={() => {
                               onToggleAgentStatus(agent.id);
@@ -568,54 +521,8 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                       </div>
                     ) : null;
                   })()}
-                  {/* Model / Process Protocol Badge (Option 2: 外部自主 ACP 进程显示进程协议，非模型) */}
+                  {/* ACP 进程协议标识；模型与记忆由端点自身管理 */}
                   {(() => {
-                    const isShinobiNative =
-                      agent.id === 'agent-shinobi-core' ||
-                      (agent.localAcpProfile && agent.localAcpProfile.includes('Shinobi'));
-                    const hasExplicitModel = Boolean(
-                      agent.modelConfig &&
-                      !agent.modelConfig.useGlobalDefault &&
-                      agent.modelConfig.modelId &&
-                      agent.modelConfig.modelId !== agent.name
-                    );
-                    const isModelDriven = isShinobiNative || hasExplicitModel;
-
-                    if (isModelDriven) {
-                      return (
-                        <div className="pt-0.5 flex items-center gap-1.5 flex-wrap">
-                          <div
-                            className={`text-[10px] px-2 py-0.5 rounded-full font-mono inline-flex items-center gap-1 border max-w-full truncate ${
-                              agent.isModelHealthy === false
-                                ? 'bg-rose-500/10 border-rose-500/30 text-rose-600 dark:text-rose-400'
-                                : agent.isModelHealthy === true
-                                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
-                                : isModelReady
-                                ? 'bg-accent/10 border-accent/25 text-accent'
-                                : 'bg-surface-subtle border-border text-fg-muted'
-                            }`}
-                            title={
-                              agent.isModelHealthy === false
-                                ? `模型连接异常: ${agent.statusDetail || '校验失败'}`
-                                : `底座模型: ${resolvedConfig.modelName || agent.modelBadge || '默认模型'}`
-                            }
-                          >
-                            <Cpu className="w-2.5 h-2.5 shrink-0" />
-                            <span className="truncate">
-                              {resolvedConfig.modelName || agent.modelBadge || '默认模型'}
-                            </span>
-                            {agent.isModelHealthy === true && (
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-                            )}
-                            {agent.isModelHealthy === false && (
-                              <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />
-                            )}
-                          </div>
-                        </div>
-                      );
-                    }
-
-                    // 外部自主 ACP 进程：不展示虚假的模型名称，展示进程协议标识
                     const isRemote = agent.isRemote || agent.acpTransport === 'websocket';
                     return (
                       <div className="pt-0.5 flex items-center gap-1.5 flex-wrap">

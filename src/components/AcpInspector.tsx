@@ -30,7 +30,7 @@ interface AcpInspectorProps {
   selectedAgent: Agent;
   rpcLogs: AcpRpcLog[];
   workspaceFiles: WorkspaceFile[];
-  onAddAgentMemoryItem: (agentId: string, category: any, key: string, content: string) => void;
+  onAddAgentMemoryItem?: (agentId: string, category: any, key: string, content: string) => void;
   onRunAgentSkill: (agentId: string, skillId: string) => void;
   onOpenRustTauriHub?: () => void;
   onEditAgent?: (agent: Agent) => void;
@@ -99,6 +99,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
 
   const handleCreateMemory = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!onAddAgentMemoryItem) return;
     if (!newMemKey.trim() || !newMemContent.trim()) return;
     onAddAgentMemoryItem(selectedAgent.id, newMemCategory, newMemKey.trim(), newMemContent.trim());
     setNewMemKey('');
@@ -812,7 +813,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
               <div className="flex items-center justify-between text-[11px]">
                 <div className="flex items-center gap-1.5 font-bold text-fg">
                   <Database className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>私有持久化数据库 (Native SQLite)</span>
+                  <span>ACP 端点长期 Memory（只读观测）</span>
                 </div>
                 <span className="font-mono text-emerald-500 uppercase font-bold text-[10px]">
                   {selectedAgent.memory.persistentType}
@@ -823,8 +824,8 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
               </div>
             </div>
 
-            {/* Add Memory Form */}
-            <form onSubmit={handleCreateMemory} className="p-2.5 rounded-2xl bg-surface-subtle border border-border space-y-2">
+            {/* Memory writes are owned by the ACP endpoint; local editing is only available via an explicit adapter. */}
+            {onAddAgentMemoryItem && <form onSubmit={handleCreateMemory} className="p-2.5 rounded-2xl bg-surface-subtle border border-border space-y-2">
               <div className="font-semibold text-fg text-[11px] flex items-center gap-1">
                 <Plus className="w-3.5 h-3.5 text-emerald-500" />
                 <span>写入新规约到本地主库</span>
@@ -861,7 +862,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
               >
                 持久化存入私有 Memory
               </button>
-            </form>
+            </form>}
 
             {/* Current Memory Items List */}
             <div className="space-y-1.5">

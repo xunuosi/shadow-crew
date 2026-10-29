@@ -195,7 +195,7 @@ shadow-crew/
 │   ├── services/
 │   │   ├── agentCollaboration.ts     # 增量上下文、Prompt 编译与 Turn Barrier
 │   │   ├── acpClient.ts              # ACP 前端契约、流式事件与会话清理
-│   │   ├── llmService.ts             # 模型调用、Token 预算与双模压缩
+│   │   ├── llmService.ts             # 应用内部模型调用与配置（不承担 ACP Agent 推理）
 │   │   └── cogno/                    # SPRT、LMAD、BWM、G-Frame 等治理引擎
 │   └── types.ts                      # 领域模型、FSM 与治理状态类型
 ├── src-tauri/                        # Tauri 桌面宿主
@@ -205,8 +205,7 @@ shadow-crew/
 │       └── db_manager.rs             # SQLite 单一事实源与存储治理
 ├── crates/
 │   ├── shadow-crew-protocol/         # ACP / Nostr 共享协议结构
-│   ├── shadow-crew-agent/            # Rust 原生参考 ACP Agent
-│   ├── shadow-crew-dev-mcp/          # 内置开发与决策 MCP Server
+│   ├── shadow-crew-dev-mcp/          # 可选开发与决策 MCP Server
 │   └── shadow-crew-server/           # 可选 Axum Nostr Relay
 ├── bin/codex-acp                     # Codex ACP 适配桥
 ├── docs/                             # PRD、技术规范、测试方案与架构决策
@@ -231,11 +230,13 @@ shadow-crew/
 npm ci
 ```
 
-### 2. 预构建内置 Agent 与 MCP
+### 2. 构建可选 MCP 工具
 
 ```bash
-cargo build -p shadow-crew-agent -p shadow-crew-dev-mcp
+cargo build -p shadow-crew-dev-mcp
 ```
+
+Shadow Crew 不包含内置 Agent。所有 Agent 推理、Session 压缩、长期 Memory 与 Tool Loop 均由本地或远程 ACP 端点负责。
 
 ### 3. 启动桌面端
 
