@@ -23,6 +23,14 @@
 6. 当前阶段保留“同一 Agent 串行 Prompt”安全策略；未来并行执行必须先完成逐调用 `cwd` 改造，不能直接解除串行锁。
 7. Channel 是系统最外层业务实体，不再归属 Project；Channel 与 Topic 之间只保留组织关系，不共享运行工作空间。
 
+Topic 默认工作目录定稿为：
+
+```text
+~/.shadow-crew/channels/<channelId>/topics/<topicId>/
+```
+
+该路径是 Topic 的默认 `cwd`；不得继续使用 `channels/<channelId>/artifacts/<topicId>` 作为 Topic 目录。
+
 核心不变量：
 
 ```text
@@ -211,6 +219,14 @@ artifactRoot = ~/.shadow-crew/channels/<channelId>/topics/<topicId>/artifacts/
 ```
 
 Topic 默认目录虽然在物理上位于 Channel 目录内部，但其执行作用域是 Topic 自己的 Binding。原生 Agent 的 Topic `ownerRoot` 必须设置为 Topic cwd，而不是 Channel cwd。
+
+该路径为本方案的最终定稿：
+
+```text
+$HOME/.shadow-crew/channels/<channelId>/topics/<topicId>/
+```
+
+运行期可显示为 `~/.shadow-crew/channels/<channelId>/topics/<topicId>/`，但绑定和 Session 持久化必须保存展开后的规范化绝对路径。
 
 ### 5.3 DM 默认路径
 
@@ -598,7 +614,7 @@ workspace-binding-v1
 3. 为现有 Topic 创建 `legacy_channel_cwd_snapshot` Binding：
    - `cwd` 等于迁移时所属 Channel 的实际 cwd。
    - 保持旧 Topic 当前执行行为不变。
-4. 新创建 Topic 才使用 `topics/<topicId>` 默认目录。
+4. 新创建 Topic 才使用 `~/.shadow-crew/channels/<channelId>/topics/<topicId>/` 默认目录。
 5. 更新 Session Key，使其包含 `workspaceBindingId`。
 6. 关闭旧 Session，并删除对应旧 `acp_sessions` 记录。
 7. 将迁移版本写入 `workspace_state`。
@@ -694,7 +710,7 @@ Topic 创建：
 - [ ] 每个 Topic 恰好有一个 Binding。
 - [ ] Topic 创建后不能修改或清空 cwd。
 - [ ] 旧 Topic 迁移后仍使用迁移前的 Channel cwd。
-- [ ] 新 Topic 使用 `topics/<topicId>` 默认 cwd。
+- [ ] 新 Topic 使用 `~/.shadow-crew/channels/<channelId>/topics/<topicId>/` 默认 cwd。
 - [ ] 迁移重复执行不会产生重复 Binding。
 
 ### 17.2 Session 隔离
