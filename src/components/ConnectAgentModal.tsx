@@ -113,6 +113,44 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
   const prevIsOpenRef = useRef(false);
   const prevAgentIdRef = useRef<string | null>(null);
+  const acpDropdownRef = useRef<HTMLDivElement>(null);
+  const iconPickerRef = useRef<HTMLDivElement>(null);
+
+  // 点击其它区域或按 Escape 键自动关闭 Local ACP 下拉菜单与头像选择浮层
+  useEffect(() => {
+    if (!isAcpDropdownOpen && !isPickingIcon) return;
+
+    const handlePointerDown = (e: MouseEvent | TouchEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+
+      if (isAcpDropdownOpen && acpDropdownRef.current && !acpDropdownRef.current.contains(target)) {
+        setIsAcpDropdownOpen(false);
+      }
+      if (isPickingIcon && iconPickerRef.current && !iconPickerRef.current.contains(target)) {
+        setIsPickingIcon(false);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (isAcpDropdownOpen) {
+          setIsAcpDropdownOpen(false);
+          e.stopPropagation();
+        } else if (isPickingIcon) {
+          setIsPickingIcon(false);
+          e.stopPropagation();
+        }
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isAcpDropdownOpen, isPickingIcon]);
 
   // Initialize or reset form based on initialAgent (only on modal open or agent switch)
   useEffect(() => {
@@ -617,7 +655,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           {/* Top Section: Icon Placeholder (Left) & Name / Description (Right) */}
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-5">
             {/* Left: Avatar Artwork Preview & Selector */}
-            <div className="sm:col-span-5 flex flex-col items-center">
+            <div className="sm:col-span-5 flex flex-col items-center" ref={iconPickerRef}>
               <div
                 onClick={() => setIsPickingIcon(!isPickingIcon)}
                 className={`w-full min-h-[160px] rounded-2xl border flex flex-col items-center justify-center p-3.5 transition-all cursor-pointer group shadow-inner relative ${iconBoxBg}`}
@@ -933,8 +971,8 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           ) : (
             <>
               {/* Middle Section: Local ACP Dropdown with Status Probing */}
-              <div className="relative">
-                <div className="flex items-center justify-between mb-1.5">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
                   <label className={`block text-xs font-semibold ${labelColor}`}>
                     Local ACP Agent
                   </label>
@@ -954,70 +992,75 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                   </button>
                 </div>
 
-                {/* Dropdown Trigger Box */}
-                <button
-                  type="button"
-                  onClick={() => setIsAcpDropdownOpen(!isAcpDropdownOpen)}
-                  className={`w-full rounded-xl px-3.5 py-2.5 text-xs flex items-center justify-between transition-all cursor-pointer text-left ${
-                    isAcpDropdownOpen
-                      ? isLightMode
-                        ? 'border-2 border-blue-500 ring-2 ring-blue-100 bg-white'
-                        : 'border-2 border-cyan-500 ring-2 ring-cyan-500/20 bg-[#151c2b]'
-                      : inputBg
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5 min-w-0 pr-2">
-                    <span className="font-semibold text-xs text-inherit truncate">{selectedAcp.name}</span>
-                    {renderAvailabilityBadge(selectedAcp.availability)}
-                  </div>
-                  <ChevronDown
-                    className={`w-4 h-4 shrink-0 transition-transform ${
-                      isAcpDropdownOpen ? 'rotate-180 text-blue-500' : 'text-gray-400'
-                    }`}
-                  />
-                </button>
-
-                {/* Dropdown Options Menu */}
-                {isAcpDropdownOpen && (
-                  <div
-                    className={`absolute left-0 right-0 top-full mt-1.5 rounded-2xl border shadow-xl py-1.5 z-30 max-h-60 overflow-y-auto ${
-                      isLightMode ? 'bg-white border-gray-200 divide-y divide-gray-100' : 'bg-[#131b28] border-[#26354c] divide-y divide-[#1e2a3c]'
+                {/* Dropdown Container with isolated relative positioning */}
+                <div className="relative" ref={acpDropdownRef}>
+                  {/* Dropdown Trigger Box */}
+                  <button
+                    type="button"
+                    onClick={() => setIsAcpDropdownOpen((prev) => !prev)}
+                    className={`w-full rounded-xl px-3.5 py-2.5 text-xs flex items-center justify-between transition-all cursor-pointer text-left ${
+                      isAcpDropdownOpen
+                        ? isLightMode
+                          ? 'border-2 border-blue-500 ring-2 ring-blue-100 bg-white'
+                          : 'border-2 border-cyan-500 ring-2 ring-cyan-500/20 bg-[#151c2b]'
+                        : inputBg
                     }`}
                   >
-                    {runtimes.map((option) => {
-                      const isSelected = selectedAcpId === option.id;
-                      return (
-                        <button
-                          key={option.id}
-                          type="button"
-                          onClick={() => handleSelectRuntime(option)}
-                          className={`w-full text-left px-4 py-2.5 transition-colors cursor-pointer flex items-center justify-between gap-3 ${
-                            isSelected
-                              ? isLightMode
-                                ? 'bg-blue-50/80 text-blue-900'
-                                : 'bg-cyan-950/60 text-cyan-200'
-                              : isLightMode
-                              ? 'hover:bg-gray-50 text-gray-800'
-                              : 'hover:bg-[#1a2436] text-gray-200'
-                          }`}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="font-semibold text-xs truncate">{option.name}</div>
-                            <div className={`text-[11px] mt-0.5 font-mono truncate ${isLightMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                              {option.command}
+                    <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                      <span className="font-semibold text-xs text-inherit truncate">{selectedAcp.name}</span>
+                      {renderAvailabilityBadge(selectedAcp.availability)}
+                    </div>
+                    <ChevronDown
+                      className={`w-4 h-4 shrink-0 transition-transform duration-200 ${
+                        isAcpDropdownOpen ? 'rotate-180 text-blue-500' : 'text-gray-400'
+                      }`}
+                    />
+                  </button>
+
+                  {/* Dropdown Options Menu */}
+                  {isAcpDropdownOpen && (
+                    <div
+                      className={`absolute left-0 right-0 top-full mt-1.5 rounded-2xl border py-1.5 z-50 max-h-60 overflow-y-auto animate-in fade-in zoom-in-95 duration-100 ${
+                        isLightMode
+                          ? 'bg-white border-gray-200 divide-y divide-gray-100 shadow-xl'
+                          : 'bg-[#131b28] border-[#26354c] divide-y divide-[#1e2a3c] shadow-2xl'
+                      }`}
+                    >
+                      {runtimes.map((option) => {
+                        const isSelected = selectedAcpId === option.id;
+                        return (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => handleSelectRuntime(option)}
+                            className={`w-full text-left px-4 py-2.5 transition-colors cursor-pointer flex items-center justify-between gap-3 ${
+                              isSelected
+                                ? isLightMode
+                                  ? 'bg-blue-50/80 text-blue-900'
+                                  : 'bg-cyan-950/60 text-cyan-200'
+                                : isLightMode
+                                ? 'hover:bg-gray-50 text-gray-800'
+                                : 'hover:bg-[#1a2436] text-gray-200'
+                            }`}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="font-semibold text-xs truncate">{option.name}</div>
+                              <div className={`text-[11px] mt-0.5 font-mono truncate ${isLightMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                                {option.command}
+                              </div>
                             </div>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {renderAvailabilityBadge(option.availability)}
-                            {isSelected && (
-                              <Check className={`w-4 h-4 shrink-0 ${isLightMode ? 'text-blue-600' : 'text-cyan-400'}`} />
-                            )}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+                            <div className="flex items-center gap-2 shrink-0">
+                              {renderAvailabilityBadge(option.availability)}
+                              {isSelected && (
+                                <Check className={`w-4 h-4 shrink-0 ${isLightMode ? 'text-blue-600' : 'text-cyan-400'}`} />
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
 
                 {/* Setup Guidance Callout */}
                 {selectedAcp.availability === 'not_adapted' && (
