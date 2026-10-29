@@ -459,6 +459,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     }
     clearDraftAttachments();
     setAttachmentError(null);
+    return () => {
+      clearDraftAttachments();
+    };
   }, [topic?.id, clearDraftAttachments]);
 
   const updateReplyContent = (valOrFn: string | ((prev: string) => string)) => {

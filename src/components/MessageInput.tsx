@@ -197,6 +197,9 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     setAttachmentError(null);
     historyIndexRef.current = -1;
     tempDraftRef.current = '';
+    return () => {
+      clearDraftAttachments();
+    };
   }, [draftType, draftId, clearDraftAttachments]);
 
   const updateContent = (valOrFn: string | ((prev: string) => string)) => {
