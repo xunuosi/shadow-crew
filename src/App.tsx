@@ -28,7 +28,9 @@ import {
   FastTrackConvergenceEvidence,
   ModularOrchestrationState,
   WorkspaceBinding,
-  DuelRolesConfig
+  DuelRolesConfig,
+  AcpPermissionDecision,
+  AcpPermissionRequest,
 } from './types';
 import { 
   INITIAL_AGENTS, 
@@ -45,6 +47,8 @@ import { Sidebar } from './components/Sidebar';
 import { ThreadList } from './components/ThreadList';
 import { ChatTimeline } from './components/ChatTimeline';
 import { MessageInput } from './components/MessageInput';
+import { AcpPermissionModal } from './components/AcpPermissionModal';
+import { AcpPermissionCenterModal } from './components/AcpPermissionCenterModal';
 
 // 按需异步加载高体积分支抽屉与低频弹窗组件，从首屏关键渲染路径剥离
 const SubThreadDrawer = lazy(() => import('./components/SubThreadDrawer').then((m) => ({ default: m.SubThreadDrawer })));
@@ -78,6 +82,15 @@ import {
   extractWorkspaceDiffsFromText,
   applyTopicPatchToWorkspace,
 } from './services/acpClient';
+import {
+  listPendingAcpPermissions,
+  removePendingAcpPermission,
+  respondToAcpPermission,
+  revokeAcpPermissionGrantsForAgent,
+  revokeAcpPermissionGrantsForScope,
+  upsertPendingAcpPermission,
+} from './services/acpPermissionClient';
+import { listenTauriEvent } from './services/tauriEventClient';
 import { isAgentOffline, isAgentOnline } from './utils/agentRuntime';
 import {
   saveMessagesBatchToDb,
@@ -717,6 +730,8 @@ export default function App() {
   const [isAgentTeamsModalOpen, setIsAgentTeamsModalOpen] = useState<boolean>(false);
   const [isCreateTeamModalOpen, setIsCreateTeamModalOpen] = useState<boolean>(false);
   const [isAgentDefaultsModalOpen, setIsAgentDefaultsModalOpen] = useState<boolean>(false);
+  const [isPermissionCenterOpen, setIsPermissionCenterOpen] = useState<boolean>(false);
+  const [pendingAcpPermissions, setPendingAcpPermissions] = useState<AcpPermissionRequest[]>([]);
   const [isStorageSettingsModalOpen, setIsStorageSettingsModalOpen] = useState<boolean>(false);
   const [isCreateChannelOpen, setIsCreateChannelOpen] = useState<boolean>(false);
   const [isChannelMembersModalOpen, setIsChannelMembersModalOpen] = useState<boolean>(false);
@@ -1213,10 +1228,52 @@ export default function App() {
   // Listen for real-time ACP status changes from Tauri backend
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const tauriListen =
-      (window as any).__TAURI__?.event?.listen ||
-      (window as any).__TAURI_INTERNALS__?.listen;
-    if (!tauriListen) return;
+    const tauriListen = listenTauriEvent;
+
+    const mergePendingPermission = (request: AcpPermissionRequest) => {
+      setPendingAcpPermissions((prev) => upsertPendingAcpPermission(prev, request));
+    };
+
+    let unlistenPermissionRequest: (() => void) | undefined;
+    tauriListen('acp:permission_request', (event: any) => {
+      const request = event?.payload as AcpPermissionRequest | undefined;
+      if (request?.requestId && request.agentId) {
+        mergePendingPermission(request);
+      }
+    }).then((fn: any) => {
+      unlistenPermissionRequest = fn;
+    }).catch((err) => {
+      console.warn('[App] Failed to subscribe ACP permission events:', err);
+    });
+
+    let unlistenPermissionResolved: (() => void) | undefined;
+    tauriListen('acp:permission_resolved', (event: any) => {
+      const agentId = event?.payload?.agentId;
+      const requestId = event?.payload?.requestId;
+      if (agentId && requestId) {
+        setPendingAcpPermissions((prev) =>
+          removePendingAcpPermission(prev, agentId, requestId)
+        );
+      }
+    }).then((fn: any) => {
+      unlistenPermissionResolved = fn;
+    }).catch((err) => {
+      console.warn('[App] Failed to subscribe ACP permission resolution events:', err);
+    });
+
+    const hydratePendingPermissions = () =>
+      listPendingAcpPermissions()
+        .then((requests) => {
+          setPendingAcpPermissions(
+            [...requests].sort((a, b) => a.createdAt - b.createdAt)
+          );
+        })
+        .catch((err) => {
+          console.warn('[App] Failed to hydrate pending ACP permissions:', err);
+        });
+
+    void hydratePendingPermissions();
+    const permissionPollTimer = window.setInterval(hydratePendingPermissions, 1000);
 
     let unlisten: (() => void) | undefined;
     tauriListen('acp:status_change', (event: any) => {
@@ -1397,6 +1454,9 @@ export default function App() {
     }).catch(() => {});
 
     return () => {
+      window.clearInterval(permissionPollTimer);
+      if (unlistenPermissionRequest) unlistenPermissionRequest();
+      if (unlistenPermissionResolved) unlistenPermissionResolved();
       if (unlisten) unlisten();
       if (unlistenSessionReset) unlistenSessionReset();
       if (unlistenReplaySink) unlistenReplaySink();
@@ -1743,6 +1803,10 @@ export default function App() {
     }
     setIsDeleteChannelModalOpen(false);
     await Promise.all([
+      revokeAcpPermissionGrantsForScope('channel', channelId),
+      ...Array.from(deletedTopicIds).map((topicId) =>
+        revokeAcpPermissionGrantsForScope('topic', topicId)
+      ),
       safelyClearAcpSessions(undefined, `channel:${channelId}`, '删除频道'),
       safelyClearAcpSessions(undefined, `topic:${channelId}`, '删除频道'),
     ]);
@@ -7747,6 +7811,21 @@ export default function App() {
     });
   };
 
+  const handleAcpPermissionDecision = async (decision: AcpPermissionDecision) => {
+    const request = pendingAcpPermissions[0];
+    if (!request) {
+      throw new Error('当前没有等待处理的 ACP 权限请求');
+    }
+    await respondToAcpPermission({
+      agentId: request.agentId,
+      requestId: request.requestId,
+      decision,
+    });
+    setPendingAcpPermissions((prev) =>
+      removePendingAcpPermission(prev, request.agentId, request.requestId)
+    );
+  };
+
   return (
     <div className="h-full w-full flex bg-canvas text-fg overflow-hidden font-sans select-none antialiased transition-colors duration-150">
       {/* 1. Left Primary Sidebar (Antigravity-style Smooth Collapsible) */}
@@ -7842,6 +7921,7 @@ export default function App() {
           }}
           onOpenCreateTeamModal={() => setIsCreateTeamModalOpen(true)}
           onOpenAgentDefaultsModal={() => setIsAgentDefaultsModalOpen(true)}
+          onOpenPermissionCenter={() => setIsPermissionCenterOpen(true)}
           onEditAgent={(agent) => {
             setEditingAgent(agent);
             setDuplicatingAgent(null);
@@ -7922,6 +8002,9 @@ export default function App() {
           onDeleteAgent={(agentId) => {
             clearSessionWarmScope({ agentId });
             setAgents((prev) => prev.filter((a) => a.id !== agentId));
+            void revokeAcpPermissionGrantsForAgent(agentId).catch((err) => {
+              console.warn('[App] Failed to revoke ACP permission grants on agent deletion:', err);
+            });
             void clearAcpAgentSessions(agentId).catch((err) => {
               console.warn('[App] Failed to clear sessions on agent deletion:', err);
             });
@@ -8162,6 +8245,21 @@ export default function App() {
           onOpenStorageSettings={() => setIsStorageSettingsModalOpen(true)}
         />
       )}
+
+      {pendingAcpPermissions[0] && (
+        <AcpPermissionModal
+          request={pendingAcpPermissions[0]}
+          agent={agents.find((agent) => agent.id === pendingAcpPermissions[0].agentId)}
+          queuedCount={Math.max(0, pendingAcpPermissions.length - 1)}
+          onDecision={handleAcpPermissionDecision}
+        />
+      )}
+
+      <AcpPermissionCenterModal
+        isOpen={isPermissionCenterOpen}
+        agents={agents}
+        onClose={() => setIsPermissionCenterOpen(false)}
+      />
 
       {/* 7.3 Modal: Storage Architecture & Cache Management (Option 3: SQLite) */}
       {isStorageSettingsModalOpen && (

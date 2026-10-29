@@ -5,6 +5,7 @@
 > **关联文档**：
 > - [`TECH_SPEC_ACP_REMOTE_AND_MEMORY.md`](./TECH_SPEC_ACP_REMOTE_AND_MEMORY.md)
 > - [`TECH_SPEC_TOPIC_CWD_ISOLATION.md`](./TECH_SPEC_TOPIC_CWD_ISOLATION.md)
+> - [`TECH_SPEC_ACP_LOCAL_PERMISSION_BROKER.md`](./TECH_SPEC_ACP_LOCAL_PERMISSION_BROKER.md)
 
 ---
 
@@ -20,6 +21,7 @@ Shadow Crew 保留薄控制面：
 - Session Key、恢复与清理；
 - UI 消息历史、搜索、审计；
 - Artifact、Patch 与用户确认。
+- 本地 ACP 工具权限代理与 Scope Grant。
 
 ## 2. 职责边界
 

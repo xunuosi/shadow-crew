@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -362,6 +362,458 @@ pub struct EnsureSessionResult {
     pub recovery_mode: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpPermissionOptionView {
+    pub option_id: String,
+    pub name: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpPermissionRequestView {
+    pub request_id: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub session_key: String,
+    pub scope_type: String,
+    pub scope_id: String,
+    pub workspace_binding_id: String,
+    pub cwd: String,
+    pub capability: String,
+    pub tool_name: String,
+    pub tool_title: String,
+    pub tool_kind: String,
+    pub command: Option<String>,
+    pub paths: Vec<String>,
+    pub outside_workspace_paths: Vec<String>,
+    pub description: Option<String>,
+    pub supports_allow_once: bool,
+    pub supports_reject: bool,
+    pub options: Vec<AcpPermissionOptionView>,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionScopeContext {
+    pub scope_type: String,
+    pub scope_id: String,
+    pub workspace_binding_id: String,
+    pub session_key: String,
+    pub cwd: String,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct PermissionGrantKey {
+    pub scope_type: String,
+    pub scope_id: String,
+    pub workspace_binding_id: String,
+    pub capability: String,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct SessionPermissionGrantKey {
+    pub session_id: String,
+    pub grant: PermissionGrantKey,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingAcpPermission {
+    pub rpc_id: serde_json::Value,
+    pub view: AcpPermissionRequestView,
+    pub options: Vec<AcpPermissionOptionView>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpPermissionDecision {
+    Deny,
+    AllowOnce,
+    AllowSession,
+    AllowScope,
+}
+
+impl AcpPermissionDecision {
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw.trim() {
+            "deny" => Ok(Self::Deny),
+            "allow_once" => Ok(Self::AllowOnce),
+            "allow_session" => Ok(Self::AllowSession),
+            "allow_scope" => Ok(Self::AllowScope),
+            other => anyhow::bail!("Unsupported ACP permission decision: {}", other),
+        }
+    }
+
+    fn is_allow(self) -> bool {
+        !matches!(self, Self::Deny)
+    }
+}
+
+fn jsonrpc_id_key(id: &serde_json::Value) -> Option<String> {
+    if let Some(value) = id.as_str() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = id.as_u64() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = id.as_i64() {
+        return Some(value.to_string());
+    }
+    None
+}
+
+fn acp_client_capabilities() -> serde_json::Value {
+    serde_json::json!({
+        "fs": {
+            "readTextFile": false,
+            "writeTextFile": false
+        },
+        "terminal": false
+    })
+}
+
+fn classify_permission_capability(tool_call: &serde_json::Value) -> String {
+    let kind = tool_call
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let name = tool_call
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
+    match kind.as_str() {
+        "read" | "search" => "fs.read",
+        "edit" | "write" => "fs.write",
+        "delete" | "move" => "fs.delete",
+        "execute" => "shell.execute",
+        "fetch" => "network.access",
+        _ if name.contains("write")
+            || name.contains("edit")
+            || name.contains("replace")
+            || name.contains("patch") =>
+        {
+            "fs.write"
+        }
+        _ if name.contains("delete")
+            || name.contains("remove")
+            || name.contains("unlink") =>
+        {
+            "fs.delete"
+        }
+        _ if name.contains("read")
+            || name.contains("grep")
+            || name.contains("search")
+            || name.contains("glob")
+            || name.contains("list") =>
+        {
+            "fs.read"
+        }
+        _ if name.contains("bash")
+            || name.contains("shell")
+            || name.contains("terminal")
+            || name.contains("execute") =>
+        {
+            "shell.execute"
+        }
+        _ if name.contains("fetch")
+            || name.contains("http")
+            || name.contains("browser")
+            || name.contains("web") =>
+        {
+            "network.access"
+        }
+        _ => "other",
+    }
+    .to_string()
+}
+
+fn permission_path_candidates(tool_call: &serde_json::Value) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let Some(locations) = tool_call.get("locations").and_then(|value| value.as_array()) {
+        for location in locations {
+            if let Some(path) = location.get("path").and_then(|value| value.as_str()) {
+                if !path.trim().is_empty() {
+                    candidates.push(path.trim().to_string());
+                }
+            }
+        }
+    }
+
+    if let Some(raw_input) = tool_call.get("rawInput").and_then(|value| value.as_object()) {
+        for key in [
+            "file_path",
+            "filePath",
+            "path",
+            "notebook_path",
+            "notebookPath",
+            "cwd",
+            "workdir",
+        ] {
+            if let Some(path) = raw_input.get(key).and_then(|value| value.as_str()) {
+                if !path.trim().is_empty() {
+                    candidates.push(path.trim().to_string());
+                }
+            }
+        }
+    }
+
+    let mut seen = HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|path| seen.insert(path.clone()))
+        .collect()
+}
+
+fn expand_permission_path(raw: &str, cwd: &Path) -> PathBuf {
+    let trimmed = raw.trim();
+    let expanded = if trimmed == "~" || trimmed.starts_with("~/") {
+        std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(|home| {
+                if trimmed == "~" {
+                    PathBuf::from(home)
+                } else {
+                    PathBuf::from(home).join(&trimmed[2..])
+                }
+            })
+            .unwrap_or_else(|_| PathBuf::from(trimmed))
+    } else {
+        PathBuf::from(trimmed)
+    };
+
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        cwd.join(expanded)
+    }
+}
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::Normal(value) => normalized.push(value),
+        }
+    }
+    normalized
+}
+
+fn resolve_permission_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        if let Ok(canonical_parent) = std::fs::canonicalize(parent) {
+            return canonical_parent.join(name);
+        }
+    }
+    normalize_lexical_path(path)
+}
+
+fn partition_permission_paths(
+    paths: &[String],
+    cwd: &Path,
+) -> (Vec<String>, Vec<String>) {
+    let canonical_cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let mut inside = Vec::new();
+    let mut outside = Vec::new();
+    for raw in paths {
+        let resolved = resolve_permission_path(&expand_permission_path(raw, &canonical_cwd));
+        let display = resolved.to_string_lossy().to_string();
+        if resolved.starts_with(&canonical_cwd) {
+            inside.push(display);
+        } else {
+            outside.push(display);
+        }
+    }
+    (inside, outside)
+}
+
+fn parse_permission_options(params: &serde_json::Value) -> Vec<AcpPermissionOptionView> {
+    params
+        .get("options")
+        .and_then(|value| value.as_array())
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|option| {
+                    let option_id = option
+                        .get("optionId")
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.trim().is_empty())?
+                        .to_string();
+                    Some(AcpPermissionOptionView {
+                        option_id,
+                        name: option
+                            .get("name")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        kind: option
+                            .get("kind")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn select_permission_option(
+    options: &[AcpPermissionOptionView],
+    decision: AcpPermissionDecision,
+) -> Option<String> {
+    if decision.is_allow() {
+        return options
+            .iter()
+            .find(|option| option.kind == "allow_once")
+            .or_else(|| {
+                options.iter().find(|option| {
+                    let option_id = option.option_id.to_ascii_lowercase();
+                    option_id == "allow-once" || option_id == "allow_once"
+                })
+            })
+            .map(|option| option.option_id.clone());
+    }
+
+    options
+        .iter()
+        .find(|option| option.kind == "reject_once")
+        .or_else(|| {
+            options.iter().find(|option| {
+                option.kind.starts_with("reject")
+                    || option.option_id.to_ascii_lowercase().contains("reject")
+            })
+        })
+        .map(|option| option.option_id.clone())
+}
+
+fn permission_selected_response(
+    rpc_id: serde_json::Value,
+    option_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": rpc_id,
+        "result": {
+            "outcome": {
+                "outcome": "selected",
+                "optionId": option_id
+            }
+        }
+    })
+}
+
+fn permission_cancelled_response(rpc_id: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": rpc_id,
+        "result": {
+            "outcome": {
+                "outcome": "cancelled"
+            }
+        }
+    })
+}
+
+fn build_permission_grant_id(
+    agent_id: &str,
+    scope: &PermissionScopeContext,
+    capability: &str,
+) -> String {
+    format!(
+        "acp-grant:{}:{}:{}:{}:{}",
+        agent_id, scope.scope_type, scope.scope_id, scope.workspace_binding_id, capability
+    )
+}
+
+fn build_permission_request_view(
+    agent_id: &str,
+    request_id: String,
+    session_id: String,
+    scope: PermissionScopeContext,
+    params: &serde_json::Value,
+    options: Vec<AcpPermissionOptionView>,
+) -> AcpPermissionRequestView {
+    let tool_call = params
+        .get("toolCall")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let capability = classify_permission_capability(&tool_call);
+    let raw_paths = permission_path_candidates(&tool_call);
+    let (paths, outside_workspace_paths) =
+        partition_permission_paths(&raw_paths, Path::new(&scope.cwd));
+    let command = tool_call
+        .get("rawInput")
+        .and_then(|value| value.get("command"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    let description = params
+        .get("_meta")
+        .and_then(|value| value.get("permission"))
+        .and_then(|value| value.get("description"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    let supports_allow_once = options
+        .iter()
+        .any(|option| option.kind == "allow_once");
+    let supports_reject = options.iter().any(|option| {
+        option.kind.starts_with("reject")
+            || option.option_id.to_ascii_lowercase().contains("reject")
+    });
+
+    AcpPermissionRequestView {
+        request_id,
+        agent_id: agent_id.to_string(),
+        session_id,
+        session_key: scope.session_key,
+        scope_type: scope.scope_type,
+        scope_id: scope.scope_id,
+        workspace_binding_id: scope.workspace_binding_id,
+        cwd: scope.cwd,
+        capability,
+        tool_name: tool_call
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        tool_title: tool_call
+            .get("title")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        tool_kind: tool_call
+            .get("kind")
+            .and_then(|value| value.as_str())
+            .unwrap_or("other")
+            .to_string(),
+        command,
+        paths,
+        outside_workspace_paths,
+        description,
+        supports_allow_once,
+        supports_reject,
+        options,
+        created_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64,
+    }
+}
+
 #[derive(Clone)]
 pub struct RunningAgent {
     pub agent_id: String,
@@ -382,6 +834,10 @@ pub struct RunningAgent {
     pub auth_state: Arc<TokioMutex<String>>,
     pub status_detail: Arc<TokioMutex<Option<String>>>,
     pub session_registry: Arc<TokioMutex<SessionRegistry>>,
+    pub permission_scopes: Arc<TokioMutex<HashMap<String, PermissionScopeContext>>>,
+    pub pending_permissions: Arc<TokioMutex<HashMap<String, PendingAcpPermission>>>,
+    pub session_permission_grants: Arc<TokioMutex<HashSet<SessionPermissionGrantKey>>>,
+    pub pending_permission_count: Arc<AtomicUsize>,
     pub supports_load_session: Arc<AtomicBool>,
     pub supports_resume_session: Arc<AtomicBool>,
     pub db_manager: Option<Arc<crate::db_manager::DatabaseManager>>,
@@ -426,6 +882,86 @@ impl AcpProcessManager {
     /// 获取指定 Agent 的轻量级 Clone 句柄 (持有子进程管道与锁的 Arc 引用)
     pub fn get_agent(&self, agent_id: &str) -> Option<RunningAgent> {
         self.agents.get(agent_id).cloned()
+    }
+
+    /// 将用户对本地 ACP 权限请求的决策写回对应 Agent 的 stdio 通道。
+    pub async fn respond_to_acp_permission(
+        &self,
+        agent_id: &str,
+        request_id: &str,
+        decision: &str,
+    ) -> Result<()> {
+        let decision = AcpPermissionDecision::parse(decision)?;
+        let agent = self
+            .get_agent(agent_id)
+            .ok_or_else(|| anyhow::anyhow!("Agent {} is not running", agent_id))?;
+        agent
+            .respond_to_permission(request_id, decision)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to respond to ACP permission request {} for agent {}",
+                    request_id, agent_id
+                )
+            })
+    }
+
+    /// 列出当前仍等待用户处理的本地 ACP 权限请求。
+    pub async fn list_pending_acp_permissions(&self) -> Vec<AcpPermissionRequestView> {
+        let mut requests = Vec::new();
+        for agent in self.agents.values() {
+            let pending = agent.pending_permissions.lock().await;
+            requests.extend(pending.values().map(|item| item.view.clone()));
+        }
+        requests.sort_by_key(|request| request.created_at);
+        requests
+    }
+
+    pub fn list_acp_permission_grants(
+        &self,
+        agent_id: Option<&str>,
+    ) -> Result<Vec<crate::db_manager::AcpPermissionGrantRecord>> {
+        let db = self
+            .db_manager
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Database is unavailable"))?;
+        db.list_acp_permission_grants(agent_id)
+    }
+
+    pub fn revoke_acp_permission_grant(&self, grant_id: &str) -> Result<bool> {
+        let db = self
+            .db_manager
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Database is unavailable"))?;
+        db.revoke_acp_permission_grant(grant_id)
+    }
+
+    pub fn revoke_all_acp_permission_grants(&self) -> Result<usize> {
+        let db = self
+            .db_manager
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Database is unavailable"))?;
+        db.revoke_all_acp_permission_grants()
+    }
+
+    pub fn revoke_acp_permission_grants_for_agent(&self, agent_id: &str) -> Result<usize> {
+        let db = self
+            .db_manager
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Database is unavailable"))?;
+        db.revoke_acp_permission_grants_for_agent(agent_id)
+    }
+
+    pub fn revoke_acp_permission_grants_for_scope(
+        &self,
+        scope_type: &str,
+        scope_id: &str,
+    ) -> Result<usize> {
+        let db = self
+            .db_manager
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Database is unavailable"))?;
+        db.revoke_acp_permission_grants_for_scope(scope_type, scope_id)
     }
 
     /// 获取当前所有正在运行的 Agent ID 列表
@@ -750,6 +1286,16 @@ impl AcpProcessManager {
         let auth_state = Arc::new(TokioMutex::new("ok".to_string()));
         let status_detail = Arc::new(TokioMutex::new(None::<String>));
         let session_registry = Arc::new(TokioMutex::new(SessionRegistry::new()));
+        let permission_scopes = Arc::new(TokioMutex::new(HashMap::<
+            String,
+            PermissionScopeContext,
+        >::new()));
+        let pending_permissions = Arc::new(TokioMutex::new(HashMap::<
+            String,
+            PendingAcpPermission,
+        >::new()));
+        let session_permission_grants = Arc::new(TokioMutex::new(HashSet::new()));
+        let pending_permission_count = Arc::new(AtomicUsize::new(0));
         let supports_load_session = Arc::new(AtomicBool::new(false));
         let supports_resume_session = Arc::new(AtomicBool::new(false));
         let replay_sinks = Arc::new(TokioMutex::new(HashMap::<
@@ -799,6 +1345,12 @@ impl AcpProcessManager {
         let is_alive_clone = is_alive.clone();
         let stdin_tx_reader = stdin_tx.clone();
         let last_activity_clone = last_activity.clone();
+        let session_registry_permissions = session_registry.clone();
+        let permission_scopes_clone = permission_scopes.clone();
+        let pending_permissions_clone = pending_permissions.clone();
+        let session_permission_grants_clone = session_permission_grants.clone();
+        let pending_permission_count_clone = pending_permission_count.clone();
+        let permission_db_manager = self.db_manager.clone();
 
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
@@ -965,72 +1517,184 @@ impl AcpProcessManager {
                                 }
                             }
                         } else if method == "session/request_permission" {
-                            // Agent 发起工具授权申请 (如 Claude Code 执行 bash 检查或写文件)
-                            if let Some(req_id) = json_val.get("id").cloned() {
-                                let mut chosen_option_id = "allow-once".to_string();
-                                let mut tool_name = "unknown".to_string();
-
-                                if let Some(params) = json_val.get("params") {
-                                    if let Some(tool_call) = params.get("toolCall") {
-                                        if let Some(name) =
-                                            tool_call.get("name").and_then(|n| n.as_str())
-                                        {
-                                            tool_name = name.to_string();
-                                        }
-                                    }
-
-                                    if let Some(options) =
-                                        params.get("options").and_then(|o| o.as_array())
-                                    {
-                                        let mut found = false;
-                                        for opt in options {
-                                            let kind = opt
-                                                .get("kind")
-                                                .and_then(|k| k.as_str())
-                                                .unwrap_or_default();
-                                            let opt_id = opt
-                                                .get("optionId")
-                                                .and_then(|i| i.as_str())
-                                                .unwrap_or_default();
-                                            if kind == "allow_once"
-                                                || kind == "allow_always"
-                                                || opt_id.contains("allow")
-                                            {
-                                                chosen_option_id = opt_id.to_string();
-                                                found = true;
-                                                break;
-                                            }
-                                        }
-                                        if !found && !options.is_empty() {
-                                            if let Some(first_id) =
-                                                options[0].get("optionId").and_then(|i| i.as_str())
-                                            {
-                                                chosen_option_id = first_id.to_string();
-                                            }
-                                        }
-                                    }
-                                }
-
+                            let Some(rpc_id) = json_val.get("id").cloned() else {
                                 log_acp_event(
                                     &agent_id_clone,
-                                    "PERM_APPROVAL",
-                                    &format!("Auto-approving permission for tool '{}' with option '{}' (id: {:?})", tool_name, chosen_option_id, req_id),
+                                    "PERM_INVALID",
+                                    "session/request_permission without JSON-RPC id",
                                 );
-
-                                // 构造符合标准 ACP 规范的权限响应
-                                let permission_resp = serde_json::json!({
-                                    "jsonrpc": "2.0",
-                                    "id": req_id,
-                                    "result": {
-                                        "outcome": {
-                                            "outcome": "selected",
-                                            "optionId": chosen_option_id
-                                        }
-                                    }
-                                });
-
-                                let _ = stdin_tx_reader.send(permission_resp.to_string()).await;
+                                continue;
+                            };
+                            let Some(request_id) = jsonrpc_id_key(&rpc_id) else {
+                                let _ = stdin_tx_reader
+                                    .send(permission_cancelled_response(rpc_id).to_string())
+                                    .await;
+                                log_acp_event(
+                                    &agent_id_clone,
+                                    "PERM_INVALID",
+                                    "session/request_permission with unsupported JSON-RPC id",
+                                );
+                                continue;
+                            };
+                            let params = json_val
+                                .get("params")
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::json!({}));
+                            let session_id = params
+                                .get("sessionId")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default()
+                                .to_string();
+                            let has_active_prompt = {
+                                let active = session_active_req_clone.lock().await;
+                                active.contains_key(&session_id)
+                            };
+                            if !has_active_prompt {
+                                let _ = stdin_tx_reader
+                                    .send(permission_cancelled_response(rpc_id).to_string())
+                                    .await;
+                                log_acp_event(
+                                    &agent_id_clone,
+                                    "PERM_NO_ACTIVE_PROMPT",
+                                    &format!(
+                                        "Permission request {} cancelled because session '{}' has no active prompt",
+                                        request_id, session_id
+                                    ),
+                                );
+                                continue;
                             }
+
+                            let session_key = {
+                                let registry = session_registry_permissions.lock().await;
+                                registry
+                                    .entries
+                                    .iter()
+                                    .find_map(|(key, entry)| {
+                                        (entry.session_id == session_id).then(|| key.clone())
+                                    })
+                            };
+                            let scope = if let Some(ref session_key) = session_key {
+                                permission_scopes_clone.lock().await.get(session_key).cloned()
+                            } else {
+                                None
+                            };
+
+                            let Some(scope) = scope else {
+                                let _ = stdin_tx_reader
+                                    .send(permission_cancelled_response(rpc_id).to_string())
+                                    .await;
+                                log_acp_event(
+                                    &agent_id_clone,
+                                    "PERM_SCOPE_MISSING",
+                                    &format!(
+                                        "No permission scope for ACP session '{}'; request {} cancelled",
+                                        session_id, request_id
+                                    ),
+                                );
+                                continue;
+                            };
+
+                            let permission_options = parse_permission_options(&params);
+                            let view = build_permission_request_view(
+                                &agent_id_clone,
+                                request_id.clone(),
+                                session_id.clone(),
+                                scope.clone(),
+                                &params,
+                                permission_options.clone(),
+                            );
+                            let grant_key = SessionPermissionGrantKey {
+                                session_id: session_id.clone(),
+                                grant: PermissionGrantKey {
+                                    scope_type: scope.scope_type.clone(),
+                                    scope_id: scope.scope_id.clone(),
+                                    workspace_binding_id: scope.workspace_binding_id.clone(),
+                                    capability: view.capability.clone(),
+                                },
+                            };
+                            let session_granted = if view.outside_workspace_paths.is_empty() {
+                                session_permission_grants_clone
+                                    .lock()
+                                    .await
+                                    .contains(&grant_key)
+                            } else {
+                                false
+                            };
+                            let persisted_granted = if !session_granted
+                                && view.outside_workspace_paths.is_empty()
+                            {
+                                permission_db_manager
+                                    .as_ref()
+                                    .and_then(|db| {
+                                        db.has_acp_permission_grant(
+                                            &agent_id_clone,
+                                            &scope.scope_type,
+                                            &scope.scope_id,
+                                            &scope.workspace_binding_id,
+                                            &view.capability,
+                                        )
+                                        .ok()
+                                    })
+                                    .unwrap_or(false)
+                            } else {
+                                false
+                            };
+
+                            if (session_granted || persisted_granted)
+                                && view.supports_allow_once
+                            {
+                                if let Some(option_id) = select_permission_option(
+                                    &permission_options,
+                                    AcpPermissionDecision::AllowOnce,
+                                ) {
+                                    let response = permission_selected_response(
+                                        rpc_id.clone(),
+                                        &option_id,
+                                    );
+                                    let _ = stdin_tx_reader.send(response.to_string()).await;
+                                    log_acp_event(
+                                        &agent_id_clone,
+                                        "PERM_LEASE_ALLOW",
+                                        &format!(
+                                            "request={} capability={} scope={}:{} source={}",
+                                            request_id,
+                                            view.capability,
+                                            view.scope_type,
+                                            view.scope_id,
+                                            if session_granted { "session" } else { "persisted" }
+                                        ),
+                                    );
+                                    continue;
+                                }
+                            }
+
+                            let pending = PendingAcpPermission {
+                                rpc_id: rpc_id.clone(),
+                                view: view.clone(),
+                                options: permission_options,
+                            };
+                            let inserted = {
+                                let mut requests = pending_permissions_clone.lock().await;
+                                requests.insert(request_id.clone(), pending).is_none()
+                            };
+                            if inserted {
+                                pending_permission_count_clone.fetch_add(1, Ordering::SeqCst);
+                            }
+                            log_acp_event(
+                                &agent_id_clone,
+                                "PERM_REQUEST",
+                                &format!(
+                                    "request={} tool={} capability={} scope={}:{} paths={:?} outside={:?}",
+                                    request_id,
+                                    view.tool_name,
+                                    view.capability,
+                                    view.scope_type,
+                                    view.scope_id,
+                                    view.paths,
+                                    view.outside_workspace_paths
+                                ),
+                            );
+                            let _ = app_handle_clone.emit("acp:permission_request", &view);
                         } else if let Some(req_id) = json_val.get("id").cloned() {
                             // Agent 发起了其它未支持的客户端调用，按 JSON-RPC 2.0 规范返回 MethodNotFound 避免 Agent 挂起死等
                             log_acp_event(
@@ -1101,6 +1765,21 @@ impl AcpProcessManager {
                     "status": "stopped"
                 }),
             );
+            let cancelled_permissions = {
+                let mut requests = pending_permissions_clone.lock().await;
+                requests.drain().map(|(_, request)| request.view).collect::<Vec<_>>()
+            };
+            pending_permission_count_clone.store(0, Ordering::SeqCst);
+            for request in cancelled_permissions {
+                let _ = app_handle_clone.emit(
+                    "acp:permission_resolved",
+                    serde_json::json!({
+                        "agentId": &agent_id_clone,
+                        "requestId": request.request_id,
+                        "reason": "agent process exited",
+                    }),
+                );
+            }
             let mut map = pending_requests_clone.lock().await;
             for (_, tx) in map.drain() {
                 let _ = tx.send(serde_json::json!({
@@ -1128,6 +1807,10 @@ impl AcpProcessManager {
                 auth_state: auth_state.clone(),
                 status_detail: status_detail.clone(),
                 session_registry,
+                permission_scopes,
+                pending_permissions,
+                session_permission_grants,
+                pending_permission_count,
                 supports_load_session: supports_load_session.clone(),
                 supports_resume_session: supports_resume_session.clone(),
                 db_manager: self.db_manager.clone(),
@@ -1155,10 +1838,7 @@ impl AcpProcessManager {
                     "name": "shadow-crew",
                     "version": "0.1.0"
                 },
-                "clientCapabilities": {
-                    "fs": { "readTextFile": true, "writeTextFile": true },
-                    "terminal": true
-                }
+                "clientCapabilities": acp_client_capabilities()
             }
         });
         let _ = stdin_tx.send(init_req.to_string()).await;
@@ -1304,6 +1984,238 @@ impl AcpProcessManager {
 }
 
 impl RunningAgent {
+    pub async fn respond_to_permission(
+        &self,
+        request_id: &str,
+        decision: AcpPermissionDecision,
+    ) -> Result<()> {
+        let pending = {
+            let requests = self.pending_permissions.lock().await;
+            requests
+                .get(request_id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Permission request {} is no longer pending", request_id))?
+        };
+
+        if decision.is_allow() && !pending.view.supports_allow_once {
+            anyhow::bail!(
+                "ACP endpoint did not provide an allow_once option; the request remains blocked"
+            );
+        }
+        if matches!(
+            decision,
+            AcpPermissionDecision::AllowSession | AcpPermissionDecision::AllowScope
+        ) && !pending.view.outside_workspace_paths.is_empty()
+        {
+            anyhow::bail!(
+                "Cannot grant a reusable permission for paths outside the Workspace Binding"
+            );
+        }
+        if matches!(
+            decision,
+            AcpPermissionDecision::AllowSession | AcpPermissionDecision::AllowScope
+        ) && pending.view.capability == "other"
+        {
+            anyhow::bail!(
+                "Unclassified ACP tools can only be allowed once because their risk boundary is unknown"
+            );
+        }
+
+        let option_id = select_permission_option(&pending.options, decision);
+        if decision.is_allow() && option_id.is_none() {
+            anyhow::bail!("ACP endpoint did not provide an allow_once option");
+        }
+
+        {
+            let mut requests = self.pending_permissions.lock().await;
+            if requests.remove(request_id).is_none() {
+                anyhow::bail!("Permission request {} was already resolved", request_id);
+            }
+        }
+
+        if matches!(
+            decision,
+            AcpPermissionDecision::AllowSession | AcpPermissionDecision::AllowScope
+        ) {
+            let key = SessionPermissionGrantKey {
+                session_id: pending.view.session_id.clone(),
+                grant: PermissionGrantKey {
+                    scope_type: pending.view.scope_type.clone(),
+                    scope_id: pending.view.scope_id.clone(),
+                    workspace_binding_id: pending.view.workspace_binding_id.clone(),
+                    capability: pending.view.capability.clone(),
+                },
+            };
+            if decision == AcpPermissionDecision::AllowSession {
+                self.session_permission_grants.lock().await.insert(key);
+            } else if let Some(ref db) = self.db_manager {
+                let grant = crate::db_manager::AcpPermissionGrantRecord {
+                    id: build_permission_grant_id(&self.agent_id, &PermissionScopeContext {
+                        scope_type: pending.view.scope_type.clone(),
+                        scope_id: pending.view.scope_id.clone(),
+                        workspace_binding_id: pending.view.workspace_binding_id.clone(),
+                        session_key: pending.view.session_key.clone(),
+                        cwd: pending.view.cwd.clone(),
+                    }, &pending.view.capability),
+                    agent_id: self.agent_id.clone(),
+                    scope_type: pending.view.scope_type.clone(),
+                    scope_id: pending.view.scope_id.clone(),
+                    workspace_binding_id: pending.view.workspace_binding_id.clone(),
+                    capability: pending.view.capability.clone(),
+                    created_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64,
+                };
+                if let Err(err) = db.save_acp_permission_grant(&grant) {
+                    self.pending_permissions
+                        .lock()
+                        .await
+                        .insert(request_id.to_string(), pending.clone());
+                    return Err(err).context("Failed to persist ACP permission grant");
+                }
+            }
+        }
+
+        self.pending_permission_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                Some(count.saturating_sub(1))
+            })
+            .ok();
+
+        let response = if let Some(option_id) = option_id {
+            permission_selected_response(pending.rpc_id.clone(), &option_id)
+        } else {
+            permission_cancelled_response(pending.rpc_id.clone())
+        };
+        self.stdin_tx
+            .send(response.to_string())
+            .await
+            .with_context(|| "Failed to write ACP permission response to agent stdin")?;
+        log_acp_event(
+            &self.agent_id,
+            "PERM_RESOLVED",
+            &format!(
+                "request={} decision={:?} capability={} scope={}:{}",
+                request_id,
+                decision,
+                pending.view.capability,
+                pending.view.scope_type,
+                pending.view.scope_id
+            ),
+        );
+        let _ = self.app_handle.emit(
+            "acp:permission_resolved",
+            serde_json::json!({
+                "agentId": &self.agent_id,
+                "requestId": request_id,
+            }),
+        );
+        Ok(())
+    }
+
+    async fn cancel_pending_permissions_for_session(
+        &self,
+        session_id: &str,
+        reason: &str,
+    ) {
+        let cancelled = {
+            let mut requests = self.pending_permissions.lock().await;
+            let keys: Vec<String> = requests
+                .iter()
+                .filter(|(_, request)| request.view.session_id == session_id)
+                .map(|(key, _)| key.clone())
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| requests.remove(&key))
+                .collect::<Vec<_>>()
+        };
+
+        if cancelled.is_empty() {
+            return;
+        }
+        self.pending_permission_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                Some(count.saturating_sub(cancelled.len()))
+            })
+            .ok();
+        for request in &cancelled {
+            let _ = self
+                .stdin_tx
+                .send(permission_cancelled_response(request.rpc_id.clone()).to_string())
+                .await;
+            let _ = self.app_handle.emit(
+                "acp:permission_resolved",
+                serde_json::json!({
+                    "agentId": &self.agent_id,
+                    "requestId": &request.view.request_id,
+                    "reason": reason,
+                }),
+            );
+            log_acp_event(
+                &self.agent_id,
+                "PERM_CANCELLED",
+                &format!(
+                    "request={} session={} reason={}",
+                    request.view.request_id, session_id, reason
+                ),
+            );
+        }
+    }
+
+    async fn cancel_expired_permissions(&self, max_age: Duration) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let max_age_ms = max_age.as_millis() as u64;
+        let expired = {
+            let mut requests = self.pending_permissions.lock().await;
+            let keys: Vec<String> = requests
+                .iter()
+                .filter(|(_, request)| now.saturating_sub(request.view.created_at) >= max_age_ms)
+                .map(|(key, _)| key.clone())
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| requests.remove(&key))
+                .collect::<Vec<_>>()
+        };
+        if expired.is_empty() {
+            return;
+        }
+        self.pending_permission_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                Some(count.saturating_sub(expired.len()))
+            })
+            .ok();
+        for request in expired {
+            let _ = self
+                .stdin_tx
+                .send(permission_cancelled_response(request.rpc_id.clone()).to_string())
+                .await;
+            let _ = self.app_handle.emit(
+                "acp:permission_resolved",
+                serde_json::json!({
+                    "agentId": &self.agent_id,
+                    "requestId": &request.view.request_id,
+                    "reason": "permission request timed out",
+                }),
+            );
+            log_acp_event(
+                &self.agent_id,
+                "PERM_TIMEOUT",
+                &format!(
+                    "request={} capability={} scope={}:{} timed out",
+                    request.view.request_id,
+                    request.view.capability,
+                    request.view.scope_type,
+                    request.view.scope_id
+                ),
+            );
+        }
+        self.last_activity.store(now, Ordering::Relaxed);
+    }
+
     #[allow(dead_code)]
     pub async fn clear_sessions(&self, key_or_prefix: Option<&str>) {
         self.clear_sessions_with_generation(key_or_prefix, None)
@@ -1326,6 +2238,18 @@ impl RunningAgent {
             let mut reg = self.session_registry.lock().await;
             reg.prune_with_generation(key_or_prefix, clear_generation)
         };
+        let active_session_keys = {
+            let reg = self.session_registry.lock().await;
+            reg.entries.keys().cloned().collect::<HashSet<_>>()
+        };
+        self.permission_scopes
+            .lock()
+            .await
+            .retain(|session_key, _| active_session_keys.contains(session_key));
+        self.session_permission_grants
+            .lock()
+            .await
+            .retain(|grant| !removed_sessions.contains(&grant.session_id));
 
         // 同步清理 SQLite 持久化表，并携带 clear_generation 保护，杜绝误删清理发起之后新建的会话记录
         if let Some(ref db) = self.db_manager {
@@ -1333,7 +2257,12 @@ impl RunningAgent {
         }
 
         // 异步向底层 ACP 进程发送 session/close，使 Agent 进程释放底层会话资源
-        for sid in removed_sessions {
+        for sid in &removed_sessions {
+            self.cancel_pending_permissions_for_session(
+                sid,
+                "ACP session was cleared before permission was resolved",
+            )
+            .await;
             let close_req = serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": "session/close",
@@ -1633,10 +2562,7 @@ impl RunningAgent {
                         "name": "shadow-crew",
                         "version": "0.1.0"
                     },
-                    "clientCapabilities": {
-                        "fs": { "readTextFile": true, "writeTextFile": true },
-                        "terminal": true
-                    }
+                    "clientCapabilities": acp_client_capabilities()
                 }
             });
             let _ = self.stdin_tx.send(init_req.to_string()).await;
@@ -1726,6 +2652,39 @@ impl RunningAgent {
             scope_type,
             &resolved_workspace.session_key_suffix,
             is_dm,
+        );
+        let effective_permission_channel_id = channel_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(room_id);
+        let permission_scope_type = if is_dm {
+            "dm"
+        } else if is_dm_topic {
+            "dm_topic"
+        } else if scope_type
+            .map(|scope| scope.trim() == "topic")
+            .unwrap_or_else(|| {
+                room_id != effective_permission_channel_id && !room_id.starts_with("chan-")
+            })
+        {
+            "topic"
+        } else {
+            "channel"
+        };
+        let permission_scope_id = if permission_scope_type == "channel" {
+            effective_permission_channel_id
+        } else {
+            room_id
+        };
+        self.permission_scopes.lock().await.insert(
+            session_key.clone(),
+            PermissionScopeContext {
+                scope_type: permission_scope_type.to_string(),
+                scope_id: permission_scope_id.to_string(),
+                workspace_binding_id: resolved_workspace.workspace_binding_id.clone(),
+                session_key: session_key.clone(),
+                cwd: target_workspace_dir.to_string_lossy().to_string(),
+            },
         );
         let workspace_notice = if is_dm {
             let agent_cwd = target_workspace_dir.to_string_lossy().to_string();
@@ -2064,6 +3023,15 @@ impl RunningAgent {
             reg.remove(&session_key).map(|e| e.session_id)
         };
         if let Some(old_id) = old_sid {
+            self.cancel_pending_permissions_for_session(
+                &old_id,
+                "ACP session was replaced before permission was resolved",
+            )
+            .await;
+            self.session_permission_grants
+                .lock()
+                .await
+                .retain(|grant| grant.session_id != old_id);
             let close_req = serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": "session/close",
@@ -2314,10 +3282,15 @@ impl RunningAgent {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(1800);
+        let permission_timeout_secs = std::env::var("SHADOW_CREW_ACP_PERMISSION_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(600);
 
         let start_time = std::time::Instant::now();
         let idle_timeout = Duration::from_secs(idle_timeout_secs);
         let max_duration = Duration::from_secs(max_duration_secs);
+        let permission_timeout = Duration::from_secs(permission_timeout_secs);
 
         let mut resp_rx = resp_rx;
         let mut last_heartbeat_sec: u64 = 0;
@@ -2342,7 +3315,14 @@ impl RunningAgent {
                 .unwrap_or_default()
                 .as_millis() as u64;
             let idle_elapsed_ms = current_ms.saturating_sub(last_act_ms);
-            if idle_elapsed_ms >= idle_timeout.as_millis() as u64 {
+            let pending_permission_count = self.pending_permission_count.load(Ordering::SeqCst);
+            if pending_permission_count > 0 {
+                self.cancel_expired_permissions(permission_timeout).await;
+            }
+            let pending_permission_count = self.pending_permission_count.load(Ordering::SeqCst);
+            if pending_permission_count == 0
+                && idle_elapsed_ms >= idle_timeout.as_millis() as u64
+            {
                 tracing::warn!(
                     "[Agent {}] Prompt reached idle timeout (no output for {}s)",
                     agent_id,
@@ -2365,6 +3345,7 @@ impl RunningAgent {
                         "sessionId": current_session_id,
                         "elapsed_seconds": total_sec,
                         "idle_elapsed_seconds": idle_elapsed_ms / 1000,
+                        "pending_permission_count": pending_permission_count,
                     }),
                 );
             }
@@ -2422,6 +3403,10 @@ impl RunningAgent {
                             agent_id, session_key, err
                         );
                         self.session_registry.lock().await.remove(&session_key);
+                        self.session_permission_grants
+                            .lock()
+                            .await
+                            .retain(|grant| grant.session_id != current_session_id);
                         if let Some(ref db) = self.db_manager {
                             let _ = db.delete_acp_session(Some(agent_id), Some(&session_key), None);
                         }
@@ -2472,6 +3457,12 @@ impl RunningAgent {
             }
         }
 
+        self.cancel_pending_permissions_for_session(
+            &current_session_id,
+            "session prompt finished before permission was resolved",
+        )
+        .await;
+
         response
     }
 }
@@ -2516,8 +3507,12 @@ fn derive_runtime_status(is_alive: bool, auth_state: &str, has_init_error: bool)
 #[cfg(test)]
 mod runtime_status_tests {
     use super::{
-        build_scoped_session_key, derive_runtime_status, is_dm_session_scope,
-        resolve_session_workspace,
+        acp_client_capabilities, build_permission_request_view, build_scoped_session_key,
+        classify_permission_capability, derive_runtime_status, is_dm_session_scope,
+        jsonrpc_id_key, parse_permission_options, partition_permission_paths,
+        permission_cancelled_response, permission_selected_response,
+        resolve_session_workspace, select_permission_option, AcpPermissionDecision,
+        PermissionScopeContext,
     };
 
     #[test]
@@ -2535,6 +3530,148 @@ mod runtime_status_tests {
     #[test]
     fn healthy_handshake_is_running() {
         assert_eq!(derive_runtime_status(true, "ok", false), "running");
+    }
+
+    #[test]
+    fn permission_capabilities_and_options_fail_closed_without_allow_once() {
+        let capabilities = acp_client_capabilities();
+        assert_eq!(capabilities["fs"]["readTextFile"], false);
+        assert_eq!(capabilities["fs"]["writeTextFile"], false);
+        assert_eq!(capabilities["terminal"], false);
+        assert_eq!(
+            classify_permission_capability(&serde_json::json!({
+                "name": "Read",
+                "kind": "read"
+            })),
+            "fs.read"
+        );
+        assert_eq!(
+            classify_permission_capability(&serde_json::json!({
+                "name": "MultiEdit",
+                "kind": "edit"
+            })),
+            "fs.write"
+        );
+        assert_eq!(
+            classify_permission_capability(&serde_json::json!({
+                "name": "Bash",
+                "kind": "execute"
+            })),
+            "shell.execute"
+        );
+
+        let params = serde_json::json!({
+            "options": [
+                { "optionId": "allow-always", "name": "Always", "kind": "allow_always" },
+                { "optionId": "allow-once", "name": "Once", "kind": "allow_once" },
+                { "optionId": "reject", "name": "No", "kind": "reject_once" }
+            ]
+        });
+        let options = parse_permission_options(&params);
+        assert_eq!(
+            select_permission_option(&options, AcpPermissionDecision::AllowOnce),
+            Some("allow-once".to_string())
+        );
+        assert_eq!(
+            select_permission_option(&options, AcpPermissionDecision::Deny),
+            Some("reject".to_string())
+        );
+
+        let always_only = parse_permission_options(&serde_json::json!({
+            "options": [
+                { "optionId": "allow-always", "name": "Always", "kind": "allow_always" }
+            ]
+        }));
+        assert_eq!(
+            select_permission_option(&always_only, AcpPermissionDecision::AllowOnce),
+            None,
+            "allow_always must not be silently substituted for one-time approval"
+        );
+    }
+
+    #[test]
+    fn permission_request_detects_paths_outside_workspace_and_preserves_jsonrpc_id() {
+        let root = std::env::temp_dir().join(format!(
+            "shadow_crew_permission_scope_test_{}",
+            std::process::id()
+        ));
+        let inside = root.join("src/app.ts");
+        let outside = std::env::temp_dir().join("shadow_crew_permission_outside.ts");
+        std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
+        std::fs::write(&inside, "inside").unwrap();
+        std::fs::write(&outside, "outside").unwrap();
+
+        let params = serde_json::json!({
+            "sessionId": "session-1",
+            "toolCall": {
+                "name": "Write",
+                "title": "Write files",
+                "kind": "edit",
+                "rawInput": { "file_path": outside.to_string_lossy() },
+                "locations": [{ "path": inside.to_string_lossy() }]
+            },
+            "options": [
+                { "optionId": "allow-once", "name": "Once", "kind": "allow_once" },
+                { "optionId": "reject", "name": "No", "kind": "reject_once" }
+            ],
+            "_meta": {
+                "permission": {
+                    "description": "writes source files"
+                }
+            }
+        });
+        let scope = PermissionScopeContext {
+            scope_type: "topic".to_string(),
+            scope_id: "topic-1".to_string(),
+            workspace_binding_id: "ws-topic-1".to_string(),
+            session_key: "topic:channel-1:topic-1:standard:ws-ws-topic-1".to_string(),
+            cwd: root.to_string_lossy().to_string(),
+        };
+        let view = build_permission_request_view(
+            "agent-1",
+            "7".to_string(),
+            "session-1".to_string(),
+            scope,
+            &params,
+            parse_permission_options(&params),
+        );
+
+        assert_eq!(view.capability, "fs.write");
+        assert_eq!(view.paths.len(), 1);
+        assert_eq!(view.outside_workspace_paths.len(), 1);
+        assert!(view.supports_allow_once);
+        assert!(view.supports_reject);
+        let serialized_view = serde_json::to_value(&view).unwrap();
+        assert_eq!(serialized_view["requestId"], "7");
+        assert_eq!(serialized_view["workspaceBindingId"], "ws-topic-1");
+        assert_eq!(serialized_view["supportsAllowOnce"], true);
+        assert_eq!(
+            jsonrpc_id_key(&serde_json::json!("string-id")),
+            Some("string-id".to_string())
+        );
+        assert_eq!(
+            permission_selected_response(serde_json::json!(7), "allow-once")["result"]["outcome"]
+                ["optionId"],
+            "allow-once"
+        );
+        assert_eq!(
+            permission_cancelled_response(serde_json::json!(7))["result"]["outcome"]["outcome"],
+            "cancelled"
+        );
+
+        let traversal = root.join("missing/../../outside.ts");
+        let (_, traversal_outside) = partition_permission_paths(
+            &[traversal.to_string_lossy().to_string()],
+            &root,
+        );
+        assert_eq!(
+            traversal_outside.len(),
+            1,
+            "lexical '..' traversal must remain outside the workspace"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(outside);
     }
 
     #[test]

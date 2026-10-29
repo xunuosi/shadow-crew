@@ -288,6 +288,61 @@ export interface WorkspaceBinding {
   createdAt: number;
 }
 
+export type AcpPermissionCapability =
+  | 'fs.read'
+  | 'fs.write'
+  | 'fs.delete'
+  | 'shell.execute'
+  | 'network.access'
+  | 'other';
+
+export type AcpPermissionScopeType = 'channel' | 'topic' | 'dm' | 'dm_topic';
+
+export type AcpPermissionDecision =
+  | 'deny'
+  | 'allow_once'
+  | 'allow_session'
+  | 'allow_scope';
+
+export interface AcpPermissionOption {
+  optionId: string;
+  name: string;
+  kind: string;
+}
+
+export interface AcpPermissionRequest {
+  requestId: string;
+  agentId: string;
+  sessionId: string;
+  sessionKey: string;
+  scopeType: AcpPermissionScopeType;
+  scopeId: string;
+  workspaceBindingId: string;
+  cwd: string;
+  capability: AcpPermissionCapability;
+  toolName: string;
+  toolTitle: string;
+  toolKind: string;
+  command?: string;
+  paths: string[];
+  outsideWorkspacePaths: string[];
+  description?: string;
+  supportsAllowOnce: boolean;
+  supportsReject: boolean;
+  options: AcpPermissionOption[];
+  createdAt: number;
+}
+
+export interface AcpPermissionGrant {
+  id: string;
+  agentId: string;
+  scopeType: AcpPermissionScopeType;
+  scopeId: string;
+  workspaceBindingId: string;
+  capability: AcpPermissionCapability;
+  createdAt: number;
+}
+
 // PRD 规范：Topic 议题状态与共识决策记录
 export type TopicStatus = 'open' | 'investigating' | 'resolved';
 

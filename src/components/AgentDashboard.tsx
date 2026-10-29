@@ -18,6 +18,7 @@ import {
   Cpu,
   Terminal,
   Copy,
+  ShieldCheck,
 } from 'lucide-react';
 import { AgentAvatarArtwork, TeamArtwork } from './AgentAvatarArtwork';
 import { ThemeSwitcher } from './ThemeSwitcher';
@@ -29,6 +30,7 @@ interface AgentDashboardProps {
   onOpenConnectAgentModal: () => void;
   onOpenCreateTeamModal: () => void;
   onOpenAgentDefaultsModal?: () => void;
+  onOpenPermissionCenter?: () => void;
   onToggleAgentStatus: (agentId: string) => void;
   onLaunchTeamThread: (team: AgentTeam) => void;
   onStart1on1Chat: (agent: Agent) => void;
@@ -48,6 +50,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   onOpenConnectAgentModal,
   onOpenCreateTeamModal,
   onOpenAgentDefaultsModal,
+  onOpenPermissionCenter,
   onToggleAgentStatus,
   onLaunchTeamThread,
   onStart1on1Chat,
@@ -151,9 +154,20 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center justify-end gap-2.5">
           {/* Quick Theme Switcher Pill */}
           <ThemeSwitcher variant="compact" />
+
+          {onOpenPermissionCenter && (
+            <button
+              onClick={onOpenPermissionCenter}
+              className="px-3.5 py-1.5 rounded-xl bg-surface hover:bg-surface-hover border border-border hover:border-border-hover text-xs text-fg-secondary hover:text-fg flex items-center gap-2 transition-all cursor-pointer shadow-xs"
+              title="查看与撤销本地 ACP 执行授权"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+              <span>Execution permissions</span>
+            </button>
+          )}
 
           {onOpenAgentDefaultsModal && (
             <button

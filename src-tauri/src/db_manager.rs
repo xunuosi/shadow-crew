@@ -30,6 +30,18 @@ pub struct AcpSessionRecord {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpPermissionGrantRecord {
+    pub id: String,
+    pub agent_id: String,
+    pub scope_type: String,
+    pub scope_id: String,
+    pub workspace_binding_id: String,
+    pub capability: String,
+    pub created_at: u64,
+}
+
 pub struct DatabaseManager {
     conn: Mutex<Connection>,
     db_path: String,
@@ -344,6 +356,19 @@ impl DatabaseManager {
                 PRIMARY KEY (agent_id, session_key)
             );
             CREATE INDEX IF NOT EXISTS idx_acp_sessions_agent ON acp_sessions(agent_id);
+
+            -- 6. 本地 ACP 工具授权租约 (Scope Grant)
+            CREATE TABLE IF NOT EXISTS acp_permission_grants (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                scope_type TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                workspace_binding_id TEXT NOT NULL DEFAULT '',
+                capability TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_acp_permission_grants_match
+                ON acp_permission_grants(agent_id, scope_type, scope_id, workspace_binding_id, capability);
 
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 name TEXT PRIMARY KEY,
@@ -996,6 +1021,139 @@ impl DatabaseManager {
         }
     }
 
+    /// 持久化一条本地 ACP Scope Grant。相同 Agent + Scope + Binding + Capability 幂等覆盖。
+    pub fn save_acp_permission_grant(&self, grant: &AcpPermissionGrantRecord) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO acp_permission_grants
+                (id, agent_id, scope_type, scope_id, workspace_binding_id, capability, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET
+                agent_id = excluded.agent_id,
+                scope_type = excluded.scope_type,
+                scope_id = excluded.scope_id,
+                workspace_binding_id = excluded.workspace_binding_id,
+                capability = excluded.capability,
+                created_at = excluded.created_at",
+            params![
+                grant.id,
+                grant.agent_id,
+                grant.scope_type,
+                grant.scope_id,
+                grant.workspace_binding_id,
+                grant.capability,
+                grant.created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 精确匹配一条 Scope Grant。
+    pub fn has_acp_permission_grant(
+        &self,
+        agent_id: &str,
+        scope_type: &str,
+        scope_id: &str,
+        workspace_binding_id: &str,
+        capability: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let exists: i64 = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM acp_permission_grants
+                WHERE agent_id = ?1
+                  AND scope_type = ?2
+                  AND scope_id = ?3
+                  AND workspace_binding_id = ?4
+                  AND capability = ?5
+            )",
+            params![
+                agent_id,
+                scope_type,
+                scope_id,
+                workspace_binding_id,
+                capability
+            ],
+            |row| row.get(0),
+        )?;
+        Ok(exists != 0)
+    }
+
+    /// 列出全部或指定 Agent 的持久 Scope Grant。
+    pub fn list_acp_permission_grants(
+        &self,
+        agent_id: Option<&str>,
+    ) -> Result<Vec<AcpPermissionGrantRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let map_row = |row: &rusqlite::Row<'_>| {
+            Ok(AcpPermissionGrantRecord {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                scope_type: row.get(2)?,
+                scope_id: row.get(3)?,
+                workspace_binding_id: row.get(4)?,
+                capability: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        };
+
+        if let Some(agent_id) = agent_id {
+            let mut stmt = conn.prepare(
+                "SELECT id, agent_id, scope_type, scope_id, workspace_binding_id, capability, created_at
+                 FROM acp_permission_grants
+                 WHERE agent_id = ?1
+                 ORDER BY created_at DESC",
+            )?;
+            let rows = stmt.query_map(params![agent_id], map_row)?;
+            return rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into);
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT id, agent_id, scope_type, scope_id, workspace_binding_id, capability, created_at
+             FROM acp_permission_grants
+             ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], map_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    /// 撤销单条 Grant，返回是否真实删除。
+    pub fn revoke_acp_permission_grant(&self, grant_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let affected = conn.execute(
+            "DELETE FROM acp_permission_grants WHERE id = ?1",
+            params![grant_id],
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// 撤销全部 Grant，返回删除数量。
+    pub fn revoke_all_acp_permission_grants(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute("DELETE FROM acp_permission_grants", [])?)
+    }
+
+    /// 删除 Agent 时同步撤销其全部持久 Grant。
+    pub fn revoke_acp_permission_grants_for_agent(&self, agent_id: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute(
+            "DELETE FROM acp_permission_grants WHERE agent_id = ?1",
+            params![agent_id],
+        )?)
+    }
+
+    pub fn revoke_acp_permission_grants_for_scope(
+        &self,
+        scope_type: &str,
+        scope_id: &str,
+    ) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute(
+            "DELETE FROM acp_permission_grants WHERE scope_type = ?1 AND scope_id = ?2",
+            params![scope_type, scope_id],
+        )?)
+    }
+
     /// 清理指定 Agent 或指定 session_key 前缀的持久化会话映射，并返回被删除的 session_id 列表。
     /// 若提供了 `max_created_gen`，则仅删除 `created_gen <= max_created_gen` 的记录，严格保护清理请求发起后新建的会话！
     pub fn delete_acp_session(
@@ -1460,5 +1618,95 @@ mod tests {
             .expect("delete all agent sessions failed");
         assert_eq!(deleted_all.len(), 2);
         assert!(mgr.list_acp_sessions(Some("agent_alpha")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_acp_permission_grants_are_exact_and_revocable() {
+        let mgr = DatabaseManager::new(":memory:").expect("Failed to create in-memory db");
+        let grant = AcpPermissionGrantRecord {
+            id: "acp-grant:agent-1:topic:topic-1:ws-topic-1:fs.write".to_string(),
+            agent_id: "agent-1".to_string(),
+            scope_type: "topic".to_string(),
+            scope_id: "topic-1".to_string(),
+            workspace_binding_id: "ws-topic-1".to_string(),
+            capability: "fs.write".to_string(),
+            created_at: 100,
+        };
+
+        mgr.save_acp_permission_grant(&grant)
+            .expect("save permission grant failed");
+        assert!(mgr
+            .has_acp_permission_grant(
+                "agent-1",
+                "topic",
+                "topic-1",
+                "ws-topic-1",
+                "fs.write"
+            )
+            .unwrap());
+        assert!(!mgr
+            .has_acp_permission_grant(
+                "agent-2",
+                "topic",
+                "topic-1",
+                "ws-topic-1",
+                "fs.write"
+            )
+            .unwrap());
+        assert!(!mgr
+            .has_acp_permission_grant(
+                "agent-1",
+                "topic",
+                "topic-2",
+                "ws-topic-1",
+                "fs.write"
+            )
+            .unwrap());
+        assert!(!mgr
+            .has_acp_permission_grant(
+                "agent-1",
+                "topic",
+                "topic-1",
+                "ws-topic-1",
+                "shell.execute"
+            )
+            .unwrap());
+
+        let grants = mgr
+            .list_acp_permission_grants(Some("agent-1"))
+            .expect("list permission grants failed");
+        assert_eq!(grants, vec![grant.clone()]);
+        assert!(mgr
+            .revoke_acp_permission_grant(&grant.id)
+            .expect("revoke permission grant failed"));
+        assert!(!mgr
+            .has_acp_permission_grant(
+                "agent-1",
+                "topic",
+                "topic-1",
+                "ws-topic-1",
+                "fs.write"
+            )
+            .unwrap());
+
+        mgr.save_acp_permission_grant(&grant)
+            .expect("re-save permission grant failed");
+        assert_eq!(
+            mgr.revoke_acp_permission_grants_for_agent("agent-1")
+                .expect("revoke agent grants failed"),
+            1
+        );
+        assert!(mgr
+            .list_acp_permission_grants(Some("agent-1"))
+            .unwrap()
+            .is_empty());
+
+        mgr.save_acp_permission_grant(&grant)
+            .expect("save scope revoke fixture failed");
+        assert_eq!(
+            mgr.revoke_acp_permission_grants_for_scope("topic", "topic-1")
+                .expect("revoke scope grants failed"),
+            1
+        );
     }
 }

@@ -82,6 +82,81 @@ async fn get_agents_runtime_status(state: State<'_, AppState>) -> Result<Vec<acp
     Ok(manager.get_agents_runtime_status().await)
 }
 
+#[tauri::command]
+async fn respond_acp_permission(
+    agent_id: String,
+    request_id: String,
+    decision: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let manager = state.acp_manager.lock().await;
+    manager
+        .respond_to_acp_permission(&agent_id, &request_id, &decision)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_pending_acp_permissions(
+    state: State<'_, AppState>,
+) -> Result<Vec<acp_manager::AcpPermissionRequestView>, String> {
+    let manager = state.acp_manager.lock().await;
+    Ok(manager.list_pending_acp_permissions().await)
+}
+
+#[tauri::command]
+async fn list_acp_permission_grants(
+    agent_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<db_manager::AcpPermissionGrantRecord>, String> {
+    let manager = state.acp_manager.lock().await;
+    manager
+        .list_acp_permission_grants(agent_id.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn revoke_acp_permission_grant(
+    grant_id: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let manager = state.acp_manager.lock().await;
+    manager
+        .revoke_acp_permission_grant(&grant_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn revoke_all_acp_permission_grants(state: State<'_, AppState>) -> Result<usize, String> {
+    let manager = state.acp_manager.lock().await;
+    manager
+        .revoke_all_acp_permission_grants()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn revoke_acp_permission_grants_for_agent(
+    agent_id: String,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let manager = state.acp_manager.lock().await;
+    manager
+        .revoke_acp_permission_grants_for_agent(&agent_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn revoke_acp_permission_grants_for_scope(
+    scope_type: String,
+    scope_id: String,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let manager = state.acp_manager.lock().await;
+    manager
+        .revoke_acp_permission_grants_for_scope(&scope_type, &scope_id)
+        .map_err(|e| e.to_string())
+}
+
 /// Tauri Command: 发送指令到 ACP Agent (带流式回调与自动拉起)
 #[tauri::command]
 async fn send_prompt_to_agent(
@@ -846,6 +921,13 @@ async fn main() {
             stop_acp_agent,
             get_running_agent_ids,
             get_agents_runtime_status,
+            respond_acp_permission,
+            list_pending_acp_permissions,
+            list_acp_permission_grants,
+            revoke_acp_permission_grant,
+            revoke_all_acp_permission_grants,
+            revoke_acp_permission_grants_for_agent,
+            revoke_acp_permission_grants_for_scope,
             send_prompt_to_agent,
             ensure_agent_session,
             resolve_workspace_cwd,
