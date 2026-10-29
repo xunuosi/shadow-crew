@@ -158,9 +158,10 @@ export function parseSessionKey(key: string): ParsedSessionKey {
     };
   }
   if (parts[0] === 'topic') {
-    const hasWorkspace = parts[4]?.startsWith('ws-');
+    const hasWorkspace = Boolean(parts[4]?.startsWith('ws-'));
     if (
       (parts.length < 4 || parts.length > 6) ||
+      (parts.length === 6 && !hasWorkspace) ||
       !isValidSessionSegment(parts[1]) ||
       !isValidSessionSegment(parts[2]) ||
       !isValidSessionSegment(parts[3]) ||
@@ -180,9 +181,10 @@ export function parseSessionKey(key: string): ParsedSessionKey {
     };
   }
   if (parts[0] === 'channel') {
-    const hasWorkspace = parts[3]?.startsWith('ws-');
+    const hasWorkspace = Boolean(parts[3]?.startsWith('ws-'));
     if (
       (parts.length < 3 || parts.length > 5) ||
+      (parts.length === 5 && !hasWorkspace) ||
       !isValidSessionSegment(parts[1]) ||
       !isValidSessionSegment(parts[2]) ||
       (parts.length >= 4 && !isValidSessionSegment(parts[3])) ||
