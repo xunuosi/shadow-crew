@@ -4,8 +4,14 @@ import {
   X, 
   Hash, 
   Users, 
-  Check
+  Check,
+  HardDrive
 } from 'lucide-react';
+
+export interface ChannelWorkspaceSelection {
+  mode: 'default' | 'custom';
+  cwd?: string;
+}
 
 interface CreateChannelModalProps {
   isOpen: boolean;
@@ -13,7 +19,10 @@ interface CreateChannelModalProps {
   teams: AgentTeam[];
   agents: Agent[];
   currentUserId?: string;
-  onCreateChannel: (channel: Omit<Channel, 'id' | 'unreadCount'>) => void;
+  onCreateChannel: (
+    channel: Omit<Channel, 'id' | 'unreadCount' | 'workspaceBindingId'>,
+    workspace: ChannelWorkspaceSelection
+  ) => Promise<void> | void;
 }
 
 export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
@@ -27,6 +36,10 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
+  const [workspaceMode, setWorkspaceMode] = useState<'default' | 'custom'>('default');
+  const [customCwd, setCustomCwd] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [initialInvitedAgentIds, setInitialInvitedAgentIds] = useState<string[]>(() =>
     agents.map((a) => a.id)
   );
@@ -41,6 +54,9 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
       setName('');
       setDescription('');
       setSelectedTeamId(null);
+      setWorkspaceMode('default');
+      setCustomCwd('');
+      setError(null);
       setInitialInvitedAgentIds(agentsRef.current.map((a) => a.id));
       const timer = setTimeout(() => {
         nameInputRef.current?.focus();
@@ -66,33 +82,48 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
     setInitialInvitedAgentIds(validIds);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
+    if (workspaceMode === 'custom' && !customCwd.trim()) {
+      setError('请输入已存在的自定义工作目录');
+      return;
+    }
 
     const cleanName = name.trim().replace(/^#/, '');
     const cleanDesc = description.trim();
     const memberIds = Array.from(new Set([currentUserId, ...initialInvitedAgentIds]));
 
-    onCreateChannel({
-      creatorId: currentUserId,
-      name: cleanName,
-      kind: 'general',
-      status: 'active',
-      description: cleanDesc,
-      topic: cleanDesc || undefined,
-      isPrivate: false,
-      iconName: 'Hash',
-      assignedTeamId: selectedTeamId || undefined,
-      assignedAgentIds: initialInvitedAgentIds,
-      memberIds,
-      createdAt: Date.now(),
-    });
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      await onCreateChannel({
+        creatorId: currentUserId,
+        name: cleanName,
+        kind: 'general',
+        status: 'active',
+        description: cleanDesc,
+        topic: cleanDesc || undefined,
+        isPrivate: false,
+        iconName: 'Hash',
+        assignedTeamId: selectedTeamId || undefined,
+        assignedAgentIds: initialInvitedAgentIds,
+        memberIds,
+        createdAt: Date.now(),
+      }, {
+        mode: workspaceMode,
+        cwd: workspaceMode === 'custom' ? customCwd.trim() : undefined,
+      });
 
-    setName('');
-    setDescription('');
-    setInitialInvitedAgentIds([]);
-    onClose();
+      setName('');
+      setDescription('');
+      setInitialInvitedAgentIds([]);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const isAllSelected = agents.length > 0 && initialInvitedAgentIds.length === agents.length && !selectedTeamId;
@@ -172,6 +203,68 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
               className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-xs text-fg placeholder-fg-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 resize-none leading-relaxed transition-all"
             />
           </div>
+
+          {/* 3. Immutable Workspace Binding */}
+          <div className="p-3.5 rounded-xl bg-surface-subtle border border-border space-y-2.5">
+            <div className="flex items-center gap-1.5 text-fg font-semibold text-xs">
+              <HardDrive className="w-3.5 h-3.5 text-accent" />
+              <span>工作目录 (CWD)</span>
+              <span className="text-[10px] font-normal text-fg-muted">创建后不可修改</span>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceMode('default');
+                  setError(null);
+                }}
+                className={`px-3 py-2 rounded-lg border text-left transition-all cursor-pointer ${
+                  workspaceMode === 'default'
+                    ? 'bg-blue-50 border-blue-300 text-blue-800 dark:bg-blue-500/15 dark:border-blue-500/30 dark:text-blue-300'
+                    : 'bg-surface border-border text-fg-secondary hover:border-fg-muted'
+                }`}
+              >
+                <span className="block text-[11px] font-semibold">使用频道默认目录</span>
+                <span className="block mt-0.5 text-[10px] font-mono text-fg-muted truncate">
+                  ~/.shadow-crew/channels/&lt;channelId&gt;/
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceMode('custom');
+                  setError(null);
+                }}
+                className={`px-3 py-2 rounded-lg border text-left transition-all cursor-pointer ${
+                  workspaceMode === 'custom'
+                    ? 'bg-purple-50 border-purple-300 text-purple-800 dark:bg-purple-500/15 dark:border-purple-500/30 dark:text-purple-300'
+                    : 'bg-surface border-border text-fg-secondary hover:border-fg-muted'
+                }`}
+              >
+                <span className="block text-[11px] font-semibold">指定已有目录</span>
+                <span className="block mt-0.5 text-[10px] text-fg-muted">用于真实代码仓库或外部工作区</span>
+              </button>
+            </div>
+            {workspaceMode === 'custom' && (
+              <input
+                type="text"
+                value={customCwd}
+                onChange={(e) => setCustomCwd(e.target.value)}
+                placeholder="/Users/you/projects/example 或 ~/projects/example"
+                spellCheck={false}
+                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-xs font-mono text-fg placeholder-fg-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
+              />
+            )}
+            <p className="text-[10px] text-fg-muted leading-relaxed">
+              工作目录在频道创建时固化。后续 Session、Patch 和产物都使用该目录。
+            </p>
+          </div>
+
+          {error && (
+            <div className="px-3 py-2 rounded-lg bg-rose-50 border border-rose-300 text-rose-800 dark:bg-rose-500/15 dark:border-rose-500/30 dark:text-rose-300 text-[11px]">
+              {error}
+            </div>
+          )}
 
           {/* 3. Initial Agent Members & Team Presets */}
           <div className="p-3.5 rounded-xl bg-surface-subtle border border-border space-y-2.5">
@@ -274,10 +367,10 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={!name.trim()}
+              disabled={!name.trim() || isSubmitting}
               className="px-5 py-1.5 rounded-lg bg-accent hover:opacity-90 disabled:opacity-40 text-accent-fg font-semibold shadow-xs transition-all cursor-pointer"
             >
-              创建频道
+              {isSubmitting ? '创建中...' : '创建频道'}
             </button>
           </div>
         </form>

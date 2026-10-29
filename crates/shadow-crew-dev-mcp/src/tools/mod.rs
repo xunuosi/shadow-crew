@@ -132,7 +132,7 @@ pub fn get_tools_list() -> Value {
         },
         {
             "name": "write_channel_artifact",
-            "description": "将正式技术产物 (如 ADR 架构决策文档、推演方案白皮书、关键补丁 diff) 永久归档至当前频道专属产物目录 (~/.shadow-crew/channels/<channel_id>/artifacts/)。可被系统访达一键查看。",
+            "description": "将正式技术产物 (如 ADR 架构决策文档、推演方案白皮书、关键补丁 diff) 永久归档至当前 Workspace Binding 的 artifactRoot。Channel 与 Topic 使用各自的独立产物目录。",
             "inputSchema": {
                 "type": "object",
                 "properties": {

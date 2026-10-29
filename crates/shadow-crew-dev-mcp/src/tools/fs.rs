@@ -264,6 +264,16 @@ pub fn get_shadow_crew_home_dir() -> std::path::PathBuf {
 
 /// 解析指定频道的落地产物目录 (~/.shadow-crew/channels/<channel_id>/artifacts/)
 pub fn get_channel_artifacts_dir(channel_id: Option<&str>) -> std::path::PathBuf {
+    if let Ok(root) = std::env::var("SHADOW_CREW_ARTIFACT_ROOT")
+        .or_else(|_| std::env::var("SHINOBI_ARTIFACT_ROOT"))
+    {
+        if !root.trim().is_empty() {
+            let artifact_root = std::path::PathBuf::from(root.trim());
+            let _ = std::fs::create_dir_all(&artifact_root);
+            return artifact_root;
+        }
+    }
+
     let clean_id = channel_id
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.trim().to_string())
@@ -322,7 +332,7 @@ pub async fn write_agent_artifact(
     ))
 }
 
-/// 将关键技术产物 (ADR 架构决策、推演设计白皮书、补丁 diff) 归档至当前频道专属产物目录
+/// 将关键技术产物归档至当前 Workspace Binding 的 artifactRoot
 pub async fn write_channel_artifact(
     filename: &str,
     content: &str,
@@ -351,7 +361,7 @@ pub async fn write_channel_artifact(
         .map_err(|e| anyhow!("写入产物失败 [{}]: {}", target_path.display(), e))?;
 
     Ok(format!(
-        "产物已成功归档到当前频道专属产物目录: {} (大小: {} 字节)",
+        "产物已成功归档到当前 Workspace Binding 产物目录: {} (大小: {} 字节)",
         target_path.display(),
         content.len()
     ))

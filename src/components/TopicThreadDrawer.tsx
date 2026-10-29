@@ -15,6 +15,7 @@ import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { 
   X, 
   GitBranch, 
+  HardDrive,
   CornerDownRight, 
   Send, 
   CheckCircle2, 
@@ -83,6 +84,7 @@ interface TopicThreadDrawerProps {
   onApplyTopicPatch?: (topicId: string) => Promise<void> | void;
   onOpenCodexDiff: (diff: any) => void;
   onEditTopic?: () => void;
+  workspaceCwd?: string;
   overlappingFiles?: string[];
 }
 
@@ -103,6 +105,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   onApplyTopicPatch,
   onOpenCodexDiff,
   onEditTopic,
+  workspaceCwd,
   overlappingFiles = [],
 }) => {
   const [replyContent, setReplyContent] = useState('');
@@ -997,6 +1000,14 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         <div className="max-h-[40vh] overflow-y-auto shrink-0">
           {/* 2. Topic Anchor Context */}
           <div className="p-3.5 bg-surface-subtle border-b border-border text-[11px] space-y-2 shrink-0">
+            {workspaceCwd && (
+              <div className="flex items-center gap-1.5 min-w-0 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-[10px] text-fg-muted">
+                <HardDrive className="w-3 h-3 text-accent shrink-0" />
+                <span className="shrink-0 font-semibold text-fg-secondary">议题工作目录</span>
+                <span className="truncate font-mono" title={workspaceCwd}>{workspaceCwd}</span>
+                <span className="ml-auto shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 border border-border">只读绑定</span>
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <span className="text-[10px] text-purple-600 dark:text-purple-400 font-semibold flex items-center gap-1">
                 <CornerDownRight className="w-3 h-3" />

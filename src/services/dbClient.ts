@@ -1,4 +1,4 @@
-import { Message, Channel, Thread, Agent, AgentTeam } from '../types';
+import { Message, Channel, Thread, Agent, AgentTeam, WorkspaceBinding } from '../types';
 
 export interface StorageStats {
   databasePath: string;
@@ -278,16 +278,25 @@ export interface ChannelDirInfo {
 /**
  * 打开当前频道的落地产物工作区目录 (在系统访达/资源管理器中弹出)
  */
-export async function openChannelArtifactsFolder(channelId: string): Promise<string> {
+export async function openChannelArtifactsFolder(
+  channelId: string,
+  workspaceBindingId?: string
+): Promise<string> {
   const invoke = getTauriInvoke();
   if (invoke) {
     try {
+      if (workspaceBindingId) {
+        return await invoke('open_workspace_artifacts_dir', { workspaceBindingId });
+      }
       const path = await invoke('open_channel_artifacts_dir', { channelId });
       return path;
     } catch (e) {
       console.error('[dbClient] open_channel_artifacts_dir failed:', e);
       throw e;
     }
+  }
+  if (workspaceBindingId) {
+    return `~/.shadow-crew/channels/${channelId}/artifacts/`;
   }
   return `~/.shadow-crew/channels/${channelId}/artifacts/`;
 }
@@ -341,6 +350,7 @@ export async function getAgentDirInfo(agentId: string): Promise<ChannelDirInfo |
 
 export interface FullWorkspaceData {
   channels: Channel[];
+  workspaceBindings: WorkspaceBinding[];
   threads: Thread[];
   agents: Agent[];
   teams: AgentTeam[];
@@ -381,6 +391,60 @@ export async function saveChannelsToDb(channels: Channel[]): Promise<void> {
   try {
     localStorage.setItem('shinobi_channels', JSON.stringify(channels));
   } catch {}
+}
+
+/**
+ * 保存不可变 Workspace Binding 列表至 SQLite。
+ */
+export async function saveWorkspaceBindingsToDb(bindings: WorkspaceBinding[]): Promise<void> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      await invoke('db_save_workspace_bindings', { bindings });
+    } catch (e) {
+      console.error('[dbClient] db_save_workspace_bindings failed:', e);
+      throw e;
+    }
+    return;
+  }
+  try {
+    localStorage.setItem('shinobi_workspace_bindings', JSON.stringify(bindings));
+  } catch (e) {
+    throw e;
+  }
+}
+
+export async function deleteWorkspaceBindingsFromDb(bindingIds: string[]): Promise<void> {
+  if (bindingIds.length === 0) return;
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    await invoke('db_delete_workspace_bindings', { bindingIds });
+    return;
+  }
+  try {
+    const raw = localStorage.getItem('shinobi_workspace_bindings');
+    const bindings: WorkspaceBinding[] = raw ? JSON.parse(raw) : [];
+    localStorage.setItem(
+      'shinobi_workspace_bindings',
+      JSON.stringify(bindings.filter((binding) => !bindingIds.includes(binding.id)))
+    );
+  } catch {}
+}
+
+/**
+ * 在桌面端创建并规范化工作目录；Web 环境仅做字符串规范化。
+ */
+export async function resolveWorkspaceCwd(rawCwd: string, createMissing: boolean): Promise<string> {
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    return await invoke('resolve_workspace_cwd', {
+      rawCwd,
+      createMissing,
+    });
+  }
+  const trimmed = rawCwd.trim().replace(/\/+$/, '');
+  if (!trimmed) throw new Error('工作目录不能为空');
+  return trimmed;
 }
 
 /**

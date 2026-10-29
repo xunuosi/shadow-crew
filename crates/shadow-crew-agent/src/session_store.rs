@@ -7,8 +7,10 @@ pub struct StoredSession {
     pub session_id: String,
     pub session_key: String,
     pub channel_id: String,
+    pub workspace_binding_id: String,
     pub owner_dir: PathBuf,
     pub workspace_dir: PathBuf,
+    pub artifact_root: PathBuf,
     pub system_prompt: Option<String>,
     pub mcp_pool_key: String,
 }
@@ -37,8 +39,10 @@ impl SessionStore {
                 session_id TEXT PRIMARY KEY,
                 session_key TEXT NOT NULL,
                 channel_id TEXT NOT NULL,
+                workspace_binding_id TEXT NOT NULL DEFAULT '',
                 owner_dir TEXT NOT NULL,
                 workspace_dir TEXT NOT NULL,
+                artifact_root TEXT NOT NULL DEFAULT '',
                 system_prompt TEXT,
                 mcp_pool_key TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
@@ -55,6 +59,14 @@ impl SessionStore {
                 ON native_agent_messages(session_id, id);
             ",
         )?;
+        let _ = conn.execute(
+            "ALTER TABLE native_agent_sessions ADD COLUMN workspace_binding_id TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE native_agent_sessions ADD COLUMN artifact_root TEXT NOT NULL DEFAULT ''",
+            [],
+        );
         Ok(Self { conn })
     }
 
@@ -63,14 +75,16 @@ impl SessionStore {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO native_agent_sessions (
-                session_id, session_key, channel_id, owner_dir, workspace_dir,
-                system_prompt, mcp_pool_key, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                session_id, session_key, channel_id, workspace_binding_id, owner_dir, workspace_dir,
+                artifact_root, system_prompt, mcp_pool_key, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
              ON CONFLICT(session_id) DO UPDATE SET
                 session_key = excluded.session_key,
                 channel_id = excluded.channel_id,
+                workspace_binding_id = excluded.workspace_binding_id,
                 owner_dir = excluded.owner_dir,
                 workspace_dir = excluded.workspace_dir,
+                artifact_root = excluded.artifact_root,
                 system_prompt = excluded.system_prompt,
                 mcp_pool_key = excluded.mcp_pool_key,
                 updated_at = excluded.updated_at",
@@ -78,8 +92,10 @@ impl SessionStore {
                 session.session_id,
                 session.session_key,
                 session.channel_id,
+                session.workspace_binding_id,
                 session.owner_dir.to_string_lossy(),
                 session.workspace_dir.to_string_lossy(),
+                session.artifact_root.to_string_lossy(),
                 session.system_prompt,
                 session.mcp_pool_key,
                 now
@@ -97,8 +113,8 @@ impl SessionStore {
 
     pub fn get_session(&self, session_id: &str) -> Result<Option<StoredSession>> {
         let mut stmt = self.conn.prepare(
-            "SELECT session_id, session_key, channel_id, owner_dir, workspace_dir,
-                    system_prompt, mcp_pool_key
+            "SELECT session_id, session_key, channel_id, workspace_binding_id, owner_dir, workspace_dir,
+                    artifact_root, system_prompt, mcp_pool_key
              FROM native_agent_sessions
              WHERE session_id = ?1",
         )?;
@@ -110,10 +126,12 @@ impl SessionStore {
             session_id: row.get(0)?,
             session_key: row.get(1)?,
             channel_id: row.get(2)?,
-            owner_dir: PathBuf::from(row.get::<_, String>(3)?),
-            workspace_dir: PathBuf::from(row.get::<_, String>(4)?),
-            system_prompt: row.get(5)?,
-            mcp_pool_key: row.get(6)?,
+            workspace_binding_id: row.get(3)?,
+            owner_dir: PathBuf::from(row.get::<_, String>(4)?),
+            workspace_dir: PathBuf::from(row.get::<_, String>(5)?),
+            artifact_root: PathBuf::from(row.get::<_, String>(6)?),
+            system_prompt: row.get(7)?,
+            mcp_pool_key: row.get(8)?,
         }))
     }
 
@@ -228,8 +246,10 @@ mod tests {
             session_id: "shinobi-session-topic:chan-1:topic-1:standard".to_string(),
             session_key: "topic:chan-1:topic-1:standard".to_string(),
             channel_id: "chan-1".to_string(),
+            workspace_binding_id: "ws-topic-1".to_string(),
             owner_dir: PathBuf::from("/tmp/chan-1"),
             workspace_dir: PathBuf::from("/tmp/chan-1"),
+            artifact_root: PathBuf::from("/tmp/chan-1/artifacts"),
             system_prompt: Some("system".to_string()),
             mcp_pool_key: "chan-1::/tmp/chan-1".to_string(),
         };

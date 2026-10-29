@@ -22,6 +22,7 @@ pub struct AcpSessionRecord {
     pub agent_id: String,
     pub session_key: String,
     pub session_id: String,
+    pub workspace_binding_id: String,
     pub workspace_cwd: String,
     pub system_prompt: String,
     pub created_gen: u64,
@@ -99,6 +100,77 @@ pub fn get_default_db_path() -> String {
 
     let target_db = home_dir.join("global_memory.sqlite");
     target_db.to_string_lossy().to_string()
+}
+
+/// 解析、校验并按需创建 Workspace cwd。自定义目录要求已存在；系统默认目录允许创建。
+pub fn resolve_workspace_cwd_input(raw_cwd: &str, create_missing: bool) -> Result<String> {
+    let trimmed = raw_cwd.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("Workspace cwd cannot be empty"));
+    }
+
+    let expanded = if trimmed == "~" || trimmed.starts_with("~/") {
+        let user_home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map_err(|_| anyhow::anyhow!("Cannot resolve user home directory"))?;
+        if trimmed == "~" {
+            user_home
+        } else {
+            format!("{}{}", user_home, &trimmed[1..])
+        }
+    } else {
+        trimmed.to_string()
+    };
+
+    let path = Path::new(&expanded);
+    if !path.is_absolute() {
+        return Err(anyhow::anyhow!("Workspace cwd must be an absolute path: {}", raw_cwd));
+    }
+
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(anyhow::anyhow!("Workspace cwd cannot be a symbolic link: {}", path.display()));
+            }
+            Some(meta)
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound && create_missing => {
+            std::fs::create_dir_all(path)
+                .map_err(|e| anyhow::anyhow!("Failed to create workspace cwd {}: {}", path.display(), e))?;
+            Some(std::fs::symlink_metadata(path)?)
+        }
+        Err(err) => {
+            return Err(anyhow::anyhow!(
+                "Workspace cwd does not exist or is inaccessible [{}]: {}",
+                path.display(),
+                err
+            ));
+        }
+    };
+
+    if metadata.as_ref().is_some_and(|meta| !meta.is_dir()) {
+        return Err(anyhow::anyhow!("Workspace cwd is not a directory: {}", path.display()));
+    }
+
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| anyhow::anyhow!("Failed to canonicalize workspace cwd {}: {}", path.display(), e))?;
+    let shadow_home = get_shadow_crew_home_dir();
+    let user_home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(std::path::PathBuf::from);
+
+    if canonical.parent().is_none() {
+        return Err(anyhow::anyhow!("Filesystem root cannot be used as a workspace"));
+    }
+    if canonical == shadow_home {
+        return Err(anyhow::anyhow!("Shadow Crew global root cannot be used as a workspace"));
+    }
+    if user_home.as_ref().is_some_and(|home| canonical == *home) {
+        return Err(anyhow::anyhow!("User home directory cannot be used as a workspace"));
+    }
+
+    Ok(canonical.to_string_lossy().to_string())
 }
 
 /// 转义 SQL LIKE 查询中的通配符 (% 与 _)
@@ -215,6 +287,18 @@ impl DatabaseManager {
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS workspace_bindings (
+                id TEXT PRIMARY KEY,
+                owner_type TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                artifact_root TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE(owner_type, owner_id)
+            );
+
             CREATE TABLE IF NOT EXISTS threads (
                 id TEXT PRIMARY KEY,
                 channel_id TEXT NOT NULL,
@@ -251,6 +335,7 @@ impl DatabaseManager {
                 agent_id TEXT NOT NULL,
                 session_key TEXT NOT NULL,
                 session_id TEXT NOT NULL,
+                workspace_binding_id TEXT NOT NULL DEFAULT '',
                 workspace_cwd TEXT NOT NULL,
                 system_prompt TEXT NOT NULL,
                 created_gen INTEGER DEFAULT 0,
@@ -268,6 +353,10 @@ impl DatabaseManager {
 
         // 平滑升级已有历史数据库结构
         let _ = conn.execute("ALTER TABLE acp_sessions ADD COLUMN created_gen INTEGER DEFAULT 0", []);
+        let _ = conn.execute(
+            "ALTER TABLE acp_sessions ADD COLUMN workspace_binding_id TEXT NOT NULL DEFAULT ''",
+            [],
+        );
         migrate_remove_project_concept(&mut conn)?;
 
         Ok(Self {
@@ -560,6 +649,131 @@ impl DatabaseManager {
         Ok(list)
     }
 
+    /// 保存 Workspace Binding 列表。
+    pub fn save_workspace_bindings(&self, bindings: &[serde_json::Value]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO workspace_bindings
+                 (id, owner_type, owner_id, mode, origin, cwd, artifact_root, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+            for binding in bindings {
+                let id = binding.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                if id.is_empty() {
+                    continue;
+                }
+                let owner_type = binding.get("ownerType").and_then(|v| v.as_str()).unwrap_or("");
+                let owner_id = binding.get("ownerId").and_then(|v| v.as_str()).unwrap_or("");
+                let mode = binding.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+                let origin = binding.get("origin").and_then(|v| v.as_str()).unwrap_or("");
+                let cwd_raw = binding.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+                let artifact_root_raw = binding.get("artifactRoot").and_then(|v| v.as_str()).unwrap_or("");
+                let create_missing = mode == "default"
+                    || cwd_raw.starts_with("~/.shadow-crew")
+                    || cwd_raw.starts_with("~/.shinobi");
+                let cwd = resolve_workspace_cwd_input(cwd_raw, create_missing)?;
+                let artifact_root = resolve_workspace_cwd_input(artifact_root_raw, true)?;
+                let created_at = binding.get("createdAt").and_then(|v| v.as_i64()).unwrap_or(0);
+
+                let existing = tx.query_row(
+                    "SELECT owner_type, owner_id, mode, origin, cwd, artifact_root, created_at
+                     FROM workspace_bindings WHERE id = ?1",
+                    params![id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, i64>(6)?,
+                        ))
+                    },
+                ).ok();
+                if let Some(existing) = existing {
+                    let expected = (
+                        owner_type.to_string(),
+                        owner_id.to_string(),
+                        mode.to_string(),
+                        origin.to_string(),
+                        cwd.clone(),
+                        artifact_root.clone(),
+                        created_at,
+                    );
+                    if existing != expected {
+                        anyhow::bail!(
+                            "Workspace Binding {} is immutable and cannot be updated",
+                            id
+                        );
+                    }
+                    continue;
+                }
+
+                stmt.execute(params![
+                    id,
+                    owner_type,
+                    owner_id,
+                    mode,
+                    origin,
+                    cwd,
+                    artifact_root,
+                    created_at
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_workspace_bindings(&self, binding_ids: &[String]) -> Result<()> {
+        if binding_ids.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        for binding_id in binding_ids {
+            tx.execute(
+                "DELETE FROM workspace_bindings WHERE id = ?1",
+                params![binding_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 查询全部 Workspace Binding。
+    pub fn get_workspace_bindings(&self) -> Result<Vec<serde_json::Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, owner_type, owner_id, mode, origin, cwd, artifact_root, created_at
+             FROM workspace_bindings ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "ownerType": row.get::<_, String>(1)?,
+                "ownerId": row.get::<_, String>(2)?,
+                "mode": row.get::<_, String>(3)?,
+                "origin": row.get::<_, String>(4)?,
+                "cwd": row.get::<_, String>(5)?,
+                "artifactRoot": row.get::<_, String>(6)?,
+                "createdAt": row.get::<_, i64>(7)?,
+            }))
+        })?;
+        Ok(rows.flatten().collect())
+    }
+
+    /// 查询单个 Workspace Binding。
+    pub fn get_workspace_binding(&self, binding_id: &str) -> Result<Option<serde_json::Value>> {
+        Ok(self
+            .get_workspace_bindings()?
+            .into_iter()
+            .find(|binding| binding.get("id").and_then(|v| v.as_str()) == Some(binding_id)))
+    }
+
     /// 保存话题/议题列表
     pub fn save_threads(&self, threads: &[serde_json::Value]) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
@@ -699,6 +913,7 @@ impl DatabaseManager {
     /// 聚合获取工作区全部核心资产（一次调用毫秒级全量返回）
     pub fn get_full_workspace_data(&self) -> Result<serde_json::Value> {
         let channels = self.get_channels()?;
+        let workspace_bindings = self.get_workspace_bindings()?;
         let threads = self.get_threads()?;
         let agents = self.get_agents()?;
         let teams = self.get_teams()?;
@@ -720,6 +935,7 @@ impl DatabaseManager {
 
         Ok(serde_json::json!({
             "channels": channels,
+            "workspaceBindings": workspace_bindings,
             "threads": threads,
             "agents": agents,
             "teams": teams,
@@ -733,21 +949,23 @@ impl DatabaseManager {
         agent_id: &str,
         session_key: &str,
         session_id: &str,
+        workspace_binding_id: &str,
         workspace_cwd: &str,
         system_prompt: &str,
         created_gen: u64,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO acp_sessions (agent_id, session_key, session_id, workspace_cwd, system_prompt, created_gen, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP)
+            "INSERT INTO acp_sessions (agent_id, session_key, session_id, workspace_binding_id, workspace_cwd, system_prompt, created_gen, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)
              ON CONFLICT(agent_id, session_key) DO UPDATE SET
                 session_id = excluded.session_id,
+                workspace_binding_id = excluded.workspace_binding_id,
                 workspace_cwd = excluded.workspace_cwd,
                 system_prompt = excluded.system_prompt,
                 created_gen = excluded.created_gen,
                 updated_at = CURRENT_TIMESTAMP",
-            params![agent_id, session_key, session_id, workspace_cwd, system_prompt, created_gen],
+            params![agent_id, session_key, session_id, workspace_binding_id, workspace_cwd, system_prompt, created_gen],
         )?;
         Ok(())
     }
@@ -756,7 +974,7 @@ impl DatabaseManager {
     pub fn get_acp_session(&self, agent_id: &str, session_key: &str) -> Result<Option<AcpSessionRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT agent_id, session_key, session_id, workspace_cwd, system_prompt, created_gen, created_at, updated_at
+            "SELECT agent_id, session_key, session_id, workspace_binding_id, workspace_cwd, system_prompt, created_gen, created_at, updated_at
              FROM acp_sessions
              WHERE agent_id = ?1 AND session_key = ?2",
         )?;
@@ -766,11 +984,12 @@ impl DatabaseManager {
                 agent_id: row.get(0)?,
                 session_key: row.get(1)?,
                 session_id: row.get(2)?,
-                workspace_cwd: row.get(3)?,
-                system_prompt: row.get(4)?,
-                created_gen: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                workspace_binding_id: row.get(3)?,
+                workspace_cwd: row.get(4)?,
+                system_prompt: row.get(5)?,
+                created_gen: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
             }))
         } else {
             Ok(None)
@@ -887,7 +1106,7 @@ impl DatabaseManager {
 
         if let Some(a) = agent_id {
             let mut stmt = conn.prepare(
-                "SELECT agent_id, session_key, session_id, workspace_cwd, system_prompt, created_gen, created_at, updated_at
+                "SELECT agent_id, session_key, session_id, workspace_binding_id, workspace_cwd, system_prompt, created_gen, created_at, updated_at
                  FROM acp_sessions WHERE agent_id = ?1 ORDER BY updated_at DESC",
             )?;
             let mut rows = stmt.query(params![a])?;
@@ -896,16 +1115,17 @@ impl DatabaseManager {
                     agent_id: row.get(0)?,
                     session_key: row.get(1)?,
                     session_id: row.get(2)?,
-                    workspace_cwd: row.get(3)?,
-                    system_prompt: row.get(4)?,
-                    created_gen: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
+                    workspace_binding_id: row.get(3)?,
+                    workspace_cwd: row.get(4)?,
+                    system_prompt: row.get(5)?,
+                    created_gen: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
                 });
             }
         } else {
             let mut stmt = conn.prepare(
-                "SELECT agent_id, session_key, session_id, workspace_cwd, system_prompt, created_gen, created_at, updated_at
+                "SELECT agent_id, session_key, session_id, workspace_binding_id, workspace_cwd, system_prompt, created_gen, created_at, updated_at
                  FROM acp_sessions ORDER BY updated_at DESC",
             )?;
             let mut rows = stmt.query([])?;
@@ -914,11 +1134,12 @@ impl DatabaseManager {
                     agent_id: row.get(0)?,
                     session_key: row.get(1)?,
                     session_id: row.get(2)?,
-                    workspace_cwd: row.get(3)?,
-                    system_prompt: row.get(4)?,
-                    created_gen: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
+                    workspace_binding_id: row.get(3)?,
+                    workspace_cwd: row.get(4)?,
+                    system_prompt: row.get(5)?,
+                    created_gen: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
                 });
             }
         }
@@ -965,7 +1186,38 @@ mod tests {
         let state_val = mgr.get_workspace_state("activeChannelId").expect("get_workspace_state failed");
         assert_eq!(state_val, Some(serde_json::json!("c1")));
 
-        // 6. Full Workspace Aggregate
+        // 6. Workspace Bindings
+        let binding_root = std::env::temp_dir().join(format!(
+            "shadow_crew_workspace_binding_db_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&binding_root).unwrap();
+        let binding_root = std::fs::canonicalize(&binding_root).unwrap();
+        let binding_artifact_root = binding_root.join("artifacts");
+        let binding = serde_json::json!({
+            "id": "ws-channel-c1",
+            "ownerType": "channel",
+            "ownerId": "c1",
+            "mode": "custom",
+            "origin": "created_default",
+            "cwd": binding_root.to_string_lossy(),
+            "artifactRoot": binding_artifact_root.to_string_lossy(),
+            "createdAt": 1
+        });
+        mgr.save_workspace_bindings(&[binding.clone()]).expect("save_workspace_bindings failed");
+        assert_eq!(
+            mgr.get_workspace_binding("ws-channel-c1").unwrap(),
+            Some(binding.clone())
+        );
+        let mut changed_binding = binding.clone();
+        changed_binding["cwd"] = serde_json::json!(binding_root.join("mutated").to_string_lossy());
+        assert!(mgr.save_workspace_bindings(&[changed_binding]).is_err());
+        assert_eq!(
+            mgr.get_workspace_binding("ws-channel-c1").unwrap().unwrap()["cwd"].as_str(),
+            Some(binding_root.to_str().unwrap())
+        );
+
+        // 7. Full Workspace Aggregate
         let full = mgr.get_full_workspace_data().expect("get_full_workspace_data failed");
         assert!(full.get("projects").is_none());
         assert_eq!(full["channels"].as_array().unwrap().len(), 1);
@@ -973,6 +1225,11 @@ mod tests {
         assert_eq!(full["agents"].as_array().unwrap().len(), 1);
         assert_eq!(full["teams"].as_array().unwrap().len(), 1);
         assert_eq!(full["workspaceState"]["activeChannelId"], "c1");
+        assert_eq!(full["workspaceBindings"].as_array().unwrap().len(), 1);
+
+        mgr.delete_workspace_bindings(&["ws-channel-c1".to_string()]).expect("delete binding failed");
+        assert!(mgr.get_workspace_binding("ws-channel-c1").unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&binding_root);
     }
 
     #[test]
@@ -1080,6 +1337,27 @@ mod tests {
     }
 
     #[test]
+    fn workspace_cwd_resolution_creates_only_when_allowed_and_rejects_unsafe_roots() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "shadow_crew_resolve_cwd_test_{}",
+            std::process::id()
+        ));
+        let target = temp_root.join("topic-cwd");
+        let raw = target.to_string_lossy().to_string();
+
+        assert!(resolve_workspace_cwd_input(&raw, false).is_err());
+        let resolved = resolve_workspace_cwd_input(&raw, true).unwrap();
+        assert_eq!(
+            Some(resolved.as_str()),
+            std::fs::canonicalize(&target).unwrap().to_str()
+        );
+        assert!(resolve_workspace_cwd_input("/", false).is_err());
+        assert!(resolve_workspace_cwd_input("~/", false).is_err());
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
     fn test_acp_session_persistence_lifecycle() {
         let mgr = DatabaseManager::new(":memory:").expect("Failed to create in-memory db");
 
@@ -1088,6 +1366,7 @@ mod tests {
             "agent_alpha",
             "dm:agent_alpha:thread_1",
             "sess_dm_01",
+            "",
             "/tmp/agent_alpha",
             "system_prompt_v1",
             1,
@@ -1097,6 +1376,7 @@ mod tests {
             "agent_alpha",
             "channel:chan_1:thread_2",
             "sess_chan_01",
+            "ws-channel-chan_1",
             "/tmp/chan_1",
             "system_prompt_v1",
             1,
@@ -1106,6 +1386,7 @@ mod tests {
             "agent_alpha",
             "topic:chan_1:topic_3:standard",
             "sess_topic_01",
+            "ws-topic-topic_3",
             "/tmp/chan_1",
             "system_prompt_v1",
             1,
@@ -1117,13 +1398,20 @@ mod tests {
             .expect("dm session should exist");
         assert_eq!(dm_sess.session_id, "sess_dm_01");
         assert_eq!(dm_sess.workspace_cwd, "/tmp/agent_alpha");
+        assert_eq!(dm_sess.workspace_binding_id, "");
         assert_eq!(dm_sess.created_gen, 1);
+        let topic_sess = mgr
+            .get_acp_session("agent_alpha", "topic:chan_1:topic_3:standard")
+            .expect("get topic session query failed")
+            .expect("topic session should exist");
+        assert_eq!(topic_sess.workspace_binding_id, "ws-topic-topic_3");
 
         // 3. 覆盖更新 (session_id 轮转或 cwd 变更)
         mgr.save_acp_session(
             "agent_alpha",
             "dm:agent_alpha:thread_1",
             "sess_dm_02",
+            "",
             "/tmp/agent_alpha_v2",
             "system_prompt_v2",
             2,
@@ -1149,6 +1437,7 @@ mod tests {
             "agent_alpha",
             "channel:chanA1:thread_2",
             "sess_chan_other",
+            "ws-channel-chanA1",
             "/tmp/chanA1",
             "system_prompt_v1",
             1,

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Agent, Channel, DiscussionMode, GameRolesConfig, GameRoleType } from '../types';
-import { X, Sparkles, Plus, Bot, Shield, Check, GitBranch, Maximize2, Minimize2, Swords, Scale, Crown, AlertTriangle } from 'lucide-react';
+import { X, Sparkles, Plus, Bot, Shield, Check, GitBranch, Maximize2, Minimize2, Swords, Scale, Crown, AlertTriangle, HardDrive } from 'lucide-react';
 import { ResizeHandle } from './ResizeHandle';
 import { calculateModelDiversity } from '../services/cogno';
 
@@ -8,20 +8,30 @@ interface NewTopicModalProps {
   isOpen: boolean;
   onClose: () => void;
   channel?: Channel;
+  channelWorkspaceCwd?: string;
   agents: Agent[];
-  onCreateTopic: (topicData: {
-    title: string;
-    description: string;
-    assignedAgentIds: string[];
-    discussionMode?: DiscussionMode;
-    gameRoles?: GameRolesConfig;
-  }) => void;
+  onCreateTopic: (
+    topicData: {
+      title: string;
+      description: string;
+      assignedAgentIds: string[];
+      discussionMode?: DiscussionMode;
+      gameRoles?: GameRolesConfig;
+    },
+    workspace: TopicWorkspaceSelection
+  ) => Promise<void> | void;
+}
+
+export interface TopicWorkspaceSelection {
+  mode: 'default' | 'channel_snapshot' | 'custom';
+  cwd?: string;
 }
 
 export const NewTopicModal: React.FC<NewTopicModalProps> = ({
   isOpen,
   onClose,
   channel,
+  channelWorkspaceCwd,
   agents,
   onCreateTopic,
 }) => {
@@ -31,6 +41,10 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
   const [discussionMode, setDiscussionMode] = useState<DiscussionMode>('standard');
   const [agentRoles, setAgentRoles] = useState<Record<string, GameRoleType>>({});
   const [humanIsArbiter, setHumanIsArbiter] = useState<boolean>(true);
+  const [workspaceMode, setWorkspaceMode] = useState<TopicWorkspaceSelection['mode']>('default');
+  const [customCwd, setCustomCwd] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const prevIsOpenRef = useRef(false);
   const prevChannelIdRef = useRef<string | undefined>(undefined);
   const agentsRef = useRef(agents);
@@ -84,6 +98,9 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
       setDiscussionMode('standard');
       setHumanIsArbiter(true);
       setAgentRoles(autoMapRoles(agentsRef.current));
+      setWorkspaceMode('default');
+      setCustomCwd('');
+      setError(null);
     }
 
     prevIsOpenRef.current = isOpen;
@@ -183,9 +200,13 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
     );
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
+    if (workspaceMode === 'custom' && !customCwd.trim()) {
+      setError('请输入已存在的自定义工作目录');
+      return;
+    }
 
     const isGame = discussionMode === 'game_theoretic';
     const proposers = selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'proposer');
@@ -193,25 +214,36 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
     const verifiers = selectedAgentIds.filter((id) => agentRoles[id] === 'verifier');
     const arbiters = selectedAgentIds.filter((id) => agentRoles[id] === 'arbiter');
 
-    onCreateTopic({
-      title: title.trim(),
-      description: description.trim(),
-      assignedAgentIds: selectedAgentIds,
-      discussionMode,
-      gameRoles: isGame
-        ? {
-            proposers,
-            challengers,
-            verifiers,
-            arbiters,
-            humanIsArbiter,
-          }
-        : undefined,
-    });
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      await onCreateTopic({
+        title: title.trim(),
+        description: description.trim(),
+        assignedAgentIds: selectedAgentIds,
+        discussionMode,
+        gameRoles: isGame
+          ? {
+              proposers,
+              challengers,
+              verifiers,
+              arbiters,
+              humanIsArbiter,
+            }
+          : undefined,
+      }, {
+        mode: workspaceMode,
+        cwd: workspaceMode === 'custom' ? customCwd.trim() : undefined,
+      });
 
-    setTitle('');
-    setDescription('');
-    onClose();
+      setTitle('');
+      setDescription('');
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -373,6 +405,69 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
               className="w-full px-3 py-2 rounded-xl bg-surface-subtle border border-border focus:border-purple-500 focus:ring-1 focus:ring-purple-500/30 text-fg text-xs focus:outline-none transition-all placeholder:text-fg-muted resize-none leading-relaxed"
             />
           </div>
+
+          {/* Immutable Topic CWD */}
+          <div className="p-3 rounded-xl bg-surface-subtle border border-border space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <label className="text-xs font-semibold text-fg flex items-center gap-1.5">
+                <HardDrive className="w-3.5 h-3.5 text-accent" />
+                <span>议题工作目录 (CWD)</span>
+              </label>
+              <span className="text-[10px] text-fg-muted">创建后不可修改</span>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {[
+                { mode: 'default' as const, label: '议题默认目录', detail: 'topics/<topicId>/' },
+                { mode: 'channel_snapshot' as const, label: '复制频道目录', detail: channelWorkspaceCwd || '频道当前 cwd' },
+                { mode: 'custom' as const, label: '自定义目录', detail: '已有绝对路径' },
+              ].map((option) => (
+                <button
+                  key={option.mode}
+                  type="button"
+                  onClick={() => {
+                    setWorkspaceMode(option.mode);
+                    setError(null);
+                  }}
+                  className={`px-2.5 py-2 rounded-lg border text-left transition-all cursor-pointer min-w-0 ${
+                    workspaceMode === option.mode
+                      ? option.mode === 'default'
+                        ? 'bg-blue-50 border-blue-300 text-blue-800 dark:bg-blue-500/15 dark:border-blue-500/30 dark:text-blue-300'
+                        : option.mode === 'channel_snapshot'
+                          ? 'bg-purple-50 border-purple-300 text-purple-800 dark:bg-purple-500/15 dark:border-purple-500/30 dark:text-purple-300'
+                          : 'bg-emerald-50 border-emerald-300 text-emerald-800 dark:bg-emerald-500/15 dark:border-emerald-500/30 dark:text-emerald-300'
+                      : 'bg-surface border-border text-fg-secondary hover:border-fg-muted'
+                  }`}
+                >
+                  <span className="block text-[11px] font-semibold">{option.label}</span>
+                  <span className="block mt-0.5 text-[9px] font-mono text-fg-muted truncate">{option.detail}</span>
+                </button>
+              ))}
+            </div>
+            {workspaceMode === 'default' && (
+              <div className="text-[10px] font-mono text-fg-muted break-all">
+                ~/.shadow-crew/channels/{channel.id}/topics/&lt;topicId&gt;/
+              </div>
+            )}
+            {workspaceMode === 'channel_snapshot' && channelWorkspaceCwd && (
+              <div className="text-[10px] font-mono text-fg-muted break-all">{channelWorkspaceCwd}</div>
+            )}
+            {workspaceMode === 'custom' && (
+              <input
+                type="text"
+                value={customCwd}
+                onChange={(e) => setCustomCwd(e.target.value)}
+                placeholder="/Users/you/projects/example 或 ~/projects/example"
+                spellCheck={false}
+                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-xs font-mono text-fg placeholder-fg-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
+              />
+            )}
+          </div>
+
+          {error && (
+            <div className="px-3 py-2 rounded-lg bg-rose-50 border border-rose-300 text-rose-800 dark:bg-rose-500/15 dark:border-rose-500/30 dark:text-rose-300 text-[11px]">
+              {error}
+            </div>
+          )}
 
           {/* Game-Theoretic: Human Arbiter Privilege Toggle */}
           {discussionMode === 'game_theoretic' && (
@@ -578,11 +673,11 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={!title.trim()}
+              disabled={!title.trim() || isSubmitting}
               className="px-4 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold text-xs shadow-md transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              <span>{discussionMode === 'game_theoretic' ? '开启博弈讨论推演' : '创建议题并开启推演'}</span>
+              <span>{isSubmitting ? '创建中...' : discussionMode === 'game_theoretic' ? '开启博弈讨论推演' : '创建议题并开启推演'}</span>
             </button>
           </div>
         </form>

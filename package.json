@@ -12,6 +12,7 @@
     "dev:desktop": "tauri dev",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
+    "test:workspace": "tsx src/services/test-workspace-bindings.ts",
     "test:cogno": "tsx src/services/cogno/verify-all-governance.ts && tsx src/services/cogno/test-wave1-closed-loop.ts && tsx src/services/cogno/test-wave2-sycophancy-diversity.ts && tsx src/services/cogno/test-wave3-dag-sprt-colmad.ts && tsx src/services/cogno/test-exact-bwm.ts && tsx src/services/cogno/test-gframe-bayesian-modular.ts && tsx src/services/cogno/test-adaptive-sprt-governance.ts",
     "test:cogno:edge": "tsx src/services/cogno/test-gframe-edge-cases.ts"
   },

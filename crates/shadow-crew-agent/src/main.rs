@@ -19,8 +19,10 @@ pub struct SessionState {
     pub session_key: String,
     #[allow(dead_code)]
     pub channel_id: String,
+    pub workspace_binding_id: String,
     pub owner_dir: PathBuf,
     pub workspace_dir: PathBuf,
+    pub artifact_root: PathBuf,
     pub system_prompt: Option<String>,
     pub mcp_pool_key: String,
     pub mcp_client: Option<mcp_client::SharedMcpClient>,
@@ -85,6 +87,26 @@ impl McpClientPool {
         workdir: Option<&str>,
         channel_id: Option<&str>,
     ) -> Option<mcp_client::SharedMcpClient> {
+        self.get_or_spawn_scoped(
+            pool_key,
+            mcp_key,
+            workdir,
+            channel_id,
+            None,
+            None,
+        )
+        .await
+    }
+
+    pub async fn get_or_spawn_scoped(
+        &mut self,
+        pool_key: &str,
+        mcp_key: &str,
+        workdir: Option<&str>,
+        channel_id: Option<&str>,
+        artifact_root: Option<&str>,
+        workspace_binding_id: Option<&str>,
+    ) -> Option<mcp_client::SharedMcpClient> {
         self.seq = self.seq.wrapping_add(1);
         let now_seq = self.seq;
 
@@ -133,7 +155,12 @@ impl McpClientPool {
             return None;
         }
 
-        match mcp_client::NativeMcpClient::spawn_and_connect(workdir, channel_id).await {
+        match mcp_client::NativeMcpClient::spawn_and_connect(
+            workdir,
+            channel_id,
+            artifact_root,
+            workspace_binding_id,
+        ).await {
             Ok(client) => {
                 let tool_names: Vec<String> = client
                     .get_tools()
@@ -254,8 +281,8 @@ pub fn validate_workspace_segment(raw: &str) -> std::result::Result<String, Stri
 
 /// 严格校验复合 Session Key 结构与各段合法性：
 /// - `dm:<agentId>:<roomId>` (固定 3 段)
-/// - `channel:<channelId>:<roomId>` (固定 3 段)
-/// - `topic:<channelId>:<topicId>:<discussionMode>` (固定 4 段)
+/// - `channel:<channelId>:<roomId>[:ws-<bindingId>]` (3 或 4 段)
+/// - `topic:<channelId>:<topicId>:<discussionMode>[:ws-<bindingId>]` (4 或 5 段)
 /// - 单段自定义标识 (1 段)
 /// 任何段内包含非法字符或段数不匹配（如因 ID 含 `:` 导致被拆成多余段）均直接返回 Err 拒绝。
 pub fn validate_session_key(raw_key: &str) -> std::result::Result<String, String> {
@@ -266,9 +293,14 @@ pub fn validate_session_key(raw_key: &str) -> std::result::Result<String, String
     let parts: Vec<&str> = trimmed.split(':').collect();
     match parts[0] {
         "dm" | "channel" => {
-            if parts.len() != 3 {
+            let valid_length = if parts[0] == "dm" {
+                parts.len() == 3
+            } else {
+                parts.len() == 3 || parts.len() == 4
+            };
+            if !valid_length {
                 return Err(format!(
-                    "invalid sessionKey '{}': '{}' namespace requires exactly 3 colon-separated segments (found {})",
+                    "invalid sessionKey '{}': '{}' namespace has unsupported segment count {}",
                     raw_key,
                     parts[0],
                     parts.len()
@@ -276,12 +308,18 @@ pub fn validate_session_key(raw_key: &str) -> std::result::Result<String, String
             }
             validate_workspace_segment(parts[1])?;
             validate_workspace_segment(parts[2])?;
+            if parts.len() == 4 {
+                let binding = parts[3]
+                    .strip_prefix("ws-")
+                    .ok_or_else(|| "channel workspace must use ws-<bindingId> segment".to_string())?;
+                validate_workspace_segment(binding)?;
+            }
             Ok(trimmed.to_string())
         }
         "topic" => {
-            if parts.len() != 4 {
+            if parts.len() != 4 && parts.len() != 5 {
                 return Err(format!(
-                    "invalid sessionKey '{}': 'topic' namespace requires exactly 4 colon-separated segments (found {})",
+                    "invalid sessionKey '{}': 'topic' namespace requires 4 or 5 colon-separated segments (found {})",
                     raw_key,
                     parts.len()
                 ));
@@ -289,6 +327,12 @@ pub fn validate_session_key(raw_key: &str) -> std::result::Result<String, String
             validate_workspace_segment(parts[1])?;
             validate_workspace_segment(parts[2])?;
             validate_workspace_segment(parts[3])?;
+            if parts.len() == 5 {
+                let binding = parts[4]
+                    .strip_prefix("ws-")
+                    .ok_or_else(|| "topic workspace must use ws-<bindingId> segment".to_string())?;
+                validate_workspace_segment(binding)?;
+            }
             Ok(trimmed.to_string())
         }
         _ => {
@@ -405,6 +449,57 @@ pub fn validate_and_resolve_workspace_dir(
     } else {
         None
     }
+}
+
+/// 解析 Host 已授权的显式 Workspace Binding cwd。
+/// 允许位于用户自有仓库目录，但拒绝文件系统根、用户主目录根和 Shadow Crew 全局根。
+pub fn resolve_explicit_workspace_root(
+    raw: &str,
+    shadow_crew_home: &std::path::Path,
+) -> Option<PathBuf> {
+    let user_home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()?;
+    let expanded = if raw == "~" || raw.starts_with("~/") {
+        if raw == "~" {
+            user_home
+        } else {
+            format!("{}{}", user_home, &raw[1..])
+        }
+    } else {
+        raw.to_string()
+    };
+    let candidate = PathBuf::from(expanded);
+    if !candidate.is_absolute() {
+        return None;
+    }
+
+    if let Ok(meta) = std::fs::symlink_metadata(&candidate) {
+        if meta.file_type().is_symlink() {
+            return None;
+        }
+    }
+    if std::fs::create_dir_all(&candidate).is_err() {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(&candidate).ok()?;
+    if !canonical.is_dir() || canonical.parent().is_none() {
+        return None;
+    }
+    let canonical_shadow_home = std::fs::canonicalize(shadow_crew_home)
+        .unwrap_or_else(|_| normalize_path(shadow_crew_home));
+    if canonical == canonical_shadow_home {
+        return None;
+    }
+    if std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .and_then(|home| std::fs::canonicalize(home).ok())
+        .is_some_and(|home| canonical == home)
+    {
+        return None;
+    }
+    Some(canonical)
 }
 
 /// 安全解析并创建兜底沙箱目录（例如 channels/chan-safe-default 或 agents/agent-safe-default）：
@@ -538,8 +633,10 @@ pub fn get_agent_dir_with_home(agent_id: &str, home: &std::path::Path) -> std::p
 pub struct ResolvedNewSessionConfig {
     pub session_channel_id: String,
     pub is_dm: bool,
+    pub workspace_binding_id: String,
     pub owner_dir: PathBuf,
     pub target_workspace_dir: PathBuf,
+    pub artifact_root: PathBuf,
     pub effective_key: String,
     pub unique_session_id: String,
     pub mcp_key: String,
@@ -670,9 +767,29 @@ pub fn resolve_new_session_config(
         .or(validated_env_agent_id.as_deref())
         .unwrap_or("agent-default");
 
+    let workspace_binding_id = params
+        .get("workspaceBindingId")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let explicit_workspace_root = if !is_dm {
+        params
+            .get("workspaceRoot")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .and_then(|raw| resolve_explicit_workspace_root(raw, shadow_crew_home))
+    } else {
+        None
+    };
+
     let expected_owner_dir = if is_dm {
         try_get_agent_dir_with_home(effective_agent_id, shadow_crew_home)
             .map_err(|e| (-32002, e))?
+    } else if let Some(ref explicit_root) = explicit_workspace_root {
+        explicit_root.clone()
     } else {
         try_get_channel_dir_with_home(&session_channel_id, shadow_crew_home)
             .map_err(|e| (-32002, e))?
@@ -680,6 +797,8 @@ pub fn resolve_new_session_config(
 
     let logical_owner_dir = if is_dm {
         normalize_path(&shadow_crew_home.join("agents").join(effective_agent_id))
+    } else if let Some(ref explicit_root) = explicit_workspace_root {
+        normalize_path(explicit_root)
     } else {
         normalize_path(&shadow_crew_home.join("channels").join(&session_channel_id))
     };
@@ -752,10 +871,20 @@ pub fn resolve_new_session_config(
     };
 
     let channel_cwd_str = target_workspace_dir.to_string_lossy().to_string();
+    let artifact_root = params
+        .get("artifactRoot")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| target_workspace_dir.join("artifacts"));
+    let _ = std::fs::create_dir_all(&artifact_root);
     let mcp_key = if is_dm {
         format!("agent:{}", effective_agent_id)
-    } else {
+    } else if workspace_binding_id.is_empty() {
         session_channel_id.clone()
+    } else {
+        format!("{}:{}", session_channel_id, workspace_binding_id)
     };
     let mcp_pool_key = format!("{}::{}", mcp_key, channel_cwd_str);
 
@@ -771,8 +900,10 @@ pub fn resolve_new_session_config(
     Ok(ResolvedNewSessionConfig {
         session_channel_id,
         is_dm,
+        workspace_binding_id,
         owner_dir: expected_owner_dir,
         target_workspace_dir,
+        artifact_root,
         effective_key,
         unique_session_id,
         mcp_key,
@@ -899,7 +1030,9 @@ pub fn revalidate_session_workspace_dir(
         )
     })?;
 
-    if !canonical_owner.starts_with(&category_root) || canonical_owner == category_root {
+    if session_state.workspace_binding_id.is_empty()
+        && (!canonical_owner.starts_with(&category_root) || canonical_owner == category_root)
+    {
         return Err((
             -32003,
             format!(
@@ -931,7 +1064,7 @@ pub fn revalidate_session_workspace_dir(
 
     // 逐级向上检查从 workspace_dir 到 canonical_home 的每一个祖先节点，严禁任何一级被替换为 symlink
     let mut cursor: Option<&std::path::Path> = Some(session_state.workspace_dir.as_path());
-    let mut reached_home = false;
+    let mut reached_boundary = false;
     while let Some(curr) = cursor {
         let meta = std::fs::symlink_metadata(curr).map_err(|e| {
             (
@@ -951,18 +1084,24 @@ pub fn revalidate_session_workspace_dir(
                 ),
             ));
         }
-        if curr == canonical_home.as_path() || curr == shadow_crew_home {
-            reached_home = true;
+        if curr == canonical_owner.as_path() {
+            reached_boundary = true;
+            break;
+        }
+        if session_state.workspace_binding_id.is_empty()
+            && (curr == canonical_home.as_path() || curr == shadow_crew_home)
+        {
+            reached_boundary = true;
             break;
         }
         cursor = curr.parent();
     }
-    if !reached_home {
+    if !reached_boundary {
         return Err((
             -32003,
             format!(
-                "Security violation (TOCTOU): workspace_dir {:?} does not descend from shadow_crew_home {:?}",
-                session_state.workspace_dir, canonical_home
+                "Security violation (TOCTOU): workspace_dir {:?} does not descend from owner {:?}",
+                session_state.workspace_dir, canonical_owner
             ),
         ));
     }
@@ -978,9 +1117,9 @@ pub fn revalidate_session_workspace_dir(
         )
     })?;
 
-    if !canonical_ws.starts_with(&canonical_home)
-        || canonical_ws == canonical_home
-        || !canonical_ws.starts_with(&canonical_owner)
+    if !canonical_ws.starts_with(&canonical_owner)
+        || (session_state.workspace_binding_id.is_empty()
+            && (!canonical_ws.starts_with(&canonical_home) || canonical_ws == canonical_home))
     {
         return Err((
             -32003,
@@ -1138,7 +1277,9 @@ async fn main() -> Result<()> {
 
                 let session_channel_id = resolved_cfg.session_channel_id;
                 let is_dm = resolved_cfg.is_dm;
+                let workspace_binding_id = resolved_cfg.workspace_binding_id;
                 let target_workspace_dir = resolved_cfg.target_workspace_dir;
+                let artifact_root = resolved_cfg.artifact_root;
                 let channel_cwd_str = target_workspace_dir.to_string_lossy().to_string();
                 let _ = enter_workspace_dir_safe(&target_workspace_dir);
 
@@ -1152,7 +1293,7 @@ async fn main() -> Result<()> {
                     "createdAt": now_secs,
                     "lastActive": now_secs,
                     "workspaceDir": channel_cwd_str,
-                    "artifactsDir": target_workspace_dir.join("artifacts").to_string_lossy(),
+                    "artifactsDir": artifact_root.to_string_lossy(),
                     "scratchDir": target_workspace_dir.join("scratch").to_string_lossy(),
                 });
                 let _ = std::fs::write(&meta_file, meta_obj.to_string());
@@ -1172,8 +1313,10 @@ async fn main() -> Result<()> {
                     session_id: unique_session_id.clone(),
                     session_key: effective_key.clone(),
                     channel_id: session_channel_id.clone(),
+                    workspace_binding_id: workspace_binding_id.clone(),
                     owner_dir: resolved_cfg.owner_dir.clone(),
                     workspace_dir: target_workspace_dir.clone(),
+                    artifact_root: artifact_root.clone(),
                     system_prompt: sp.clone(),
                     mcp_pool_key: mcp_pool_key.clone(),
                 };
@@ -1198,8 +1341,16 @@ async fn main() -> Result<()> {
                 } else {
                     Some(session_channel_id.as_str())
                 };
+                let artifact_root_str = artifact_root.to_string_lossy().to_string();
                 let session_mcp = mcp_pool
-                    .get_or_spawn(&mcp_pool_key, &mcp_key, Some(&channel_cwd_str), chan_param)
+                    .get_or_spawn_scoped(
+                        &mcp_pool_key,
+                        &mcp_key,
+                        Some(&channel_cwd_str),
+                        chan_param,
+                        Some(&artifact_root_str),
+                        Some(&workspace_binding_id),
+                    )
                     .await;
                 prune_dead_session_mcp_refs(&mut active_sessions, &mut mcp_pool);
 
@@ -1209,8 +1360,10 @@ async fn main() -> Result<()> {
                         session_id: unique_session_id.clone(),
                         session_key: effective_key,
                         channel_id: session_channel_id.clone(),
+                        workspace_binding_id,
                         owner_dir: resolved_cfg.owner_dir,
                         workspace_dir: target_workspace_dir,
+                        artifact_root,
                         system_prompt: sp,
                         mcp_pool_key,
                         mcp_client: session_mcp,
@@ -1254,11 +1407,42 @@ async fn main() -> Result<()> {
                 };
 
                 if let Some(existing) = active_sessions.get_mut(&requested_sid) {
+                    if let Some(requested_binding) = params
+                        .get("workspaceBindingId")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                    {
+                        if requested_binding != existing.workspace_binding_id {
+                            let err_resp = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {
+                                    "code": -32602,
+                                    "message": format!(
+                                        "Workspace binding mismatch for session {}: expected {}, got {}",
+                                        requested_sid,
+                                        existing.workspace_binding_id,
+                                        requested_binding
+                                    )
+                                }
+                            });
+                            if let Ok(mut out) = stdout_shared.lock() {
+                                let _ = writeln!(out, "{}", err_resp.to_string());
+                                let _ = out.flush();
+                            }
+                            continue;
+                        }
+                    }
                     let mut next_workspace_dir = existing.workspace_dir.clone();
                     if let Some(requested_cwd) = params.get("cwd").and_then(|v| v.as_str()) {
                         let req_path = std::path::Path::new(requested_cwd);
-                        let Some(valid_dir) =
+                        let valid_dir = if existing.workspace_binding_id.is_empty() {
                             validate_and_resolve_workspace_dir(req_path, &shadow_crew_home)
+                        } else {
+                            resolve_explicit_workspace_root(requested_cwd, &shadow_crew_home)
+                        };
+                        let Some(valid_dir) = valid_dir
                         else {
                             let err_resp = serde_json::json!({
                                 "jsonrpc": "2.0",
@@ -1315,8 +1499,10 @@ async fn main() -> Result<()> {
                         session_id: existing.session_id.clone(),
                         session_key: existing.session_key.clone(),
                         channel_id: existing.channel_id.clone(),
+                        workspace_binding_id: existing.workspace_binding_id.clone(),
                         owner_dir: existing.owner_dir.clone(),
                         workspace_dir: next_workspace_dir.clone(),
+                        artifact_root: existing.artifact_root.clone(),
                         system_prompt: next_system_prompt.clone(),
                         mcp_pool_key: next_mcp_pool_key.clone(),
                     };
@@ -1387,11 +1573,44 @@ async fn main() -> Result<()> {
                     }
                 };
 
+                if let Some(requested_binding) = params
+                    .get("workspaceBindingId")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                {
+                    if requested_binding != stored.workspace_binding_id {
+                        let err_resp = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32602,
+                                "message": format!(
+                                    "Workspace binding mismatch for persisted session {}: expected {}, got {}",
+                                    requested_sid,
+                                    stored.workspace_binding_id,
+                                    requested_binding
+                                )
+                            }
+                        });
+                        if let Ok(mut out) = stdout_shared.lock() {
+                            let _ = writeln!(out, "{}", err_resp.to_string());
+                            let _ = out.flush();
+                        }
+                        continue;
+                    }
+                }
+
                 let target_workspace = if let Some(requested_cwd) =
                     params.get("cwd").and_then(|v| v.as_str())
                 {
                     let req_path = std::path::Path::new(requested_cwd);
-                    match validate_and_resolve_workspace_dir(req_path, &shadow_crew_home) {
+                    let resolved = if stored.workspace_binding_id.is_empty() {
+                        validate_and_resolve_workspace_dir(req_path, &shadow_crew_home)
+                    } else {
+                        resolve_explicit_workspace_root(requested_cwd, &shadow_crew_home)
+                    };
+                    match resolved {
                         Some(valid_dir) => {
                             let norm_owner = normalize_path(&stored.owner_dir);
                             let canon_owner = std::fs::canonicalize(&stored.owner_dir)
@@ -1450,12 +1669,19 @@ async fn main() -> Result<()> {
                     &target_workspace,
                 );
 
+                let restored_artifact_root = if stored.artifact_root.as_os_str().is_empty() {
+                    target_workspace.join("artifacts")
+                } else {
+                    stored.artifact_root.clone()
+                };
                 let mut restored_state = SessionState {
                     session_id: stored.session_id.clone(),
                     session_key: stored.session_key.clone(),
                     channel_id: stored.channel_id.clone(),
+                    workspace_binding_id: stored.workspace_binding_id.clone(),
                     owner_dir: stored.owner_dir,
                     workspace_dir: target_workspace,
+                    artifact_root: restored_artifact_root,
                     system_prompt: target_system_prompt,
                     mcp_pool_key: target_mcp_pool_key,
                     mcp_client: None,
@@ -1479,8 +1705,10 @@ async fn main() -> Result<()> {
                     session_id: restored_state.session_id.clone(),
                     session_key: restored_state.session_key.clone(),
                     channel_id: restored_state.channel_id.clone(),
+                    workspace_binding_id: restored_state.workspace_binding_id.clone(),
                     owner_dir: restored_state.owner_dir.clone(),
                     workspace_dir: restored_state.workspace_dir.clone(),
+                    artifact_root: restored_state.artifact_root.clone(),
                     system_prompt: restored_state.system_prompt.clone(),
                     mcp_pool_key: restored_state.mcp_pool_key.clone(),
                 };
@@ -1507,12 +1735,17 @@ async fn main() -> Result<()> {
                 } else {
                     Some(restored_state.channel_id.as_str())
                 };
+                let restored_workspace_str = restored_state.workspace_dir.to_string_lossy().to_string();
+                let restored_artifact_root = restored_state.artifact_root.to_string_lossy().to_string();
+                let restored_binding_id = restored_state.workspace_binding_id.clone();
                 restored_state.mcp_client = mcp_pool
-                    .get_or_spawn(
+                    .get_or_spawn_scoped(
                         &restored_state.mcp_pool_key,
                         &restored_state.channel_id,
-                        Some(&restored_state.workspace_dir.to_string_lossy()),
+                        Some(&restored_workspace_str),
                         chan_param,
+                        Some(&restored_artifact_root),
+                        Some(&restored_binding_id),
                     )
                     .await;
                 prune_dead_session_mcp_refs(&mut active_sessions, &mut mcp_pool);
@@ -1722,12 +1955,16 @@ async fn main() -> Result<()> {
                 } else {
                     Some(session_state.channel_id.as_str())
                 };
+                let current_artifact_root = session_state.artifact_root.to_string_lossy().to_string();
+                let current_binding_id = session_state.workspace_binding_id.clone();
                 let current_mcp_client = mcp_pool
-                    .get_or_spawn(
+                    .get_or_spawn_scoped(
                         &session_state.mcp_pool_key,
                         &session_state.channel_id,
                         Some(&current_workspace_cwd),
                         chan_param_for_prompt,
+                        Some(&current_artifact_root),
+                        Some(&current_binding_id),
                     )
                     .await;
                 session_state.mcp_client = current_mcp_client.clone();
@@ -1757,6 +1994,8 @@ async fn main() -> Result<()> {
                 let active_sp = session_state.system_prompt.clone();
                 let session_key_owned = session_state.session_key.clone();
                 let channel_id_owned = session_state.channel_id.clone();
+                let workspace_binding_id_owned = session_state.workspace_binding_id.clone();
+                let artifact_root_owned = session_state.artifact_root.clone();
                 prune_dead_session_mcp_refs(&mut active_sessions, &mut mcp_pool);
                 let mut system_prompt = active_sp.unwrap_or_else(|| {
                     "你是 Shinobi，用户的 AI 影替身，代表主人参与技术架构推演与代码审查。请给出专业、严谨、可落地的回答。".to_string()
@@ -1768,15 +2007,13 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                let artifacts_dir = current_workspace_dir
-                    .join("artifacts")
-                    .to_string_lossy()
-                    .to_string();
+                let artifacts_dir = artifact_root_owned.to_string_lossy().to_string();
                 let scratch_dir = current_workspace_dir
                     .join("scratch")
                     .to_string_lossy()
                     .to_string();
                 if !system_prompt.contains("[当前频道专属工作空间环境]")
+                    && !system_prompt.contains("[当前议题专属工作空间环境]")
                     && !system_prompt.contains("[当前 Agent 个人专属独立工作空间环境]")
                 {
                     if is_dm_session {
@@ -1787,10 +2024,21 @@ async fn main() -> Result<()> {
                             artifacts_dir,
                             scratch_dir
                         ));
+                    } else if session_key_owned.starts_with("topic:") {
+                        system_prompt.push_str(&format!(
+                            "\n\n[当前议题专属工作空间环境]:\n- Session Key: {}\n- 频道 ID: {}\n- Workspace Binding: {}\n- 议题工作区根目录 (cwd): {}\n- 落地产物目录 (Artifacts): {}\n- 临时调试目录 (Scratch): {}\n提示: 当前 Topic 使用独立 cwd，不得访问其他 Topic 的私有文件。\n",
+                            session_key_owned,
+                            channel_id_owned,
+                            workspace_binding_id_owned,
+                            current_workspace_cwd,
+                            artifacts_dir,
+                            scratch_dir
+                        ));
                     } else {
                         system_prompt.push_str(&format!(
-                            "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}\n- 临时调试目录 (Scratch): {}\n提示: 如需沉淀正式技术推演文档、ADR 架构决策或代码 Patch，请优先调用 `write_channel_artifact` 工具安全保存至频道专属产物目录。\n",
+                            "\n\n[当前 Workspace Binding 环境]:\n- 频道 ID: {}\n- Workspace Binding: {}\n- 工作区根目录 (cwd): {}\n- 落地产物目录 (Artifacts): {}\n- 临时调试目录 (Scratch): {}\n提示: 正式技术产物必须通过 `write_channel_artifact` 保存至当前 Binding 的 artifactRoot。\n",
                             channel_id_owned,
+                            workspace_binding_id_owned,
                             current_workspace_cwd,
                             artifacts_dir,
                             scratch_dir
@@ -2235,8 +2483,10 @@ mod tests {
                 session_id: "s1".to_string(),
                 session_key: "topic:t1:chan-1:standard".to_string(),
                 channel_id: "chan-1".to_string(),
+                workspace_binding_id: String::new(),
                 owner_dir: dir1.clone(),
                 workspace_dir: dir1.clone(),
+                artifact_root: dir1.join("artifacts"),
                 system_prompt: None,
                 mcp_pool_key: "chan-1::d1".to_string(),
                 mcp_client: Some(mcp1.clone()),
@@ -2546,8 +2796,10 @@ mod tests {
             session_id: cfg.unique_session_id.clone(),
             session_key: cfg.effective_key.clone(),
             channel_id: cfg.session_channel_id.clone(),
+            workspace_binding_id: cfg.workspace_binding_id.clone(),
             owner_dir: cfg.owner_dir.clone(),
             workspace_dir: cfg.target_workspace_dir.clone(),
+            artifact_root: cfg.artifact_root.clone(),
             system_prompt: None,
             mcp_pool_key: cfg.mcp_pool_key.clone(),
             mcp_client: None,
@@ -2645,8 +2897,10 @@ mod tests {
             session_id: cfg.unique_session_id.clone(),
             session_key: cfg.effective_key.clone(),
             channel_id: cfg.session_channel_id.clone(),
+            workspace_binding_id: cfg.workspace_binding_id.clone(),
             owner_dir: cfg.owner_dir.clone(),
             workspace_dir: cfg.target_workspace_dir.clone(),
+            artifact_root: cfg.artifact_root.clone(),
             system_prompt: None,
             mcp_pool_key: cfg.mcp_pool_key.clone(),
             mcp_client: None,
@@ -2692,8 +2946,10 @@ mod tests {
             session_id: dm_cfg.unique_session_id.clone(),
             session_key: dm_cfg.effective_key.clone(),
             channel_id: dm_cfg.session_channel_id.clone(),
+            workspace_binding_id: dm_cfg.workspace_binding_id.clone(),
             owner_dir: dm_cfg.owner_dir.clone(),
             workspace_dir: dm_cfg.target_workspace_dir.clone(),
+            artifact_root: dm_cfg.artifact_root.clone(),
             system_prompt: None,
             mcp_pool_key: dm_cfg.mcp_pool_key.clone(),
             mcp_client: None,
@@ -2781,8 +3037,10 @@ mod tests {
             session_id: persisted_session_id.to_string(),
             session_key: resolved_cfg.effective_key,
             channel_id: resolved_cfg.session_channel_id,
+            workspace_binding_id: resolved_cfg.workspace_binding_id,
             owner_dir: resolved_cfg.owner_dir,
             workspace_dir: resolved_cfg.target_workspace_dir,
+            artifact_root: resolved_cfg.artifact_root,
             system_prompt: Some("You are a test agent".to_string()),
             mcp_pool_key: resolved_cfg.mcp_pool_key,
             mcp_client: None,
@@ -2845,5 +3103,60 @@ mod tests {
             build_resume_mcp_pool_key("dm:agent-1:thread-dm-agent-1", "agent-1", workspace),
             "agent:agent-1::/tmp/shadow-crew/workspace"
         );
+    }
+
+    #[test]
+    fn session_key_workspace_binding_segment_is_validated() {
+        assert!(validate_session_key("topic:chan-1:topic-1:standard:ws-topic-1").is_ok());
+        assert!(validate_session_key("channel:chan-1:thread-1:ws-channel-1").is_ok());
+        assert!(validate_session_key("topic:chan-1:topic-1:standard:binding-topic-1").is_err());
+        assert!(validate_session_key("channel:chan-1:thread-1:ws-").is_err());
+    }
+
+    #[test]
+    fn topic_session_new_uses_explicit_workspace_root_as_its_owner_boundary() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "shadow_crew_topic_session_cwd_test_{}",
+            std::process::id()
+        ));
+        let shadow_home = temp_root.join("shadow-home");
+        let topic_cwd = temp_root.join("external-repo").join("topics").join("topic-a");
+        let artifact_root = topic_cwd.join(".shadow-crew").join("artifacts");
+        std::fs::create_dir_all(&shadow_home).unwrap();
+
+        let params = serde_json::json!({
+            "sessionKey": "topic:chan-1:topic-a:standard:ws-topic-a",
+            "channelId": "chan-1",
+            "workspaceBindingId": "ws-topic-a",
+            "workspaceRoot": topic_cwd.to_string_lossy(),
+            "artifactRoot": artifact_root.to_string_lossy(),
+            "cwd": topic_cwd.to_string_lossy()
+        });
+        let cfg = resolve_new_session_config(&params, &shadow_home, None)
+            .expect("topic session config should resolve");
+        let canonical_topic = std::fs::canonicalize(&topic_cwd).unwrap();
+        assert_eq!(cfg.workspace_binding_id, "ws-topic-a");
+        assert_eq!(cfg.owner_dir, canonical_topic);
+        assert_eq!(cfg.target_workspace_dir, canonical_topic);
+        assert!(cfg.effective_key.ends_with(":ws-topic-a"));
+        assert!(cfg.artifact_root.ends_with(".shadow-crew/artifacts"));
+
+        let state = SessionState {
+            session_id: cfg.unique_session_id,
+            session_key: cfg.effective_key,
+            channel_id: cfg.session_channel_id,
+            workspace_binding_id: cfg.workspace_binding_id,
+            owner_dir: cfg.owner_dir,
+            workspace_dir: cfg.target_workspace_dir,
+            artifact_root: cfg.artifact_root,
+            system_prompt: None,
+            mcp_pool_key: cfg.mcp_pool_key,
+            mcp_client: None,
+        };
+        let verified = revalidate_session_workspace_dir(&state, &shadow_home)
+            .expect("external binding workspace should revalidate against its owner");
+        assert_eq!(verified, canonical_topic);
+
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 }

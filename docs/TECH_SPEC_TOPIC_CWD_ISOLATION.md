@@ -1,7 +1,7 @@
 # Shadow Crew Topic 级 CWD 隔离技术方案
 
 > **文档版本**：v1.0.0  
-> **状态**：最终技术方案 (Approved Design)  
+> **状态**：已实施并通过自动化与运行期验证 (Implemented)
 > **面向对象**：产品、前端、Tauri/Rust、ACP Agent、MCP 与测试工程师  
 > **关联文档**：
 > - [`PRD_MESSAGING_SPACE.md`](./PRD_MESSAGING_SPACE.md)
@@ -368,6 +368,7 @@ Binding 缺失、损坏或路径不可用时必须 Fail-Closed。
 
 ### 7.3 Session 生命周期
 
+- Channel / Topic / DM 的作用域必须由显式 `scopeType` 传递，禁止根据 ID 前缀猜测。
 - Topic 创建后首次调用 Agent 时创建 ACP Session。
 - Session 创建后，`workspaceBindingId + cwd` 永久稳定。
 - Session 恢复只允许在同一 Binding 中进行。

@@ -7,9 +7,12 @@ export interface AcpSendPromptOptions {
   agent: Agent;
   roomId: string;
   prompt: string;
+  workspaceBindingId?: string;
+  workspaceCwd?: string;
   channelId?: string;
   systemPrompt?: string;
   isDm?: boolean;
+  scopeType?: 'channel' | 'topic' | 'dm';
   discussionMode?: 'standard' | 'game_theoretic';
 }
 
@@ -66,6 +69,8 @@ export function buildUnifiedSessionKey(options: {
   agentId?: string;
   isDm?: boolean;
   discussionMode?: string;
+  workspaceBindingId?: string;
+  scopeType?: 'channel' | 'topic' | 'dm';
 }): string {
   const validRoomId = validateSessionSegment(options.roomId, 'roomId');
   const trimmedChannelId = options.channelId?.trim();
@@ -73,14 +78,16 @@ export function buildUnifiedSessionKey(options: {
     ? validateSessionSegment(trimmedChannelId, 'channelId')
     : undefined;
 
-  const isDm =
-    options.isDm ??
-    Boolean(
-      !validChannelId ||
-      validChannelId === 'direct-messages' ||
-      validChannelId.startsWith('dm-') ||
-      validRoomId.startsWith('thread-dm-')
-    );
+  const isDm = options.isDm ?? (
+    options.scopeType
+      ? options.scopeType === 'dm'
+      : Boolean(
+          !validChannelId ||
+          validChannelId === 'direct-messages' ||
+          validChannelId.startsWith('dm-') ||
+          validRoomId.startsWith('thread-dm-')
+        )
+  );
 
   if (isDm) {
     const aid = validateSessionSegment(options.agentId || 'default', 'agentId');
@@ -88,16 +95,21 @@ export function buildUnifiedSessionKey(options: {
   }
 
   const effectiveChanId = validChannelId || validRoomId;
-  const isTopic = validRoomId !== effectiveChanId && !validRoomId.startsWith('chan-');
+  const workspaceSegment = options.workspaceBindingId
+    ? `:ws-${validateSessionSegment(options.workspaceBindingId, 'workspaceBindingId')}`
+    : '';
+  const isTopic = options.scopeType
+    ? options.scopeType === 'topic'
+    : validRoomId !== effectiveChanId && !validRoomId.startsWith('chan-');
 
   if (isTopic) {
     const rawMode = validateSessionSegment(
       (options.discussionMode && options.discussionMode.trim()) || 'standard',
       'discussionMode'
     );
-    return `topic:${effectiveChanId}:${validRoomId}:${rawMode}`;
+    return `topic:${effectiveChanId}:${validRoomId}:${rawMode}${workspaceSegment}`;
   } else {
-    return `channel:${effectiveChanId}:${validRoomId}`;
+    return `channel:${effectiveChanId}:${validRoomId}${workspaceSegment}`;
   }
 }
 
@@ -111,6 +123,8 @@ export function buildAgentSessionKey(options: {
   channelId?: string;
   isDm?: boolean;
   discussionMode?: string;
+  workspaceBindingId?: string;
+  scopeType?: 'channel' | 'topic' | 'dm';
 }): string {
   const validAgentId = validateSessionSegment(options.agentId, 'agentId');
   const baseKey = buildUnifiedSessionKey({ ...options, agentId: validAgentId });
@@ -127,6 +141,7 @@ export interface ParsedSessionKey {
   channelId?: string;
   roomId?: string;
   discussionMode?: string;
+  workspaceBindingId?: string;
 }
 
 export function parseSessionKey(key: string): ParsedSessionKey {
@@ -143,37 +158,45 @@ export function parseSessionKey(key: string): ParsedSessionKey {
     };
   }
   if (parts[0] === 'topic') {
+    const hasWorkspace = parts[4]?.startsWith('ws-');
     if (
-      (parts.length !== 4 && parts.length !== 5) ||
+      (parts.length < 4 || parts.length > 6) ||
       !isValidSessionSegment(parts[1]) ||
       !isValidSessionSegment(parts[2]) ||
       !isValidSessionSegment(parts[3]) ||
-      (parts.length === 5 && !isValidSessionSegment(parts[4]))
+      (parts.length >= 5 && !isValidSessionSegment(parts[4])) ||
+      (parts.length === 6 && !isValidSessionSegment(parts[5]))
     ) {
       return { type: 'legacy' };
     }
+    const bindingIndex = hasWorkspace ? 4 : -1;
     return {
       type: 'topic',
       channelId: parts[1],
       roomId: parts[2],
       discussionMode: parts[3],
-      agentId: parts[4],
+      workspaceBindingId: bindingIndex >= 0 ? parts[bindingIndex].slice(3) : undefined,
+      agentId: bindingIndex >= 0 ? parts[5] : parts[4],
     };
   }
   if (parts[0] === 'channel') {
+    const hasWorkspace = parts[3]?.startsWith('ws-');
     if (
-      (parts.length !== 3 && parts.length !== 4) ||
+      (parts.length < 3 || parts.length > 5) ||
       !isValidSessionSegment(parts[1]) ||
       !isValidSessionSegment(parts[2]) ||
-      (parts.length === 4 && !isValidSessionSegment(parts[3]))
+      (parts.length >= 4 && !isValidSessionSegment(parts[3])) ||
+      (parts.length === 5 && !isValidSessionSegment(parts[4]))
     ) {
       return { type: 'legacy' };
     }
+    const bindingIndex = hasWorkspace ? 3 : -1;
     return {
       type: 'channel',
       channelId: parts[1],
       roomId: parts[2],
-      agentId: parts[3],
+      workspaceBindingId: bindingIndex >= 0 ? parts[bindingIndex].slice(3) : undefined,
+      agentId: bindingIndex >= 0 ? parts[4] : parts[3],
     };
   }
   return { type: 'legacy' };
@@ -747,7 +770,10 @@ export async function sendPromptToRemoteAcpWebSocket(
   roomId: string,
   authToken?: string,
   readOnlyGuard = true,
-  systemPrompt?: string
+  systemPrompt?: string,
+  workspaceBindingId?: string,
+  workspaceUri?: string,
+  scopeType?: 'channel' | 'topic' | 'dm'
 ): Promise<AcpAgentResponse> {
   const startTime = Date.now();
 
@@ -828,6 +854,9 @@ export async function sendPromptToRemoteAcpWebSocket(
             roomId,
             prompt: [{ type: 'text', text: prompt }],
             readOnlyGuard,
+            ...(workspaceBindingId ? { workspaceBindingId } : {}),
+            ...(workspaceUri ? { workspaceUri } : {}),
+            ...(scopeType ? { scopeType } : {}),
             ...(systemPrompt
               ? {
                   systemPrompt,
@@ -963,6 +992,8 @@ export async function sendPromptToAcpAgent(
     channelId: options.channelId,
     isDm: options.isDm,
     discussionMode: options.discussionMode,
+    workspaceBindingId: options.workspaceBindingId,
+    scopeType: options.scopeType,
   });
   const unifiedSessionKey = buildUnifiedSessionKey({
     agentId: agent.id,
@@ -970,6 +1001,8 @@ export async function sendPromptToAcpAgent(
     channelId: options.channelId,
     isDm: options.isDm,
     discussionMode: options.discussionMode,
+    workspaceBindingId: options.workspaceBindingId,
+    scopeType: options.scopeType,
   });
   await waitForPendingAcpSessionClears({
     agentId: agent.id,
@@ -1022,7 +1055,10 @@ export async function sendPromptToAcpAgent(
       roomId,
       agent.authToken,
       agent.readOnlyGuard ?? true,
-      resolvedSystemPrompt
+      resolvedSystemPrompt,
+      options.workspaceBindingId,
+      options.workspaceCwd,
+      options.scopeType
     );
     return {
       ...remoteRes,
@@ -1044,21 +1080,24 @@ export async function sendPromptToAcpAgent(
       const launchCommand = agent.acpCommandOrUrl || './target/debug/shadow-crew-agent';
       const launchEnvVars = buildAgentLaunchEnv(agent);
       const isDm = options.isDm ?? (Boolean(!options.channelId || options.channelId === 'direct-messages' || options.channelId.startsWith('dm-') || roomId.startsWith('thread-dm-')));
-      const targetCwd = isDm
+      const targetCwd = options.workspaceCwd || (isDm
         ? `~/.shadow-crew/agents/${agent.id}`
-        : `~/.shadow-crew/channels/${options.channelId || roomId}`;
+        : `~/.shadow-crew/channels/${options.channelId || roomId}`);
       const effectiveChannelId = isDm ? undefined : (options.channelId || roomId);
 
       const response = await tauriInvoke('send_prompt_to_agent', {
         agentId: agent.id,
         roomId,
         channelId: effectiveChannelId,
+        workspaceBindingId: options.workspaceBindingId || null,
+        workspaceCwd: options.workspaceCwd || targetCwd,
         prompt: enhancedPrompt,
         command: launchCommand,
         cwd: targetCwd,
         envVars: launchEnvVars,
         systemPrompt: resolvedSystemPrompt,
         discussionMode: options.discussionMode,
+        scopeType: options.scopeType,
       });
 
       const durationMs = Date.now() - startTime;
@@ -1157,6 +1196,8 @@ export async function sendPromptToAcpAgent(
         channelId: options.channelId,
         isDm: options.isDm,
         discussionMode: options.discussionMode,
+        workspaceBindingId: options.workspaceBindingId,
+        scopeType: options.scopeType,
       });
       const llmResult = await callLlmModel(modelConfig, enhancedPrompt, resolvedSystemPrompt, sessionKey);
       const durationMs = Date.now() - startTime;
@@ -1428,7 +1469,9 @@ export function extractWorkspaceDiffsFromText(
 }
 
 export interface ApplyTopicPatchOptions {
+  workspaceBindingId: string;
   workspaceRoot: string;
+  artifactRoot?: string;
   channelId: string;
   topicId: string;
   patches: TopicPatchDiffItem[];
@@ -1452,7 +1495,7 @@ export interface ApplyTopicPatchResponse {
 export async function applyTopicPatchToWorkspace(
   options: ApplyTopicPatchOptions
 ): Promise<ApplyTopicPatchResponse> {
-  const { workspaceRoot, channelId, topicId, patches } = options;
+  const { workspaceBindingId, workspaceRoot, artifactRoot, channelId, topicId, patches } = options;
 
   const tauriInvoke =
     typeof window !== 'undefined'
@@ -1463,7 +1506,7 @@ export async function applyTopicPatchToWorkspace(
   if (tauriInvoke) {
     try {
       const res = await tauriInvoke('apply_workspace_patch', {
-        workspaceRoot: workspaceRoot || '.',
+        workspaceBindingId,
         channelId: channelId || 'general',
         topicId,
         patches: patches.map((p) => ({
@@ -1491,7 +1534,7 @@ export async function applyTopicPatchToWorkspace(
   }
 
   // Web 环境回退：写入虚拟工作区缓存并返回合入明细
-  const virtualArtifactsDir = `~/.shadow-crew/channels/${channelId || 'general'}/artifacts/${topicId}`;
+  const virtualArtifactsDir = artifactRoot || `${workspaceRoot}/artifacts`;
   const appliedFiles = patches.map((p) => ({
     filename: p.filename,
     mode: 'workspace_memory' as const,
@@ -2144,6 +2187,9 @@ export async function ensureAcpAgentSession(options: {
   channelId?: string;
   systemPrompt?: string;
   discussionMode?: string;
+  workspaceBindingId?: string;
+  workspaceCwd?: string;
+  scopeType?: 'channel' | 'topic' | 'dm';
   isDm?: boolean;
   localHistoryIntact?: boolean;
 }): Promise<EnsureSessionResult | null> {
@@ -2154,6 +2200,8 @@ export async function ensureAcpAgentSession(options: {
     channelId: isDm ? undefined : options.channelId,
     isDm,
     discussionMode: options.discussionMode,
+    workspaceBindingId: options.workspaceBindingId,
+    scopeType: options.scopeType,
   });
 
   // 1. 严格等待针对该作用域的 Session 清理屏障，消除预检与清理之间的交错与重叠
@@ -2180,8 +2228,11 @@ export async function ensureAcpAgentSession(options: {
       agentId: options.agentId,
       roomId: options.roomId,
       channelId: isDm ? null : (options.channelId || null),
+      workspaceBindingId: options.workspaceBindingId || null,
+      workspaceCwd: options.workspaceCwd || null,
       systemPrompt: options.systemPrompt || null,
       discussionMode: options.discussionMode || null,
+      scopeType: options.scopeType || null,
       localHistoryIntact: options.localHistoryIntact ?? null,
     });
     return result as EnsureSessionResult;

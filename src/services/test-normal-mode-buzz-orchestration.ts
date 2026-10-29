@@ -673,6 +673,7 @@ console.log('\n6️⃣ 测试频道成员增删时已有 Session 花名册缓存
     roomId: 'thread-ch-1',
     channelId: 'ch-1',
     isDm: false,
+    scopeType: 'channel',
   });
   const ch1TopicKeyA = buildAgentSessionKey({
     agentId: mockAgentA.id,
@@ -680,12 +681,14 @@ console.log('\n6️⃣ 测试频道成员增删时已有 Session 花名册缓存
     channelId: 'ch-1',
     isDm: false,
     discussionMode: 'standard',
+    scopeType: 'topic',
   });
   const ch2KeyA = buildAgentSessionKey({
     agentId: mockAgentA.id,
     roomId: 'thread-ch-2',
     channelId: 'ch-2',
     isDm: false,
+    scopeType: 'channel',
   });
 
   standingSet.add(ch1KeyA);
@@ -1099,11 +1102,13 @@ async function runEpochAndBarrierTests() {
       roomId: 'thread-1',
       channelId: 'ch-late',
       isDm: false,
+      scopeType: 'channel',
     });
     const promptResAfterRetry = await sendPromptToAcpAgent({
       agent: mockAgentA,
       roomId: 'thread-1',
       channelId: 'ch-late',
+      scopeType: 'channel',
       prompt: 'new prompt after retry clear',
     });
     assert(
@@ -1358,6 +1363,7 @@ async function runEpochAndBarrierTests() {
       roomId: 'thread-ch-1',
       channelId: 'ch-1',
       isDm: false,
+      scopeType: 'channel',
     });
     const ch1TopicStandingKey = buildAgentSessionKey({
       agentId: mockAgentA.id,
@@ -1365,17 +1371,20 @@ async function runEpochAndBarrierTests() {
       channelId: 'ch-1',
       isDm: false,
       discussionMode: 'standard',
+      scopeType: 'topic',
     });
     const ch2StandingKey = buildAgentSessionKey({
       agentId: mockAgentA.id,
       roomId: 'thread-ch-2',
       channelId: 'ch-2',
       isDm: false,
+      scopeType: 'channel',
     });
 
     const initialChannels: Channel[] = [
       {
         id: 'ch-1',
+        workspaceBindingId: 'ws-channel-ch-1',
         name: 'arch-review',
         description: 'Architecture Review',
         creatorId: 'user-1',
@@ -1388,6 +1397,7 @@ async function runEpochAndBarrierTests() {
       },
       {
         id: 'ch-2',
+        workspaceBindingId: 'ws-channel-ch-2',
         name: 'other-chan',
         description: 'Other Channel',
         creatorId: 'user-1',
@@ -1458,6 +1468,7 @@ async function runEpochAndBarrierTests() {
           topicData: {
             id: 'topic-ch-1',
             channelId: 'ch-1',
+            workspaceBindingId: 'ws-topic-topic-ch-1',
             title: 'Sub-topic in ch-1',
             status: 'open',
             authorId: 'user-1',

@@ -73,7 +73,12 @@ pub struct NativeMcpClient {
 
 impl NativeMcpClient {
     /// 启动并连接至内置原生 MCP 服务 (shinobi-dev-mcp)
-    pub async fn spawn_and_connect(workdir: Option<&str>, channel_id: Option<&str>) -> Result<Self> {
+    pub async fn spawn_and_connect(
+        workdir: Option<&str>,
+        channel_id: Option<&str>,
+        artifact_root: Option<&str>,
+        workspace_binding_id: Option<&str>,
+    ) -> Result<Self> {
         let binary_path = resolve_shinobi_dev_mcp_path();
         let mut cmd = Command::new(&binary_path);
         cmd.stdin(Stdio::piped())
@@ -87,6 +92,17 @@ impl NativeMcpClient {
         if let Some(cid) = channel_id {
             if !cid.trim().is_empty() {
                 cmd.env("SHINOBI_CHANNEL_ID", cid.trim());
+            }
+        }
+        if let Some(root) = artifact_root {
+            if !root.trim().is_empty() {
+                cmd.env("SHADOW_CREW_ARTIFACT_ROOT", root.trim())
+                    .env("SHINOBI_ARTIFACT_ROOT", root.trim());
+            }
+        }
+        if let Some(binding_id) = workspace_binding_id {
+            if !binding_id.trim().is_empty() {
+                cmd.env("SHADOW_CREW_WORKSPACE_BINDING_ID", binding_id.trim());
             }
         }
 
@@ -294,7 +310,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_native_mcp_client_connection() {
-        let client_res = NativeMcpClient::spawn_and_connect(None, None).await;
+        let client_res = NativeMcpClient::spawn_and_connect(None, None, None, None).await;
         if let Ok(mut client) = client_res {
             let tools = client.get_tools();
             assert!(!tools.is_empty(), "Tools list should not be empty");

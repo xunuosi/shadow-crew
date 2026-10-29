@@ -27,7 +27,8 @@ import {
   TopicPatchDiffItem,
   SprtGovernorState,
   FastTrackConvergenceEvidence,
-  ModularOrchestrationState
+  ModularOrchestrationState,
+  WorkspaceBinding
 } from './types';
 import { 
   INITIAL_AGENTS, 
@@ -85,12 +86,24 @@ import {
   loadMessagesFromDb,
   loadFullWorkspaceDataFromDb,
   saveChannelsToDb,
+  saveWorkspaceBindingsToDb,
+  deleteWorkspaceBindingsFromDb,
+  resolveWorkspaceCwd,
   saveThreadsToDb,
   saveAgentsToDb,
   saveTeamsToDb,
   saveWorkspaceStateToDb,
   isTauriEnvironment,
 } from './services/dbClient';
+import {
+  createChannelBinding,
+  createTopicBinding,
+  findWorkspaceBinding,
+  getDefaultChannelCwd,
+  getDefaultTopicCwd,
+  migrateWorkspaceGraph,
+  WORKSPACE_BINDING_SCHEMA_VERSION,
+} from './services/workspaceBindings';
 import { DEFAULT_MODEL_NAME } from './config/models';
 import { resolveAgentModelConfig, setGlobalModelConfig, clearLlmSessionHistory } from './services/llmService';
 import {
@@ -154,6 +167,7 @@ export default function App() {
 
   // 关键防回滚锁：首轮从 SQLite 加载完成前，严禁各 entity 的初始挂载触发 useEffect 覆盖底层数据库
   const isWorkspaceHydratedRef = useRef(false);
+  const workspaceBindingSchemaPersistedRef = useRef(false);
   const sanitizeMessages = useCallback((list: Message[]): Message[] => {
     return list.map((message) => {
       const migrated = { ...message } as Message & { projectId?: string };
@@ -309,17 +323,10 @@ export default function App() {
             .map((c: any) => {
               const migratedChannel = { ...c };
               delete migratedChannel.projectId;
-              const channelWorkspaceRoot = `~/.shadow-crew/channels/${migratedChannel.id}`;
-              const currentRoot = migratedChannel.mountedWorkspace?.rootPath;
-              const migratedRoot =
-                !currentRoot || currentRoot === '.' || currentRoot.includes('/shadow-crew') || currentRoot.includes('/.shinobi')
-                  ? channelWorkspaceRoot
-                  : currentRoot;
+              delete migratedChannel.mountedWorkspace;
               return {
                 ...migratedChannel,
-                mountedWorkspace: {
-                  rootPath: migratedRoot,
-                },
+                workspaceBindingId: migratedChannel.workspaceBindingId || `ws-channel-${migratedChannel.id}`,
               };
             });
           return filtered;
@@ -341,6 +348,36 @@ export default function App() {
     if (!isWorkspaceHydratedRef.current) return;
     saveChannelsToDb(channels);
   }, [channels]);
+
+  const [workspaceBindings, setWorkspaceBindings] = useState<WorkspaceBinding[]>(() => {
+    try {
+      const saved = localStorage.getItem('shinobi_workspace_bindings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed as WorkspaceBinding[];
+      }
+
+      const rawChannels = localStorage.getItem('shinobi_channels');
+      const rawMessages = localStorage.getItem('shinobi_messages');
+      const legacyChannels = rawChannels ? JSON.parse(rawChannels) : [];
+      const legacyMessages = rawMessages ? JSON.parse(rawMessages) : {};
+      if (Array.isArray(legacyChannels)) {
+        return migrateWorkspaceGraph(
+          legacyChannels,
+          legacyMessages && typeof legacyMessages === 'object' ? legacyMessages : {},
+          []
+        ).workspaceBindings;
+      }
+    } catch {}
+    return [];
+  });
+
+  useEffect(() => {
+    if (!isWorkspaceHydratedRef.current) return;
+    saveWorkspaceBindingsToDb(workspaceBindings).catch((err) => {
+      console.error('[App] Failed to persist Workspace Bindings:', err);
+    });
+  }, [workspaceBindings]);
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
@@ -422,6 +459,31 @@ export default function App() {
     return INITIAL_MESSAGES;
   });
 
+  useEffect(() => {
+    if (!isWorkspaceHydratedRef.current) return;
+    try {
+      const migrated = migrateWorkspaceGraph(channels, messages, workspaceBindings);
+      if (migrated.changed) {
+        setChannels(migrated.channels);
+        setMessages(migrated.messages);
+        setWorkspaceBindings(migrated.workspaceBindings);
+      }
+      if (!workspaceBindingSchemaPersistedRef.current) {
+        workspaceBindingSchemaPersistedRef.current = true;
+        localStorage.setItem(
+          'shinobi_workspace_binding_schema_version',
+          String(WORKSPACE_BINDING_SCHEMA_VERSION)
+        );
+        void saveWorkspaceStateToDb(
+          'workspaceBindingSchemaVersion',
+          WORKSPACE_BINDING_SCHEMA_VERSION
+        );
+      }
+    } catch (err) {
+      console.error('[App] Workspace Binding migration failed:', err);
+    }
+  }, [channels, messages, workspaceBindings]);
+
   // 首次启动从 SQLite 原生数据库加载与同步工作区核心资产与历史消息
   useEffect(() => {
     let isMounted = true;
@@ -435,6 +497,12 @@ export default function App() {
             setChannels(fullData.channels);
           } else if (channels.length > 0) {
             await saveChannelsToDb(channels);
+          }
+
+          if (Array.isArray(fullData.workspaceBindings) && fullData.workspaceBindings.length > 0) {
+            setWorkspaceBindings(fullData.workspaceBindings);
+          } else if (workspaceBindings.length > 0) {
+            await saveWorkspaceBindingsToDb(workspaceBindings);
           }
 
           if (Array.isArray(fullData.threads) && fullData.threads.length > 0) {
@@ -486,12 +554,12 @@ export default function App() {
 
         const dbMsgs = await loadMessagesFromDb();
         if (!isMounted) return;
+        const messagesFromDatabase = dbMsgs?.length ? sanitizeMessages(dbMsgs) : [];
         if (dbMsgs && dbMsgs.length > 0) {
-          const sanitizedDbMsgs = sanitizeMessages(dbMsgs);
           setMessages((prev) => {
             const next = { ...prev };
             let hasNew = false;
-            for (const msg of sanitizedDbMsgs) {
+            for (const msg of messagesFromDatabase) {
               const key = msg.threadId || msg.channelId || 'general';
               if (!next[key]) next[key] = [];
               if (!next[key].some((m) => m.id === msg.id)) {
@@ -502,6 +570,48 @@ export default function App() {
             return hasNew ? next : prev;
           });
         }
+
+        const channelsForMigration =
+          fullData && Array.isArray(fullData.channels) && fullData.channels.length > 0
+            ? fullData.channels
+            : channels;
+        const bindingsForMigration =
+          fullData && Array.isArray(fullData.workspaceBindings) && fullData.workspaceBindings.length > 0
+            ? fullData.workspaceBindings
+            : workspaceBindings;
+        const mergedMessages = { ...messages };
+        for (const message of messagesFromDatabase) {
+          const key = message.threadId || message.channelId || 'general';
+          const existing = mergedMessages[key] || [];
+          if (!existing.some((item) => item.id === message.id)) {
+            mergedMessages[key] = [...existing, message];
+          }
+        }
+        const workspaceMigration = migrateWorkspaceGraph(
+          channelsForMigration,
+          mergedMessages,
+          bindingsForMigration
+        );
+        if (workspaceMigration.changed) {
+          setChannels(workspaceMigration.channels);
+          setMessages(workspaceMigration.messages);
+          setWorkspaceBindings(workspaceMigration.workspaceBindings);
+          await Promise.all([
+            saveChannelsToDb(workspaceMigration.channels),
+            saveWorkspaceBindingsToDb(workspaceMigration.workspaceBindings),
+          ]);
+        }
+        try {
+          localStorage.setItem(
+            'shinobi_workspace_binding_schema_version',
+            String(WORKSPACE_BINDING_SCHEMA_VERSION)
+          );
+        } catch {}
+        await saveWorkspaceStateToDb(
+          'workspaceBindingSchemaVersion',
+          WORKSPACE_BINDING_SCHEMA_VERSION
+        );
+        workspaceBindingSchemaPersistedRef.current = true;
       } catch (err) {
         console.error('[App] Failed to sync workspace with SQLite:', err);
       } finally {
@@ -811,6 +921,10 @@ export default function App() {
 
   // Computed Context
   const visibleChannels = channels.filter((c) => c.status !== 'deleted');
+  const getTopicWorkspaceBinding = (topicId?: string) =>
+    findWorkspaceBinding(workspaceBindings, 'topic', topicId);
+  const getChannelWorkspaceBinding = (channelId?: string) =>
+    findWorkspaceBinding(workspaceBindings, 'channel', channelId);
 
   // 1. 判断当前是否处于显式私聊模式 (Direct Message Mode)
   const isDirectMessageSelected = activeThreadId.startsWith('thread-dm-') || threads.find((t) => t.id === activeThreadId)?.type === 'dm';
@@ -1617,6 +1731,24 @@ export default function App() {
 
     // Clean up channel topics and threads
     const deletedThreads = threads.filter((t) => t.channelId === channelId).map((t) => t.id);
+    const deletedTopicIds = new Set(
+      Object.values(messages)
+        .flat()
+        .filter((message) => message.topicData?.channelId === channelId)
+        .map((message) => message.topicData!.id)
+    );
+    const remainingBindings = workspaceBindings.filter((binding) => {
+      if (binding.ownerType === 'channel' && binding.ownerId === channelId) return false;
+      if (binding.ownerType === 'topic' && deletedTopicIds.has(binding.ownerId)) return false;
+      return true;
+    });
+    const idsToDelete = workspaceBindings
+      .filter((binding) => !remainingBindings.includes(binding))
+      .map((binding) => binding.id);
+    setWorkspaceBindings(remainingBindings);
+    void deleteWorkspaceBindingsFromDb(idsToDelete).catch((err) => {
+      console.error('[App] Failed to delete Workspace Bindings:', err);
+    });
     bumpChannelEpoch(turnEpochTrackerRef.current, channelId, deletedThreads);
     setThreads((prev) => prev.filter((t) => t.channelId !== channelId));
     setMessages((prev) => {
@@ -1735,17 +1867,32 @@ export default function App() {
   };
 
   // Handle Creation of New Channel
-  const handleCreateChannel = (newChan: Omit<Channel, 'id' | 'unreadCount'>) => {
+  const handleCreateChannel = async (
+    newChan: Omit<Channel, 'id' | 'unreadCount' | 'workspaceBindingId'>,
+    workspace: { mode: 'default' | 'custom'; cwd?: string }
+  ) => {
     const id = `channel-${Date.now()}`;
-    const channelWorkspacePath = `~/.shadow-crew/channels/${id}`;
+    const requestedCwd = workspace.mode === 'default'
+      ? getDefaultChannelCwd(id)
+      : workspace.cwd || '';
+    const resolvedCwd = await resolveWorkspaceCwd(requestedCwd, workspace.mode === 'default');
+    const channelBinding = createChannelBinding({
+      channelId: id,
+      mode: workspace.mode,
+      cwd: resolvedCwd,
+    });
     const created: Channel = {
       ...newChan,
       id,
       unreadCount: 0,
-      mountedWorkspace: {
-        rootPath: channelWorkspacePath,
-      },
+      workspaceBindingId: channelBinding.id,
     };
+    const nextBindings = [
+      ...workspaceBindings.filter((binding) => binding.id !== channelBinding.id),
+      channelBinding,
+    ];
+    await saveWorkspaceBindingsToDb(nextBindings);
+    setWorkspaceBindings(nextBindings);
     setChannels((prev) => [...prev, created]);
     setActiveChannelId(id);
 
@@ -1829,15 +1976,35 @@ export default function App() {
     setActiveTopicId(topicId);
   };
 
-  const handleCreateTopic = (topicData: {
-    title: string;
-    description: string;
-    assignedAgentIds: string[];
-    discussionMode?: DiscussionMode;
-    gameRoles?: GameRolesConfig;
-  }) => {
+  const handleCreateTopic = async (
+    topicData: {
+      title: string;
+      description: string;
+      assignedAgentIds: string[];
+      discussionMode?: DiscussionMode;
+      gameRoles?: GameRolesConfig;
+    },
+    workspace: { mode: 'default' | 'channel_snapshot' | 'custom'; cwd?: string }
+  ) => {
     if (!activeChannel) return; // 私聊模式下不创建频道议题
+    const channelBinding = findWorkspaceBinding(workspaceBindings, 'channel', activeChannel.id);
+    if (!channelBinding) {
+      throw new Error(`频道 ${activeChannel.name} 缺少 Workspace Binding，无法创建议题`);
+    }
     const topicId = `topic-${Date.now()}`;
+    const requestedCwd = workspace.mode === 'default'
+      ? getDefaultTopicCwd(activeChannel.id, topicId)
+      : workspace.mode === 'channel_snapshot'
+        ? channelBinding.cwd
+        : workspace.cwd || '';
+    const resolvedCwd = await resolveWorkspaceCwd(requestedCwd, workspace.mode === 'default');
+    const topicBinding = createTopicBinding({
+      topicId,
+      channelId: activeChannel.id,
+      mode: workspace.mode,
+      channelBinding,
+      cwd: resolvedCwd,
+    });
     const validAssignedAgentIds = topicData.assignedAgentIds.filter((id) =>
       currentChannelAgents.some((a) => a.id === id)
     );
@@ -1854,6 +2021,7 @@ export default function App() {
     const newTopic: TopicMessageData = {
       id: topicId,
       channelId: activeChannel.id,
+      workspaceBindingId: topicBinding.id,
       title: topicData.title,
       description: topicData.description,
       status: 'open',
@@ -1880,6 +2048,12 @@ export default function App() {
       repliesCount: 0,
       participatingAgentIds: validAssignedAgentIds,
     };
+    const nextBindings = [
+      ...workspaceBindings.filter((binding) => binding.id !== topicBinding.id),
+      topicBinding,
+    ];
+    await saveWorkspaceBindingsToDb(nextBindings);
+    setWorkspaceBindings(nextBindings);
 
     // 确保将议题卡片插入属于当前频道的专属线程中，绝不渗入 DM 线程
     const targetChannelThread = threads.find((t) => t.channelId === activeChannel.id && t.type !== 'dm') || activeThread;
@@ -2079,6 +2253,9 @@ export default function App() {
       .filter((a): a is Agent => Boolean(a));
 
     const currentTopicObj = isTopic && topicId ? getTopicData(topicId) || activeTopicData : activeTopicData;
+    const sessionWorkspaceBinding = isTopic
+      ? getTopicWorkspaceBinding(currentTopicObj?.id)
+      : getChannelWorkspaceBinding(activeChannel?.id);
     const topicAgents =
       isTopic && topicId
         ? (currentTopicObj?.participatingAgentIds || [])
@@ -2330,6 +2507,8 @@ export default function App() {
           channelId: targetChannelId,
           isDm,
           discussionMode: currentTopicObj?.discussionMode,
+          workspaceBindingId: sessionWorkspaceBinding?.id,
+          scopeType: activeThread.type === 'dm' ? 'dm' : isTopic ? 'topic' : 'channel',
         });
 
         const preflightSystemPrompt = buildCompositeSystemPrompt({
@@ -2352,6 +2531,9 @@ export default function App() {
             channelId: targetChannelId,
             systemPrompt: preflightSystemPrompt,
             discussionMode: currentTopicObj?.discussionMode,
+            workspaceBindingId: sessionWorkspaceBinding?.id,
+            workspaceCwd: sessionWorkspaceBinding?.cwd,
+            scopeType: activeThread.type === 'dm' ? 'dm' : isTopic ? 'topic' : 'channel',
             localHistoryIntact,
           });
         } catch (err) {
@@ -2462,6 +2644,9 @@ export default function App() {
             roomId,
             prompt: cascadePrompt,
             channelId: targetChannelId,
+            workspaceBindingId: sessionWorkspaceBinding?.id,
+            workspaceCwd: sessionWorkspaceBinding?.cwd,
+            scopeType: activeThread.type === 'dm' ? 'dm' : isTopic ? 'topic' : 'channel',
             systemPrompt,
             discussionMode: currentTopicObj?.discussionMode,
           });
@@ -2793,6 +2978,9 @@ export default function App() {
           roomId: topicId,
           prompt: proposalPrompt,
           channelId: topicChannel?.id,
+          workspaceBindingId: currentTopic.workspaceBindingId,
+          workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
+          scopeType: 'topic',
           systemPrompt: buildCompositeSystemPrompt({
             agent: proposerAgent,
             availableAgents: candidateAgents,
@@ -3123,6 +3311,9 @@ export default function App() {
           roomId: topicId,
           prompt: challengePrompt,
           channelId: topicChannel?.id,
+          workspaceBindingId: currentTopic.workspaceBindingId,
+          workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
+          scopeType: 'topic',
           systemPrompt: buildCompositeSystemPrompt({
             agent: challengerAgent,
             availableAgents: candidateAgents,
@@ -3655,6 +3846,9 @@ export default function App() {
           roomId: topicId,
           prompt: verifierPrompt,
           channelId: topicChannel?.id,
+          workspaceBindingId: currentTopic.workspaceBindingId,
+          workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
+          scopeType: 'topic',
           systemPrompt: buildCompositeSystemPrompt({
             agent: verifierAgent,
             availableAgents: candidateAgents,
@@ -4209,6 +4403,9 @@ export default function App() {
           roomId: topicId,
           prompt: defensePrompt,
           channelId: topicChannel?.id,
+          workspaceBindingId: currentTopic.workspaceBindingId,
+          workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
+          scopeType: 'topic',
           systemPrompt: buildCompositeSystemPrompt({
             agent: proposerAgent,
             availableAgents: candidateAgents,
@@ -4865,6 +5062,9 @@ export default function App() {
             roomId: topicId,
             prompt: arbiterPrompt,
             channelId: topicChannel?.id,
+            workspaceBindingId: currentTopic.workspaceBindingId,
+            workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
+            scopeType: 'topic',
             systemPrompt: buildCompositeSystemPrompt({
               agent: arbiterAgent,
               availableAgents: candidateAgents,
@@ -5490,6 +5690,8 @@ export default function App() {
         channelId: topicChannel?.id || activeTopicData?.channelId,
         isDm: false,
         discussionMode: isGameTheoretic ? 'game_theoretic' : 'standard',
+        workspaceBindingId: activeTopicData?.workspaceBindingId,
+        scopeType: 'topic',
       });
 
       const preflightSystemPrompt = buildCompositeSystemPrompt({
@@ -5511,6 +5713,9 @@ export default function App() {
           channelId: topicChannel?.id || activeTopicData?.channelId,
           systemPrompt: preflightSystemPrompt,
           discussionMode: isGameTheoretic ? 'game_theoretic' : 'standard',
+          workspaceBindingId: activeTopicData?.workspaceBindingId,
+          workspaceCwd: getTopicWorkspaceBinding(activeTopicData?.id)?.cwd,
+          scopeType: 'topic',
           localHistoryIntact,
         });
       } catch (err) {
@@ -5718,6 +5923,9 @@ export default function App() {
         roomId: topicId,
         prompt: finalPrompt,
         channelId: topicChannel?.id,
+        workspaceBindingId: activeTopicData?.workspaceBindingId,
+        workspaceCwd: getTopicWorkspaceBinding(activeTopicData?.id)?.cwd,
+        scopeType: 'topic',
         systemPrompt,
         discussionMode: activeTopicData?.discussionMode,
       })
@@ -6334,6 +6542,9 @@ export default function App() {
         roomId: topicId,
         prompt: execPrompt,
         channelId: topicChannel?.id,
+        workspaceBindingId: currentTopic.workspaceBindingId,
+        workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
+        scopeType: 'topic',
         systemPrompt: buildAgentPersonaPrompt(executorAgent),
         discussionMode: 'game_theoretic',
       });
@@ -6656,12 +6867,15 @@ export default function App() {
       (currentTopic?.channelId ? channels.find((c) => c.id === currentTopic.channelId) : null) ||
       activeChannel;
     const effectiveChanId = topicChannel?.id || 'general';
-    const workspaceRoot =
-      topicChannel?.mountedWorkspace?.rootPath ||
-      `~/.shadow-crew/channels/${effectiveChanId}`;
+    const topicBinding = getTopicWorkspaceBinding(targetTopicId || currentTopic?.id);
+    if (!topicBinding) {
+      throw new Error(`议题 ${targetTopicId || currentTopic?.id || 'unknown'} 缺少 Workspace Binding`);
+    }
 
     const res = await applyTopicPatchToWorkspace({
-      workspaceRoot,
+      workspaceBindingId: topicBinding.id,
+      workspaceRoot: topicBinding.cwd,
+      artifactRoot: topicBinding.artifactRoot,
       channelId: effectiveChanId,
       topicId: targetTopicId || 'adhoc-patch',
       patches: diffsToApply,
@@ -7055,6 +7269,8 @@ export default function App() {
         roomId: currentThreadId,
         channelId: isDmThread ? undefined : activeChannel?.id,
         isDm: isDmThread,
+        workspaceBindingId: isDmThread ? undefined : getChannelWorkspaceBinding(activeChannel?.id)?.id,
+        scopeType: isDmThread ? 'dm' : 'channel',
       });
 
       const preflightSystemPrompt = buildCompositeSystemPrompt({
@@ -7074,6 +7290,9 @@ export default function App() {
           agentId: targetAgent.id,
           roomId: currentThreadId,
           channelId: isDmThread ? undefined : activeChannel?.id,
+          workspaceBindingId: isDmThread ? undefined : getChannelWorkspaceBinding(activeChannel?.id)?.id,
+          workspaceCwd: isDmThread ? undefined : getChannelWorkspaceBinding(activeChannel?.id)?.cwd,
+          scopeType: isDmThread ? 'dm' : 'channel',
           systemPrompt: preflightSystemPrompt,
           localHistoryIntact,
         });
@@ -7191,6 +7410,9 @@ export default function App() {
         roomId: currentThreadId,
         prompt: finalPrompt,
         channelId: targetChannelId,
+        workspaceBindingId: isDmThread ? undefined : getChannelWorkspaceBinding(activeChannel?.id)?.id,
+        workspaceCwd: isDmThread ? undefined : getChannelWorkspaceBinding(activeChannel?.id)?.cwd,
+        scopeType: isDmThread ? 'dm' : 'channel',
         systemPrompt: compositeSystemPrompt,
         isDm: isDmThread,
       })
@@ -7694,6 +7916,7 @@ export default function App() {
                 onReopenTopic={handleReopenTopic}
                 onExecuteTopicPatch={handleExecuteTopicPatch}
                 onApplyTopicPatch={(tid) => handleApplyTopicPatch(tid)}
+                workspaceCwd={getTopicWorkspaceBinding(activeTopicId)?.cwd}
                 overlappingFiles={(() => {
                   if (!activeTopicData || activeTopicData.gameTheoreticState?.executionStatus === 'applied') return [];
                   const myFiles = new Set(
@@ -8138,6 +8361,11 @@ export default function App() {
           isOpen={isNewTopicModalOpen}
           onClose={() => setIsNewTopicModalOpen(false)}
           channel={activeChannel}
+          channelWorkspaceCwd={
+            activeChannel
+              ? findWorkspaceBinding(workspaceBindings, 'channel', activeChannel.id)?.cwd
+              : undefined
+          }
           agents={currentChannelAgents}
           onCreateTopic={handleCreateTopic}
         />

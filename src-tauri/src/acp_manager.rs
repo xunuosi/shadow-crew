@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -538,6 +539,9 @@ impl AcpProcessManager {
                 agent_id,
                 room_id,
                 channel_id,
+                None,
+                None,
+                None,
                 system_prompt,
                 discussion_mode,
                 local_history_intact,
@@ -1320,6 +1324,9 @@ impl AcpProcessManager {
         agent_id: &str,
         room_id: &str,
         channel_id: Option<&str>,
+        workspace_binding_id: Option<&str>,
+        workspace_cwd: Option<&str>,
+        scope_type: Option<&str>,
         prompt: &str,
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
@@ -1332,6 +1339,9 @@ impl AcpProcessManager {
                 agent_id,
                 room_id,
                 channel_id,
+                workspace_binding_id,
+                workspace_cwd,
+                scope_type,
                 prompt,
                 system_prompt,
                 discussion_mode,
@@ -1413,6 +1423,165 @@ fn normalize_system_prompt_for_sync(prompt: &str) -> String {
     clean.trim().to_string()
 }
 
+struct ResolvedSessionWorkspace {
+    cwd: PathBuf,
+    artifact_root: PathBuf,
+    workspace_binding_id: String,
+    session_key_suffix: String,
+}
+
+fn build_scoped_session_key(
+    agent_id: &str,
+    room_id: &str,
+    channel_id: Option<&str>,
+    discussion_mode: Option<&str>,
+    scope_type: Option<&str>,
+    workspace_binding_suffix: &str,
+    is_dm: bool,
+) -> String {
+    if is_dm {
+        return format!("dm:{}:{}", agent_id, room_id);
+    }
+    let effective_channel_id = channel_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(room_id);
+    let is_topic = scope_type
+        .map(|scope| scope.trim() == "topic")
+        .unwrap_or_else(|| room_id != effective_channel_id && !room_id.starts_with("chan-"));
+    if is_topic {
+        let mode = discussion_mode.unwrap_or("standard").trim();
+        let effective_mode = if mode.is_empty() { "standard" } else { mode };
+        format!(
+            "topic:{}:{}:{}{}",
+            effective_channel_id,
+            room_id,
+            effective_mode,
+            workspace_binding_suffix
+        )
+    } else {
+        format!(
+            "channel:{}:{}{}",
+            effective_channel_id,
+            room_id,
+            workspace_binding_suffix
+        )
+    }
+}
+
+fn resolve_session_workspace(
+    db_manager: Option<&Arc<crate::db_manager::DatabaseManager>>,
+    agent_id: &str,
+    room_id: &str,
+    channel_id: Option<&str>,
+    workspace_binding_id: Option<&str>,
+    requested_cwd: Option<&str>,
+    scope_type: Option<&str>,
+    is_dm: bool,
+) -> Result<ResolvedSessionWorkspace> {
+    if is_dm {
+        let cwd = crate::db_manager::get_agent_dir(agent_id);
+        let artifact_root = cwd.join("artifacts");
+        let _ = std::fs::create_dir_all(&artifact_root);
+        return Ok(ResolvedSessionWorkspace {
+            cwd,
+            artifact_root,
+            workspace_binding_id: String::new(),
+            session_key_suffix: String::new(),
+        });
+    }
+
+    let effective_channel_id = channel_id
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(room_id);
+    let is_topic = scope_type
+        .map(|scope| scope.trim() == "topic")
+        .unwrap_or_else(|| room_id != effective_channel_id && !room_id.starts_with("chan-"));
+    let expected_owner_type = if is_topic { "topic" } else { "channel" };
+    let expected_owner_id = if is_topic { room_id } else { effective_channel_id };
+
+    let binding = workspace_binding_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|binding_id| {
+            let db = db_manager.ok_or_else(|| anyhow::anyhow!(
+                "Workspace Binding {} cannot be resolved without database access",
+                binding_id
+            ))?;
+            let binding = db
+                .get_workspace_binding(binding_id)?
+                .ok_or_else(|| anyhow::anyhow!("Workspace Binding {} does not exist", binding_id))?;
+            let owner_type = binding.get("ownerType").and_then(|value| value.as_str()).unwrap_or("");
+            let owner_id = binding.get("ownerId").and_then(|value| value.as_str()).unwrap_or("");
+            if owner_type != expected_owner_type || owner_id != expected_owner_id {
+                anyhow::bail!(
+                    "Workspace Binding {} scope mismatch: expected {}:{}, got {}:{}",
+                    binding_id,
+                    expected_owner_type,
+                    expected_owner_id,
+                    owner_type,
+                    owner_id
+                );
+            }
+            Ok::<serde_json::Value, anyhow::Error>(binding)
+        })
+        .transpose()?;
+
+    if is_topic && binding.is_none() {
+        anyhow::bail!(
+            "Topic {} requires a persisted Workspace Binding before creating an ACP session",
+            room_id
+        );
+    }
+
+    let fallback_channel_dir = crate::db_manager::get_channel_dir(effective_channel_id);
+    let raw_cwd = binding
+        .as_ref()
+        .and_then(|value| value.get("cwd"))
+        .and_then(|value| value.as_str())
+        .or(requested_cwd)
+        .map(str::to_string)
+        .unwrap_or_else(|| fallback_channel_dir.to_string_lossy().to_string());
+    let create_missing = binding
+        .as_ref()
+        .and_then(|value| value.get("mode"))
+        .and_then(|value| value.as_str())
+        .map(|mode| mode == "default")
+        .unwrap_or(true);
+    let cwd_text = crate::db_manager::resolve_workspace_cwd_input(&raw_cwd, create_missing)?;
+    let cwd = PathBuf::from(cwd_text);
+    let artifact_root_raw = binding
+        .as_ref()
+        .and_then(|value| value.get("artifactRoot"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| cwd.join("artifacts").to_string_lossy().to_string());
+    let artifact_root = PathBuf::from(
+        crate::db_manager::resolve_workspace_cwd_input(&artifact_root_raw, true)?,
+    );
+
+    let resolved_binding_id = binding
+        .as_ref()
+        .and_then(|value| value.get("id"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let session_key_suffix = if resolved_binding_id.is_empty() {
+        String::new()
+    } else {
+        format!(":ws-{}", resolved_binding_id)
+    };
+
+    Ok(ResolvedSessionWorkspace {
+        cwd,
+        artifact_root,
+        workspace_binding_id: resolved_binding_id,
+        session_key_suffix,
+    })
+}
+
 impl RunningAgent {
     /// 预检并确保指定 Agent 在当前会话下拥有已建立或已恢复的 ACP sessionId (加锁保护)
     pub async fn ensure_session(
@@ -1420,6 +1589,9 @@ impl RunningAgent {
         agent_id: &str,
         room_id: &str,
         channel_id: Option<&str>,
+        workspace_binding_id: Option<&str>,
+        workspace_cwd: Option<&str>,
+        scope_type: Option<&str>,
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
         local_history_intact: Option<bool>,
@@ -1429,6 +1601,9 @@ impl RunningAgent {
             agent_id,
             room_id,
             channel_id,
+            workspace_binding_id,
+            workspace_cwd,
+            scope_type,
             system_prompt,
             discussion_mode,
             local_history_intact,
@@ -1442,6 +1617,9 @@ impl RunningAgent {
         agent_id: &str,
         room_id: &str,
         channel_id: Option<&str>,
+        workspace_binding_id: Option<&str>,
+        workspace_cwd: Option<&str>,
+        scope_type: Option<&str>,
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
         local_history_intact: Option<bool>,
@@ -1537,41 +1715,66 @@ impl RunningAgent {
         }
 
         // 2. 区分当前交互场景：是当前 Agent 的 1-on-1 私聊，还是多 Agent 频道研讨
-        let is_dm = channel_id.is_none()
+        let is_dm = scope_type.map(|scope| scope.trim() == "dm").unwrap_or(false)
+            || channel_id.is_none()
             || channel_id
                 .map(|c| c.trim().is_empty() || c == "direct-messages" || c.starts_with("dm-"))
                 .unwrap_or(false)
             || room_id.starts_with("thread-dm-");
 
-        let (target_workspace_dir, session_key, workspace_notice) = if is_dm {
-            let agent_dir = crate::db_manager::get_agent_dir(agent_id);
-            let agent_cwd = agent_dir.to_string_lossy().to_string();
-            let key = format!("dm:{}:{}", agent_id, room_id);
-            let notice = format!(
+        let resolved_workspace = resolve_session_workspace(
+            self.db_manager.as_ref(),
+            agent_id,
+            room_id,
+            channel_id,
+            workspace_binding_id,
+            workspace_cwd,
+            scope_type,
+            is_dm,
+        )?;
+        let target_workspace_dir = resolved_workspace.cwd.clone();
+        let session_key = build_scoped_session_key(
+            agent_id,
+            room_id,
+            channel_id,
+            discussion_mode,
+            scope_type,
+            &resolved_workspace.session_key_suffix,
+            is_dm,
+        );
+        let workspace_notice = if is_dm {
+            let agent_cwd = target_workspace_dir.to_string_lossy().to_string();
+            format!(
                 "\n\n[当前 Agent 个人专属独立工作空间环境]:\n- Agent ID: {}\n- Agent 独立工作区根目录 (Working Directory / cwd): {}\n- 专属落地产物目录 (Artifacts): {}/artifacts\n- 专属临时调试目录 (Scratch): {}/scratch\n提示: 您当前处于与用户的 1-on-1 私聊中，沉淀的技术推演文档、方案或代码 Patch 将安全保存至您个人的专属产物目录中，与频道(channels)业务及其他 Agent 物理隔离。",
                 agent_id, agent_cwd, agent_cwd, agent_cwd
-            );
-            (agent_dir, key, notice)
+            )
         } else {
             let effective_chan_id = channel_id
                 .map(|c| c.trim())
                 .filter(|c| !c.is_empty())
                 .unwrap_or(room_id);
-            let chan_dir = crate::db_manager::get_channel_dir(effective_chan_id);
-            let chan_cwd = chan_dir.to_string_lossy().to_string();
-            let is_topic = room_id != effective_chan_id && !room_id.starts_with("chan-");
-            let key = if is_topic {
-                let mode = discussion_mode.unwrap_or("standard").trim();
-                let effective_mode = if mode.is_empty() { "standard" } else { mode };
-                format!("topic:{}:{}:{}", effective_chan_id, room_id, effective_mode)
+            let target_cwd = target_workspace_dir.to_string_lossy().to_string();
+            let is_topic = scope_type
+                .map(|scope| scope.trim() == "topic")
+                .unwrap_or_else(|| room_id != effective_chan_id && !room_id.starts_with("chan-"));
+            if is_topic {
+                format!(
+                    "\n\n[当前议题专属工作空间环境]:\n- 频道 ID: {}\n- 议题 ID: {}\n- Workspace Binding: {}\n- 议题工作区根目录 (cwd): {}\n- 落地产物目录 (Artifacts): {}\n提示: 当前 Topic 与其他 Topic 使用独立 cwd。所有文件操作必须限定在议题工作区内。",
+                    effective_chan_id,
+                    room_id,
+                    resolved_workspace.workspace_binding_id,
+                    target_cwd,
+                    resolved_workspace.artifact_root.display()
+                )
             } else {
-                format!("channel:{}:{}", effective_chan_id, room_id)
-            };
-            let notice = format!(
-                "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}/artifacts\n- 临时调试目录 (Scratch): {}/scratch",
-                effective_chan_id, chan_cwd, chan_cwd, chan_cwd
-            );
-            (chan_dir, key, notice)
+                format!(
+                    "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- Workspace Binding: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}",
+                    effective_chan_id,
+                    resolved_workspace.workspace_binding_id,
+                    target_cwd,
+                    resolved_workspace.artifact_root.display()
+                )
+            }
         };
         let workspace_cwd = target_workspace_dir.to_string_lossy().to_string();
         let enriched_sp = match system_prompt {
@@ -1618,7 +1821,9 @@ impl RunningAgent {
         if let Some(persisted) = persisted_opt {
             let persona_matched = persisted.system_prompt == normalized_sp;
             let cwd_matched = persisted.workspace_cwd == workspace_cwd;
-            let metadata_matched = persona_matched && cwd_matched;
+            let binding_matched =
+                persisted.workspace_binding_id == resolved_workspace.workspace_binding_id;
+            let metadata_matched = persona_matched && cwd_matched && binding_matched;
             let supports_resume = self.supports_resume_session.load(Ordering::SeqCst);
             let supports_load = self.supports_load_session.load(Ordering::SeqCst);
             let history_intact = local_history_intact.unwrap_or(true);
@@ -1643,6 +1848,9 @@ impl RunningAgent {
                     let resume_params = serde_json::json!({
                         "sessionId": &persisted.session_id,
                         "cwd": &workspace_cwd,
+                        "workspaceRoot": &workspace_cwd,
+                        "workspaceBindingId": &resolved_workspace.workspace_binding_id,
+                        "artifactRoot": resolved_workspace.artifact_root.to_string_lossy(),
                         "mcpServers": [],
                     });
                     let resume_req = serde_json::json!({
@@ -1681,6 +1889,7 @@ impl RunningAgent {
                                     agent_id,
                                     &session_key,
                                     &persisted.session_id,
+                                    &resolved_workspace.workspace_binding_id,
                                     &workspace_cwd,
                                     &normalized_sp,
                                     restored_gen,
@@ -1740,6 +1949,9 @@ impl RunningAgent {
                         "sessionId": &persisted.session_id,
                         "sessionKey": &session_key,
                         "cwd": &workspace_cwd,
+                        "workspaceRoot": &workspace_cwd,
+                        "workspaceBindingId": &resolved_workspace.workspace_binding_id,
+                        "artifactRoot": resolved_workspace.artifact_root.to_string_lossy(),
                         "mcpServers": [],
                     });
                     if is_dm {
@@ -1813,6 +2025,7 @@ impl RunningAgent {
                                     agent_id,
                                     &session_key,
                                     &persisted.session_id,
+                                    &resolved_workspace.workspace_binding_id,
                                     &workspace_cwd,
                                     &normalized_sp,
                                     restored_gen,
@@ -1839,7 +2052,7 @@ impl RunningAgent {
                         }
                     }
                 }
-            } else if !persona_matched || !cwd_matched {
+            } else if !persona_matched || !cwd_matched || !binding_matched {
                 tracing::info!(
                     "[Agent {}] Persisted session {} invalidated due to persona/cwd change. Purging stale record.",
                     agent_id, persisted.session_id
@@ -1877,6 +2090,9 @@ impl RunningAgent {
         }
         let mut params = serde_json::json!({
             "cwd": &workspace_cwd,
+            "workspaceRoot": &workspace_cwd,
+            "workspaceBindingId": &resolved_workspace.workspace_binding_id,
+            "artifactRoot": resolved_workspace.artifact_root.to_string_lossy(),
             "mcpServers": [],
             "sessionKey": &session_key,
         });
@@ -1948,6 +2164,7 @@ impl RunningAgent {
                 agent_id,
                 &session_key,
                 &sid,
+                &resolved_workspace.workspace_binding_id,
                 &workspace_cwd,
                 &normalized_sp,
                 created_gen,
@@ -1983,6 +2200,9 @@ impl RunningAgent {
         agent_id: &str,
         room_id: &str,
         channel_id: Option<&str>,
+        workspace_binding_id: Option<&str>,
+        requested_workspace_cwd: Option<&str>,
+        scope_type: Option<&str>,
         prompt: &str,
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
@@ -1994,6 +2214,9 @@ impl RunningAgent {
                 agent_id,
                 room_id,
                 channel_id,
+                workspace_binding_id,
+                requested_workspace_cwd,
+                scope_type,
                 system_prompt,
                 discussion_mode,
                 None,
@@ -2001,33 +2224,33 @@ impl RunningAgent {
             .await?;
         let current_session_id = ensure_res.session_id;
 
-        let is_dm = room_id.starts_with("dm-")
+        let is_dm = scope_type.map(|scope| scope.trim() == "dm").unwrap_or(false)
+            || room_id.starts_with("dm-")
             || channel_id
                 .map(|c| c.trim().is_empty() || c == "direct-messages" || c.starts_with("dm-"))
                 .unwrap_or(false)
             || room_id.starts_with("thread-dm-");
 
-        let (target_workspace_dir, session_key) = if is_dm {
-            let agent_dir = crate::db_manager::get_agent_dir(agent_id);
-            let key = format!("dm:{}:{}", agent_id, room_id);
-            (agent_dir, key)
-        } else {
-            let effective_chan_id = channel_id
-                .map(|c| c.trim())
-                .filter(|c| !c.is_empty())
-                .unwrap_or(room_id);
-            let chan_dir = crate::db_manager::get_channel_dir(effective_chan_id);
-            let is_topic = room_id != effective_chan_id && !room_id.starts_with("chan-");
-            let key = if is_topic {
-                let mode = discussion_mode.unwrap_or("standard").trim();
-                let effective_mode = if mode.is_empty() { "standard" } else { mode };
-                format!("topic:{}:{}:{}", effective_chan_id, room_id, effective_mode)
-            } else {
-                format!("channel:{}:{}", effective_chan_id, room_id)
-            };
-            (chan_dir, key)
-        };
-        let workspace_cwd = target_workspace_dir.to_string_lossy().to_string();
+        let resolved_workspace = resolve_session_workspace(
+            self.db_manager.as_ref(),
+            agent_id,
+            room_id,
+            channel_id,
+            workspace_binding_id,
+            requested_workspace_cwd,
+            scope_type,
+            is_dm,
+        )?;
+        let session_key = build_scoped_session_key(
+            agent_id,
+            room_id,
+            channel_id,
+            discussion_mode,
+            scope_type,
+            &resolved_workspace.session_key_suffix,
+            is_dm,
+        );
+        let workspace_cwd = resolved_workspace.cwd.to_string_lossy().to_string();
 
         // 构造标准 ACP session/prompt 请求 (携带独立工作区 cwd 与 channelId/agentId/sessionKey)
         let req_id = std::time::SystemTime::now()
@@ -2047,6 +2270,9 @@ impl RunningAgent {
             "sessionId": &current_session_id,
             "sessionKey": &session_key,
             "cwd": &workspace_cwd,
+            "workspaceRoot": &workspace_cwd,
+            "workspaceBindingId": &resolved_workspace.workspace_binding_id,
+            "artifactRoot": resolved_workspace.artifact_root.to_string_lossy(),
             "prompt": [
                 {
                     "type": "text",
@@ -2288,7 +2514,7 @@ fn derive_runtime_status(is_alive: bool, auth_state: &str, has_init_error: bool)
 
 #[cfg(test)]
 mod runtime_status_tests {
-    use super::derive_runtime_status;
+    use super::{build_scoped_session_key, derive_runtime_status, resolve_session_workspace};
 
     #[test]
     fn dead_process_is_idle() {
@@ -2342,6 +2568,137 @@ mod runtime_status_tests {
         assert!(agent_2.join("artifacts").exists());
         let _ = std::fs::remove_dir_all(&tmp_root);
         std::env::remove_var("SHADOW_CREW_HOME");
+    }
+
+    #[test]
+    fn topic_workspace_bindings_resolve_to_distinct_cwds_and_session_suffixes() {
+        use crate::db_manager::DatabaseManager;
+        use std::sync::Arc;
+
+        let tmp_root = std::env::temp_dir().join(format!(
+            "shadow_crew_topic_binding_test_{}",
+            std::process::id()
+        ));
+        let topic_a_dir = tmp_root.join("repo-a");
+        let topic_b_dir = tmp_root.join("repo-b");
+        std::fs::create_dir_all(&topic_a_dir).unwrap();
+        std::fs::create_dir_all(&topic_b_dir).unwrap();
+
+        let db = Arc::new(DatabaseManager::new(":memory:").unwrap());
+        db.save_workspace_bindings(&[
+            serde_json::json!({
+                "id": "ws-channel-1",
+                "ownerType": "channel",
+                "ownerId": "chan-1",
+                "mode": "custom",
+                "origin": "created_custom",
+                "cwd": topic_a_dir.to_string_lossy(),
+                "artifactRoot": topic_a_dir.join(".shadow-crew/channel-artifacts").to_string_lossy(),
+                "createdAt": 0
+            }),
+            serde_json::json!({
+                "id": "ws-topic-a",
+                "ownerType": "topic",
+                "ownerId": "topic-a",
+                "mode": "custom",
+                "origin": "created_custom",
+                "cwd": topic_a_dir.to_string_lossy(),
+                "artifactRoot": topic_a_dir.join(".shadow-crew/artifacts").to_string_lossy(),
+                "createdAt": 1
+            }),
+            serde_json::json!({
+                "id": "ws-topic-b",
+                "ownerType": "topic",
+                "ownerId": "topic-b",
+                "mode": "custom",
+                "origin": "created_custom",
+                "cwd": topic_b_dir.to_string_lossy(),
+                "artifactRoot": topic_b_dir.join(".shadow-crew/artifacts").to_string_lossy(),
+                "createdAt": 2
+            }),
+        ]).unwrap();
+
+        let topic_a = resolve_session_workspace(
+            Some(&db),
+            "agent-1",
+            "topic-a",
+            Some("chan-1"),
+            Some("ws-topic-a"),
+            None,
+            Some("topic"),
+            false,
+        ).unwrap();
+        let topic_b = resolve_session_workspace(
+            Some(&db),
+            "agent-1",
+            "topic-b",
+            Some("chan-1"),
+            Some("ws-topic-b"),
+            None,
+            Some("topic"),
+            false,
+        ).unwrap();
+        let channel = resolve_session_workspace(
+            Some(&db),
+            "agent-1",
+            "thread-1",
+            Some("chan-1"),
+            Some("ws-channel-1"),
+            None,
+            Some("channel"),
+            false,
+        ).unwrap();
+
+        assert_eq!(topic_a.cwd, std::fs::canonicalize(&topic_a_dir).unwrap());
+        assert_eq!(topic_b.cwd, std::fs::canonicalize(&topic_b_dir).unwrap());
+        assert_ne!(topic_a.cwd, topic_b.cwd);
+        assert_eq!(topic_a.session_key_suffix, ":ws-ws-topic-a");
+        assert_eq!(topic_b.session_key_suffix, ":ws-ws-topic-b");
+        assert_eq!(topic_a.workspace_binding_id, "ws-topic-a");
+        assert_eq!(channel.workspace_binding_id, "ws-channel-1");
+        assert_eq!(channel.cwd, std::fs::canonicalize(&topic_a_dir).unwrap());
+
+        let missing = resolve_session_workspace(
+            Some(&db),
+            "agent-1",
+            "topic-missing",
+            Some("chan-1"),
+            None,
+            None,
+            Some("topic"),
+            false,
+        );
+        assert!(missing.is_err(), "Topic without a Binding must fail closed");
+
+        let _ = std::fs::remove_dir_all(&tmp_root);
+    }
+
+    #[test]
+    fn explicit_scope_prevents_channel_threads_from_becoming_topics() {
+        assert_eq!(
+            build_scoped_session_key(
+                "agent-1",
+                "thread-1",
+                Some("channel-1"),
+                None,
+                Some("channel"),
+                ":ws-channel-1",
+                false,
+            ),
+            "channel:channel-1:thread-1:ws-channel-1"
+        );
+        assert_eq!(
+            build_scoped_session_key(
+                "agent-1",
+                "topic-1",
+                Some("channel-1"),
+                Some("standard"),
+                Some("topic"),
+                ":ws-topic-1",
+                false,
+            ),
+            "topic:channel-1:topic-1:standard:ws-topic-1"
+        );
     }
 
     #[tokio::test]
@@ -2608,6 +2965,7 @@ mod runtime_status_tests {
             "agent-offline",
             "topic:chan-1:thread-1:standard",
             "sid-persisted-1",
+            "",
             "/tmp/fake-cwd",
             "sp-test",
             1,

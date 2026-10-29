@@ -255,6 +255,7 @@ export type ChannelStatus = 'active' | 'archived' | 'deleted';
 // L0 协同频道 (通用实时交流与协作流)
 export interface Channel {
   id: string;
+  workspaceBindingId: string;
   creatorId: string; // 拥有者与删除权限人
   name: string;
   kind?: ChannelKind;
@@ -269,9 +270,25 @@ export interface Channel {
   memberIds: string[]; // 频道成员列表 (默认初始仅为 [creatorId])
   createdAt?: number;
   deletedAt?: number;
-  mountedWorkspace?: {
-    rootPath?: string;
-  };
+}
+
+export type WorkspaceOwnerType = 'channel' | 'topic' | 'dm';
+export type WorkspaceBindingMode = 'default' | 'custom';
+export type WorkspaceBindingOrigin =
+  | 'created_default'
+  | 'created_custom'
+  | 'channel_cwd_snapshot'
+  | 'legacy_channel_cwd_snapshot';
+
+export interface WorkspaceBinding {
+  id: string;
+  ownerType: WorkspaceOwnerType;
+  ownerId: string;
+  mode: WorkspaceBindingMode;
+  origin: WorkspaceBindingOrigin;
+  cwd: string;
+  artifactRoot: string;
+  createdAt: number;
 }
 
 // PRD 规范：Topic 议题状态与共识决策记录
@@ -672,6 +689,7 @@ export interface DecisionRecord {
 export interface TopicMessageData {
   id: string;
   channelId: string;
+  workspaceBindingId: string;
   title: string;
   description?: string;
   status: TopicStatus;

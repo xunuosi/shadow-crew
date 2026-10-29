@@ -527,7 +527,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                   } else {
                     const targetChannelId = channel?.id || activeThread?.channelId;
                     if (targetChannelId) {
-                      await openChannelArtifactsFolder(targetChannelId);
+                      await openChannelArtifactsFolder(targetChannelId, channel?.workspaceBindingId);
                     }
                   }
                 } catch (e) {
@@ -538,7 +538,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
               title={
                 activeThread?.type === 'dm'
                   ? `打开此 Agent 专属隔离产物目录 (~/.shadow-crew/agents/${activeThread.authorId || activeThread.id.replace('thread-dm-', '')}/artifacts/)`
-                  : `打开当前频道专属产物归档目录 (~/.shadow-crew/channels/${channel?.id || activeThread?.channelId}/artifacts/)`
+                  : '打开当前频道 Workspace Binding 的产物归档目录'
               }
             >
               <FolderArchive className="w-3.5 h-3.5 text-amber-500 shrink-0" />
@@ -653,7 +653,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                         } else {
                           const targetChannelId = channel?.id || activeThread?.channelId;
                           if (targetChannelId) {
-                            await openChannelArtifactsFolder(targetChannelId);
+                            await openChannelArtifactsFolder(targetChannelId, channel?.workspaceBindingId);
                           }
                         }
                       } catch (e) {

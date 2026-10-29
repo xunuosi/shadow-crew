@@ -593,6 +593,7 @@ async function runAllVerifications() {
       const mockTopic: TopicMessageData = {
         id: 'adr-001',
         channelId: 'ch-1',
+        workspaceBindingId: 'ws-topic-adr-001',
         title: '订单幂等防重与分布式锁架构决议',
         description: '解决高并发重复支付问题',
         status: 'resolved',

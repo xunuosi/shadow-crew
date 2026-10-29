@@ -268,3 +268,83 @@ fn native_agent_resume_survives_restart_and_persists_active_updates() {
     );
     assert_eq!(closed_resume["error"]["code"], -32002);
 }
+
+#[test]
+fn topic_sessions_keep_distinct_workspace_bindings_and_cwds() {
+    let test_dir = TestDir::new("topic_cwd_isolation");
+    let home = test_dir.path().join("home");
+    std::fs::create_dir_all(&home).expect("create agent home");
+    let agent_id = format!("agent_topic_e2e_{}", std::process::id());
+    let channel_id = "chan-topic-e2e";
+    let topic_a_cwd = test_dir.path().join("repo-a");
+    let topic_b_cwd = test_dir.path().join("repo-b");
+    std::fs::create_dir_all(&topic_a_cwd).expect("create topic A cwd");
+    std::fs::create_dir_all(&topic_b_cwd).expect("create topic B cwd");
+
+    let mut agent = AgentProc::spawn(&home, &agent_id);
+    agent.rpc(
+        "initialize",
+        json!({
+            "protocolVersion": 1,
+            "clientCapabilities": {},
+            "clientInfo": { "name": "topic-cwd-e2e", "version": "1.0.0" }
+        }),
+    );
+
+    let topic_a = agent.rpc(
+        "session/new",
+        json!({
+            "cwd": topic_a_cwd,
+            "workspaceRoot": topic_a_cwd,
+            "workspaceBindingId": "ws-topic-a",
+            "artifactRoot": topic_a_cwd.join(".shadow-crew/artifacts"),
+            "mcpServers": [],
+            "sessionKey": format!("topic:{channel_id}:topic-a:standard:ws-topic-a"),
+            "channelId": channel_id,
+            "systemPrompt": "TOPIC-A"
+        }),
+    );
+    let topic_b = agent.rpc(
+        "session/new",
+        json!({
+            "cwd": topic_b_cwd,
+            "workspaceRoot": topic_b_cwd,
+            "workspaceBindingId": "ws-topic-b",
+            "artifactRoot": topic_b_cwd.join(".shadow-crew/artifacts"),
+            "mcpServers": [],
+            "sessionKey": format!("topic:{channel_id}:topic-b:standard:ws-topic-b"),
+            "channelId": channel_id,
+            "systemPrompt": "TOPIC-B"
+        }),
+    );
+    let session_a = topic_a["result"]["sessionId"].as_str().expect("topic A sessionId");
+    let session_b = topic_b["result"]["sessionId"].as_str().expect("topic B sessionId");
+    assert_ne!(session_a, session_b);
+
+    agent.stop();
+    let session_db = home
+        .join(".shadow-crew")
+        .join("cache")
+        .join("native-agent-sessions")
+        .join(format!("{agent_id}.sqlite"));
+    let conn = rusqlite::Connection::open(&session_db).expect("open native session db");
+    for (session_id, expected_binding, expected_cwd) in [
+        (session_a, "ws-topic-a", &topic_a_cwd),
+        (session_b, "ws-topic-b", &topic_b_cwd),
+    ] {
+        let (binding, cwd, artifact_root): (String, String, String) = conn
+            .query_row(
+                "SELECT workspace_binding_id, workspace_dir, artifact_root
+                 FROM native_agent_sessions WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("query topic session");
+        assert_eq!(binding, expected_binding);
+        assert_eq!(
+            PathBuf::from(cwd),
+            std::fs::canonicalize(expected_cwd).expect("canonicalize expected topic cwd")
+        );
+        assert!(PathBuf::from(artifact_root).ends_with(".shadow-crew/artifacts"));
+    }
+}

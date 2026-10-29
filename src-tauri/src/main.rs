@@ -88,6 +88,9 @@ async fn send_prompt_to_agent(
     agent_id: String,
     room_id: String,
     channel_id: Option<String>,
+    workspace_binding_id: Option<String>,
+    workspace_cwd: Option<String>,
+    scope_type: Option<String>,
     prompt: String,
     _command: Option<String>,
     _cwd: Option<String>,
@@ -120,6 +123,9 @@ async fn send_prompt_to_agent(
             &agent_id,
             &room_id,
             channel_id.as_deref(),
+            workspace_binding_id.as_deref(),
+            workspace_cwd.as_deref(),
+            scope_type.as_deref(),
             &prompt,
             system_prompt.as_deref(),
             discussion_mode.as_deref(),
@@ -136,6 +142,9 @@ async fn ensure_agent_session(
     agent_id: String,
     room_id: String,
     channel_id: Option<String>,
+    workspace_binding_id: Option<String>,
+    workspace_cwd: Option<String>,
+    scope_type: Option<String>,
     system_prompt: Option<String>,
     discussion_mode: Option<String>,
     local_history_intact: Option<bool>,
@@ -161,6 +170,9 @@ async fn ensure_agent_session(
             &agent_id,
             &room_id,
             channel_id.as_deref(),
+            workspace_binding_id.as_deref(),
+            workspace_cwd.as_deref(),
+            scope_type.as_deref(),
             system_prompt.as_deref(),
             discussion_mode.as_deref(),
             local_history_intact,
@@ -169,6 +181,13 @@ async fn ensure_agent_session(
         .map_err(|e| format!("ACP Ensure Session Error: {}", e))?;
 
     Ok(result)
+}
+
+/// Tauri Command: 校验并规范化 Workspace cwd。
+#[tauri::command]
+fn resolve_workspace_cwd(raw_cwd: String, create_missing: bool) -> Result<String, String> {
+    db_manager::resolve_workspace_cwd_input(&raw_cwd, create_missing)
+        .map_err(|e| e.to_string())
 }
 
 /// Tauri Command: 清除指定 Agent 或指定会话前缀的 ACP sessionId 映射与底层沙箱状态
@@ -316,30 +335,51 @@ fn try_block_replace_on_existing_file(existing: &str, diff: &str) -> Option<Stri
 /// Tauri Command: 将议题落地 Agent 生成的补丁物理应用到本地工作区与频道归档目录
 #[tauri::command]
 async fn apply_workspace_patch(
-    workspace_root: String,
+    workspace_binding_id: String,
     channel_id: String,
     topic_id: String,
     patches: Vec<WorkspacePatchItem>,
+    state: State<'_, AppState>,
 ) -> Result<ApplyWorkspacePatchResult, String> {
-    let channel_dir = db_manager::get_channel_dir(&channel_id);
-    let topic_artifacts_dir = channel_dir.join("artifacts").join(&topic_id);
+    let binding = state
+        .db_manager
+        .get_workspace_binding(&workspace_binding_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Workspace Binding '{}' does not exist", workspace_binding_id))?;
+    let binding_owner_type = binding.get("ownerType").and_then(|value| value.as_str()).unwrap_or("");
+    let binding_owner_id = binding.get("ownerId").and_then(|value| value.as_str()).unwrap_or("");
+    let expected_owner_type = if topic_id.trim().is_empty() { "channel" } else { "topic" };
+    let expected_owner_id = if topic_id.trim().is_empty() { channel_id.as_str() } else { topic_id.as_str() };
+    if binding_owner_type != expected_owner_type || binding_owner_id != expected_owner_id {
+        return Err(format!(
+            "Workspace Binding scope mismatch: expected {}:{}, got {}:{}",
+            expected_owner_type,
+            expected_owner_id,
+            binding_owner_type,
+            binding_owner_id
+        ));
+    }
+    let binding_cwd = binding
+        .get("cwd")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "Workspace Binding is missing cwd".to_string())?;
+    let binding_mode = binding.get("mode").and_then(|value| value.as_str()).unwrap_or("custom");
+    let canonical_root = db_manager::resolve_workspace_cwd_input(binding_cwd, binding_mode == "default")
+        .map_err(|e| e.to_string())?;
+    let canonical_root = std::path::PathBuf::from(canonical_root);
+    let binding_artifact_root = binding
+        .get("artifactRoot")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| canonical_root.join("artifacts").to_string_lossy().to_string());
+    let topic_artifacts_dir = std::path::PathBuf::from(
+        db_manager::resolve_workspace_cwd_input(&binding_artifact_root, true)
+            .map_err(|e| e.to_string())?,
+    );
     std::fs::create_dir_all(&topic_artifacts_dir)
         .map_err(|e| format!("Failed to create topic artifacts dir: {}", e))?;
-
-    let trimmed_root = workspace_root.trim();
-    let canonical_root = if trimmed_root.is_empty()
-        || trimmed_root == "."
-        || trimmed_root.starts_with("~/.shadow-crew")
-        || trimmed_root.starts_with("~/.shinobi")
-        || trimmed_root.contains("/shadow-crew")
-    {
-        std::fs::canonicalize(&channel_dir).ok().or(Some(channel_dir.clone()))
-    } else {
-        std::fs::canonicalize(trimmed_root)
-            .ok()
-            .or_else(|| std::fs::canonicalize(&channel_dir).ok())
-            .or(Some(channel_dir.clone()))
-    };
+    let canonical_root = Some(canonical_root);
     let mut applied_files = Vec::new();
 
     for (idx, item) in patches.iter().enumerate() {
@@ -503,6 +543,17 @@ fn db_save_channels(channels: Vec<serde_json::Value>, state: State<'_, AppState>
     state.db_manager.save_channels(&channels).map_err(|e| e.to_string())
 }
 
+/// Tauri Command: 保存 Workspace Binding 列表。
+#[tauri::command]
+fn db_save_workspace_bindings(bindings: Vec<serde_json::Value>, state: State<'_, AppState>) -> Result<(), String> {
+    state.db_manager.save_workspace_bindings(&bindings).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_delete_workspace_bindings(binding_ids: Vec<String>, state: State<'_, AppState>) -> Result<(), String> {
+    state.db_manager.delete_workspace_bindings(&binding_ids).map_err(|e| e.to_string())
+}
+
 /// Tauri Command: 保存话题/议题列表
 #[tauri::command]
 fn db_save_threads(threads: Vec<serde_json::Value>, state: State<'_, AppState>) -> Result<(), String> {
@@ -549,6 +600,33 @@ async fn open_channel_artifacts_dir(channel_id: String) -> Result<String, String
     let _ = std::process::Command::new("xdg-open").arg(&path_str).spawn();
 
     Ok(path_str)
+}
+
+#[tauri::command]
+async fn open_workspace_artifacts_dir(
+    workspace_binding_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let binding = state
+        .db_manager
+        .get_workspace_binding(&workspace_binding_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Workspace Binding '{}' does not exist", workspace_binding_id))?;
+    let artifact_root = binding
+        .get("artifactRoot")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "Workspace Binding is missing artifactRoot".to_string())?;
+    let artifacts_dir = db_manager::resolve_workspace_cwd_input(artifact_root, true)
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(&artifacts_dir).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer").arg(&artifacts_dir).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(&artifacts_dir).spawn();
+
+    Ok(artifacts_dir)
 }
 
 /// Tauri Command: 获取当前频道与全局 Shinobi 路径信息
@@ -770,6 +848,7 @@ async fn main() {
             get_agents_runtime_status,
             send_prompt_to_agent,
             ensure_agent_session,
+            resolve_workspace_cwd,
             clear_agent_sessions,
             read_workspace_file_sandboxed,
             apply_workspace_patch,
@@ -784,6 +863,8 @@ async fn main() {
             db_clear_safe_cache,
             db_get_full_workspace_data,
             db_save_channels,
+            db_save_workspace_bindings,
+            db_delete_workspace_bindings,
             db_save_threads,
             db_save_agents,
             db_save_teams,
@@ -791,6 +872,7 @@ async fn main() {
             db_get_workspace_state,
             native_http_post,
             open_channel_artifacts_dir,
+            open_workspace_artifacts_dir,
             get_channel_dir_info,
             open_agent_artifacts_dir,
             get_agent_dir_info,
