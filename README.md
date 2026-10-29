@@ -27,6 +27,7 @@
 | **上下文治理** | 冷/热会话双态 Prompt、1M～2M 上下文模型规格、桌面端 512K 稳态预算、微型总结 Agent 与规则压缩双模降级、Session Key 作用域隔离。 |
 | **ACP 运行时** | 自动发现本地 ACP、stdio 进程托管、远程 WebSocket 端点探测、流式输出、取消/中止、会话清理与故障隔离。 |
 | **本地执行授权** | 拦截 ACP `session/request_permission`，提供 Once / Session / Channel / Topic / DM 授权、持久 Grant 管理与 Fail-Closed 超时。 |
+| **图片与文件附件** | Composer 支持选择、粘贴和拖放图片/文件；附件持久化并在本地 ACP Prompt 中转换为 `image`、`resource` 或 `resource_link` Content Blocks。 |
 | **会话恢复** | SQLite 持久化 Session 映射；支持 `session/load` 时优先协议级恢复，否则以 `session/new` + 平台层增量上下文补偿。 |
 | **本地工具链** | 内置 `shadow-crew-dev-mcp`，提供文件读写、搜索、Shell、Channel/Agent Artifact、`submit_arbitration_ruling` 与 `submit_module_decomposition`。 |
 | **本地数据与审计** | SQLite 单一事实源、WAL 并发读写、工作区路径校验、符号链接/TOCTOU 防护、运行日志与消息历史本地留存。 |

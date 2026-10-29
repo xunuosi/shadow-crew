@@ -16,6 +16,7 @@ workspace = os.getcwd()
 prompt_request_id = None
 permission_request_id = 900001
 active_session_id = None
+pending_prompt_blocks = []
 
 for line in sys.stdin:
     try:
@@ -35,7 +36,11 @@ for line in sys.stdin:
                 "protocolVersion": 1,
                 "agentCapabilities": {
                     "loadSession": False,
-                    "sessions": {"resume": False}
+                    "sessions": {"resume": False},
+                    "promptCapabilities": {
+                        "image": True,
+                        "embeddedContext": True
+                    }
                 }
             }
         })
@@ -50,6 +55,7 @@ for line in sys.stdin:
     elif method == "session/prompt":
         prompt_request_id = request_id
         active_session_id = params.get("sessionId") or active_session_id
+        pending_prompt_blocks = params.get("prompt") or []
         permission_request_id += 1
         target = os.path.join(workspace, "permission-e2e.txt")
         send({
@@ -95,7 +101,10 @@ for line in sys.stdin:
         if outcome.get("outcome") == "selected" and selected == "allow-once":
             with open(target, "w", encoding="utf-8") as handle:
                 handle.write("allowed\n")
-            reply = f"FAKE_ACP_ALLOWED:{target}"
+            block_types = ",".join(
+                str(block.get("type", "unknown")) for block in pending_prompt_blocks
+            )
+            reply = f"FAKE_ACP_ALLOWED:{target};blocks={block_types}"
         else:
             reply = "FAKE_ACP_DENIED"
         send({

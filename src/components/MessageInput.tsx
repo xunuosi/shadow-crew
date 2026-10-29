@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Agent, Message } from '../types';
+import { Agent, Message, MessageAttachmentInput } from '../types';
 import { 
   Send, 
   AtSign, 
@@ -17,14 +17,29 @@ import {
   Square,
   ChevronDown,
   Users,
-  Edit3
+  Edit3,
+  FileText,
+  Loader2,
 } from 'lucide-react';
 import { MentionSuggestions, MentionItem } from './MentionSuggestions';
 import { getDraft, saveDraft, clearDraft, DraftType } from '../services/draftService';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
+import {
+  MAX_FILE_ATTACHMENT_BYTES,
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_MESSAGE_ATTACHMENTS,
+  MAX_TOTAL_ATTACHMENT_BYTES,
+  formatAttachmentSize,
+  getAttachmentTotalBytes,
+  prepareMessageAttachments,
+} from '../services/chatAttachmentService';
 
 interface MessageInputProps {
-  onSendMessage: (content: string, targetAgentId?: string) => void;
+  onSendMessage: (
+    content: string,
+    attachments?: MessageAttachmentInput[],
+    targetAgentId?: string
+  ) => Promise<void> | void;
   activeAgents: Agent[];
   isGenerating?: boolean;
   onAbort?: () => void;
@@ -61,10 +76,99 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const [isOverflowOpen, setIsOverflowOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overflowRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [draftAttachments, setDraftAttachments] = useState<
+    Array<{
+      id: string;
+      file: File;
+      kind: 'image' | 'file';
+      previewUrl?: string;
+    }>
+  >([]);
+  const draftAttachmentsRef = useRef(draftAttachments);
+  draftAttachmentsRef.current = draftAttachments;
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [isPreparingAttachments, setIsPreparingAttachments] = useState(false);
+  const isSendingRef = useRef(false);
 
   // 历史回溯游标与暂存未发送草稿 (-1 表示当前正处于实时编辑状态)
   const historyIndexRef = useRef<number>(-1);
   const tempDraftRef = useRef<string>('');
+
+  const clearDraftAttachments = useCallback(() => {
+    draftAttachmentsRef.current.forEach((attachment) => {
+      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+    });
+    draftAttachmentsRef.current = [];
+    setDraftAttachments([]);
+  }, []);
+
+  const addDraftFiles = useCallback((files: File[]) => {
+    if (files.length === 0) return;
+    const previous = draftAttachmentsRef.current;
+    if (previous.length + files.length > MAX_MESSAGE_ATTACHMENTS) {
+      setAttachmentError(`单条消息最多添加 ${MAX_MESSAGE_ATTACHMENTS} 个图片或文件`);
+      return;
+    }
+
+    let error: string | null = null;
+    let totalBytes = getAttachmentTotalBytes(previous);
+    const batchId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const next = [...previous];
+    for (const [index, file] of files.entries()) {
+      const imageExtension = file.name.split('.').pop()?.toLowerCase() || '';
+      const isImage =
+        ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type) ||
+        ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(imageExtension);
+      if (file.type.startsWith('image/') && !isImage) {
+        error = `不支持图片格式: ${file.name}。仅支持 PNG / JPEG / WebP / GIF`;
+        continue;
+      }
+      if (file.size <= 0) {
+        error = `附件 ${file.name} 为空文件`;
+        continue;
+      }
+      const limit = isImage ? MAX_IMAGE_ATTACHMENT_BYTES : MAX_FILE_ATTACHMENT_BYTES;
+      if (file.size > limit) {
+        error = `${isImage ? '图片' : '文件'} ${file.name} 超过 ${formatAttachmentSize(limit)} 上限`;
+        continue;
+      }
+      if (totalBytes + file.size > MAX_TOTAL_ATTACHMENT_BYTES) {
+        error = `单条消息附件总大小不能超过 ${formatAttachmentSize(MAX_TOTAL_ATTACHMENT_BYTES)}`;
+        continue;
+      }
+      totalBytes += file.size;
+      next.push({
+        id: `draft-att-${batchId}-${index}`,
+        file,
+        kind: isImage ? 'image' : 'file',
+        previewUrl: isImage ? URL.createObjectURL(file) : undefined,
+      });
+    }
+
+    setAttachmentError(error);
+    if (next.length !== previous.length) {
+      draftAttachmentsRef.current = next;
+      setDraftAttachments(next);
+    }
+  }, []);
+
+  const removeDraftAttachment = (id: string) => {
+    const previous = draftAttachmentsRef.current;
+    const target = previous.find((attachment) => attachment.id === id);
+    if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+    const next = previous.filter((attachment) => attachment.id !== id);
+    draftAttachmentsRef.current = next;
+    setDraftAttachments(next);
+  };
+
+  useEffect(() => {
+    return () => {
+      draftAttachmentsRef.current.forEach((attachment) => {
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+      });
+    };
+  }, []);
 
   // 输入框高度根据输入内容动态自适应扩展 (最小 44px 约2行，最大 220px 约8-10行，超出平滑滚动)
   const adjustTextareaHeight = useCallback(() => {
@@ -89,9 +193,11 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       const savedDraft = getDraft(draftType, draftId);
       setContent(savedDraft);
     }
+    clearDraftAttachments();
+    setAttachmentError(null);
     historyIndexRef.current = -1;
     tempDraftRef.current = '';
-  }, [draftType, draftId]);
+  }, [draftType, draftId, clearDraftAttachments]);
 
   const updateContent = (valOrFn: string | ((prev: string) => string)) => {
     const next = typeof valOrFn === 'function' ? valOrFn(content) : valOrFn;
@@ -108,6 +214,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     if (draftType && draftId) {
       clearDraft(draftType, draftId);
     }
+    clearDraftAttachments();
+    setAttachmentError(null);
     if (textareaRef.current) {
       textareaRef.current.style.height = '44px';
     }
@@ -149,12 +257,24 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const showSpecialAll = 'all'.includes(mentionQuery.toLowerCase()) || mentionQuery === '';
   const totalCount = filteredCandidates.length + (showSpecialAll ? 1 : 0);
 
-  const handleSend = () => {
-    if (!content.trim() || isGenerating) return;
+  const handleSend = async () => {
+    if (
+      (!content.trim() && draftAttachments.length === 0) ||
+      isGenerating ||
+      isPreparingAttachments ||
+      isSendingRef.current
+    ) {
+      return;
+    }
+    isSendingRef.current = true;
     const trimmed = content.trim();
+    setAttachmentError(null);
 
     // 内存级输入历史存储：避免连续重复存储
-    if (globalInputHistory.length === 0 || globalInputHistory[globalInputHistory.length - 1] !== trimmed) {
+    if (
+      trimmed &&
+      (globalInputHistory.length === 0 || globalInputHistory[globalInputHistory.length - 1] !== trimmed)
+    ) {
       globalInputHistory.push(trimmed);
       if (globalInputHistory.length > MAX_HISTORY_SIZE) {
         globalInputHistory.shift();
@@ -165,19 +285,37 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
     let finalContent = content;
     if (quotingMessage) {
-      const quoteSnippet = quotingMessage.content.trim().split('\n')[0].slice(0, 100);
+      const quoteSnippet =
+        quotingMessage.content.trim().split('\n')[0].slice(0, 100) ||
+        (quotingMessage.attachments?.length ? '[附件消息]' : '');
       const quoteHeader = `> **@${quotingMessage.authorName}**: ${quoteSnippet}${quotingMessage.content.length > 100 ? '...' : ''}\n\n`;
       finalContent = quoteHeader + content;
       onCancelQuote?.();
     }
-    onSendMessage(finalContent);
-    setContent('');
-    if (draftType && draftId) {
-      clearDraft(draftType, draftId);
-    }
-    setIsMentionOpen(false);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = '44px';
+
+    try {
+      setIsPreparingAttachments(draftAttachments.length > 0);
+      const preparedAttachments =
+        draftAttachments.length > 0
+          ? await prepareMessageAttachments(
+              draftAttachments.map((attachment) => attachment.file)
+            )
+          : [];
+      await onSendMessage(finalContent, preparedAttachments);
+      setContent('');
+      if (draftType && draftId) {
+        clearDraft(draftType, draftId);
+      }
+      clearDraftAttachments();
+      setIsMentionOpen(false);
+      if (textareaRef.current) {
+        textareaRef.current.style.height = '44px';
+      }
+    } catch (err) {
+      setAttachmentError(err instanceof Error ? err.message : String(err));
+    } finally {
+      isSendingRef.current = false;
+      setIsPreparingAttachments(false);
     }
   };
 
@@ -301,7 +439,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
-      handleSend();
+      void handleSend();
     }
   };
 
@@ -324,6 +462,34 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       }
     } else {
       setIsMentionOpen(false);
+    }
+  };
+
+  const handleFileSelection = (event: React.ChangeEvent<HTMLInputElement>) => {
+    addDraftFiles(Array.from(event.target.files || []));
+    event.target.value = '';
+  };
+
+  const handleComposerPaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    const files = Array.from(event.clipboardData.files || []);
+    if (files.length === 0) {
+      for (const item of Array.from(event.clipboardData.items || [])) {
+        if (item.kind !== 'file') continue;
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length > 0) {
+      event.preventDefault();
+      addDraftFiles(files);
+    }
+  };
+
+  const handleComposerDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    const files = Array.from(event.dataTransfer.files || []);
+    if (files.length > 0) {
+      event.preventDefault();
+      addDraftFiles(files);
     }
   };
 
@@ -355,7 +521,21 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     <div 
       id="shinobi-composer-pane"
       className="p-3.5 bg-surface border-t border-border select-none text-xs transition-colors duration-150"
+      onPaste={handleComposerPaste}
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes('Files')) {
+          event.preventDefault();
+        }
+      }}
+      onDrop={handleComposerDrop}
     >
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleFileSelection}
+      />
       <div className="max-w-3xl mx-auto space-y-2">
         {/* 1. Top Quick-Mention Agent Pills + New Topic Trigger (Scenario-Adaptive & Collapsible - Only in Channel) */}
         {(activeAgents.length > 0 || onOpenNewTopicModal) && (
@@ -457,6 +637,51 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
         {/* 2. Main Textarea Box with Floating Mention Suggestions */}
         <div className="relative bg-surface-subtle border border-border rounded-2xl p-3 focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/20 transition-all">
+          {draftAttachments.length > 0 && (
+            <div className="mb-2 flex gap-2 overflow-x-auto pb-1">
+              {draftAttachments.map((attachment) => (
+                <div
+                  key={attachment.id}
+                  className="group/att relative flex min-w-[150px] max-w-[220px] items-center gap-2 rounded-xl border border-border bg-surface px-2 py-1.5 shadow-2xs"
+                >
+                  {attachment.kind === 'image' && attachment.previewUrl ? (
+                    <img
+                      src={attachment.previewUrl}
+                      alt={attachment.file.name}
+                      className="h-10 w-10 shrink-0 rounded-lg border border-border object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-surface-subtle text-fg-muted">
+                      <FileText className="h-4 w-4" />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[10px] font-semibold text-fg">
+                      {attachment.file.name}
+                    </div>
+                    <div className="mt-0.5 text-[9px] font-mono text-fg-muted">
+                      {formatAttachmentSize(attachment.file.size)}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeDraftAttachment(attachment.id)}
+                    className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-border bg-surface text-fg-muted opacity-0 shadow-sm transition-opacity hover:text-rose-500 group-hover/att:opacity-100"
+                    title="移除附件"
+                  >
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {attachmentError && (
+            <div className="mb-2 rounded-lg border border-rose-300 bg-rose-50 px-2.5 py-1.5 text-[10px] text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
+              {attachmentError}
+            </div>
+          )}
+
           {!isDm && (
             <MentionSuggestions
               isOpen={isMentionOpen}
@@ -530,8 +755,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
               {/* Attachment */}
               <button 
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
                 className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
-                title="添加工作区文件或 Diff 附件"
+                title="添加图片或文件（也可直接粘贴或拖入）"
               >
                 <Paperclip className="w-3.5 h-3.5" />
               </button>
@@ -564,7 +791,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             {/* Right Action Button: Send or Stop */}
             <div className="flex items-center gap-1.5 shrink-0">
               {/* Draft Status Badge */}
-              {content.trim().length > 0 && (
+              {(content.trim().length > 0 || draftAttachments.length > 0) && (
                 <div
                   className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-500 dark:text-amber-400 text-[10px] select-none animate-in fade-in duration-150 mr-1"
                   title={`草稿已独立暂存至【${isDm ? '私聊Agent' : '频道'}】，切换上下文不丢失`}
@@ -597,16 +824,23 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               ) : (
                 <button
                   type="button"
-                  onClick={handleSend}
-                  disabled={!content.trim()}
+                  onClick={() => void handleSend()}
+                  disabled={
+                    (!content.trim() && draftAttachments.length === 0) ||
+                    isPreparingAttachments
+                  }
                   className={`w-7 h-7 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-md shrink-0 ${
-                    content.trim()
+                    (content.trim() || draftAttachments.length > 0) && !isPreparingAttachments
                       ? 'bg-accent text-accent-fg hover:opacity-95 hover:scale-105 active:scale-95'
                       : 'bg-surface border border-border text-fg-muted cursor-not-allowed'
                   }`}
                   title="发送消息 (⌘ + Enter)"
                 >
-                  <ArrowUp className="w-4 h-4 stroke-[2.5]" />
+                  {isPreparingAttachments ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <ArrowUp className="w-4 h-4 stroke-[2.5]" />
+                  )}
                 </button>
               )}
             </div>

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -433,6 +434,18 @@ pub enum AcpPermissionDecision {
     AllowScope,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpPromptAttachment {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size: u64,
+    pub path: String,
+    pub uri: String,
+}
+
 impl AcpPermissionDecision {
     pub fn parse(raw: &str) -> Result<Self> {
         match raw.trim() {
@@ -470,6 +483,171 @@ fn acp_client_capabilities() -> serde_json::Value {
         },
         "terminal": false
     })
+}
+
+fn check_supports_prompt_image(result: &serde_json::Value) -> bool {
+    result
+        .get("agentCapabilities")
+        .and_then(|value| value.get("promptCapabilities"))
+        .and_then(|value| value.get("image"))
+        .and_then(|value| value.as_bool())
+        .or_else(|| {
+            result
+                .get("promptCapabilities")
+                .and_then(|value| value.get("image"))
+                .and_then(|value| value.as_bool())
+        })
+        .unwrap_or(false)
+}
+
+fn check_supports_embedded_context(result: &serde_json::Value) -> bool {
+    result
+        .get("agentCapabilities")
+        .and_then(|value| value.get("promptCapabilities"))
+        .and_then(|value| value.get("embeddedContext"))
+        .and_then(|value| value.as_bool())
+        .or_else(|| {
+            result
+                .get("promptCapabilities")
+                .and_then(|value| value.get("embeddedContext"))
+                .and_then(|value| value.as_bool())
+        })
+        .unwrap_or(false)
+}
+
+fn attachment_file_uri(path: &Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    let mut encoded = String::new();
+    for byte in raw.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{:02X}", byte));
+        }
+    }
+    if encoded.starts_with('/') {
+        format!("file://{}", encoded)
+    } else {
+        format!("file:///{}", encoded)
+    }
+}
+
+fn resolve_acp_attachment_path(
+    raw_path: &str,
+    attachment_root: &Path,
+) -> Result<PathBuf> {
+    let canonical_root = std::fs::canonicalize(attachment_root)
+        .with_context(|| format!("Attachment root is unavailable: {}", attachment_root.display()))?;
+    let canonical_path = std::fs::canonicalize(raw_path)
+        .with_context(|| format!("Attachment does not exist: {}", raw_path))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "Attachment path escapes Shadow Crew attachment root: {}",
+            raw_path
+        );
+    }
+    if !canonical_path.is_file() {
+        anyhow::bail!("Attachment is not a regular file: {}", raw_path);
+    }
+    Ok(canonical_path)
+}
+
+fn build_prompt_content_blocks(
+    prompt: &str,
+    attachments: &[AcpPromptAttachment],
+    supports_image: bool,
+    supports_embedded_context: bool,
+) -> Result<Vec<serde_json::Value>> {
+    let attachment_root = crate::db_manager::get_shadow_crew_home_dir().join("attachments");
+    build_prompt_content_blocks_from_root(
+        prompt,
+        attachments,
+        supports_image,
+        supports_embedded_context,
+        &attachment_root,
+    )
+}
+
+fn build_prompt_content_blocks_from_root(
+    prompt: &str,
+    attachments: &[AcpPromptAttachment],
+    supports_image: bool,
+    supports_embedded_context: bool,
+    attachment_root: &Path,
+) -> Result<Vec<serde_json::Value>> {
+    let mut blocks = vec![serde_json::json!({
+        "type": "text",
+        "text": prompt
+    })];
+
+    for attachment in attachments {
+        let path = resolve_acp_attachment_path(&attachment.path, attachment_root)?;
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("Failed to read ACP attachment: {}", path.display()))?;
+        if bytes.len() as u64 != attachment.size {
+            anyhow::bail!(
+                "Attachment size changed after upload: {} (expected {}, actual {})",
+                attachment.name,
+                attachment.size,
+                bytes.len()
+            );
+        }
+        if attachment.uri.trim().is_empty() {
+            anyhow::bail!("Attachment URI is missing for '{}'", attachment.name);
+        }
+        let uri = attachment_file_uri(&path);
+
+        if attachment.kind == "image" {
+            if !supports_image {
+                anyhow::bail!(
+                    "当前 ACP Agent 未声明 promptCapabilities.image，无法发送图片附件 '{}'",
+                    attachment.name
+                );
+            }
+            blocks.push(serde_json::json!({
+                "type": "image",
+                "data": BASE64_STANDARD.encode(&bytes),
+                "mimeType": attachment.mime_type,
+                "uri": uri,
+                "_meta": {
+                    "shadowCrewAttachmentId": attachment.id,
+                    "name": attachment.name
+                }
+            }));
+            continue;
+        }
+
+        if supports_embedded_context {
+            let resource = if let Ok(text) = String::from_utf8(bytes.clone()) {
+                serde_json::json!({
+                    "uri": uri,
+                    "mimeType": attachment.mime_type,
+                    "text": text
+                })
+            } else {
+                serde_json::json!({
+                    "uri": uri,
+                    "mimeType": attachment.mime_type,
+                    "blob": BASE64_STANDARD.encode(&bytes)
+                })
+            };
+            blocks.push(serde_json::json!({
+                "type": "resource",
+                "resource": resource
+            }));
+        } else {
+            blocks.push(serde_json::json!({
+                "type": "resource_link",
+                "uri": uri,
+                "name": attachment.name,
+                "title": attachment.name,
+                "description": "User-attached file from Shadow Crew",
+                "mimeType": attachment.mime_type,
+                "size": attachment.size
+            }));
+        }
+    }
+    Ok(blocks)
 }
 
 fn classify_permission_capability(tool_call: &serde_json::Value) -> String {
@@ -840,6 +1018,8 @@ pub struct RunningAgent {
     pub pending_permission_count: Arc<AtomicUsize>,
     pub supports_load_session: Arc<AtomicBool>,
     pub supports_resume_session: Arc<AtomicBool>,
+    pub supports_prompt_image: Arc<AtomicBool>,
+    pub supports_embedded_context: Arc<AtomicBool>,
     pub db_manager: Option<Arc<crate::db_manager::DatabaseManager>>,
     #[allow(dead_code)]
     pub cwd: String,
@@ -1298,6 +1478,8 @@ impl AcpProcessManager {
         let pending_permission_count = Arc::new(AtomicUsize::new(0));
         let supports_load_session = Arc::new(AtomicBool::new(false));
         let supports_resume_session = Arc::new(AtomicBool::new(false));
+        let supports_prompt_image = Arc::new(AtomicBool::new(false));
+        let supports_embedded_context = Arc::new(AtomicBool::new(false));
         let replay_sinks = Arc::new(TokioMutex::new(HashMap::<
             String,
             Arc<TokioMutex<ReplaySinkState>>,
@@ -1813,6 +1995,8 @@ impl AcpProcessManager {
                 pending_permission_count,
                 supports_load_session: supports_load_session.clone(),
                 supports_resume_session: supports_resume_session.clone(),
+                supports_prompt_image: supports_prompt_image.clone(),
+                supports_embedded_context: supports_embedded_context.clone(),
                 db_manager: self.db_manager.clone(),
                 cwd: shadow_crew_home_str,
                 app_handle: app_handle.clone(),
@@ -1883,6 +2067,10 @@ impl AcpProcessManager {
                         supports_load_session.store(supported, Ordering::SeqCst);
                         let supported_resume = check_supports_resume_session(res);
                         supports_resume_session.store(supported_resume, Ordering::SeqCst);
+                        supports_prompt_image
+                            .store(check_supports_prompt_image(res), Ordering::SeqCst);
+                        supports_embedded_context
+                            .store(check_supports_embedded_context(res), Ordering::SeqCst);
                         if supported {
                             tracing::info!("[Agent {}] Immediate init: Agent reports support for ACP session/load capability", agent_id);
                         }
@@ -1960,6 +2148,7 @@ impl AcpProcessManager {
         workspace_binding_id: Option<&str>,
         workspace_cwd: Option<&str>,
         scope_type: Option<&str>,
+        attachments: &[AcpPromptAttachment],
         prompt: &str,
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
@@ -1975,6 +2164,7 @@ impl AcpProcessManager {
                 workspace_binding_id,
                 workspace_cwd,
                 scope_type,
+                attachments,
                 prompt,
                 system_prompt,
                 discussion_mode,
@@ -2596,6 +2786,14 @@ impl RunningAgent {
                             let supported_resume = check_supports_resume_session(res);
                             self.supports_resume_session
                                 .store(supported_resume, Ordering::SeqCst);
+                            self.supports_prompt_image.store(
+                                check_supports_prompt_image(res),
+                                Ordering::SeqCst,
+                            );
+                            self.supports_embedded_context.store(
+                                check_supports_embedded_context(res),
+                                Ordering::SeqCst,
+                            );
                             if supported {
                                 tracing::info!("[Agent {}] Lazy init: Agent reports support for ACP session/load capability", agent_id);
                             }
@@ -3170,6 +3368,7 @@ impl RunningAgent {
         workspace_binding_id: Option<&str>,
         requested_workspace_cwd: Option<&str>,
         scope_type: Option<&str>,
+        attachments: &[AcpPromptAttachment],
         prompt: &str,
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
@@ -3216,6 +3415,12 @@ impl RunningAgent {
             is_dm,
         );
         let workspace_cwd = resolved_workspace.cwd.to_string_lossy().to_string();
+        let prompt_blocks = build_prompt_content_blocks(
+            prompt,
+            attachments,
+            self.supports_prompt_image.load(Ordering::SeqCst),
+            self.supports_embedded_context.load(Ordering::SeqCst),
+        )?;
 
         // 构造标准 ACP session/prompt 请求 (携带独立工作区 cwd 与 channelId/agentId/sessionKey)
         let req_id = std::time::SystemTime::now()
@@ -3238,12 +3443,7 @@ impl RunningAgent {
             "workspaceRoot": &workspace_cwd,
             "workspaceBindingId": &resolved_workspace.workspace_binding_id,
             "artifactRoot": resolved_workspace.artifact_root.to_string_lossy(),
-            "prompt": [
-                {
-                    "type": "text",
-                    "text": prompt
-                }
-            ]
+            "prompt": prompt_blocks
         });
         if is_dm || is_dm_topic {
             prompt_params["agentId"] = serde_json::Value::String(agent_id.to_string());
@@ -3507,12 +3707,14 @@ fn derive_runtime_status(is_alive: bool, auth_state: &str, has_init_error: bool)
 #[cfg(test)]
 mod runtime_status_tests {
     use super::{
-        acp_client_capabilities, build_permission_request_view, build_scoped_session_key,
+        acp_client_capabilities, attachment_file_uri, build_permission_request_view,
+        build_prompt_content_blocks_from_root, build_scoped_session_key,
+        check_supports_embedded_context, check_supports_prompt_image,
         classify_permission_capability, derive_runtime_status, is_dm_session_scope,
         jsonrpc_id_key, parse_permission_options, partition_permission_paths,
         permission_cancelled_response, permission_selected_response,
         resolve_session_workspace, select_permission_option, AcpPermissionDecision,
-        PermissionScopeContext,
+        AcpPromptAttachment, PermissionScopeContext,
     };
 
     #[test]
@@ -3538,6 +3740,16 @@ mod runtime_status_tests {
         assert_eq!(capabilities["fs"]["readTextFile"], false);
         assert_eq!(capabilities["fs"]["writeTextFile"], false);
         assert_eq!(capabilities["terminal"], false);
+        let prompt_capabilities = serde_json::json!({
+            "agentCapabilities": {
+                "promptCapabilities": {
+                    "image": true,
+                    "embeddedContext": true
+                }
+            }
+        });
+        assert!(check_supports_prompt_image(&prompt_capabilities));
+        assert!(check_supports_embedded_context(&prompt_capabilities));
         assert_eq!(
             classify_permission_capability(&serde_json::json!({
                 "name": "Read",
@@ -3672,6 +3884,112 @@ mod runtime_status_tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(outside);
+    }
+
+    #[test]
+    fn prompt_content_blocks_include_images_and_embedded_files_without_path_escape() {
+        let root = std::env::temp_dir().join(format!(
+            "shadow_crew_prompt_attachment_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let attachment_root = root.join("attachments");
+        std::fs::create_dir_all(&attachment_root).unwrap();
+        let image_path = attachment_root.join("image.png");
+        let file_path = attachment_root.join("notes.txt");
+        let outside_path = root.join("outside.txt");
+        std::fs::write(&image_path, b"\x89PNG\r\n\x1a\nfake-image").unwrap();
+        std::fs::write(&file_path, b"hello attachment").unwrap();
+        std::fs::write(&outside_path, b"outside").unwrap();
+
+        let image = AcpPromptAttachment {
+            id: "img-1".to_string(),
+            kind: "image".to_string(),
+            name: "image.png".to_string(),
+            mime_type: "image/png".to_string(),
+            size: std::fs::metadata(&image_path).unwrap().len(),
+            path: image_path.to_string_lossy().to_string(),
+            uri: attachment_file_uri(&image_path),
+        };
+        let file = AcpPromptAttachment {
+            id: "file-1".to_string(),
+            kind: "file".to_string(),
+            name: "notes.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            size: std::fs::metadata(&file_path).unwrap().len(),
+            path: file_path.to_string_lossy().to_string(),
+            uri: attachment_file_uri(&file_path),
+        };
+
+        let blocks = build_prompt_content_blocks_from_root(
+            "review attachments",
+            &[image.clone(), file],
+            true,
+            true,
+            &attachment_root,
+        )
+        .unwrap();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["mimeType"], "image/png");
+        assert_eq!(blocks[2]["type"], "resource");
+        assert_eq!(blocks[2]["resource"]["text"], "hello attachment");
+
+        let linked_file = AcpPromptAttachment {
+            id: "file-link".to_string(),
+            kind: "file".to_string(),
+            name: "linked.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            size: std::fs::metadata(&file_path).unwrap().len(),
+            path: file_path.to_string_lossy().to_string(),
+            uri: attachment_file_uri(&file_path),
+        };
+        let linked_blocks = build_prompt_content_blocks_from_root(
+            "linked file",
+            &[linked_file],
+            false,
+            false,
+            &attachment_root,
+        )
+        .unwrap();
+        assert_eq!(linked_blocks[1]["type"], "resource_link");
+
+        assert!(
+            build_prompt_content_blocks_from_root(
+                "image unsupported",
+                &[image],
+                false,
+                false,
+                &attachment_root,
+            )
+            .is_err()
+        );
+
+        let escaped = AcpPromptAttachment {
+            id: "bad".to_string(),
+            kind: "file".to_string(),
+            name: "outside.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            size: std::fs::metadata(&outside_path).unwrap().len(),
+            path: outside_path.to_string_lossy().to_string(),
+            uri: attachment_file_uri(&outside_path),
+        };
+        assert!(
+            build_prompt_content_blocks_from_root(
+                "escape",
+                &[escaped],
+                true,
+                true,
+                &attachment_root,
+            )
+            .is_err()
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

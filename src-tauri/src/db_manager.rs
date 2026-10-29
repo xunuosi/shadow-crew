@@ -383,6 +383,7 @@ impl DatabaseManager {
             [],
         );
         migrate_remove_project_concept(&mut conn)?;
+        migrate_workspace_binding_storage_paths(&mut conn)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -1306,6 +1307,58 @@ impl DatabaseManager {
     }
 }
 
+fn migrate_workspace_binding_storage_paths(conn: &mut Connection) -> Result<()> {
+    let migration_name = "20261029_normalize_workspace_binding_paths";
+    let applied: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = ?1)",
+        params![migration_name],
+        |row| row.get(0),
+    )?;
+    if applied != 0 {
+        return Ok(());
+    }
+
+    let rows = {
+        let mut stmt = conn.prepare(
+            "SELECT id, mode, cwd, artifact_root FROM workspace_bindings",
+        )?;
+        let mapped = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        mapped.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    let tx = conn.transaction()?;
+    for (id, mode, cwd_raw, artifact_raw) in rows {
+        let create_missing = mode == "default"
+            || cwd_raw.starts_with("~/.shadow-crew")
+            || cwd_raw.starts_with("~/.shinobi");
+        let Ok(cwd) = resolve_workspace_cwd_input(&cwd_raw, create_missing) else {
+            continue;
+        };
+        let Ok(artifact_root) = resolve_workspace_cwd_input(&artifact_raw, true) else {
+            continue;
+        };
+        if cwd != cwd_raw || artifact_root != artifact_raw {
+            tx.execute(
+                "UPDATE workspace_bindings SET cwd = ?1, artifact_root = ?2 WHERE id = ?3",
+                params![cwd, artifact_root, id],
+            )?;
+        }
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO schema_migrations (name) VALUES (?1)",
+        params![migration_name],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1708,5 +1761,73 @@ mod tests {
                 .expect("revoke scope grants failed"),
             1
         );
+    }
+
+    #[test]
+    fn test_workspace_binding_path_migration_is_canonical_and_idempotent() {
+        let root = std::env::temp_dir().join(format!(
+            "shadow_crew_binding_path_migration_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("child")).unwrap();
+        let messy_cwd = workspace.join("child/../");
+        let artifact_root = workspace.join("artifacts");
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workspace_bindings (
+                id TEXT PRIMARY KEY,
+                owner_type TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                artifact_root TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+             );
+             CREATE TABLE schema_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+             );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO workspace_bindings
+             (id, owner_type, owner_id, mode, origin, cwd, artifact_root, created_at)
+             VALUES ('ws-1', 'channel', 'c1', 'custom', 'created_custom', ?1, ?2, 1)",
+            params![
+                messy_cwd.to_string_lossy(),
+                artifact_root.to_string_lossy()
+            ],
+        )
+        .unwrap();
+
+        migrate_workspace_binding_storage_paths(&mut conn).unwrap();
+        migrate_workspace_binding_storage_paths(&mut conn).unwrap();
+        let (cwd, stored_artifact): (String, String) = conn
+            .query_row(
+                "SELECT cwd, artifact_root FROM workspace_bindings WHERE id = 'ws-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(cwd, std::fs::canonicalize(&workspace).unwrap().to_string_lossy());
+        assert_eq!(
+            stored_artifact,
+            std::fs::canonicalize(&artifact_root).unwrap().to_string_lossy()
+        );
+        let applied_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE name = '20261029_normalize_workspace_binding_paths'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied_count, 1);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

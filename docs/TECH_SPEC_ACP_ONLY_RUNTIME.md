@@ -6,6 +6,7 @@
 > - [`TECH_SPEC_ACP_REMOTE_AND_MEMORY.md`](./TECH_SPEC_ACP_REMOTE_AND_MEMORY.md)
 > - [`TECH_SPEC_TOPIC_CWD_ISOLATION.md`](./TECH_SPEC_TOPIC_CWD_ISOLATION.md)
 > - [`TECH_SPEC_ACP_LOCAL_PERMISSION_BROKER.md`](./TECH_SPEC_ACP_LOCAL_PERMISSION_BROKER.md)
+> - [`TECH_SPEC_CHAT_ATTACHMENTS.md`](./TECH_SPEC_CHAT_ATTACHMENTS.md)
 
 ---
 
@@ -22,6 +23,7 @@ Shadow Crew 保留薄控制面：
 - UI 消息历史、搜索、审计；
 - Artifact、Patch 与用户确认。
 - 本地 ACP 工具权限代理与 Scope Grant。
+- 图片/文件附件持久化与 ACP Content Blocks 投递。
 
 ## 2. 职责边界
 

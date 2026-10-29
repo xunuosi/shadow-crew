@@ -42,6 +42,7 @@ import { isAgentOffline } from '../utils/agentRuntime';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { openChannelArtifactsFolder, openAgentArtifactsFolder } from '../services/dbClient';
+import { MessageAttachmentList } from './MessageAttachmentList';
 
 interface ChatTimelineProps {
   messages: Message[];
@@ -149,7 +150,12 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   };
 
   const handleCopyMessage = (message: Message) => {
-    navigator.clipboard.writeText(message.content);
+    const attachmentSummary = (message.attachments || [])
+      .map((attachment) => `[${attachment.kind === 'image' ? '图片' : '文件'}] ${attachment.name}`)
+      .join('\n');
+    navigator.clipboard.writeText(
+      [message.content.trim(), attachmentSummary].filter(Boolean).join('\n\n')
+    );
     setCopiedMsgId(message.id);
     setTimeout(() => setCopiedMsgId(null), 2000);
     setContextMenu(null);
@@ -1151,6 +1157,8 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
 
                 {/* Main Markdown Text with Code Formatting */}
                 <MarkdownRenderer content={message.content} />
+
+                <MessageAttachmentList attachments={message.attachments} />
 
                 {/* Codex Style Unified Diff Card */}
                 {message.diffView && (

@@ -9,7 +9,8 @@ import {
   GameRoleType,
   McdaDecisionPayload,
   MinorityReport,
-  TopicPatchDiffItem
+  TopicPatchDiffItem,
+  MessageAttachmentInput,
 } from '../types';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { 
@@ -46,6 +47,8 @@ import {
   Play,
   Zap,
   FileText,
+  Image as ImageIcon,
+  Paperclip,
   Clock,
   Loader2
 } from 'lucide-react';
@@ -58,6 +61,16 @@ import { getDraft, saveDraft, clearDraft } from '../services/draftService';
 import { logGameTheoreticTelemetry } from '../services/agentCollaboration';
 import { LivingAdrCanvas } from './LivingAdrCanvas';
 import { isAgentOffline } from '../utils/agentRuntime';
+import {
+  MAX_FILE_ATTACHMENT_BYTES,
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_MESSAGE_ATTACHMENTS,
+  MAX_TOTAL_ATTACHMENT_BYTES,
+  formatAttachmentSize,
+  getAttachmentTotalBytes,
+  prepareMessageAttachments,
+} from '../services/chatAttachmentService';
+import { MessageAttachmentList } from './MessageAttachmentList';
 
 interface TopicThreadDrawerProps {
   isOpen: boolean;
@@ -69,7 +82,11 @@ interface TopicThreadDrawerProps {
   onAbortAgent?: (agentId: string) => void;
   onAbortAll?: () => void;
   onClose: () => void;
-  onSendMessage: (topicId: string, content: string) => void;
+  onSendMessage: (
+    topicId: string,
+    content: string,
+    attachments?: MessageAttachmentInput[]
+  ) => Promise<void> | void;
   onResolveTopic: (topicId: string, decision: {
     solution: string;
     impactedFiles: string[];
@@ -114,6 +131,20 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   const [solutionDraft, setSolutionDraft] = useState('');
   const [impactedFilesDraft, setImpactedFilesDraft] = useState('src/middleware/auth.ts, src/routes/oauth.ts');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [draftAttachments, setDraftAttachments] = useState<
+    Array<{
+      id: string;
+      file: File;
+      kind: 'image' | 'file';
+      previewUrl?: string;
+    }>
+  >([]);
+  const draftAttachmentsRef = useRef(draftAttachments);
+  draftAttachmentsRef.current = draftAttachments;
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [isPreparingAttachments, setIsPreparingAttachments] = useState(false);
+  const isSendingRef = useRef(false);
 
   // 落地执行 Agent 指派状态
   const [selectedExecutorId, setSelectedExecutorId] = useState('');
@@ -130,6 +161,81 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   const [newPointInput, setNewPointInput] = useState('');
   const [exemptionChecked, setExemptionChecked] = useState(false);
   const [exemptionReason, setExemptionReason] = useState('');
+
+  const clearDraftAttachments = useCallback(() => {
+    draftAttachmentsRef.current.forEach((attachment) => {
+      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+    });
+    draftAttachmentsRef.current = [];
+    setDraftAttachments([]);
+  }, []);
+
+  const addDraftFiles = useCallback((files: File[]) => {
+    if (files.length === 0) return;
+    const previous = draftAttachmentsRef.current;
+    if (previous.length + files.length > MAX_MESSAGE_ATTACHMENTS) {
+      setAttachmentError(`单条消息最多添加 ${MAX_MESSAGE_ATTACHMENTS} 个图片或文件`);
+      return;
+    }
+
+    let error: string | null = null;
+    let totalBytes = getAttachmentTotalBytes(previous);
+    const batchId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const next = [...previous];
+    for (const [index, file] of files.entries()) {
+      const imageExtension = file.name.split('.').pop()?.toLowerCase() || '';
+      const isImage =
+        ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type) ||
+        ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(imageExtension);
+      if (file.type.startsWith('image/') && !isImage) {
+        error = `不支持图片格式: ${file.name}。仅支持 PNG / JPEG / WebP / GIF`;
+        continue;
+      }
+      if (file.size <= 0) {
+        error = `附件 ${file.name} 为空文件`;
+        continue;
+      }
+      const limit = isImage ? MAX_IMAGE_ATTACHMENT_BYTES : MAX_FILE_ATTACHMENT_BYTES;
+      if (file.size > limit) {
+        error = `${isImage ? '图片' : '文件'} ${file.name} 超过 ${formatAttachmentSize(limit)} 上限`;
+        continue;
+      }
+      if (totalBytes + file.size > MAX_TOTAL_ATTACHMENT_BYTES) {
+        error = `单条消息附件总大小不能超过 ${formatAttachmentSize(MAX_TOTAL_ATTACHMENT_BYTES)}`;
+        continue;
+      }
+      totalBytes += file.size;
+      next.push({
+        id: `draft-att-${batchId}-${index}`,
+        file,
+        kind: isImage ? 'image' : 'file',
+        previewUrl: isImage ? URL.createObjectURL(file) : undefined,
+      });
+    }
+
+    setAttachmentError(error);
+    if (next.length !== previous.length) {
+      draftAttachmentsRef.current = next;
+      setDraftAttachments(next);
+    }
+  }, []);
+
+  const removeDraftAttachment = (id: string) => {
+    const previous = draftAttachmentsRef.current;
+    const target = previous.find((attachment) => attachment.id === id);
+    if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+    const next = previous.filter((attachment) => attachment.id !== id);
+    draftAttachmentsRef.current = next;
+    setDraftAttachments(next);
+  };
+
+  useEffect(() => {
+    return () => {
+      draftAttachmentsRef.current.forEach((attachment) => {
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+      });
+    };
+  }, []);
   const [activeDrawerView, setActiveDrawerView] = useState<'stream' | 'adr'>('stream');
   const [isRulingDetailExpanded, setIsRulingDetailExpanded] = useState(false);
   const [activeModuleFilterId, setActiveModuleFilterId] = useState<string>('ALL');
@@ -351,7 +457,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     } else {
       setReplyContent('');
     }
-  }, [topic?.id]);
+    clearDraftAttachments();
+    setAttachmentError(null);
+  }, [topic?.id, clearDraftAttachments]);
 
   const updateReplyContent = (valOrFn: string | ((prev: string) => string)) => {
     const next = typeof valOrFn === 'function' ? valOrFn(replyContent) : valOrFn;
@@ -366,6 +474,8 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     if (topic?.id) {
       clearDraft('topic', topic.id);
     }
+    clearDraftAttachments();
+    setAttachmentError(null);
     if (textareaRef.current) {
       textareaRef.current.style.height = '44px';
     }
@@ -443,7 +553,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   };
 
   const handleQuoteInDrawer = (message: Message) => {
-    const clean = message.content.trim().split('\n')[0].slice(0, 80);
+    const clean =
+      message.content.trim().split('\n')[0].slice(0, 80) ||
+      (message.attachments?.length ? '[附件消息]' : '');
     updateReplyContent(`> **@${message.authorName}**: ${clean}...\n\n${replyContent}`);
     setTimeout(() => textareaRef.current?.focus(), 50);
     setContextMenu(null);
@@ -702,16 +814,38 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     setExpandedThinking((prev) => ({ ...prev, [msgId]: !prev[msgId] }));
   };
 
-  const handleSend = () => {
-    if (!replyContent.trim() || !topic?.id) return;
-    onSendMessage(topic.id, replyContent);
-    setReplyContent('');
-    if (topic?.id) {
-      clearDraft('topic', topic.id);
+  const handleSend = async () => {
+    if (
+      (!replyContent.trim() && draftAttachments.length === 0) ||
+      !topic?.id ||
+      isPreparingAttachments ||
+      isSendingRef.current
+    ) {
+      return;
     }
-    setIsMentionOpen(false);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = '44px';
+    isSendingRef.current = true;
+    setAttachmentError(null);
+    try {
+      setIsPreparingAttachments(draftAttachments.length > 0);
+      const preparedAttachments =
+        draftAttachments.length > 0
+          ? await prepareMessageAttachments(
+              draftAttachments.map((attachment) => attachment.file)
+            )
+          : [];
+      await onSendMessage(topic.id, replyContent, preparedAttachments);
+      setReplyContent('');
+      clearDraft('topic', topic.id);
+      clearDraftAttachments();
+      setIsMentionOpen(false);
+      if (textareaRef.current) {
+        textareaRef.current.style.height = '44px';
+      }
+    } catch (err) {
+      setAttachmentError(err instanceof Error ? err.message : String(err));
+    } finally {
+      isSendingRef.current = false;
+      setIsPreparingAttachments(false);
     }
   };
 
@@ -804,6 +938,34 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       setMentionIndex(0);
     } else {
       setIsMentionOpen(false);
+    }
+  };
+
+  const handleFileSelection = (event: React.ChangeEvent<HTMLInputElement>) => {
+    addDraftFiles(Array.from(event.target.files || []));
+    event.target.value = '';
+  };
+
+  const handleComposerPaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    const files = Array.from(event.clipboardData.files || []);
+    if (files.length === 0) {
+      for (const item of Array.from(event.clipboardData.items || [])) {
+        if (item.kind !== 'file') continue;
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length > 0) {
+      event.preventDefault();
+      addDraftFiles(files);
+    }
+  };
+
+  const handleComposerDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    const files = Array.from(event.dataTransfer.files || []);
+    if (files.length > 0) {
+      event.preventDefault();
+      addDraftFiles(files);
     }
   };
 
@@ -2030,6 +2192,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 ) : (
                   <>
                     <MarkdownRenderer content={msg.content} />
+                    <MessageAttachmentList attachments={msg.attachments} />
                     {/* Unified Diff View */}
                     {msg.diffView && (
                       <div className="p-2.5 rounded-lg bg-surface border border-border font-mono text-[10px]">
@@ -2875,7 +3038,23 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         )}
 
         {/* Mini Composer to Reply in this Topic */}
-        <div className="relative bg-surface border border-border rounded-xl p-2 focus-within:border-purple-500 transition-all">
+        <div
+          className="relative bg-surface border border-border rounded-xl p-2 focus-within:border-purple-500 transition-all"
+          onPaste={handleComposerPaste}
+          onDragOver={(event) => {
+            if (event.dataTransfer.types.includes('Files')) {
+              event.preventDefault();
+            }
+          }}
+          onDrop={handleComposerDrop}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFileSelection}
+          />
           <MentionSuggestions
             isOpen={isMentionOpen}
             query={mentionQuery}
@@ -2885,6 +3064,55 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             onSelect={handleSelectMention}
             onClose={() => setIsMentionOpen(false)}
           />
+
+          {draftAttachments.length > 0 && (
+            <div className="mb-1.5 flex gap-1.5 overflow-x-auto pb-1">
+              {draftAttachments.map((attachment) => (
+                <div
+                  key={attachment.id}
+                  className="group/att relative flex min-w-[140px] max-w-[200px] items-center gap-1.5 rounded-lg border border-border bg-surface-subtle px-2 py-1.5"
+                >
+                  {attachment.kind === 'image' && attachment.previewUrl ? (
+                    <img
+                      src={attachment.previewUrl}
+                      alt={attachment.file.name}
+                      className="h-8 w-8 shrink-0 rounded-md border border-border object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-surface text-fg-muted">
+                      {attachment.kind === 'image' ? (
+                        <ImageIcon className="h-3.5 w-3.5" />
+                      ) : (
+                        <FileText className="h-3.5 w-3.5" />
+                      )}
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[9px] font-semibold text-fg">
+                      {attachment.file.name}
+                    </div>
+                    <div className="text-[8px] font-mono text-fg-muted">
+                      {formatAttachmentSize(attachment.file.size)}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeDraftAttachment(attachment.id)}
+                    className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full border border-border bg-surface text-fg-muted opacity-0 shadow-sm transition-opacity hover:text-rose-500 group-hover/att:opacity-100"
+                    title="移除附件"
+                  >
+                    <X className="h-2 w-2" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {attachmentError && (
+            <div className="mb-1.5 rounded-lg border border-rose-300 bg-rose-50 px-2 py-1.5 text-[9px] text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
+              {attachmentError}
+            </div>
+          )}
 
           <textarea
             ref={textareaRef}
@@ -2920,6 +3148,14 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               >
                 <AtSign className="w-3.5 h-3.5 text-accent" />
               </button>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="p-1 rounded hover:text-accent hover:bg-surface-hover text-fg-muted transition-colors cursor-pointer"
+                title="添加图片或文件（也可直接粘贴或拖入）"
+              >
+                <Paperclip className="w-3.5 h-3.5" />
+              </button>
               <span className="text-[10px] text-fg-muted font-mono">
                 {isExecuting ? 'Esc 终止' : '⌘ + Enter 发送'}
               </span>
@@ -2927,7 +3163,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
             <div className="flex items-center gap-1.5 shrink-0">
               {/* Topic Draft Status Badge */}
-              {replyContent.trim().length > 0 && (
+              {(replyContent.trim().length > 0 || draftAttachments.length > 0) && (
                 <div
                   className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[10px] select-none mr-1 animate-in fade-in"
                   title="当前议题回复草稿已独立暂存，切换议题不丢失"
@@ -2964,12 +3200,19 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             ) : (
               <button
                 type="button"
-                onClick={handleSend}
-                disabled={!replyContent.trim()}
+                onClick={() => void handleSend()}
+                disabled={
+                  (!replyContent.trim() && draftAttachments.length === 0) ||
+                  isPreparingAttachments
+                }
                 className="p-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white transition-all cursor-pointer shadow-xs"
                 title="发送回复 (⌘ + Enter)"
               >
-                <Send className="w-3 h-3" />
+                {isPreparingAttachments ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Send className="w-3 h-3" />
+                )}
               </button>
             )}
           </div>

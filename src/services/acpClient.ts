@@ -1,4 +1,4 @@
-import { Agent, CartridgeCitation, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem, TopicExecutionUiMeta, ModuleDecompositionDraft, ModuleComplexityLevel } from '../types';
+import { Agent, CartridgeCitation, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem, TopicExecutionUiMeta, ModuleDecompositionDraft, ModuleComplexityLevel, MessageAttachment } from '../types';
 import { isAgentOffline } from '../utils/agentRuntime';
 import { buildAgentPersonaPrompt } from './agentCollaboration';
 
@@ -13,6 +13,7 @@ export interface AcpSendPromptOptions {
   isDm?: boolean;
   scopeType?: 'channel' | 'topic' | 'dm' | 'dm_topic';
   discussionMode?: 'standard' | 'game_theoretic';
+  attachments?: MessageAttachment[];
 }
 
 /**
@@ -959,6 +960,14 @@ export async function sendPromptToAcpAgent(
     Boolean(agent.remoteUrl);
 
   if (isRemote) {
+    if (options.attachments && options.attachments.length > 0) {
+      return {
+        textResponse: `⚠️【${agent.name}】当前远程 ACP 附件同步尚未实现。为避免静默丢弃图片或文件，本轮已阻断。`,
+        durationMs: Date.now() - startTime,
+        isRealProcess: false,
+        isError: true,
+      };
+    }
     const targetUrl = agent.remoteUrl || agent.acpCommandOrUrl;
     console.log(`[ACP Client] Dispatching prompt to Remote ACP: ${targetUrl} (${agent.name})`);
     const remoteRes = await sendPromptToRemoteAcpWebSocket(
@@ -1005,6 +1014,23 @@ export async function sendPromptToAcpAgent(
         ? `~/.shadow-crew/agents/${agent.id}`
         : `~/.shadow-crew/channels/${options.channelId || roomId}`);
       const effectiveChannelId = isDm ? undefined : (options.channelId || roomId);
+      const promptAttachments = (options.attachments || []).map((attachment) => ({
+        id: attachment.id,
+        kind: attachment.kind,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+        path: attachment.path,
+        uri: attachment.uri,
+      }));
+      if (promptAttachments.some((attachment) => !attachment.path || !attachment.uri)) {
+        return {
+          textResponse: `⚠️【${agent.name}】附件尚未写入本地附件目录，本轮未派发。`,
+          durationMs: Date.now() - startTime,
+          isRealProcess: false,
+          isError: true,
+        };
+      }
 
       const response = await tauriInvoke('send_prompt_to_agent', {
         agentId: agent.id,
@@ -1019,6 +1045,7 @@ export async function sendPromptToAcpAgent(
         systemPrompt: resolvedSystemPrompt,
         discussionMode: options.discussionMode,
         scopeType: options.scopeType,
+        attachments: promptAttachments,
       });
 
       const durationMs = Date.now() - startTime;

@@ -844,6 +844,29 @@ export interface CartridgeCitation {
 
 export type MessageKind = 'normal' | 'system_control' | 'rollup' | 'guard' | 'error';
 
+export type MessageAttachmentKind = 'image' | 'file';
+
+export interface MessageAttachmentInput {
+  id: string;
+  kind: MessageAttachmentKind;
+  name: string;
+  mimeType: string;
+  size: number;
+  dataBase64: string;
+  previewDataUrl?: string;
+}
+
+export interface MessageAttachment {
+  id: string;
+  kind: MessageAttachmentKind;
+  name: string;
+  mimeType: string;
+  size: number;
+  path?: string;
+  uri?: string;
+  previewDataUrl?: string;
+}
+
 export interface Message {
   id: string;
   threadId: string;
@@ -894,6 +917,7 @@ export interface Message {
   isPending?: boolean; // 正在推演/流式输出中的临时占位卡
   pendingHint?: string; // 实时推演/心跳动作描述提示
   startedAt?: number; // 任务发起时间戳
+  attachments?: MessageAttachment[];
   codeSnippets?: Array<{
     language: string;
     filename: string;

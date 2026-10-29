@@ -31,6 +31,8 @@ import {
   DuelRolesConfig,
   AcpPermissionDecision,
   AcpPermissionRequest,
+  MessageAttachment,
+  MessageAttachmentInput,
 } from './types';
 import { 
   INITIAL_AGENTS, 
@@ -91,6 +93,10 @@ import {
   upsertPendingAcpPermission,
 } from './services/acpPermissionClient';
 import { listenTauriEvent } from './services/tauriEventClient';
+import {
+  buildAttachmentManifest,
+  persistMessageAttachments,
+} from './services/chatAttachmentService';
 import { isAgentOffline, isAgentOnline } from './utils/agentRuntime';
 import {
   saveMessagesBatchToDb,
@@ -5319,9 +5325,23 @@ export default function App() {
     }
   };
 
-  const handleSendTopicMessage = (topicId: string, content: string) => {
+  const handleSendTopicMessage = async (
+    topicId: string,
+    content: string,
+    pendingAttachments: MessageAttachmentInput[] = []
+  ) => {
+    const userMessageId = `topic-msg-${Date.now()}`;
+    const topicScopeType = activeTopicData?.scopeType === 'dm' ? 'dm_topic' : 'topic';
+    const savedAttachments: MessageAttachment[] = await persistMessageAttachments({
+      scopeType: topicScopeType,
+      scopeId: topicId,
+      messageId: userMessageId,
+      attachments: pendingAttachments,
+    });
+    const attachmentManifest = buildAttachmentManifest(savedAttachments);
+    const agentTurnContent = `${content}${attachmentManifest}`.trim();
     const userMsg: Message = {
-      id: `topic-msg-${Date.now()}`,
+      id: userMessageId,
       threadId: topicId,
       authorId: 'user-norris',
       authorName: 'Norris_M5Pro',
@@ -5330,6 +5350,7 @@ export default function App() {
       isAgent: false,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       content,
+      attachments: savedAttachments,
     };
 
     commitMessages((prev) => {
@@ -5445,8 +5466,8 @@ export default function App() {
         includeRoster: false,
       });
       const prompt = isGame
-        ? `[私聊双方博弈议题]\n标题：${activeTopicData?.title}\n背景：${activeTopicData?.description || activeTopicData?.title}\n\n[角色约束]\n你固定担任：${agentRole === 'proposer' ? '提案方' : '对抗方'}\n人类固定担任：${isHumanProposer ? '提案方' : '对抗方'}\n只允许两个角色，不得引入验证官、仲裁官或其他 Agent 角色。\n\n[最近讨论]\n${roomTranscript || '（暂无）'}\n\n[人类本轮发言]\n${content}\n\n请基于你的固定角色回复。提案方给出方案与约束，对抗方给出具体反例、风险和可证伪条件。`
-        : `[私聊议题]\n标题：${activeTopicData?.title}\n背景：${activeTopicData?.description || activeTopicData?.title}\n\n[最近讨论]\n${roomTranscript || '（暂无）'}\n\n[人类本轮发言]\n${content}\n\n请直接回应并推进当前议题。`;
+        ? `[私聊双方博弈议题]\n标题：${activeTopicData?.title}\n背景：${activeTopicData?.description || activeTopicData?.title}\n\n[角色约束]\n你固定担任：${agentRole === 'proposer' ? '提案方' : '对抗方'}\n人类固定担任：${isHumanProposer ? '提案方' : '对抗方'}\n只允许两个角色，不得引入验证官、仲裁官或其他 Agent 角色。\n\n[最近讨论]\n${roomTranscript || '（暂无）'}\n\n[人类本轮发言]\n${agentTurnContent}\n\n请基于你的固定角色回复。提案方给出方案与约束，对抗方给出具体反例、风险和可证伪条件。`
+        : `[私聊议题]\n标题：${activeTopicData?.title}\n背景：${activeTopicData?.description || activeTopicData?.title}\n\n[最近讨论]\n${roomTranscript || '（暂无）'}\n\n[人类本轮发言]\n${agentTurnContent}\n\n请直接回应并推进当前议题。`;
       const execKey = `${topicId}:${dmAgent.id}`;
       setActiveExecutions((prev) => ({
         ...prev,
@@ -5485,6 +5506,7 @@ export default function App() {
             scopeType: 'dm_topic',
             systemPrompt,
             discussionMode: activeTopicData?.discussionMode,
+          attachments: savedAttachments,
           });
           const agentReply: Message = {
             id: `dm-topic-reply-${Date.now()}-${dmAgent.id}`,
@@ -5851,7 +5873,7 @@ export default function App() {
         cascadeId: sharedStandardCascadeId,
         rootMessageId: userMsg.id,
         roomId: topicId,
-        originalPrompt: content,
+        originalPrompt: agentTurnContent,
         depth: 1,
         maxDepth: 12,
         visitedAgentIds: onlineAgents.map((a) => a.id),
@@ -5988,7 +6010,7 @@ export default function App() {
       if (isGameTheoretic) {
         finalPrompt = buildTopicPrompt({
           topic: topicContext,
-          userContent: content,
+          userContent: agentTurnContent,
           targetAgent: agent,
           availableAgents: candidateAgents,
         });
@@ -6012,7 +6034,7 @@ export default function App() {
           roomId: topicId,
           isWarmSession: deltaBatch.isWarmSession,
           deltaMessages: deltaBatch.deltaMessages,
-          triggerContent: content,
+          triggerContent: agentTurnContent,
           hop: 1,
           maxHops: 12,
           topic: topicContext,
@@ -6033,7 +6055,7 @@ export default function App() {
           cascadeId,
           rootMessageId: userMsg.id,
           roomId: topicId,
-          originalPrompt: content,
+          originalPrompt: agentTurnContent,
           depth: 1,
           maxDepth: 12,
           visitedAgentIds: [agent.id],
@@ -6114,6 +6136,7 @@ export default function App() {
         scopeType: 'topic',
         systemPrompt,
         discussionMode: activeTopicData?.discussionMode,
+        attachments: savedAttachments,
       })
         .then((acpResp) => {
           setActiveExecutions((prev) => {
@@ -7216,8 +7239,11 @@ export default function App() {
   };
 
   // Send Message in active thread
-  const handleSendMessage = (content: string) => {
-    if (!content.trim() || !activeThread) return;
+  const handleSendMessage = async (
+    content: string,
+    pendingAttachments: MessageAttachmentInput[] = []
+  ) => {
+    if ((!content.trim() && pendingAttachments.length === 0) || !activeThread) return;
 
     const currentThreadId = activeThread.id;
     const isDmThread = activeThread.type === 'dm';
@@ -7225,9 +7251,20 @@ export default function App() {
     const targetChannelId = isDmThread
       ? undefined
       : activeChannel?.id;
+    const userMessageId = `msg-${Date.now()}`;
+    const scopeType = isDmThread ? 'dm' : 'channel';
+    const scopeId = isDmThread ? currentThreadId : (targetChannelId || currentThreadId);
+    const savedAttachments: MessageAttachment[] = await persistMessageAttachments({
+      scopeType,
+      scopeId,
+      messageId: userMessageId,
+      attachments: pendingAttachments,
+    });
+    const attachmentManifest = buildAttachmentManifest(savedAttachments);
+    const agentTurnContent = `${content}${attachmentManifest}`.trim();
 
     const userMsg: Message = {
-      id: `msg-${Date.now()}`,
+      id: userMessageId,
       threadId: currentThreadId,
       channelId: targetChannelId,
       authorId: 'user-norris',
@@ -7237,6 +7274,7 @@ export default function App() {
       isAgent: false,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       content,
+      attachments: savedAttachments,
       reactions: [],
     };
 
@@ -7408,7 +7446,7 @@ export default function App() {
       cascadeId,
       rootMessageId: userMsg.id,
       roomId: activeThread.id,
-      originalPrompt: content,
+      originalPrompt: agentTurnContent,
       depth: 1,
       maxDepth: 12, // 对标 Buzz: 提升至 12 轮作为不可见安全兜底
       visitedAgentIds: onlineAgents.map((ag) => ag.id),
@@ -7564,7 +7602,7 @@ export default function App() {
         roomId: currentThreadId,
         isWarmSession: deltaBatch.isWarmSession,
         deltaMessages: deltaBatch.deltaMessages,
-        triggerContent: content,
+        triggerContent: agentTurnContent,
         hop: 1,
         maxHops: 12,
         isDm: isDmThread,
@@ -7601,6 +7639,7 @@ export default function App() {
         scopeType: isDmThread ? 'dm' : 'channel',
         systemPrompt: compositeSystemPrompt,
         isDm: isDmThread,
+        attachments: savedAttachments,
       })
         .then((acpResp) => {
           setActiveExecutions((prev) => {

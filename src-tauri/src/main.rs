@@ -6,6 +6,7 @@ mod agent_discovery;
 mod db_manager;
 
 use acp_manager::AcpProcessManager;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use db_manager::{DatabaseManager, StorageStatsDto};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -17,6 +18,204 @@ struct AppState {
     db_manager: Arc<DatabaseManager>,
     #[allow(dead_code)]
     nostr_relay_url: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatAttachmentInput {
+    id: String,
+    kind: String,
+    name: String,
+    mime_type: String,
+    size: u64,
+    data_base64: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredChatAttachment {
+    id: String,
+    kind: String,
+    name: String,
+    mime_type: String,
+    size: u64,
+    path: String,
+    uri: String,
+}
+
+fn sanitize_attachment_segment(raw: &str, fallback: &str) -> String {
+    let cleaned: String = raw
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let cleaned = cleaned
+        .trim_matches(|ch| matches!(ch, '.' | '_' | '-'))
+        .to_string();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        fallback.to_string()
+    } else {
+        cleaned.chars().take(120).collect()
+    }
+}
+
+fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 8
+        && bytes[0] == 0x89
+        && bytes[1] == 0x50
+        && bytes[2] == 0x4e
+        && bytes[3] == 0x47
+    {
+        return Some("image/png");
+    }
+    if bytes.len() >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff {
+        return Some("image/jpeg");
+    }
+    if bytes.len() >= 6 && (&bytes[..6] == b"GIF87a" || &bytes[..6] == b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    None
+}
+
+fn percent_encode_path(path: &std::path::Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    let mut encoded = String::new();
+    for byte in raw.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{:02X}", byte));
+        }
+    }
+    if encoded.starts_with('/') {
+        format!("file://{}", encoded)
+    } else {
+        format!("file:///{}", encoded)
+    }
+}
+
+/// 将聊天附件写入 Shadow Crew 私有附件目录，并返回供 ACP 使用的路径和 file URI。
+#[tauri::command]
+async fn save_chat_attachments(
+    scope_type: String,
+    scope_id: String,
+    message_id: String,
+    attachments: Vec<ChatAttachmentInput>,
+) -> Result<Vec<StoredChatAttachment>, String> {
+    let attachment_root = db_manager::get_shadow_crew_home_dir().join("attachments");
+    save_chat_attachments_to_root(
+        scope_type,
+        scope_id,
+        message_id,
+        attachments,
+        &attachment_root,
+    )
+    .await
+}
+
+async fn save_chat_attachments_to_root(
+    scope_type: String,
+    scope_id: String,
+    message_id: String,
+    attachments: Vec<ChatAttachmentInput>,
+    attachment_root: &std::path::Path,
+) -> Result<Vec<StoredChatAttachment>, String> {
+    if attachments.len() > 6 {
+        return Err("单条消息最多添加 6 个附件".to_string());
+    }
+
+    let safe_scope_type = sanitize_attachment_segment(&scope_type, "unknown");
+    let safe_scope_id = sanitize_attachment_segment(&scope_id, "default");
+    let safe_message_id = sanitize_attachment_segment(&message_id, "message");
+    let attachment_dir = attachment_root
+        .join(safe_scope_type)
+        .join(safe_scope_id)
+        .join(safe_message_id);
+    tokio::fs::create_dir_all(&attachment_dir)
+        .await
+        .map_err(|e| format!("创建附件目录失败: {}", e))?;
+
+    let mut total_size = 0u64;
+    let mut stored = Vec::with_capacity(attachments.len());
+    for attachment in attachments {
+        let bytes = BASE64_STANDARD
+            .decode(attachment.data_base64.as_bytes())
+            .map_err(|e| format!("附件 {} Base64 解码失败: {}", attachment.name, e))?;
+        let actual_size = bytes.len() as u64;
+        if actual_size == 0 {
+            return Err(format!("附件 {} 为空文件", attachment.name));
+        }
+        if actual_size != attachment.size {
+            return Err(format!(
+                "附件 {} 大小校验失败: declared={}, actual={}",
+                attachment.name, attachment.size, actual_size
+            ));
+        }
+
+        let is_image = attachment.kind == "image";
+        let max_size = if is_image {
+            4 * 1024 * 1024
+        } else {
+            8 * 1024 * 1024
+        };
+        if actual_size > max_size {
+            return Err(format!(
+                "{} {} 超过 {} MiB 上限",
+                if is_image { "图片" } else { "文件" },
+                attachment.name,
+                max_size / 1024 / 1024
+            ));
+        }
+        total_size += actual_size;
+        if total_size > 16 * 1024 * 1024 {
+            return Err("单条消息附件总大小不能超过 16 MiB".to_string());
+        }
+
+        let detected_image_mime = detect_image_mime(&bytes);
+        if is_image && detected_image_mime.is_none() {
+            return Err(format!(
+                "图片 {} 文件头无效，仅支持 PNG / JPEG / WebP / GIF",
+                attachment.name
+            ));
+        }
+        if !is_image && detected_image_mime.is_some() {
+            return Err(format!("附件 {} 是图片，类型声明不一致", attachment.name));
+        }
+        let mime_type = if is_image {
+            detected_image_mime.unwrap_or("application/octet-stream")
+        } else if attachment.mime_type.trim().is_empty() {
+            "application/octet-stream"
+        } else {
+            attachment.mime_type.trim()
+        };
+
+        let safe_id = sanitize_attachment_segment(&attachment.id, "attachment");
+        let safe_name = sanitize_attachment_segment(&attachment.name, "attachment.bin");
+        let target_path = attachment_dir.join(format!("{}-{}", safe_id, safe_name));
+        tokio::fs::write(&target_path, &bytes)
+            .await
+            .map_err(|e| format!("保存附件 {} 失败: {}", attachment.name, e))?;
+
+        stored.push(StoredChatAttachment {
+            id: attachment.id,
+            kind: if is_image { "image" } else { "file" }.to_string(),
+            name: attachment.name,
+            mime_type: mime_type.to_string(),
+            size: actual_size,
+            path: target_path.to_string_lossy().to_string(),
+            uri: percent_encode_path(&target_path),
+        });
+    }
+    Ok(stored)
 }
 
 /// Tauri Command: 探测本地预设 ACP Agents 状态 (Available / Not Adapted / Not Installed)
@@ -166,6 +365,7 @@ async fn send_prompt_to_agent(
     workspace_binding_id: Option<String>,
     workspace_cwd: Option<String>,
     scope_type: Option<String>,
+    attachments: Option<Vec<acp_manager::AcpPromptAttachment>>,
     prompt: String,
     _command: Option<String>,
     _cwd: Option<String>,
@@ -201,6 +401,7 @@ async fn send_prompt_to_agent(
             workspace_binding_id.as_deref(),
             workspace_cwd.as_deref(),
             scope_type.as_deref(),
+            attachments.as_deref().unwrap_or(&[]),
             &prompt,
             system_prompt.as_deref(),
             discussion_mode.as_deref(),
@@ -928,6 +1129,7 @@ async fn main() {
             revoke_all_acp_permission_grants,
             revoke_acp_permission_grants_for_agent,
             revoke_acp_permission_grants_for_scope,
+            save_chat_attachments,
             send_prompt_to_agent,
             ensure_agent_session,
             resolve_workspace_cwd,
@@ -961,4 +1163,112 @@ async fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running shadow-crew tauri desktop application");
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+
+    fn temp_root() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "shadow_crew_chat_attachment_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ))
+    }
+
+    #[tokio::test]
+    async fn saves_valid_image_and_file_into_scoped_attachment_store() {
+        let root = temp_root();
+        let png = b"\x89PNG\r\n\x1a\nfake-image";
+        let text = b"attachment text";
+        let stored = save_chat_attachments_to_root(
+            "channel".to_string(),
+            "channel-1".to_string(),
+            "msg-1".to_string(),
+            vec![
+                ChatAttachmentInput {
+                    id: "img-1".to_string(),
+                    kind: "image".to_string(),
+                    name: "screen shot.png".to_string(),
+                    mime_type: "image/png".to_string(),
+                    size: png.len() as u64,
+                    data_base64: BASE64_STANDARD.encode(png),
+                },
+                ChatAttachmentInput {
+                    id: "file-1".to_string(),
+                    kind: "file".to_string(),
+                    name: "notes.md".to_string(),
+                    mime_type: "text/markdown".to_string(),
+                    size: text.len() as u64,
+                    data_base64: BASE64_STANDARD.encode(text),
+                },
+            ],
+            &root,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0].kind, "image");
+        assert!(stored[0].uri.starts_with("file://"));
+        assert_eq!(std::fs::read(&stored[0].path).unwrap(), png);
+        assert_eq!(std::fs::read(&stored[1].path).unwrap(), text);
+        assert!(stored[0]
+            .path
+            .contains("/channel/channel-1/msg-1/"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn rejects_fake_images_and_declared_size_mismatch() {
+        let root = temp_root();
+        let error = save_chat_attachments_to_root(
+            "channel".to_string(),
+            "channel-1".to_string(),
+            "msg-1".to_string(),
+            vec![ChatAttachmentInput {
+                id: "img-1".to_string(),
+                kind: "image".to_string(),
+                name: "fake.png".to_string(),
+                mime_type: "image/png".to_string(),
+                size: 4,
+                data_base64: BASE64_STANDARD.encode(b"fake"),
+            }],
+            &root,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("文件头无效"));
+
+        let error = save_chat_attachments_to_root(
+            "topic".to_string(),
+            "topic-1".to_string(),
+            "msg-2".to_string(),
+            vec![ChatAttachmentInput {
+                id: "file-1".to_string(),
+                kind: "file".to_string(),
+                name: "notes.txt".to_string(),
+                mime_type: "text/plain".to_string(),
+                size: 99,
+                data_base64: BASE64_STANDARD.encode(b"small"),
+            }],
+            &root,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("大小校验失败"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sanitizes_path_segments_and_detects_image_headers() {
+        assert_eq!(sanitize_attachment_segment("../../etc", "fallback"), "etc");
+        assert_eq!(sanitize_attachment_segment("", "fallback"), "fallback");
+        assert_eq!(detect_image_mime(b"\x89PNG\r\n\x1a\nrest"), Some("image/png"));
+        assert_eq!(detect_image_mime(b"not-an-image"), None);
+    }
 }
