@@ -170,7 +170,7 @@ const allAgents = [agent1, agent2, agentGlm, agentChinese, agentSpaces];
 
   const roster = buildCrewRosterGuidance(pool, agent1.id);
   console.assert(
-    roster.includes('@glmclaude-01 (GlmClaude-01)') && !roster.includes('@glmclaude (GlmClaude-01)'),
+    roster.includes('@glmclaude-01 (GlmClaude-01') && !roster.includes('@glmclaude (GlmClaude-01'),
     `Test 13c failed: roster leaked stale @glmclaude handle:\n${roster}`
   );
 
