@@ -106,6 +106,9 @@ function findCodexBinary() {
 
 const codexResolution = findCodexBinary();
 const CODEX_BIN = codexResolution.bin;
+const NATIVE_MEMORY_ENABLED = process.env.SHADOW_CREW_ACP_NATIVE_MEMORY === '1';
+const NATIVE_MEMORY_AUTO_GENERATE =
+  process.env.SHADOW_CREW_ACP_NATIVE_MEMORY_AUTO_GENERATE === '1';
 
 function codexUnavailableReason() {
   if (codexResolution.explicitInvalid) {
@@ -132,8 +135,60 @@ function codexVersion() {
   return cachedCodexVersion;
 }
 
+let cachedNativeMemoryFeatureSupported = null;
+function codexNativeMemoryFeatureSupported() {
+  if (cachedNativeMemoryFeatureSupported !== null) {
+    return cachedNativeMemoryFeatureSupported;
+  }
+  if (!CODEX_BIN) {
+    cachedNativeMemoryFeatureSupported = false;
+    return false;
+  }
+  try {
+    const out = execFileSync(CODEX_BIN, ['--enable', 'memories', 'features', 'list'], {
+      timeout: 5000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: codexChildEnv(),
+    });
+    const memoryLine = out
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line.startsWith('memories '));
+    cachedNativeMemoryFeatureSupported = Boolean(memoryLine && /\btrue$/.test(memoryLine));
+  } catch {
+    cachedNativeMemoryFeatureSupported = false;
+  }
+  return cachedNativeMemoryFeatureSupported;
+}
+
+function codexNativeMemoryCapability() {
+  const supported = codexNativeMemoryFeatureSupported();
+  const enabled = supported && NATIVE_MEMORY_ENABLED;
+  let detail = null;
+  if (!supported) {
+    detail = '当前 Codex CLI 不支持 memories 功能';
+  } else if (!NATIVE_MEMORY_ENABLED) {
+    detail = '已在 Shadow Crew Agent 配置中关闭原生记忆';
+  } else {
+    detail = NATIVE_MEMORY_AUTO_GENERATE
+      ? '已启用 Codex native memory 专用工具与自动提炼；自动提炼依赖模型提供方能力'
+      : '已启用 Codex native memory 专用工具；自动提炼已关闭';
+  }
+  return {
+    supported,
+    enabled,
+    persistent: supported,
+    crossThread: supported,
+    scope: 'runtime',
+    provider: 'codex-memories',
+    detail,
+  };
+}
+
 // 会话状态管理与持久化缓存 (独立会话文件存储，彻底杜绝多进程覆盖 ~/.shadow-crew/cache/codex_sessions/<sessionId>.json)
-const SESSIONS_CACHE_ROOT = path.join(HOME, '.shadow-crew', 'cache');
+const SHADOW_CREW_HOME = process.env.SHADOW_CREW_HOME || path.join(HOME, '.shadow-crew');
+const SESSIONS_CACHE_ROOT = path.join(SHADOW_CREW_HOME, 'cache');
 const SESSIONS_DIR = path.join(SESSIONS_CACHE_ROOT, 'codex_sessions');
 const LEGACY_CACHE_FILE = path.join(SESSIONS_CACHE_ROOT, 'codex_sessions.json');
 
@@ -292,6 +347,7 @@ rl.on('line', async (line) => {
         loadSession: false,
         tools: { listChanged: true },
         streaming: true,
+        nativeMemory: codexNativeMemoryCapability(),
         sessionCapabilities: {
           resume: {},
         },
@@ -423,11 +479,22 @@ rl.on('line', async (line) => {
     }
 
     const hasThread = Boolean(session.codexThreadId);
+    const nativeMemoryActive =
+      NATIVE_MEMORY_ENABLED && codexNativeMemoryFeatureSupported();
+    const nativeMemoryDirective = nativeMemoryActive
+      ? `[Codex native memory mode]\n当用户明确要求长期记住，或信息属于稳定偏好、项目约定、可复用事故经验时，使用当前可用的原生 memory/ad_hoc_note 工具持久化。不要保存密钥、临时状态或普通讨论流水。`
+      : '';
     // 当已有底座 Codex thread 时，底层会话已记忆首次注入的系统公约与花名册，
     // 此时仅发送增量 userPromptText，严禁重复前置长篇系统提示词以避免 Token 浪费
-    const fullPrompt = (hasThread || !session.systemPrompt)
-      ? userPromptText
-      : `${session.systemPrompt}\n\n${userPromptText}`;
+    let fullPrompt = userPromptText;
+    if (!hasThread) {
+      const initialContext = [session.systemPrompt, nativeMemoryDirective]
+        .filter((part) => typeof part === 'string' && part.trim().length > 0)
+        .join('\n\n');
+      if (initialContext) {
+        fullPrompt = `${initialContext}\n\n${userPromptText}`;
+      }
+    }
 
     // 方案 A：精准开放工作区写权限 (-s workspace-write)，保证 Agent 能正常落盘 artifacts/scratch，
     // 同时通过 Seatbelt 沙箱阻断对外部目录的越界篡改。
@@ -435,7 +502,16 @@ rl.on('line', async (line) => {
     const args = ['exec'];
 
     if (hasThread) {
-      args.push('resume', session.codexThreadId, '-');
+      args.push('resume', session.codexThreadId);
+    }
+
+    if (nativeMemoryActive) {
+      args.push(
+        '--enable', 'memories',
+        '-c', 'memories.use_memories=true',
+        '-c', `memories.generate_memories=${NATIVE_MEMORY_AUTO_GENERATE ? 'true' : 'false'}`,
+        '-c', 'memories.dedicated_tools=true'
+      );
     }
 
     if (process.env.CODEX_DANGEROUSLY_BYPASS_SANDBOX === '1') {
@@ -456,8 +532,8 @@ rl.on('line', async (line) => {
           args.push('--add-dir', dir);
         }
       }
-      args.push('-');
     }
+    args.push('-');
 
     let fullOutput = '';
     let hasSentChunk = false;
