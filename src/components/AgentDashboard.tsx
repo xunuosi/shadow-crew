@@ -280,67 +280,72 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                 className="min-h-[20.5rem] h-auto rounded-3xl bg-surface border border-border hover:border-accent/50 hover:shadow-xl transition-all p-4 flex flex-col justify-between relative group select-none shadow-card"
               >
                 {/* Top Card Row: Online Status Badge (Left) & Menu (Right) */}
-                <div className="flex items-center justify-between h-6">
-                  <div className="flex items-center gap-1.5 min-w-0 pr-1">
+                <div className="flex items-center justify-between h-6 gap-1.5">
+                  <div className="flex items-center gap-1.5 min-w-0 shrink-0">
                     {/* Badge State */}
                     {agent.status === 'error' ? (
                       <span
-                        className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/25 text-rose-600 dark:text-rose-400 text-[11px] font-medium"
+                        className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-50 dark:bg-rose-500/10 border border-rose-300 dark:border-rose-500/25 text-rose-800 dark:text-rose-400 text-[11px] font-medium whitespace-nowrap shrink-0 select-none"
                         title={agent.statusDetail || "ACP 连通异常"}
                       >
-                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                        <span>error</span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />
+                        <span className="whitespace-nowrap">error</span>
                       </span>
                     ) : agent.status === 'idle' ? (
                       <span
-                        className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-zinc-500/10 border border-zinc-500/25 text-zinc-500 dark:text-zinc-400 text-[11px] font-medium"
+                        className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-zinc-100 dark:bg-zinc-500/10 border border-zinc-300 dark:border-zinc-500/25 text-zinc-700 dark:text-zinc-400 text-[11px] font-medium whitespace-nowrap shrink-0 select-none"
                         title="通信未开启，点击下方 Start 按钮连接"
                       >
-                        <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500" />
-                        <span>offline</span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 shrink-0" />
+                        <span className="whitespace-nowrap">offline</span>
                       </span>
                     ) : (agent.isRemote || agent.acpTransport === 'websocket') && isRunning ? (
                       <span
-                        className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-cyan-500/15 border border-cyan-500/35 text-cyan-700 dark:text-cyan-300 text-[11px] font-medium shrink-0"
+                        className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-cyan-50 dark:bg-cyan-500/15 border border-cyan-300 dark:border-cyan-500/35 text-cyan-800 dark:text-cyan-300 text-[11px] font-medium whitespace-nowrap shrink-0 select-none"
                         title={`远程 WebSocket 端点: ${agent.remoteUrl || agent.acpCommandOrUrl || 'ws://...'}`}
                       >
-                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-                        <span>remote online</span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-500 dark:bg-cyan-400 animate-pulse shrink-0" />
+                        <span className="whitespace-nowrap">remote online</span>
                       </span>
                     ) : agent.status === 'running' || agent.status === 'thinking' || agent.status === 'using_skill' || agent.status === 'accessing_workspace' || agent.status === 'querying_memory' ? (
-                      <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-600 dark:text-emerald-400 text-[11px] font-medium" title="ACP 协议已握手就绪，模型可调用">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                        <span>online</span>
+                      <span
+                        className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-300 dark:border-emerald-500/25 text-emerald-800 dark:text-emerald-400 text-[11px] font-medium whitespace-nowrap shrink-0 select-none"
+                        title="ACP 协议已握手就绪，模型可调用"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                        <span className="whitespace-nowrap">online</span>
                       </span>
                     ) : agent.status === 'auth_required' ? (
                       <span
-                        className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/35 text-amber-600 dark:text-amber-400 text-[11px] font-medium"
-                        title={agent.statusDetail || "缺少或无效 API Key"}
+                        onClick={(e) => {
+                          if (onEditAgent) {
+                            e.stopPropagation();
+                            onEditAgent(agent);
+                          }
+                        }}
+                        className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-500/15 border border-amber-300 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 text-[11px] font-medium whitespace-nowrap shrink-0 select-none ${
+                          onEditAgent ? 'cursor-pointer hover:border-amber-400 dark:hover:border-amber-400/80 hover:shadow-2xs transition-all' : ''
+                        }`}
+                        title={agent.statusDetail ? `${agent.statusDetail}（点击配置）` : "缺少或无效 API Key / 认证凭据，点击立即配置"}
                       >
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-                        <span>auth required</span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-400 animate-pulse shrink-0" />
+                        <span className="whitespace-nowrap">auth required</span>
                       </span>
                     ) : agent.status === 'starting' ? (
-                      <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-sky-500/10 border border-sky-500/25 text-sky-600 dark:text-sky-400 text-[11px] font-medium">
-                        <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-ping" />
-                        <span>connecting...</span>
-                      </span>
-                    ) : agent.status === 'error' ? (
                       <span
-                        className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/25 text-red-600 dark:text-red-400 text-[11px] font-medium"
-                        title={agent.statusDetail || "启动或握手异常"}
+                        className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-50 dark:bg-sky-500/10 border border-sky-300 dark:border-sky-500/25 text-sky-800 dark:text-sky-400 text-[11px] font-medium whitespace-nowrap shrink-0 select-none"
                       >
-                        <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                        <span>error</span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-ping shrink-0" />
+                        <span className="whitespace-nowrap">connecting...</span>
                       </span>
                     ) : (
-                      <span className="text-[10px] text-fg-muted font-mono pl-1">
+                      <span className="text-[10px] text-fg-muted font-mono pl-1 whitespace-nowrap shrink-0 select-none">
                         {agent.acpTransport || 'stdio'}
                       </span>
                     )}
                   </div>
 
-                  <div className="flex items-center gap-0.5">
+                  <div className="flex items-center gap-0.5 shrink-0 ml-auto">
                     {/* Top-right Quick Edit Entry */}
                     {onEditAgent && (
                       <button

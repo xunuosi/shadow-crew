@@ -391,9 +391,15 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 </div>
                 <span className="truncate">DM with <span className="text-accent font-semibold">{dmTargetAgent?.name || activeThread.authorName}</span></span>
                 {dmTargetAgent && isAgentOffline(dmTargetAgent) && (
-                  <span className="hidden @md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 border border-zinc-500/25 text-[10px] font-mono shrink-0" title={dmTargetAgent.status === 'error' ? `连接异常${dmTargetAgent.statusDetail ? `：${dmTargetAgent.statusDetail}` : ''}` : '通信未开启，请先在 Agents 面板点击 Start 开启连接'}>
-                    <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500" />
+                  <span className="hidden @md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 border border-zinc-500/25 text-[10px] font-mono shrink-0 whitespace-nowrap" title={dmTargetAgent.status === 'error' ? `连接异常${dmTargetAgent.statusDetail ? `：${dmTargetAgent.statusDetail}` : ''}` : '通信未开启，请先在 Agents 面板点击 Start 开启连接'}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 shrink-0" />
                     <span>{dmTargetAgent.status === 'error' ? '连接异常 (Error)' : '未开启通信 (Offline)'}</span>
+                  </span>
+                )}
+                {dmTargetAgent && dmTargetAgent.status === 'auth_required' && (
+                  <span className="hidden @md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 text-[10px] font-mono shrink-0 whitespace-nowrap" title={dmTargetAgent.statusDetail || '缺少或无效 API Key，请先配置凭据'}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+                    <span>认证缺失 (Auth Required)</span>
                   </span>
                 )}
                 {dmTargetAgent && (dmTargetAgent.status === 'running' || dmTargetAgent.status === 'thinking') && currentThreadExecutions.length === 0 && (
