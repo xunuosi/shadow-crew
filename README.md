@@ -25,7 +25,7 @@
 | **CognoNexus 4+1 决策** | Proposer → Challenger → Verifier → Defender → Arbiter + Human；FSM 单向推进、阶段契约、法定人数门禁、结构化裁决与后仲裁执行闭环。 |
 | **G-Frame 模块化编排** | 2～4 个原子模块拆解、只读公共接口契约、模块上下文物理隔离、文件白名单、贝叶斯先验/后验路由与模块级冻结。 |
 | **上下文治理** | 冷/热会话双态 Prompt、1M～2M 上下文模型规格、桌面端 512K 稳态预算、微型总结 Agent 与规则压缩双模降级、Session Key 作用域隔离。 |
-| **ACP 运行时** | 自动发现本地 ACP、stdio 进程托管、远程 WebSocket 端点探测、流式输出、取消/中止、会话清理与故障隔离。 |
+| **ACP 运行时** | 自动发现本地 ACP、stdio 进程托管、远程 WebSocket 端点探测、流式输出、取消/中止、会话清理与故障隔离；支持端点通过 `agentCapabilities.nativeMemory` 声明原生长期记忆，Shadow Crew 只负责策略传递与状态核验。 |
 | **本地执行授权** | 拦截 ACP `session/request_permission`，提供 Once / Session / Channel / Topic / DM 授权、持久 Grant 管理与 Fail-Closed 超时。 |
 | **图片与文件附件** | Composer 支持选择、粘贴和拖放图片/文件；附件持久化并在本地 ACP Prompt 中转换为 `image`、`resource` 或 `resource_link` Content Blocks。 |
 | **会话恢复** | SQLite 持久化 Session 映射；支持 `session/load` 时优先协议级恢复，否则以 `session/new` + 平台层增量上下文补偿。 |
@@ -315,6 +315,7 @@ cargo test -p shadow-crew-dev-mcp
 | [4+1 博弈编排协议规范](docs/SPEC_GAME_THEORETIC_ORCHESTRATION_PROTOCOL.md) | FSM、阶段载荷、Quorum Gate、后仲裁执行与 CognoNexus 核心算法。 |
 | [G-Frame 贝叶斯模块化编排规范](docs/SPEC_GFRAME_BAYESIAN_MODULAR_ORCHESTRATION.md) | 模块拓扑拆解、公共契约、上下文隔离、贝叶斯调控与 Wave 1～3 落地方案。 |
 | [普通模式增量上下文与并发编排规范](docs/SPEC_NORMAL_MODE_BUZZ_CONTEXT_AND_CONCURRENT_ORCHESTRATION.md) | 生产生效中的 `<delta-events>` 水位线、冷热双态 Prompt 与 Turn Barrier。 |
+| [ACP 原生记忆能力规范](docs/SPEC_ACP_NATIVE_MEMORY.md) | `agentCapabilities.nativeMemory` 扩展、Agent 策略、Codex 映射与验收用例。 |
 | [Messaging Space PRD](docs/PRD_MESSAGING_SPACE.md) | 项目、频道、私聊、议题和成员模型。 |
 | [多 Agent 讨论与 Steering PRD](docs/PRD_MULTI_AGENT_DISCUSSION_AND_STEERING.md) | 轮次治理、终止机制、中途插话与旁路议题。 |
 | [远程 ACP 与记忆流转 PRD](docs/PRD_ACP_REMOTE_AND_MEMORY.md) | 跨端远程连接、`.acpmem` 记忆导出/导入与安全边界，仍按演进项治理。 |

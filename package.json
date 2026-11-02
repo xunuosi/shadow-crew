@@ -14,6 +14,7 @@
     "lint": "tsc --noEmit",
     "test:workspace": "tsx src/services/test-workspace-bindings.ts",
     "test:acp-only": "tsx src/services/test-acp-only-runtime.ts",
+    "test:acp-native-memory": "tsx src/services/test-acp-native-memory.ts",
     "test:acp-permission": "tsx src/services/test-acp-permission-protocol.ts",
     "test:acp-permission-ui": "tsx src/services/test-acp-permission-ui.ts",
     "test:chat-attachments": "tsx src/services/test-chat-attachments.ts",
