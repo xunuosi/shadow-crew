@@ -1,6 +1,11 @@
 import { Agent, CartridgeCitation, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem, TopicExecutionUiMeta, ModuleDecompositionDraft, ModuleComplexityLevel, MessageAttachment } from '../types';
 import { isAgentOffline } from '../utils/agentRuntime';
 import { buildAgentPersonaPrompt } from './agentCollaboration';
+import {
+  ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV,
+  ACP_NATIVE_MEMORY_ENV,
+  parseNativeMemoryCapability,
+} from './agentMemory';
 
 export interface AcpSendPromptOptions {
   agent: Agent;
@@ -596,6 +601,7 @@ export async function probeRemoteAcpConnection(
   error?: string;
   agentInfo?: any;
   loadSession?: boolean;
+  nativeMemory?: ReturnType<typeof parseNativeMemoryCapability>;
   rawRpcResult?: any;
 }> {
   const startTime = Date.now();
@@ -655,12 +661,14 @@ export async function probeRemoteAcpConnection(
               data?.result?.agentCapabilities?.loadSession ??
               data?.result?.capabilities?.sessions?.load ??
               data?.result?.agentCapabilities?.sessions?.load;
+            const nativeMemory = parseNativeMemoryCapability(data?.result);
             ws?.close();
             resolve({
               ok: true,
               latencyMs,
               agentInfo,
               loadSession: typeof loadSession === 'boolean' ? loadSession : undefined,
+              nativeMemory,
               rawRpcResult: data,
             });
           } catch {
@@ -707,7 +715,9 @@ export async function sendPromptToRemoteAcpWebSocket(
   systemPrompt?: string,
   workspaceBindingId?: string,
   workspaceUri?: string,
-  scopeType?: 'channel' | 'topic' | 'dm' | 'dm_topic'
+  scopeType?: 'channel' | 'topic' | 'dm' | 'dm_topic',
+  nativeMemoryEnabled = false,
+  nativeMemoryAutoGenerate = false
 ): Promise<AcpAgentResponse> {
   const startTime = Date.now();
 
@@ -791,16 +801,22 @@ export async function sendPromptToRemoteAcpWebSocket(
             ...(workspaceBindingId ? { workspaceBindingId } : {}),
             ...(workspaceUri ? { workspaceUri } : {}),
             ...(scopeType ? { scopeType } : {}),
-            ...(systemPrompt
-              ? {
-                  systemPrompt,
-                  _meta: {
+            ...(systemPrompt ? { systemPrompt } : {}),
+            _meta: {
+              ...(systemPrompt
+                ? {
                     systemPrompt: {
                       append: systemPrompt,
                     },
-                  },
-                }
-              : {}),
+                  }
+                : {}),
+              shadowCrew: {
+                nativeMemory: {
+                  enabled: nativeMemoryEnabled,
+                  autoGenerate: nativeMemoryAutoGenerate,
+                },
+              },
+            },
           },
         };
         ws?.send(JSON.stringify(rpcPayload));
@@ -882,9 +898,26 @@ export async function sendPromptToRemoteAcpWebSocket(
   });
 }
 
-/** 构造 ACP 进程启动环境变量；模型与记忆配置完全由 ACP 端点自身管理。 */
+/**
+ * 构造 ACP 进程启动环境变量。
+ * 该变量只表达当前 Agent 是否允许开启端点原生长期记忆，具体实现仍由适配器负责。
+ */
 export function buildAgentLaunchEnv(agent: Agent): Array<{ key: string; value: string }> {
-  return [...(agent.envVars || [])];
+  const vars = (agent.envVars || []).filter(
+    (item) =>
+      item.key.trim() !== ACP_NATIVE_MEMORY_ENV &&
+      item.key.trim() !== ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV
+  );
+  vars.push({
+    key: ACP_NATIVE_MEMORY_ENV,
+    value: agent.memory.mode === 'native' ? '1' : '0',
+  });
+  vars.push({
+    key: ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV,
+    value:
+      agent.memory.mode === 'native' && agent.memory.autoGenerate ? '1' : '0',
+  });
+  return vars;
 }
 
 /**
@@ -979,7 +1012,9 @@ export async function sendPromptToAcpAgent(
       resolvedSystemPrompt,
       options.workspaceBindingId,
       options.workspaceCwd,
-      options.scopeType
+      options.scopeType,
+      agent.memory.mode === 'native',
+      agent.memory.autoGenerate
     );
     return remoteRes;
   }
@@ -1043,6 +1078,8 @@ export async function sendPromptToAcpAgent(
         cwd: targetCwd,
         envVars: launchEnvVars,
         systemPrompt: resolvedSystemPrompt,
+        nativeMemoryEnabled: agent.memory.mode === 'native',
+        nativeMemoryAutoGenerate: agent.memory.autoGenerate,
         discussionMode: options.discussionMode,
         scopeType: options.scopeType,
         attachments: promptAttachments,

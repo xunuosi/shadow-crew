@@ -65,6 +65,8 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
   const [newMemKey, setNewMemKey] = useState('');
   const [newMemContent, setNewMemContent] = useState('');
   const [newMemCategory, setNewMemCategory] = useState<'codebase_pattern' | 'user_preference' | 'incident_history' | 'skill_rule'>('codebase_pattern');
+  const nativeMemoryCapability = selectedAgent.memory.nativeCapability;
+  const nativeMemoryStatus = nativeMemoryCapability.status;
 
   // Selected file preview
   const [previewFile, setPreviewFile] = useState<WorkspaceFile | null>(
@@ -287,6 +289,16 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                           agentCapabilities: {
                             loadSession: isLoadSupported,
                             streaming: selectedAgent.capabilities?.supportsStreaming ?? true,
+                            nativeMemory: {
+                              supported:
+                                nativeMemoryStatus === 'enabled' ||
+                                nativeMemoryStatus === 'disabled',
+                              enabled: nativeMemoryStatus === 'enabled',
+                              persistent: nativeMemoryCapability.persistent,
+                              crossThread: nativeMemoryCapability.crossThread,
+                              provider: nativeMemoryCapability.provider,
+                              scope: nativeMemoryCapability.scope,
+                            },
                             mcpCapabilities: {
                               http: true,
                               sse: true,
@@ -455,6 +467,35 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                       </span>
                     </div>
 
+                    <div
+                      className={`p-2 rounded-xl border flex items-center justify-between gap-2 ${
+                        nativeMemoryStatus === 'enabled'
+                          ? 'bg-emerald-50 border-emerald-300 text-emerald-800 dark:bg-emerald-500/15 dark:border-emerald-500/30 dark:text-emerald-300'
+                          : nativeMemoryStatus === 'unsupported'
+                            ? 'bg-rose-50 border-rose-300 text-rose-800 dark:bg-rose-500/15 dark:border-rose-500/30 dark:text-rose-300'
+                            : 'bg-amber-50 border-amber-300 text-amber-800 dark:bg-amber-500/15 dark:border-amber-500/30 dark:text-amber-300'
+                      }`}
+                    >
+                      <div className="flex flex-col min-w-0 pr-2">
+                        <span className="font-mono font-semibold text-[11px] whitespace-nowrap">
+                          agentCapabilities.nativeMemory
+                        </span>
+                        <span className="text-[10px] mt-0.5 truncate opacity-90">
+                          {nativeMemoryCapability.detail ||
+                            '端点自行管理持久化与跨线程召回'}
+                        </span>
+                      </div>
+                      <span className="font-mono text-[10px] font-semibold whitespace-nowrap shrink-0">
+                        {nativeMemoryStatus === 'enabled'
+                          ? '已启用 ✓'
+                          : nativeMemoryStatus === 'disabled'
+                            ? '已关闭'
+                            : nativeMemoryStatus === 'unsupported'
+                              ? '不支持 ✕'
+                              : '待握手 ⚠️'}
+                      </span>
+                    </div>
+
                     <div className="flex items-center justify-between p-2 rounded-xl bg-surface border border-border">
                       <span className="text-fg-secondary font-mono">session/prompt (研讨流式交互)</span>
                       <span className="text-emerald-700 dark:text-emerald-400 font-bold flex items-center gap-1">
@@ -594,7 +635,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                 <span>技术核心解答：ACP 接入后能用自有的 Memory、Workspace 和 Skill 吗？</span>
               </div>
               <p className="text-[11px] leading-relaxed text-indigo-800/90 dark:text-indigo-200/90">
-                <strong>结论：完全可以，而且这正是 ACP (Agent Client Protocol) 的核心设计哲学！</strong>
+                <strong>结论：ACP 不定义统一记忆协议；端点可自行持久化，并通过可选 nativeMemory 能力声明供宿主核验。</strong>
               </p>
             </div>
 
@@ -608,7 +649,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                 ACP 并不限制 Agent 的私有存储实现。当通过 stdio/websocket 连接时：
                 <ul className="list-disc list-inside mt-1 space-y-1 text-fg-muted text-[10px]">
                   <li>
-                    <strong className="text-fg">私有长期记忆 (Private Memory):</strong> Agent 拥有自己的持久化后端（如 SQLite、Markdown 记忆库、本地向量库 Mem0）。只要连接同一个 agent runtime，其历史经验跨讨论依然有效。
+                    <strong className="text-fg">私有长期记忆 (Private Memory):</strong> 若 Agent 自身具备持久化后端并声明 nativeMemory，其长期经验由端点召回。Shadow Crew 不自动注入、迁移或删除这部分记忆。
                   </li>
                   <li>
                     <strong className="text-fg">房间共享讨论上下文 (Room Context):</strong> Buzz 会在每次触发 prompt 时，把当前房间内的 Nostr 签名消息切片通过 ACP 的 <code className="text-emerald-500 font-mono">session/prompt</code> 传给 Agent，两者互不冲突。
@@ -810,17 +851,49 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
 
             {/* Native Persistent SQLite Memory Bank */}
             <div className="p-2.5 rounded-2xl bg-surface-subtle border border-border space-y-2">
-              <div className="flex items-center justify-between text-[11px]">
+              <div className="flex items-center justify-between gap-2 text-[11px]">
                 <div className="flex items-center gap-1.5 font-bold text-fg">
                   <Database className="w-3.5 h-3.5 text-emerald-500" />
                   <span>ACP 端点长期 Memory（只读观测）</span>
                 </div>
-                <span className="font-mono text-emerald-500 uppercase font-bold text-[10px]">
-                  {selectedAgent.memory.persistentType}
+                <span className={`font-mono uppercase font-bold text-[10px] ${
+                  nativeMemoryStatus === 'enabled'
+                    ? 'text-emerald-600 dark:text-emerald-300'
+                    : nativeMemoryStatus === 'unsupported'
+                      ? 'text-rose-600 dark:text-rose-300'
+                      : 'text-amber-600 dark:text-amber-300'
+                }`}>
+                  {nativeMemoryStatus}
                 </span>
               </div>
+              <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+                <div className="rounded-lg border border-border bg-surface p-1.5">
+                  <div className="text-fg-muted">托管策略</div>
+                  <div className="mt-0.5 font-mono font-semibold text-fg">
+                    {selectedAgent.memory.mode}
+                    {' · '}
+                    auto:{selectedAgent.memory.autoGenerate ? 'on' : 'off'}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-border bg-surface p-1.5">
+                  <div className="text-fg-muted">持久化 / 跨线程</div>
+                  <div className="mt-0.5 font-mono font-semibold text-fg">
+                    {nativeMemoryCapability.persistent === true ? 'YES' : 'UNKNOWN'}
+                    {' / '}
+                    {nativeMemoryCapability.crossThread === true ? 'YES' : 'UNKNOWN'}
+                  </div>
+                </div>
+              </div>
               <div className="text-[10px] text-fg-muted font-mono break-all bg-surface p-1.5 rounded border border-border">
-                路径: {selectedAgent.memory.internalMemoryPath}
+                提供方: {nativeMemoryCapability.provider || '未声明'}
+                <br />
+                作用域: {nativeMemoryCapability.scope || 'unknown'}
+                <br />
+                存储提示: {selectedAgent.memory.internalMemoryPath}
+              </div>
+              <div className="text-[10px] text-fg-secondary leading-relaxed">
+                {nativeMemoryCapability.detail ||
+                  '端点已声明原生长期记忆；实际召回范围与删除方式由该 Agent 自行管理。'}
               </div>
             </div>
 

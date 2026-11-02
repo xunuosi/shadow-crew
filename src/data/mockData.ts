@@ -64,6 +64,17 @@ export const INITIAL_AGENTS: Agent[] = [
       },
     ],
     memory: {
+      schemaVersion: 1,
+      mode: 'native',
+      autoGenerate: true,
+      nativeCapability: {
+        status: 'enabled',
+        persistent: true,
+        crossThread: true,
+        provider: 'openclaw-native-memory',
+        scope: 'runtime',
+        detail: 'Mock ACP endpoint advertises native memory',
+      },
       internalMemoryPath: '~/.shadow-crew/global_memory.sqlite',
       persistentType: 'sqlite',
       persistentItems: [

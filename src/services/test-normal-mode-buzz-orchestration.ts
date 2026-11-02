@@ -81,6 +81,16 @@ function createMockAgent(partial: {
     },
     skills: [],
     memory: {
+      schemaVersion: 1,
+      mode: 'native',
+      autoGenerate: false,
+      nativeCapability: {
+        status: 'enabled',
+        persistent: true,
+        crossThread: true,
+        provider: 'mock-acp',
+        scope: 'runtime',
+      },
       internalMemoryPath: '/tmp/mock',
       persistentType: 'sqlite',
       persistentItems: [],

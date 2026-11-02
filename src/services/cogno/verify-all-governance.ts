@@ -90,6 +90,16 @@ function mockAgent(overrides: Partial<Agent> & { id: string; name: string; handl
       activeFiles: [],
     },
     memory: {
+      schemaVersion: 1,
+      mode: 'native',
+      autoGenerate: false,
+      nativeCapability: {
+        status: 'enabled',
+        persistent: true,
+        crossThread: true,
+        provider: 'mock-cmd',
+        scope: 'runtime',
+      },
       internalMemoryPath: '/tmp/mem',
       persistentType: 'sqlite',
       persistentItems: [],

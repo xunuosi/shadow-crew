@@ -138,7 +138,7 @@ export const AcpArchitectureModal: React.FC<AcpArchitectureModalProps> = ({
                   <div className="text-emerald-600 dark:text-emerald-300 font-bold mb-1">A. Agent 自带的私有长期记忆</div>
                   <div className="text-fg-muted space-y-0.5">
                     <div>• 存储在 Agent 的私有磁盘中 (如 SQLite、Vector DB、.agent/memory)</div>
-                    <div>• 跨房间、跨讨论均保持有效</div>
+                    <div>• 是否跨房间、跨会话生效由端点 nativeMemory 声明决定</div>
                     <div>• 记录代码库规范、历史踩坑经验、用户个人偏好</div>
                     <div>• <strong>完全由 Agent 自身控制读写</strong></div>
                   </div>

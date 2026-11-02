@@ -3,6 +3,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { INITIAL_AGENTS } from '../data/mockData';
 import { FALLBACK_PRESET_RUNTIMES } from './acpDiscovery';
 import { buildAgentLaunchEnv, sendPromptToAcpAgent } from './acpClient';
+import {
+  ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV,
+  ACP_NATIVE_MEMORY_ENV,
+} from './agentMemory';
 import { getGlobalModelConfig } from './llmService';
 
 assert(
@@ -72,8 +76,12 @@ const launchEnv = buildAgentLaunchEnv({
 });
 assert.deepEqual(
   launchEnv,
-  [{ key: 'ACP_USER_ENV', value: 'kept' }],
-  'Agent 启动环境不得由平台注入模型参数，只保留用户显式配置的 ACP 环境变量'
+  [
+    { key: 'ACP_USER_ENV', value: 'kept' },
+    { key: ACP_NATIVE_MEMORY_ENV, value: '1' },
+    { key: ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV, value: '1' },
+  ],
+  'Agent 启动环境只允许用户显式 ENV 与宿主原生记忆策略，不得注入模型参数'
 );
 
 assert(getGlobalModelConfig().modelId, '应用内全局模型配置必须保留');

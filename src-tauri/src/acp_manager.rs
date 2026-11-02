@@ -11,6 +11,13 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
 
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 /// 格式化并写入本地持久化日志文件 (~/.shadow-crew/logs/acp.log)
 pub fn log_acp_event(agent_id: &str, direction: &str, line: &str) {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
@@ -69,6 +76,32 @@ impl AcpEnvVar {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpNativeMemoryCapability {
+    pub status: String,
+    pub persistent: Option<bool>,
+    pub cross_thread: Option<bool>,
+    pub provider: Option<String>,
+    pub scope: Option<String>,
+    pub detail: Option<String>,
+    pub last_checked_at: u64,
+}
+
+impl Default for AcpNativeMemoryCapability {
+    fn default() -> Self {
+        Self {
+            status: "unknown".to_string(),
+            persistent: None,
+            cross_thread: None,
+            provider: None,
+            scope: None,
+            detail: Some("ACP endpoint has not declared agentCapabilities.nativeMemory".to_string()),
+            last_checked_at: now_millis(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentRuntimeStatus {
     pub agent_id: String,
     pub pid: u32,
@@ -79,6 +112,7 @@ pub struct AgentRuntimeStatus {
     pub status_detail: Option<String>,
     pub supports_load_session: Option<bool>,
     pub supports_resume_session: Option<bool>,
+    pub native_memory: Option<AcpNativeMemoryCapability>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,6 +286,82 @@ pub fn check_supports_resume_session(result: &serde_json::Value) -> bool {
                 .filter(|v| v.as_bool() == Some(true))
         })
         .is_some()
+}
+
+/// 解析 ACP 可选扩展 agentCapabilities.nativeMemory。
+///
+/// 契约示例：
+/// ```json
+/// {
+///   "agentCapabilities": {
+///     "nativeMemory": {
+///       "supported": true,
+///       "enabled": true,
+///       "persistent": true,
+///       "crossThread": true,
+///       "scope": "runtime",
+///       "provider": "codex-memories"
+///     }
+///   }
+/// }
+/// ```
+pub fn check_native_memory_capability(result: &serde_json::Value) -> AcpNativeMemoryCapability {
+    let Some(raw) = result
+        .get("agentCapabilities")
+        .and_then(|capabilities| capabilities.get("nativeMemory"))
+        .and_then(|value| value.as_object())
+    else {
+        return AcpNativeMemoryCapability::default();
+    };
+
+    let supported = raw.get("supported").and_then(|value| value.as_bool());
+    let enabled = raw.get("enabled").and_then(|value| value.as_bool());
+    let status = match (supported, enabled) {
+        (Some(false), _) => "unsupported",
+        (Some(true), Some(false)) => "disabled",
+        (Some(true), _) => "enabled",
+        _ => "unknown",
+    };
+    let scope = raw
+        .get("scope")
+        .and_then(|value| value.as_str())
+        .filter(|value| matches!(*value, "agent" | "workspace" | "runtime"))
+        .map(str::to_string);
+
+    AcpNativeMemoryCapability {
+        status: status.to_string(),
+        persistent: raw.get("persistent").and_then(|value| value.as_bool()),
+        cross_thread: raw.get("crossThread").and_then(|value| value.as_bool()),
+        provider: raw
+            .get("provider")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        scope,
+        detail: raw
+            .get("detail")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                (status == "unknown")
+                    .then(|| "nativeMemory declaration is missing required supported field".to_string())
+            }),
+        last_checked_at: now_millis(),
+    }
+}
+
+fn build_native_memory_prompt_meta(
+    enabled: Option<bool>,
+    auto_generate: Option<bool>,
+) -> serde_json::Value {
+    let enabled = enabled.unwrap_or(false);
+    serde_json::json!({
+        "shadowCrew": {
+            "nativeMemory": {
+                "enabled": enabled,
+                "autoGenerate": enabled && auto_generate.unwrap_or(false)
+            }
+        }
+    })
 }
 
 /// 从 ACP session/update 载荷中提取文本内容
@@ -1020,6 +1130,7 @@ pub struct RunningAgent {
     pub supports_resume_session: Arc<AtomicBool>,
     pub supports_prompt_image: Arc<AtomicBool>,
     pub supports_embedded_context: Arc<AtomicBool>,
+    pub native_memory_capability: Arc<TokioMutex<AcpNativeMemoryCapability>>,
     pub db_manager: Option<Arc<crate::db_manager::DatabaseManager>>,
     #[allow(dead_code)]
     pub cwd: String,
@@ -1178,6 +1289,11 @@ impl AcpProcessManager {
             } else {
                 None
             };
+            let native_memory = if is_alive {
+                Some(agent.native_memory_capability.lock().await.clone())
+            } else {
+                None
+            };
 
             statuses.push(AgentRuntimeStatus {
                 agent_id: id.clone(),
@@ -1189,6 +1305,7 @@ impl AcpProcessManager {
                 status_detail,
                 supports_load_session: supports_load,
                 supports_resume_session: supports_resume,
+                native_memory,
             });
         }
         statuses
@@ -1480,6 +1597,8 @@ impl AcpProcessManager {
         let supports_resume_session = Arc::new(AtomicBool::new(false));
         let supports_prompt_image = Arc::new(AtomicBool::new(false));
         let supports_embedded_context = Arc::new(AtomicBool::new(false));
+        let native_memory_capability =
+            Arc::new(TokioMutex::new(AcpNativeMemoryCapability::default()));
         let replay_sinks = Arc::new(TokioMutex::new(HashMap::<
             String,
             Arc<TokioMutex<ReplaySinkState>>,
@@ -1997,6 +2116,7 @@ impl AcpProcessManager {
                 supports_resume_session: supports_resume_session.clone(),
                 supports_prompt_image: supports_prompt_image.clone(),
                 supports_embedded_context: supports_embedded_context.clone(),
+                native_memory_capability: native_memory_capability.clone(),
                 db_manager: self.db_manager.clone(),
                 cwd: shadow_crew_home_str,
                 app_handle: app_handle.clone(),
@@ -2071,6 +2191,8 @@ impl AcpProcessManager {
                             .store(check_supports_prompt_image(res), Ordering::SeqCst);
                         supports_embedded_context
                             .store(check_supports_embedded_context(res), Ordering::SeqCst);
+                        *native_memory_capability.lock().await =
+                            check_native_memory_capability(res);
                         if supported {
                             tracing::info!("[Agent {}] Immediate init: Agent reports support for ACP session/load capability", agent_id);
                         }
@@ -2152,6 +2274,8 @@ impl AcpProcessManager {
         prompt: &str,
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
+        native_memory_enabled: Option<bool>,
+        native_memory_auto_generate: Option<bool>,
     ) -> Result<serde_json::Value> {
         let agent = self
             .get_agent(agent_id)
@@ -2168,6 +2292,8 @@ impl AcpProcessManager {
                 prompt,
                 system_prompt,
                 discussion_mode,
+                native_memory_enabled,
+                native_memory_auto_generate,
             )
             .await
     }
@@ -2794,6 +2920,8 @@ impl RunningAgent {
                                 check_supports_embedded_context(res),
                                 Ordering::SeqCst,
                             );
+                            *self.native_memory_capability.lock().await =
+                                check_native_memory_capability(res);
                             if supported {
                                 tracing::info!("[Agent {}] Lazy init: Agent reports support for ACP session/load capability", agent_id);
                             }
@@ -3372,6 +3500,8 @@ impl RunningAgent {
         prompt: &str,
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
+        native_memory_enabled: Option<bool>,
+        native_memory_auto_generate: Option<bool>,
     ) -> Result<serde_json::Value> {
         let _prompt_guard = self.prompt_lock.lock().await;
 
@@ -3443,7 +3573,11 @@ impl RunningAgent {
             "workspaceRoot": &workspace_cwd,
             "workspaceBindingId": &resolved_workspace.workspace_binding_id,
             "artifactRoot": resolved_workspace.artifact_root.to_string_lossy(),
-            "prompt": prompt_blocks
+            "prompt": prompt_blocks,
+            "_meta": build_native_memory_prompt_meta(
+                native_memory_enabled,
+                native_memory_auto_generate
+            )
         });
         if is_dm || is_dm_topic {
             prompt_params["agentId"] = serde_json::Value::String(agent_id.to_string());
@@ -4442,6 +4576,102 @@ mod runtime_status_tests {
             }
         });
         assert!(!check_supports_load_session(&without_support));
+    }
+
+    #[test]
+    fn test_check_native_memory_capability_contract() {
+        use super::check_native_memory_capability;
+
+        let enabled = serde_json::json!({
+            "agentCapabilities": {
+                "nativeMemory": {
+                    "supported": true,
+                    "enabled": true,
+                    "persistent": true,
+                    "crossThread": true,
+                    "scope": "runtime",
+                    "provider": "codex-memories"
+                }
+            }
+        });
+        let capability = check_native_memory_capability(&enabled);
+        assert_eq!(capability.status, "enabled");
+        assert_eq!(capability.persistent, Some(true));
+        assert_eq!(capability.cross_thread, Some(true));
+        assert_eq!(capability.provider.as_deref(), Some("codex-memories"));
+        assert_eq!(capability.scope.as_deref(), Some("runtime"));
+
+        let disabled = serde_json::json!({
+            "agentCapabilities": {
+                "nativeMemory": {
+                    "supported": true,
+                    "enabled": false,
+                    "persistent": true,
+                    "crossThread": true
+                }
+            }
+        });
+        assert_eq!(
+            check_native_memory_capability(&disabled).status,
+            "disabled"
+        );
+
+        let unsupported = serde_json::json!({
+            "agentCapabilities": {
+                "nativeMemory": {
+                    "supported": false
+                }
+            }
+        });
+        assert_eq!(
+            check_native_memory_capability(&unsupported).status,
+            "unsupported"
+        );
+
+        let undeclared = serde_json::json!({
+            "agentCapabilities": {
+                "loadSession": true
+            }
+        });
+        let unknown = check_native_memory_capability(&undeclared);
+        assert_eq!(unknown.status, "unknown");
+        assert!(unknown.persistent.is_none());
+        assert!(unknown.cross_thread.is_none());
+    }
+
+    #[test]
+    fn test_native_memory_prompt_meta_contract() {
+        use super::build_native_memory_prompt_meta;
+
+        let enabled = build_native_memory_prompt_meta(Some(true), Some(false));
+        assert_eq!(
+            enabled["shadowCrew"]["nativeMemory"]["enabled"],
+            serde_json::Value::Bool(true)
+        );
+        assert_eq!(
+            enabled["shadowCrew"]["nativeMemory"]["autoGenerate"],
+            serde_json::Value::Bool(false)
+        );
+
+        let disabled = build_native_memory_prompt_meta(Some(false), Some(true));
+        assert_eq!(
+            disabled["shadowCrew"]["nativeMemory"]["enabled"],
+            serde_json::Value::Bool(false)
+        );
+        assert_eq!(
+            disabled["shadowCrew"]["nativeMemory"]["autoGenerate"],
+            serde_json::Value::Bool(false)
+        );
+
+        let defaults = build_native_memory_prompt_meta(None, None);
+        assert_eq!(
+            defaults["shadowCrew"]["nativeMemory"]["enabled"],
+            serde_json::Value::Bool(false)
+        );
+        assert_eq!(
+            defaults["shadowCrew"]["nativeMemory"]["autoGenerate"],
+            serde_json::Value::Bool(false)
+        );
     }
 
     #[test]

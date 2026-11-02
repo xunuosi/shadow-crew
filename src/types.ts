@@ -21,6 +21,28 @@ export interface LocalAcpRuntime {
   recommended_env?: Array<[string, string]>;
 }
 
+export type AcpNativeMemoryStatus =
+  | 'unknown'
+  | 'enabled'
+  | 'disabled'
+  | 'unsupported';
+
+/**
+ * ACP 可选扩展：agentCapabilities.nativeMemory
+ *
+ * 原生长期记忆的存储与召回由 ACP 端点负责；Shadow Crew 只记录端点的真实声明，
+ * 不会据此自动注入、迁移或清理端点私有记忆。
+ */
+export interface AcpNativeMemoryCapability {
+  status: AcpNativeMemoryStatus;
+  persistent?: boolean | null;
+  crossThread?: boolean | null;
+  provider?: string | null;
+  scope?: 'agent' | 'workspace' | 'runtime' | 'unknown' | null;
+  detail?: string | null;
+  lastCheckedAt?: number;
+}
+
 export interface AgentRuntimeStatus {
   agent_id: string;
   pid: number;
@@ -33,6 +55,8 @@ export interface AgentRuntimeStatus {
   supportsLoadSession?: boolean | null;
   supports_resume_session?: boolean | null;
   supportsResumeSession?: boolean | null;
+  native_memory?: AcpNativeMemoryCapability | null;
+  nativeMemory?: AcpNativeMemoryCapability | null;
 }
 
 export interface AgentSkill {
@@ -86,6 +110,13 @@ export interface AcpMemoryBundle {
 }
 
 export interface AgentMemoryBank {
+  /** 1 = 已迁移到显式原生记忆策略的数据结构。 */
+  schemaVersion: 1;
+  /** native：由 ACP 端点管理；disabled：禁止启用端点原生记忆。 */
+  mode: 'native' | 'disabled';
+  /** 是否允许端点自动从历史对话提炼长期记忆；显式 memory 工具写入不受此项影响。 */
+  autoGenerate: boolean;
+  nativeCapability: AcpNativeMemoryCapability;
   internalMemoryPath: string;
   persistentType: 'sqlite' | 'markdown_bank' | 'vector_store' | 'mem0';
   persistentItems: Array<{

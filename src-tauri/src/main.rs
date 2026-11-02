@@ -372,6 +372,8 @@ async fn send_prompt_to_agent(
     _env_vars: Option<Vec<acp_manager::AcpEnvVar>>,
     system_prompt: Option<String>,
     discussion_mode: Option<String>,
+    native_memory_enabled: Option<bool>,
+    native_memory_auto_generate: Option<bool>,
     _app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
@@ -405,6 +407,8 @@ async fn send_prompt_to_agent(
             &prompt,
             system_prompt.as_deref(),
             discussion_mode.as_deref(),
+            native_memory_enabled,
+            native_memory_auto_generate,
         )
         .await
         .map_err(|e| format!("ACP Prompt Error: {}", e))?;

@@ -97,6 +97,11 @@ import {
   buildAttachmentManifest,
   persistMessageAttachments,
 } from './services/chatAttachmentService';
+import {
+  createAgentMemoryBank,
+  createUnknownNativeMemoryCapability,
+  migrateAgentMemoryV1,
+} from './services/agentMemory';
 import { isAgentOffline, isAgentOnline } from './utils/agentRuntime';
 import {
   saveMessagesBatchToDb,
@@ -239,19 +244,9 @@ export default function App() {
                   activeFiles: ['~/.shadow-crew/agents'],
                 };
               }
-              const updatedMemory = a.memory
-                ? {
-                    ...a.memory,
-                    internalMemoryPath:
-                      !a.memory.internalMemoryPath || a.memory.internalMemoryPath.includes('.local/share') || a.memory.internalMemoryPath.includes('.shinobi')
-                        ? '~/.shadow-crew/global_memory.sqlite'
-                        : a.memory.internalMemoryPath,
-                  }
-                : undefined;
               const baseAgent = {
                 ...a,
                 handle: normalizeAgentHandle(a.name, a.id),
-                ...(updatedMemory ? { memory: updatedMemory } : {}),
                 status: 'idle', // 启动默认未开启通信，需用户在面板点击 Start
                 statusDetail: undefined,
               };
@@ -262,7 +257,10 @@ export default function App() {
               if (baseAgent.role === baseAgent.name && baseAgent.description && baseAgent.description !== baseAgent.name) {
                 baseAgent.role = baseAgent.description.length < 35 ? baseAgent.description : 'Autonomous ACP Daemon';
               }
-              return updatedWorkspace ? { ...baseAgent, workspace: updatedWorkspace } : baseAgent;
+              const memoryMigrated = migrateAgentMemoryV1(
+                (updatedWorkspace ? { ...baseAgent, workspace: updatedWorkspace } : baseAgent) as Agent
+              ).agent;
+              return memoryMigrated;
             });
           if (filtered.length > 0) return filtered;
       }
@@ -512,19 +510,22 @@ export default function App() {
 
           if (Array.isArray(fullData.agents) && fullData.agents.length > 0) {
             let handleMigrated = false;
+            let memoryMigrated = false;
             const sanitizedAgents = fullData.agents.map((ag: Agent) => {
               const expectedHandle = normalizeAgentHandle(ag.name, ag.id);
+              const memoryResult = migrateAgentMemoryV1(ag);
+              memoryMigrated = memoryMigrated || memoryResult.changed;
               if (ag.handle !== expectedHandle) {
                 handleMigrated = true;
                 return {
-                  ...ag,
+                  ...memoryResult.agent,
                   handle: expectedHandle,
                 };
               }
-              return ag;
+              return memoryResult.agent;
             });
             setAgents(sanitizedAgents);
-            if (handleMigrated) {
+            if (handleMigrated || memoryMigrated) {
               resetAllSessionWarmState();
               await saveAgentsToDb(sanitizedAgents);
             }
@@ -1108,6 +1109,7 @@ export default function App() {
               const targetDetail = match.status_detail || undefined;
               const remoteSupportsLoad = match.supportsLoadSession ?? match.supports_load_session;
               const remoteSupportsResume = match.supportsResumeSession ?? match.supports_resume_session;
+              const nativeMemory = match.nativeMemory ?? match.native_memory;
               const hasLoadChanged =
                 remoteSupportsLoad !== undefined &&
                 remoteSupportsLoad !== null &&
@@ -1116,15 +1118,30 @@ export default function App() {
                 remoteSupportsResume !== undefined &&
                 remoteSupportsResume !== null &&
                 a.capabilities?.supportsResumeSession !== remoteSupportsResume;
-              if (a.status !== targetStatus || a.statusDetail !== targetDetail || hasLoadChanged || hasResumeChanged) {
+              const hasMemoryChanged =
+                Boolean(nativeMemory) &&
+                JSON.stringify(a.memory.nativeCapability) !== JSON.stringify(nativeMemory);
+              if (
+                a.status !== targetStatus ||
+                a.statusDetail !== targetDetail ||
+                hasLoadChanged ||
+                hasResumeChanged ||
+                hasMemoryChanged
+              ) {
                 hasChange = true;
                 return {
                   ...a,
                   status: targetStatus,
                   statusDetail: targetDetail,
+                  memory: nativeMemory
+                    ? {
+                        ...a.memory,
+                        nativeCapability: nativeMemory,
+                      }
+                    : a.memory,
                   capabilities: {
                     ...(a.capabilities || {
-                      canUseInternalMemory: true,
+                      canUseInternalMemory: false,
                       canAccessWorkspaceFiles: true,
                       canExecuteSkills: true,
                       canDelegateToSubAgents: true,
@@ -1135,6 +1152,13 @@ export default function App() {
                       : {}),
                     ...(remoteSupportsResume !== undefined && remoteSupportsResume !== null
                       ? { supportsResumeSession: remoteSupportsResume }
+                      : {}),
+                    ...(nativeMemory
+                      ? {
+                          canUseInternalMemory:
+                            a.memory.mode === 'native' &&
+                            nativeMemory.status === 'enabled',
+                        }
                       : {}),
                   },
                 };
@@ -7938,14 +7962,15 @@ export default function App() {
                 }),
               },
               memory: {
-                internalMemoryPath: '~/.shadow-crew/global_memory.sqlite',
-                persistentType: 'sqlite',
-                persistentItems: [],
-                sessionCacheCount: 0,
+                ...createAgentMemoryBank(
+                  agent.memory.mode,
+                  agent.memory.autoGenerate
+                ),
+                nativeCapability: agent.memory.nativeCapability,
                 cartridges: agent.memory?.cartridges ? [...agent.memory.cartridges] : [],
               },
               capabilities: {
-                canUseInternalMemory: true,
+                canUseInternalMemory: agent.memory.nativeCapability.status === 'enabled',
                 canAccessWorkspaceFiles: true,
                 canExecuteSkills: true,
                 canDelegateToSubAgents: true,
@@ -8544,7 +8569,8 @@ export default function App() {
             acpCommandOrUrl: agentData.acpCommandOrUrl || (agentData.isRemote ? (agentData.remoteUrl || 'ws://127.0.0.1:9090/acp') : 'cargo run --bin custom-agent -- --acp'),
             protocolVersion: '2025-01-01 (ACP v1.0.4)',
             capabilities: {
-              canUseInternalMemory: true,
+              canUseInternalMemory:
+                agentData.memory?.nativeCapability.status === 'enabled',
               canAccessWorkspaceFiles: true,
               canExecuteSkills: true,
               canDelegateToSubAgents: true,
@@ -8558,13 +8584,11 @@ export default function App() {
               activeFiles: ['~/.shadow-crew/agents'],
             },
             skills: [],
-            memory: {
-              internalMemoryPath: '~/.shadow-crew/global_memory.sqlite',
-              persistentType: 'sqlite',
-              persistentItems: [],
-              sessionCacheCount: 0,
-              cartridges: agentData.memory?.cartridges || [],
-            },
+            memory:
+              agentData.memory || {
+                ...createAgentMemoryBank('native'),
+                nativeCapability: createUnknownNativeMemoryCapability(),
+              },
           };
           setAgents((prev) => [...prev, newAg]);
           setDuplicatingAgent(null);
