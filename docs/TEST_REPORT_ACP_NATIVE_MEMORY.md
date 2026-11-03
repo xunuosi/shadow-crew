@@ -1,9 +1,9 @@
-# ACP 原生长期记忆功能测试报告（三轮缺陷修复与回归复测版）
+# ACP 原生长期记忆功能测试报告（四轮深度复核与行为回归终版）
 
 > 测试日期：2026-11-03  
-> 结论：通过，可交付复测（首轮 9 项审计缺陷与第二轮 4 项残留/回归风险均已闭环）
+> 结论：通过，可交付复测（首轮 9 项审计缺陷、第二轮 4 项修复及第三轮深度复查发现的 5 项残留/次生问题均已闭环）  
 > 规范依据：[SPEC_ACP_NATIVE_MEMORY.md](./SPEC_ACP_NATIVE_MEMORY.md)、[TECH_SPEC_ACP_ONLY_RUNTIME.md](./TECH_SPEC_ACP_ONLY_RUNTIME.md)  
-> 覆盖范围：本地 stdio ACP、远程 WebSocket ACP 能力感知、Codex ACP 原生 Memory、Agent 生命周期与配置迁移、双主题 UI 对比度
+> 覆盖范围：本地 stdio ACP、远程 WebSocket ACP 能力感知、Codex ACP 原生 Memory、Agent 生命周期与配置迁移、双主题 UI 行为渲染与对比度
 
 ---
 
@@ -12,18 +12,19 @@
 1. **显式托管策略**：Agent 配置具备 `memory.mode`（`native | disabled`）与 `autoGenerate`（默认 `false`），持久化版本号 `schemaVersion = 1`。
 2. **协议握手能力扩展**：ACP `initialize` 响应解析可选扩展 `agentCapabilities.nativeMemory`，严格要求 `supported === true && enabled === true` 才判定为 `enabled`，`supported === true && enabled === false` 判定为 `disabled`，`supported === false` 判定为 `unsupported`，其余缺失或半声明状态一律归入 `unknown`（遵循 `NM-01` Fail-Closed 原则）。
 3. **运行期探测与离线态严格解耦（`NM-01` / `NM-09`）**：
-   - 应用冷启动/重加载统一经过 `normalizeHydratedAgent()`：持久化的 `running/starting` 状态、`statusDetail` 和上次进程的 `nativeCapability` 全部作废，Agent 以 `idle + unknown + canUseInternalMemory=false` 进入工作区，再由真实运行态探测重新确认。
+   - 应用冷启动/重加载统一经过 `normalizeHydratedAgent()`（覆盖 `localStorage` 初始化回退、`INITIAL_AGENTS` 预设以及 SQLite `syncWorkspaceWithDb` 异步 hydration 全入口）：持久化的 `running/starting` 状态、`statusDetail` 和上次进程的 `nativeCapability` 全部作废，Agent 以 `idle + unknown + canUseInternalMemory=false` 进入工作区，并在 SQLite hydration 完成后立即触发 `syncRunningAgentsWithBackend` 同步真实运行态。
    - Agent 停止、本地进程退出、复制 Agent、编辑 Agent 或删除 Agent 时，均立即重置 `nativeCapability` 为 `unknown`。
-4. **本地与远程双通道策略下发**：
+4. **本地与远程双通道策略下发与生命周期状态机**：
    - 本地 stdio 通道：启动时通过受控环境变量 `SHADOW_CREW_ACP_NATIVE_MEMORY` / `SHADOW_CREW_ACP_NATIVE_MEMORY_AUTO_GENERATE` 下发策略（屏蔽用户同名 ENV 伪造），并在 `initialize` 与 `session/prompt` 请求中携带 `_meta.shadowCrew.nativeMemory`。
    - 远程 WebSocket 通道：`probeRemoteAcpConnection()` 与 `sendPromptToRemoteAcpWebSocket()` 在 `initialize` 和 `session/prompt` 中同步携带 `_meta.shadowCrew.nativeMemory`，且 `autoGenerate` 严格受 `nativeMemoryEnabled` 门控；后台本地轮询 `syncRunningAgentsWithBackend` 跳过远程/WebSocket Agent，防止 3 秒轮询冲掉远程在线状态。
-   - 远程 Agent 使用独立健康租约：运行中的 WebSocket Agent 每 15 秒重新探测一次，断线回落 `error + unknown`；启动、停止、编辑和删除通过 generation 取消旧探测，迟到结果不得覆盖新状态。
-5. **Codex ACP 适配器（`bin/codex-acp`）**：
+   - 远程 Agent 使用独立健康租约与显式状态机函数（`markRemoteAgentStarting` / `applyRemoteProbeOutcome` / `stopAgentRuntimeState` / `recordRemoteProbeSuccess` / `isAgentActivelyRunning`）：运行中的 WebSocket Agent 每 15 秒重新探测一次，断线回落 `error + isModelHealthy=false + unknown`；启动、停止、编辑和删除通过 generation 取消旧探测，迟到结果不得覆盖新状态；`starting` 状态支持随时点击卡片胶囊或“Stop running agents”中断，且 `error / auth_required` 不会被“Stop running agents”误启动。
+5. **Codex ACP 适配器（`bin/codex-acp`）与 Rust 握手重试机制**：
    - 同时消费 RPC 请求参数 `_meta.shadowCrew.nativeMemory` 与启动环境变量（`_meta` 优先），按需挂载 `--enable memories`、`memories.use_memories=true`、`memories.generate_memories=true|false`、`memories.dedicated_tools=true`。
-   - `disabled` 模式显式追加 `--disable memories`、`features.memories=false` 及三项 `memories.*=false` 覆盖，确保用户全局 `config.toml` 开启 memories 时仍能强制关闭。
-   - Rust `spawn_agent` / `ensure_initialized` 握手上限提升至 10 秒；初始化请求使用全局递增 ID，任何超时或拒绝都保持 `initialized=false` 并向上返回错误，后续 Prompt 仍可重新发起握手，不会永久锁死 `unknown`。
+   - `disabled` 模式显式追加 `--disable memories`、`features.memories=false` 及三项 `memories.*=false` 覆盖，确保用户全局 `config.toml` 开启 `[features] memories = true` 时仍能强制关闭。
+   - `codexNativeMemoryFeatureSupported()` 在探测异常（如冷启动偶发超时）时不缓存 `false`，保证后续请求可重试探测且不阻塞 `--disable memories` 注入。
+   - Rust `spawn_agent` / `ensure_initialized`（含 `execute_lazy_initialize_handshake`）握手上限提升至 10 秒；初始化请求使用全局递增 ID，连续多次超时或拒绝都保持 `initialized=false`、清理 `pending_requests` 并向上返回错误，后续 Prompt 仍可重新发起握手并在恢复后写回真实 `nativeMemory` 能力，不会永久锁死 `unknown`。
 6. **双主题高对比度 UI（`NM-THEME-01`）**：
-   - `ConnectAgentModal` 容器显式绑定 `data-theme={isLightMode ? 'light' : 'dark'}` 并通过 `MutationObserver` 与全局 `<html data-theme>` 同步，内部状态块与远程探测卡片全部采用显式 `isLightMode` 双主题语义色阶，彻底消除「浅字叠浅底 / 深字叠深底」。
+   - `ConnectAgentModal` 在首帧初始化时即根据 `initialAgent / duplicateAgent` 同步填充表单与策略状态，容器显式绑定 `data-theme={isLightMode ? 'light' : 'dark'}` 并通过 `MutationObserver` 与全局 `<html data-theme>` 同步，内部状态块与远程探测卡片全部采用显式 `isLightMode` 双主题语义色阶，彻底消除「浅字叠浅底 / 深字叠深底」。
 
 ---
 
@@ -33,22 +34,24 @@
 | --- | --- | --- | --- | --- |
 | **NM-01** | 未声明 `nativeMemory` 或 `supported: true` 但缺失 `enabled` 必须显示 `unknown`，严禁伪装为 `enabled` | 单元层 (TS + Rust) | `test-acp-native-memory.ts` (`verifyTypeContracts`) + `acp_manager.rs` (`test_check_native_memory_capability_contract`) | ✅ 通过 |
 | **NM-02** | Codex 开启原生记忆时，`initialize` 返回 `enabled`，`exec` 注入 `--enable memories` 与 `dedicated_tools=true` | 适配器层 + 真实运行期层 | `verifyAdapterEnabledFlow` (fake CLI) + `verifyRealCodexFlow` (真实 Codex CLI) | ✅ 通过 |
-| **NM-03** | 关闭原生记忆时，`initialize` 返回 `disabled`，`exec` 显式注入 `--disable memories` 与全部 memories=false 覆盖 | 适配器层 + 真实 CLI 参数层 | `verifyAdapterDisabledFlow` + `verifyAdapterMetaPolicyOverrideFlow` + `codex exec --disable memories --help` | ✅ 通过 |
+| **NM-03** | 关闭原生记忆时，`initialize` 返回 `disabled`，`exec` 显式注入 `--disable memories` 与全部 `memories=false` 覆盖 | 适配器层 + 真实运行期层 | `verifyAdapterDisabledFlow` + `verifyAdapterMetaPolicyOverrideFlow` + `verifyRealCodexFlow` (`disabledAdapter`) | ✅ 通过 |
 | **NM-04** | 显式长期记忆在第一个 ACP Session 写入后，第二个全新 ACP Session 不带历史上下文仍可召回 | 真实运行期层 (E2E) | `verifyRealCodexFlow`（隔离 `CODEX_HOME`，跨进程跨 Session 召回 `ORBIT-7742-LYNX`） | ✅ 通过 |
 | **NM-05** | 退出原适配器进程并重启新进程后，隔离 `CODEX_HOME` 下的 `memories_v2` 笔记仍可被召回 | 真实运行期层 (E2E) | `verifyRealCodexFlow`（`sourceAdapter.close()` 后拉起全新 `recallAdapter` 进程验证） | ✅ 通过 |
-| **NM-06** | 清理 Shadow Crew ACP Session 仅清理会话映射，不删除端点原生长期记忆 | 宿主集成层 + E2E | `acp_manager.rs` (`test_clear_agent_sessions_with_generation_deletes_db_even_if_memory_empty`) + `NM-SESSION-CLEAR-01` | ✅ 通过 |
+| **NM-06** | 清理 Shadow Crew ACP Session 仅清理会话映射，不删除端点原生长期记忆 | 宿主集成层 + E2E | `acp_manager.rs` (`test_clear_agent_sessions_with_generation_deletes_db_even_if_memory_empty`) | ✅ 通过 |
 | **NM-07** | 旧版 Agent 数据通过 `migrateAgentMemoryV1` 集中迁移到 `schemaVersion=1`，业务层零旧字段回退 | 单元层 | `verifyTypeContracts` + `test-acp-only-runtime.ts` | ✅ 通过 |
-| **NM-08** | 亮色/暗色主题 × 弹窗内部主题切换 × `enabled/disabled/unknown/unsupported` 状态组合全部可读 | UI 契约与运行期层 | `verifyRemoteWebSocketAndUiContracts` + 双主题渲染检查 | ✅ 通过 |
+| **NM-08** | 亮色/暗色主题 × `AcpInspector` / `ConnectAgentModal` × `enabled/disabled/unknown/unsupported` 状态组合全部正确渲染 | React SSR 行为渲染层 | `verifyRemoteWebSocketAndUiContracts`（`renderToStaticMarkup` 渲染 `AcpInspector` 双标签页与 `ConnectAgentModal` 各状态组合） | ✅ 通过 |
 | **NM-09** | 离线/重启加载的 Agent 不得保留上次进程的 `enabled` 探测结果；`INITIAL_AGENTS` 离线预设必须为 `unknown` | 单元层 + 宿主状态层 | `verifyTypeContracts` (`staleOfflineAgent` / `activeOnlineAgent` / `INITIAL_AGENTS[0]`) | ✅ 通过 |
-| **NM-10** | 同一 `CODEX_HOME` 共享边界清晰披露；测试使用独立临时 `CODEX_HOME` 物理隔离 | 真实运行期层 + UI 文案 | `verifyRealCodexFlow` + `ConnectAgentModal.tsx` / `AcpInspector.tsx` | ✅ 通过 |
-| **NM-11** | 首次 spawn 与 lazy initialize 均失败后保持可重试 | Rust 单元层 + 代码路径审计 | 全局递增 init ID 测试 + `initialized=false` 失败分支 | ✅ 通过 |
-| **NM-12** | 用户全局配置开启 memories 时，Agent disabled 仍必须强制关闭 | Fake CLI + 真实 CLI 参数解析 | `verifyAdapterDisabledFlow` / `verifyAdapterMetaPolicyOverrideFlow` | ✅ 通过 |
-| **NM-13** | 远程 Agent 启动/停止/编辑/删除的迟到 probe 不得复活 Agent | 纯函数生命周期反例 | `remoteAgentLifecycle` generation lease 测试 | ✅ 通过 |
-| **NM-14** | 远程 Agent 断线健康租约超时后回落 error + unknown | 纯函数生命周期 + 代码路径审计 | 15 秒 refresh 判定 + 健康复探失败分支 | ✅ 通过 |
+| **NM-10** | 同一 `CODEX_HOME` 共享边界清晰披露；测试使用独立临时 `CODEX_HOME` 物理隔离 | 真实运行期层 + UI 渲染层 | `verifyRealCodexFlow` + `ConnectAgentModal` / `AcpInspector` SSR 渲染校验 | ✅ 通过 |
+| **NM-11** | 首次 spawn 与 lazy initialize 连续两次超时后仍保持 `initialized=false`，第三次握手成功可恢复能力 | Rust 异步行为测试 | `acp_manager.rs` (`test_initialize_twice_timeout_remains_retryable_and_recovers_capabilities`) | ✅ 通过 |
+| **NM-12** | 用户全局 `config.toml` 开启 `[features] memories = true` 时，Agent `disabled` 仍强制覆盖为关闭且不召回旧记忆 | Fake CLI 配置解析 + 真实 Codex CLI E2E | `verifyAdapterDisabledFlow` + `verifyAdapterMetaPolicyOverrideFlow` + `verifyRealCodexFlow` (`disabledAdapter` 真实查询返回非 canary) | ✅ 通过 |
+| **NM-13** | 远程 Agent 启动后在探测完成前停止（或 Stop All），迟到 probe 不得将 Agent 写回 `running` | 状态机行为测试 | `verifyTypeContracts`（`markRemoteAgentStarting` → `stopAgentRuntimeState` → 迟到 `applyRemoteProbeOutcome` 返回 `applied: false`） | ✅ 通过 |
+| **NM-14** | 远程 Agent 15 秒健康复探断线后自动迁移为 `error + isModelHealthy=false + unknown` | 状态机行为测试 | `verifyTypeContracts`（`shouldRefreshRemoteProbe` → `applyRemoteProbeOutcome({ ok: false })` 状态迁移验证） | ✅ 通过 |
 
 ---
 
-## 3. 本轮代码审查发现并修复的 9 项缺陷清单
+## 3. 历史轮次与本轮深度复查修复清单
+
+### 3.1 首轮代码审查发现并修复的 9 项缺陷
 
 | 编号 | 严重度 | 缺陷位置与现象 | 根因分析 | 修复方案与回归验证 |
 | --- | --- | --- | --- | --- |
@@ -62,16 +65,15 @@
 | **#8** | P2 | `src/App.tsx`、`src/components/ConnectAgentModal.tsx`：复制 Agent 时旧 `capabilities` 覆盖 `canUseInternalMemory` 且拷贝旧 `nativeCapability`；新建 Agent 丢弃 `capabilities`；仅修改 `autoGenerate` 未触发策略变更重置 | 属性展开顺序将 `...(agent.capabilities \|\| {})` 放在后面；`onConnectAgent` 硬编码 `capabilities`；`nativeMemoryPolicyChanged` 仅比较 `mode` | 修正展开顺序并重置副本 `nativeCapability` 为 `unknown`；`onConnectAgent` 保留 `agentData.capabilities`；`nativeMemoryPolicyChanged` 同时校验 `mode` 与 `autoGenerate` |
 | **#9** | P3 | `src-tauri/src/acp_manager.rs`：Rust 默认 `AcpNativeMemoryCapability` 与前端 TS 默认值不一致（英文 `detail`、`scope: None`、动态时间戳） | Rust `Default` 实现未与前端 `createUnknownNativeMemoryCapability()` 对齐，导致轮询无意义刷新并覆盖中文提示 | 对齐 Rust 默认值为 `scope: Some("unknown")`、中文 `detail: Some("等待 ACP 端点握手声明")`、`last_checked_at: 0`，并在 `App.tsx` 按语义字段比对变更 |
 
----
+### 3.2 第二轮与第三轮针对 5 项重点问题的深度核查与彻底闭环
 
-### 3.1 第二轮独立复查发现的残留与新风险
-
-| 编号 | 严重度 | 问题 | 最终修复与验证 |
+| 问题项 | 之前修复状态 | 本轮深度复查发现的残留/次生缺陷 | 最终闭环修复与验证 |
 | --- | --- | --- | --- |
-| **R1** | P1 | lazy initialize 再次超时后仍设置 `initialized=true`，可能永久丢失能力状态 | 初始化 ID 改为全局递增；所有超时/拒绝/通道关闭均保持未初始化并向调用方返回错误，下一次 Prompt 可重新握手；新增 ID 唯一性 Rust 测试 |
-| **R2** | P1 | `disabled` 只省略 `--enable`，无法覆盖用户全局 memories 配置 | 显式 `--disable memories` + `features.memories=false` + `use/generate/dedicated=false`；Fake CLI 与真实 CLI 参数解析双重验证 |
-| **R3** | P1 | 持久化 `running` 状态可能在应用重启后保留旧 capability，尤其远程 Agent 不经过本地轮询 | `normalizeHydratedAgent()` 统一作废持久化运行态与握手能力；数据库 hydration 回读后立即写回干净状态 |
-| **R4** | P2 | 远程 Agent 跳过本地轮询后无独立健康检查，且迟到 probe 可能把已停止 Agent 恢复为 running | 新增 `remoteAgentLifecycle` generation 租约、15 秒健康复探、断线错误回落；启动/停止/编辑/删除均取消旧 probe；新增纯函数反例测试 |
+| **P1：`disabled` 无法覆盖用户全局 `memories` 配置** | `bin/codex-acp` 已追加 `--disable memories` 与 `-c features.memories=false` 等参数 | 1. `codexNativeMemoryFeatureSupported()` 在 `catch` 分支将 `cachedNativeMemoryFeatureSupported = false` 永久缓存，一旦冷启动探测超时，后续 `--disable memories` 分支将不再注入。<br>2. Fake CLI 与真实 E2E 测试均未在 `CODEX_HOME/config.toml` 中开启 `memories = true` 验证真实覆盖效果。 | 1. 移除 `codexNativeMemoryFeatureSupported()` 的失败缓存，偶发异常后可重试。<br>2. Fake CLI 默认写入 `[features] memories = true` 并解析 CLI 覆盖后的有效值，断言 `configMemoriesEnabled === true` 且四个 `effective*` 均为 `false`。<br>3. 真实 Codex E2E（`--real`）在已写入 canary 的 `realHome/config.toml` 中追加 `memories = true`，启动 `disabled` 适配器验证 `enabled: false` 且无法召回 `ORBIT-7742-LYNX`。 |
+| **P1：`lazy initialize` 第二次超时仍永久锁定** | `acp_manager.rs` 已移除超时分支的 `self.initialized.store(true)` | Rust 测试仅测试了 `next_init_request_id()` 递增，缺少“连续两次 `initialize` 超时后仍可第三次重试并恢复 `nativeMemory` 能力”的真实异步握手测试。 | 抽离 `execute_lazy_initialize_handshake` 并在 `acp_manager.rs` 新增 `test_initialize_twice_timeout_remains_retryable_and_recovers_capabilities`，验证连续两次超时后 `initialized == false`、`pending_requests` 归零，第三次成功握手后恢复 `initialized == true` 且 `native_memory_capability.status == "enabled"`。 |
+| **P2：远程 Agent 可能永久显示在线** | `App.tsx` 已增加 15s 远程复探，SQLite hydration 已接入 `normalizeHydratedAgent` | 1. `localStorage` 初始化入口（`App.tsx` 第 287/295 行）仍调用 `migrateAgentMemoryV1` 而非 `normalizeHydratedAgent`，若 SQLite 尚未返回或失败会短暂暴露持久化的 `running + enabled`。<br>2. SQLite hydration 完成后把所有 Agent 置为 `idle`，但未立即重新触发 `syncRunningAgentsWithBackend()`。 | 1. `localStorage` 与 `INITIAL_AGENTS` 全入口统一使用 `normalizeHydratedAgent`。<br>2. SQLite hydration 完成后立即调用 `syncRunningAgentsWithBackendRef.current?.()` 同步后端运行态与远程探测。 |
+| **P2：远程启动/停止存在异步竞态** | 已引入 `remoteAgentLifecycle.ts` 的 `generation` 租约 | 1. `AgentDashboard.tsx` 的 `handleStopAll` 使用 `ag.status !== 'idle'` 判断运行态，导致处于 `error` 或 `auth_required` 的 Agent 在点击“Stop running agents”时反而被触发启动！<br>2. Agent 卡片状态胶囊按钮设置了 `disabled={agent.status === 'starting'}`，导致用户在慢探测期间无法点击胶囊取消启动。<br>3. `onToggleAgentStatus` 读取闭包 `agents` 而非 `agentsRef.current`；`onUpdateAgent` 在保存刚完成健康探测的远程在线 Agent 时误调 `cancelRemoteAgentProbe` 导致 5s 后重复探测。 | 1. 新增 `isAgentActivelyRunning(agent, store)`，`handleStopAll` 仅停止真正运行中或探测中的 Agent，绝不误启动 `error / auth_required` Agent。<br>2. 移除卡片胶囊按钮在 `starting` 态的 `disabled` 锁死，支持随时点击中断握手。<br>3. `onToggleAgentStatus` 改读 `agentsRef.current` 并接入 `markRemoteAgentStarting` / `applyRemoteProbeOutcome` / `stopAgentRuntimeState`；`onUpdateAgent` 在远程在线复测成功后调用 `recordRemoteProbeSuccess` 记录租约时间。 |
+| **P3：测试覆盖偏差（源码字符串断言与缺口）** | 仍使用 `readFileSync` 字符串匹配校验 UI 与宿主生命周期 | `verifyRemoteWebSocketAndUiContracts` 存在 8 处 `readFileSync(...).includes(...)` 源码扫描断言，且缺少 `Agent[]` 状态机层面的远程断线与启停竞态行为测试。 | 1. 全面移除 `readFileSync` 源码字符串断言。<br>2. 使用 `renderToStaticMarkup` 对 `<AcpInspector />`（`rust_tauri` 与 `memory` 双标签页 × 4 种能力状态）及 `<ConnectAgentModal />`（亮/暗主题、远程探测状态胶囊、主从复选框联动）进行真实组件树渲染断言。<br>3. 对 `Agent[]` 状态迁移函数执行「启动→探测中停止→迟到响应丢弃→重连成功→15s 复探断线回落 `error + unknown`」完整行为测试。 |
 
 ---
 
@@ -80,23 +82,21 @@
 | 验证层级 | 验证项 | 执行命令 | 结果与证据 | 验证性质声明 |
 | --- | --- | --- | --- | --- |
 | **静态类型检查** | TypeScript 全量类型校验 | `npm run lint` | 通过（0 error） | 真实编译器静态检查 |
-| **生产构建检查** | Vite 前端生产打包 | `npm run build` | 通过（2015 modules transformed） | 真实生产打包 |
-| **单元 + 协议 + 适配器层** | 原生记忆契约、迁移、显式 disable、Fake Codex CLI、远程 WS 探针、远程 generation/健康租约、UI 源码契约 | `npm run test:acp-native-memory` | **通过（117 assertions）** | 纯函数 + Fake Codex 子进程 JSON-RPC + Mock WebSocket + 生命周期状态机反例 |
-| **真实运行期层 (E2E)** | 真实 Codex CLI 跨进程、跨 Session 原生记忆写入与召回 | `npm run test:acp-native-memory -- --real` | **通过（122 assertions，隔离 `CODEX_HOME`）** | **真实 `bin/codex-acp` + 真实本机 Codex CLI + 真实模型网关推理 + 真实 `memories_v2` 落盘与跨进程召回** |
+| **生产构建检查** | Vite 前端生产打包 | `npm run build` | 通过（2016 modules transformed） | 真实生产打包 |
+| **单元 + 协议 + 状态机 + UI 渲染层** | 原生记忆契约、迁移、用户 `config.toml` `memories=true` 覆盖、Fake Codex CLI、远程 WS 探针、远程启停竞态与断线状态机、React SSR 组件渲染 | `npm run test:acp-native-memory` | **通过（175 assertions）** | 纯函数 + Fake Codex 子进程 JSON-RPC + Mock WebSocket + 远程状态机行为测试 + React `renderToStaticMarkup` 真实组件渲染 |
+| **真实运行期层 (E2E)** | 真实 Codex CLI 跨进程写入、跨 Session 召回 + 用户 `config.toml` `memories=true` 下 `disabled` 强制阻断召回 | `npm run test:acp-native-memory -- --real` | **通过（182 assertions，隔离 `CODEX_HOME`）** | **真实 `bin/codex-acp` + 真实本机 Codex CLI + 真实模型网关推理 + 真实 `memories_v2` 落盘、跨进程召回与 `disabled` 阻断召回** |
 | **ACP 运行时基线** | ACP-only 运行时与禁用历史字段回归 | `npm run test:acp-only` | 通过 | 纯函数与契约回归 |
-| **Rust 宿主层** | Tauri ACP 管理器、握手解析、初始化 ID、Session 隔离、权限与 SQLite | `cargo test -p shadow-crew-desktop --no-fail-fast` | **通过（33/33 tests）** | 真实 Rust 单元与 SQLite/状态机集成测试 |
+| **Rust 宿主层** | Tauri ACP 管理器、握手解析、连续两次超时重试恢复、Session 隔离、权限与 SQLite | `cargo test -p shadow-crew-desktop --no-fail-fast` | **通过（34/34 tests）** | 真实 Rust 单元与异步握手/SQLite 状态机集成测试 |
 | **Rust MCP 工具层** | Dev MCP Server 工具契约与执行 | `cargo test -p shadow-crew-dev-mcp --no-fail-fast` | **通过（9/9 tests）** | 真实 Rust 单元测试 |
-| **全量关联回归** | Workspace / Permission / Permission UI / Attachments / DM / CognoNexus / G-Frame Edge | `npm run test:workspace && npm run test:acp-permission && npm run test:acp-permission-ui && npm run test:chat-attachments && npm run test:dm && npm run test:cogno && npm run test:cogno:edge` | **全部通过（0 defect / 0 warn）** | 真实回归测试套件 |
 
 ### 验证覆盖边界说明（符合 `AGENTS.md` 第 2.7 节要求）
 
 - **已覆盖的真实运行期层**：
-  - 本机真实 Codex CLI（`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`）经 `bin/codex-acp` 的 `initialize` 握手探测、第一个 Session 原生 memory 工具写入（落盘至隔离 `CODEX_HOME/memories_v2/extensions/ad_hoc/notes`）、进程退出后第二个全新进程/Session 的跨线程原生 memory 召回。
-  - Rust `shadow-crew-desktop` 后端状态机、握手能力解析与 SQLite 持久化测试。
-- **使用 Fake / Mock 的验证层**：
-  - 远程 WebSocket 握手探针（`probeRemoteAcpConnection`）与远程 Prompt 发送（`sendPromptToRemoteAcpWebSocket`）通过进程内 `MockWebSocket` 验证了完整 JSON-RPC 报文载荷、`_meta.shadowCrew.nativeMemory` 门控与错误 Fail-Closed 行为（本机未额外部署外部独立远程 WebSocket ACP 守护进程）。
-  - 远程 generation/健康租约通过纯函数故障注入验证：旧 probe 在 stop/edit 后迟到完成时返回失效，不允许复活 Agent；15 秒窗口前后的刷新判定均覆盖。
-  - 真实 Codex CLI 已解析并接受 `--disable memories` 与三项 `memories.*=false` 参数组合，但未在真实用户全局配置上执行破坏性开关切换；配置覆盖正确性由显式参数契约与 Fake CLI 断言共同验证。
+  - 本机真实 Codex CLI（`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`）经 `bin/codex-acp` 的 `initialize` 握手探测、第一个 Session 原生 memory 工具写入（落盘至隔离 `CODEX_HOME/memories_v2/extensions/ad_hoc/notes`）、进程退出后第二个全新进程/Session 的跨线程原生 memory 召回，以及在隔离 `CODEX_HOME/config.toml` 写入 `[features] memories = true` 后以 `disabled` 模式启动第三个真实 Codex 进程验证 `enabled: false` 且无法召回 canary。
+  - Rust `shadow-crew-desktop` 后端状态机、连续两次 `initialize` 超时后第三次握手恢复、握手能力解析与 SQLite 持久化测试。
+- **使用 Fake / Mock / SSR 的验证层**：
+  - 远程 WebSocket 握手探针（`probeRemoteAcpConnection`）与远程 Prompt 发送（`sendPromptToRemoteAcpWebSocket`）通过进程内 `MockWebSocket` 验证了完整 JSON-RPC 报文载荷、`_meta.shadowCrew.nativeMemory` 门控与错误 Fail-Closed 行为；远程 Agent 启停竞态、迟到 probe 拒绝与 15 秒断线回落通过 `remoteAgentLifecycle.ts` 状态机对 `Agent[]` 进行了行为验证。
+  - `AcpInspector` 与 `ConnectAgentModal` 通过 `react-dom/server` 的 `renderToStaticMarkup` 执行了组件树渲染与状态矩阵验证。
 
 ---
 
@@ -127,18 +127,18 @@
 
 ### NM-DISABLED-CONFIG-01 用户配置与 disabled 优先级
 
-1. 在测试 `CODEX_HOME/config.toml` 中临时开启 `features.memories=true` 与 `[memories]`。
+1. 在测试 `CODEX_HOME/config.toml` 中开启 `features.memories=true` 与 `[memories]`。
 2. Shadow Crew 将该 Codex Agent 设为 `disabled` 并重启。
-3. 检查 ACP 能力为 `disabled`，子进程参数包含 `--disable memories` 与三项 false 配置。
+3. 检查 ACP 能力为 `disabled`，子进程参数包含 `--disable memories`、`features.memories=false` 与三项 `memories.*=false` 配置。
 4. 发送一个在旧记忆中明确存在的 canary 查询，并禁止 shell/文件读取。
 5. 预期 Agent 无法通过 native memory 召回该 canary。
 
 ### NM-REMOTE-01 远程健康租约与启停竞态
 
 1. 使用一个可断开、初始化可延迟的远程 WebSocket ACP 测试端点。
-2. Shadow Crew 点击 Start 后立即 Stop/Stop All。
-3. 等待超过初始化延迟时间，确认 Agent 仍保持 `idle`，不会被迟到 probe 复活。
-4. 再次 Start 并等待成功，然后关闭远端服务；超过 15 秒健康复探窗口后，Agent 应从 `running` 回落为 `error`，nativeMemory 变为 `unknown`。
+2. Shadow Crew 点击 Start 后立即点击卡片上的 `starting` 胶囊（或顶部 `Stop running agents`）。
+3. 等待超过初始化延迟时间，确认 Agent 仍保持 `idle`，不会被迟到 probe 复活；且处于 `error` 状态的 Agent 不会被 `Stop running agents` 误触发启动。
+4. 再次 Start 并等待成功，然后关闭远端服务；超过 15 秒健康复探窗口后，Agent 应从 `running` 回落为 `error`，`nativeMemory` 变为 `unknown`。
 
 ### NM-THEME-01 双主题与弹窗内部主题切换可读性
 

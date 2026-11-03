@@ -39,6 +39,16 @@ interface ConnectAgentModalProps {
   initialAgent?: Agent | null;
   duplicateAgent?: Agent | null;
   onUpdateAgent?: (agentId: string, updatedData: Partial<Agent>) => void;
+  initialRemoteTestResult?: {
+    ok: boolean;
+    latencyMs: number;
+    error?: string;
+    agentInfo?: any;
+    loadSession?: boolean;
+    resumeSession?: boolean;
+    nativeMemory?: Agent['memory']['nativeCapability'];
+    rawRpcResult?: any;
+  } | null;
 }
 
 interface EnvVarItem {
@@ -67,29 +77,52 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   initialAgent,
   duplicateAgent,
   onUpdateAgent,
+  initialRemoteTestResult = null,
 }) => {
   if (!isOpen) return null;
 
   const isDuplicateMode = Boolean(duplicateAgent && !initialAgent);
+  const initialTarget = initialAgent || duplicateAgent;
 
   // Connection Tab: 'local' | 'remote'
-  const [connectTab, setConnectTab] = useState<'local' | 'remote'>('local');
+  const [connectTab, setConnectTab] = useState<'local' | 'remote'>(() =>
+    initialTarget && (initialTarget.isRemote || initialTarget.acpTransport === 'websocket')
+      ? 'remote'
+      : 'local'
+  );
 
   // Form Fields
-  const [name, setName] = useState('New ACP Agent');
-  const [role, setRole] = useState('ACP Endpoint');
+  const [name, setName] = useState(() =>
+    initialTarget
+      ? duplicateAgent
+        ? `${initialTarget.name} 副本`
+        : initialTarget.name || 'New ACP Agent'
+      : 'New ACP Agent'
+  );
+  const [role, setRole] = useState(() => initialTarget?.role || 'ACP Endpoint');
   const [description, setDescription] = useState(
-    'Local or remote Agent Client Protocol endpoint.'
+    () =>
+      initialTarget?.description ||
+      'Local or remote Agent Client Protocol endpoint.'
   );
   const [selectedIconId, setSelectedIconId] = useState('shinobi');
   const [customEmoji, setCustomEmoji] = useState('');
-  const [customCommand, setCustomCommand] = useState('');
+  const [customCommand, setCustomCommand] = useState(
+    () => initialTarget?.acpCommandOrUrl || ''
+  );
   const [isPickingIcon, setIsPickingIcon] = useState(false);
 
   // Remote ACP Connection State
-  const [remoteUrl, setRemoteUrl] = useState('ws://127.0.0.1:9000');
-  const [authToken, setAuthToken] = useState('');
-  const [readOnlyGuard, setReadOnlyGuard] = useState(true);
+  const [remoteUrl, setRemoteUrl] = useState(
+    () =>
+      initialTarget?.remoteUrl ||
+      initialTarget?.acpCommandOrUrl ||
+      'ws://127.0.0.1:9000'
+  );
+  const [authToken, setAuthToken] = useState(() => initialTarget?.authToken || '');
+  const [readOnlyGuard, setReadOnlyGuard] = useState(
+    () => initialTarget?.readOnlyGuard ?? true
+  );
   const [isTestingRemote, setIsTestingRemote] = useState(false);
   const [remoteTestResult, setRemoteTestResult] = useState<{
     ok: boolean;
@@ -100,7 +133,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     resumeSession?: boolean;
     nativeMemory?: Agent['memory']['nativeCapability'];
     rawRpcResult?: any;
-  } | null>(null);
+  } | null>(initialRemoteTestResult);
 
   // Local ACP Runtimes & Discovery
   const [runtimes, setRuntimes] = useState<LocalAcpRuntime[]>(FALLBACK_PRESET_RUNTIMES);
@@ -110,8 +143,12 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
   // Dynamic Environment Variables (ENV)
   const [envVars, setEnvVars] = useState<EnvVarItem[]>([]);
-  const [nativeMemoryEnabled, setNativeMemoryEnabled] = useState(true);
-  const [nativeMemoryAutoGenerate, setNativeMemoryAutoGenerate] = useState(false);
+  const [nativeMemoryEnabled, setNativeMemoryEnabled] = useState(() =>
+    initialTarget ? initialTarget.memory.mode === 'native' : true
+  );
+  const [nativeMemoryAutoGenerate, setNativeMemoryAutoGenerate] = useState(() =>
+    initialTarget ? Boolean(initialTarget.memory.autoGenerate) : false
+  );
 
   // Visual Theme support (synced with global data-theme and toggleable inside modal)
   const [isLightMode, setIsLightMode] = useState(() =>

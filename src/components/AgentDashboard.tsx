@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { AgentAvatarArtwork, TeamArtwork } from './AgentAvatarArtwork';
 import { ThemeSwitcher } from './ThemeSwitcher';
+import { isAgentActivelyRunning } from '../services/remoteAgentLifecycle';
 
 interface AgentDashboardProps {
   agents: Agent[];
@@ -119,7 +120,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
 
   const handleStopAll = () => {
     agents.forEach((ag) => {
-      if (ag.status !== 'idle') {
+      if (isAgentActivelyRunning(ag)) {
         onToggleAgentStatus(ag.id);
       }
     });
@@ -480,17 +481,16 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                         e.stopPropagation();
                         onToggleAgentStatus(agent.id);
                       }}
-                      disabled={agent.status === 'starting'}
                       className={`absolute -bottom-2.5 left-1/2 -translate-x-1/2 pl-3 pr-2 py-1 rounded-full text-[11px] font-semibold flex items-center gap-2 transition-all shadow-md cursor-pointer ${
                         agent.status === 'starting'
-                          ? 'bg-surface border border-sky-500/40 text-sky-500 cursor-wait'
+                          ? 'bg-surface border border-sky-500/40 text-sky-500 hover:border-red-500/60'
                           : isRunning
                           ? 'bg-surface border border-emerald-500/50 text-emerald-600 dark:text-emerald-400 hover:border-red-500/60'
                           : 'bg-surface border border-border hover:border-accent text-fg-secondary hover:text-fg'
                       }`}
                       title={
                         agent.status === 'starting'
-                          ? '正在建立 ACP 握手连接...'
+                          ? '正在建立 ACP 握手连接（点击可取消并停止）'
                           : isRunning
                           ? '点击挂起/断开通信连接'
                           : '点击启动通信并完成 ACP 握手'

@@ -30,6 +30,7 @@ interface AcpInspectorProps {
   selectedAgent: Agent;
   rpcLogs: AcpRpcLog[];
   workspaceFiles: WorkspaceFile[];
+  initialTab?: 'architecture' | 'rust_tauri' | 'memory' | 'workspace' | 'skills' | 'rpc_logs';
   onAddAgentMemoryItem?: (agentId: string, category: any, key: string, content: string) => void;
   onRunAgentSkill: (agentId: string, skillId: string) => void;
   onOpenRustTauriHub?: () => void;
@@ -45,6 +46,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
   selectedAgent,
   rpcLogs,
   workspaceFiles,
+  initialTab = 'rust_tauri',
   onAddAgentMemoryItem,
   onRunAgentSkill,
   onOpenRustTauriHub,
@@ -55,7 +57,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
   onOpenImportModal,
   onClose,
 }) => {
-  const [activeTab, setActiveTab] = useState<'architecture' | 'rust_tauri' | 'memory' | 'workspace' | 'skills' | 'rpc_logs'>('rust_tauri');
+  const [activeTab, setActiveTab] = useState<'architecture' | 'rust_tauri' | 'memory' | 'workspace' | 'skills' | 'rpc_logs'>(initialTab);
   const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
   const [diskLogText, setDiskLogText] = useState<string | null>(null);
   const [loadingDiskLog, setLoadingDiskLog] = useState(false);
@@ -862,10 +864,10 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                 </div>
                 <span className={`font-mono uppercase font-bold text-[10px] ${
                   nativeMemoryStatus === 'enabled'
-                    ? 'text-emerald-600 dark:text-emerald-300'
+                    ? 'text-emerald-800 dark:text-emerald-300'
                     : nativeMemoryStatus === 'unsupported'
-                      ? 'text-rose-600 dark:text-rose-300'
-                      : 'text-amber-600 dark:text-amber-300'
+                      ? 'text-rose-800 dark:text-rose-300'
+                      : 'text-amber-800 dark:text-amber-300'
                 }`}>
                   {nativeMemoryStatus}
                 </span>

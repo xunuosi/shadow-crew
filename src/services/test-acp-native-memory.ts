@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
@@ -14,8 +15,12 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface, Interface } from 'node:readline';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { Agent } from '../types';
 import { INITIAL_AGENTS } from '../data/mockData';
+import { AcpInspector } from '../components/AcpInspector';
+import { ConnectAgentModal } from '../components/ConnectAgentModal';
 import {
   ACP_NATIVE_MEMORY_ENV,
   ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV,
@@ -31,10 +36,16 @@ import {
   sendPromptToRemoteAcpWebSocket,
 } from './acpClient';
 import {
+  applyRemoteProbeOutcome,
   beginRemoteProbe,
   cancelRemoteProbe,
   completeRemoteProbe,
+  isAgentActivelyRunning,
+  markRemoteAgentStarting,
+  nativeMemoryCapabilityChanged,
+  recordRemoteProbeSuccess,
   shouldRefreshRemoteProbe,
+  stopAgentRuntimeState,
 } from './remoteAgentLifecycle';
 
 interface AdapterHarness {
@@ -45,6 +56,17 @@ interface AdapterHarness {
   close(): Promise<void>;
 }
 
+interface FakeCodexAction {
+  args: string[];
+  nativeMemory: string;
+  nativeMemoryAutoGenerate: string;
+  configMemoriesEnabled: boolean;
+  effectiveMemoriesEnabled: boolean;
+  effectiveUseMemories: boolean;
+  effectiveGenerateMemories: boolean;
+  effectiveDedicatedTools: boolean;
+}
+
 function createFakeCodex(tempDir: string): { binary: string; actionsFile: string } {
   mkdirSync(tempDir, { recursive: true });
   const binary = join(tempDir, 'fake-codex.cjs');
@@ -53,18 +75,55 @@ function createFakeCodex(tempDir: string): { binary: string; actionsFile: string
     binary,
     `#!/usr/bin/env node
 const fs = require('node:fs');
+const path = require('node:path');
 const args = process.argv.slice(2);
+const codexHome = process.env.CODEX_HOME || '';
+const configPath = codexHome ? path.join(codexHome, 'config.toml') : '';
+const configText = configPath && fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
+const configMemoriesEnabled = /^\\s*memories\\s*=\\s*true\\s*$/m.test(configText);
+let effectiveMemoriesEnabled = configMemoriesEnabled;
+let effectiveUseMemories = /^\\s*use_memories\\s*=\\s*true\\s*$/m.test(configText) || configMemoriesEnabled;
+let effectiveGenerateMemories = /^\\s*generate_memories\\s*=\\s*true\\s*$/m.test(configText);
+let effectiveDedicatedTools = /^\\s*dedicated_tools\\s*=\\s*true\\s*$/m.test(configText) || configMemoriesEnabled;
+
+for (let i = 0; i < args.length; i += 1) {
+  const token = args[i];
+  const next = args[i + 1];
+  if (token === '--enable' && next === 'memories') {
+    effectiveMemoriesEnabled = true;
+    i += 1;
+  } else if (token === '--disable' && next === 'memories') {
+    effectiveMemoriesEnabled = false;
+    i += 1;
+  } else if (token === '-c' && typeof next === 'string') {
+    if (next === 'features.memories=true') effectiveMemoriesEnabled = true;
+    if (next === 'features.memories=false') effectiveMemoriesEnabled = false;
+    if (next === 'memories.use_memories=true') effectiveUseMemories = true;
+    if (next === 'memories.use_memories=false') effectiveUseMemories = false;
+    if (next === 'memories.generate_memories=true') effectiveGenerateMemories = true;
+    if (next === 'memories.generate_memories=false') effectiveGenerateMemories = false;
+    if (next === 'memories.dedicated_tools=true') effectiveDedicatedTools = true;
+    if (next === 'memories.dedicated_tools=false') effectiveDedicatedTools = false;
+    i += 1;
+  }
+}
+
 fs.appendFileSync(process.env.FAKE_CODEX_ACTIONS, JSON.stringify({
   args,
   nativeMemory: process.env.SHADOW_CREW_ACP_NATIVE_MEMORY || '',
-  nativeMemoryAutoGenerate: process.env.SHADOW_CREW_ACP_NATIVE_MEMORY_AUTO_GENERATE || ''
+  nativeMemoryAutoGenerate: process.env.SHADOW_CREW_ACP_NATIVE_MEMORY_AUTO_GENERATE || '',
+  configMemoriesEnabled,
+  effectiveMemoriesEnabled,
+  effectiveUseMemories,
+  effectiveGenerateMemories,
+  effectiveDedicatedTools,
 }) + '\\n');
 if (args.includes('--version')) {
   console.log('codex-cli 99.0.0-test');
   process.exit(0);
 }
 if (args.includes('features') && args.includes('list')) {
-  console.log('memories stable true');
+  console.log(\`memories stable \${effectiveMemoriesEnabled ? 'true' : 'false'}\`);
   process.exit(0);
 }
 if (args[0] === 'exec') {
@@ -98,18 +157,36 @@ async function startAdapter(
   const home =
     realHome ||
     join(tempDir, nativeMemoryEnabled ? 'home-enabled' : 'home-disabled');
+  const codexHome = realHome || join(home, '.codex-unused');
+  mkdirSync(codexHome, { recursive: true });
   if (realHome) {
-    mkdirSync(realHome, { recursive: true });
-    const configLink = join(realHome, 'config.toml');
+    const configPath = join(realHome, 'config.toml');
     const authLink = join(realHome, 'auth.json');
     const realConfig = join(homedir(), '.codex', 'config.toml');
     const realAuth = join(homedir(), '.codex', 'auth.json');
-    if (existsSync(realConfig) && !existsSync(configLink)) {
-      symlinkSync(realConfig, configLink);
+    if (existsSync(realConfig) && !existsSync(configPath)) {
+      copyFileSync(realConfig, configPath);
     }
     if (existsSync(realAuth) && !existsSync(authLink)) {
       symlinkSync(realAuth, authLink);
     }
+  } else {
+    // Simulate a user global config.toml that explicitly enables Codex memories,
+    // verifying that Shadow Crew's `disabled` mode actively overrides user config.
+    writeFileSync(
+      join(codexHome, 'config.toml'),
+      [
+        '[features]',
+        'memories = true',
+        '',
+        '[memories]',
+        'use_memories = true',
+        'generate_memories = true',
+        'dedicated_tools = true',
+        '',
+      ].join('\n'),
+      'utf8'
+    );
   }
   const adapter = join(process.cwd(), 'bin', 'codex-acp');
   const child = spawn(process.execPath, [adapter], {
@@ -117,7 +194,7 @@ async function startAdapter(
     env: {
       ...process.env,
       HOME: realHome ? homedir() : home,
-      CODEX_HOME: realHome || join(home, '.codex-unused'),
+      CODEX_HOME: codexHome,
       SHADOW_CREW_HOME: realHome
         ? join(realHome, 'shadow-crew-home')
         : join(home, '.shadow-crew'),
@@ -182,9 +259,7 @@ async function startAdapter(
   return { harness, actionsFile: fake?.actionsFile };
 }
 
-function readActions(
-  actionsFile: string
-): Array<{ args: string[]; nativeMemory: string; nativeMemoryAutoGenerate: string }> {
+function readActions(actionsFile: string): FakeCodexAction[] {
   if (!existsSync(actionsFile)) return [];
   return readFileSync(actionsFile, 'utf8')
     .split('\n')
@@ -241,6 +316,11 @@ async function verifyAdapterEnabledFlow(tempDir: string): Promise<number> {
       assert.ok(action.args.includes('memories.dedicated_tools=true'));
       assert.equal(action.nativeMemory, '1');
       assert.equal(action.nativeMemoryAutoGenerate, '0');
+      assert.equal(action.configMemoriesEnabled, true);
+      assert.equal(action.effectiveMemoriesEnabled, true);
+      assert.equal(action.effectiveUseMemories, true);
+      assert.equal(action.effectiveGenerateMemories, false);
+      assert.equal(action.effectiveDedicatedTools, true);
     }
     assert.ok(execActions[0].args.includes('-'));
     assert.ok(
@@ -248,7 +328,7 @@ async function verifyAdapterEnabledFlow(tempDir: string): Promise<number> {
         execActions[1].args.includes('thread-native-memory-test')
     );
     assert.ok(execActions[1].args.indexOf('-') > execActions[1].args.indexOf('thread-native-memory-test'));
-    assertions += 26;
+    assertions += 36;
   } finally {
     await harness.close();
   }
@@ -284,7 +364,13 @@ async function verifyAdapterDisabledFlow(tempDir: string): Promise<number> {
     assert.ok(execAction!.args.includes('memories.dedicated_tools=false'));
     assert.equal(execAction!.nativeMemory, '0');
     assert.equal(execAction!.nativeMemoryAutoGenerate, '0');
-    return 12;
+    // User config.toml has [features] memories = true, but CLI flags override all effective flags to false
+    assert.equal(execAction!.configMemoriesEnabled, true);
+    assert.equal(execAction!.effectiveMemoriesEnabled, false);
+    assert.equal(execAction!.effectiveUseMemories, false);
+    assert.equal(execAction!.effectiveGenerateMemories, false);
+    assert.equal(execAction!.effectiveDedicatedTools, false);
+    return 17;
   } finally {
     await harness.close();
   }
@@ -309,7 +395,8 @@ async function verifyAdapterAutoGenerateFlow(tempDir: string): Promise<number> {
     assert.ok(execAction);
     assert.ok(execAction!.args.includes('memories.generate_memories=true'));
     assert.equal(execAction!.nativeMemoryAutoGenerate, '1');
-    return 4;
+    assert.equal(execAction!.effectiveGenerateMemories, true);
+    return 5;
   } finally {
     await harness.close();
   }
@@ -388,11 +475,20 @@ async function verifyAdapterMetaPolicyOverrideFlow(tempDir: string): Promise<num
     assert.ok(execActions[0].args.includes('memories.dedicated_tools=false'));
     assert.equal(execActions[0].nativeMemory, '0');
     assert.equal(execActions[0].nativeMemoryAutoGenerate, '0');
+    assert.equal(execActions[0].configMemoriesEnabled, true);
+    assert.equal(execActions[0].effectiveMemoriesEnabled, false);
+    assert.equal(execActions[0].effectiveUseMemories, false);
+    assert.equal(execActions[0].effectiveGenerateMemories, false);
+    assert.equal(execActions[0].effectiveDedicatedTools, false);
     assert.ok(execActions[1].args.includes('memories'));
     assert.ok(execActions[1].args.includes('memories.generate_memories=true'));
     assert.equal(execActions[1].nativeMemory, '1');
     assert.equal(execActions[1].nativeMemoryAutoGenerate, '1');
-    return 16;
+    assert.equal(execActions[1].effectiveMemoriesEnabled, true);
+    assert.equal(execActions[1].effectiveUseMemories, true);
+    assert.equal(execActions[1].effectiveGenerateMemories, true);
+    assert.equal(execActions[1].effectiveDedicatedTools, true);
+    return 25;
   } finally {
     await harness.close();
   }
@@ -567,20 +663,87 @@ function verifyTypeContracts(): number {
   assert.equal(INITIAL_AGENTS[0].capabilities?.canUseInternalMemory, false);
   assertions += 12;
 
-  // Remote probe leases prevent a late start probe from resurrecting an Agent
-  // after the user has stopped it.
+  // Behavioral state machine tests for remote Agent lifecycle:
+  // 1) Start -> Stop before probe finishes -> late probe does NOT resurrect Agent to running
   const probeStore = new Map<string, {
     generation: number;
     inFlight: boolean;
     lastAttemptAt: number;
   }>();
+  const baseRemoteAgent: Agent = {
+    ...migrated.agent,
+    id: 'remote-agent',
+    isRemote: true,
+    acpTransport: 'websocket',
+    remoteUrl: 'ws://127.0.0.1:9000',
+    status: 'idle',
+  };
+  let agentsState: Agent[] = [baseRemoteAgent];
   const staleGeneration = beginRemoteProbe(probeStore, 'remote-agent', 1000);
-  assert.equal(probeStore.get('remote-agent')?.inFlight, true);
-  cancelRemoteProbe(probeStore, 'remote-agent');
-  assert.equal(completeRemoteProbe(probeStore, 'remote-agent', staleGeneration), false);
+  agentsState = markRemoteAgentStarting(agentsState, 'remote-agent');
+  assert.equal(agentsState[0].status, 'starting');
+  assert.equal(isAgentActivelyRunning(agentsState[0], probeStore), true);
+
+  // User clicks Stop (or Stop All) while probe is in flight
+  agentsState = stopAgentRuntimeState(agentsState, probeStore, 'remote-agent');
+  assert.equal(agentsState[0].status, 'idle');
+  assert.equal(agentsState[0].memory.nativeCapability.status, 'unknown');
+  assert.equal(agentsState[0].capabilities?.canUseInternalMemory, false);
+
+  // Late probe arrives after stop -> must be rejected by lease & state machine
+  const lateApplied = applyRemoteProbeOutcome(
+    agentsState,
+    probeStore,
+    'remote-agent',
+    staleGeneration,
+    {
+      ok: true,
+      latencyMs: 18,
+      loadSession: true,
+      resumeSession: true,
+      nativeMemory: {
+        status: 'enabled',
+        persistent: true,
+        crossThread: true,
+        provider: 'remote-codex',
+        scope: 'runtime',
+      },
+    },
+    true
+  );
+  assert.equal(lateApplied.applied, false);
+  assert.equal(lateApplied.agents[0].status, 'idle');
+  assert.equal(lateApplied.agents[0].memory.nativeCapability.status, 'unknown');
+  assert.equal(lateApplied.agents[0].capabilities?.canUseInternalMemory, false);
+
+  // 2) Fresh start -> probe succeeds -> transitions to running + enabled capability
   const freshGeneration = beginRemoteProbe(probeStore, 'remote-agent', 2000);
-  assert.equal(completeRemoteProbe(probeStore, 'remote-agent', freshGeneration), true);
-  assert.equal(probeStore.get('remote-agent')?.inFlight, false);
+  agentsState = markRemoteAgentStarting(agentsState, 'remote-agent');
+  const freshApplied = applyRemoteProbeOutcome(
+    agentsState,
+    probeStore,
+    'remote-agent',
+    freshGeneration,
+    {
+      ok: true,
+      latencyMs: 12,
+      loadSession: true,
+      resumeSession: true,
+      nativeMemory: {
+        status: 'enabled',
+        persistent: true,
+        crossThread: true,
+        provider: 'remote-codex',
+        scope: 'runtime',
+      },
+    },
+    true
+  );
+  assert.equal(freshApplied.applied, true);
+  agentsState = freshApplied.agents;
+  assert.equal(agentsState[0].status, 'running');
+  assert.equal(agentsState[0].memory.nativeCapability.status, 'enabled');
+  assert.equal(agentsState[0].capabilities?.canUseInternalMemory, true);
   assert.equal(
     shouldRefreshRemoteProbe(probeStore, 'remote-agent', 15_000, 5_000),
     false
@@ -589,7 +752,46 @@ function verifyTypeContracts(): number {
     shouldRefreshRemoteProbe(probeStore, 'remote-agent', 15_000, 17_001),
     true
   );
-  assertions += 6;
+
+  // 3) Periodic 15s refresh detects remote disconnect -> transitions to error + resets capability to unknown
+  const refreshGen = beginRemoteProbe(probeStore, 'remote-agent', 18_000);
+  // Silent background refresh keeps status 'running' until probe finishes
+  assert.equal(agentsState[0].status, 'running');
+  const disconnectApplied = applyRemoteProbeOutcome(
+    agentsState,
+    probeStore,
+    'remote-agent',
+    refreshGen,
+    {
+      ok: false,
+      latencyMs: 0,
+      error: 'WebSocket connection closed (Code: 1006)',
+    },
+    false
+  );
+  assert.equal(disconnectApplied.applied, true);
+  agentsState = disconnectApplied.agents;
+  assert.equal(agentsState[0].status, 'error');
+  assert.equal(agentsState[0].isModelHealthy, false);
+  assert.equal(agentsState[0].memory.nativeCapability.status, 'unknown');
+  assert.equal(agentsState[0].capabilities?.canUseInternalMemory, false);
+  // Error state must NOT be treated as actively running by Stop All
+  assert.equal(isAgentActivelyRunning(agentsState[0], probeStore), false);
+
+  // 4) Edit-save fresh probe records timestamp so 5s poll does not immediately re-probe
+  recordRemoteProbeSuccess(probeStore, 'remote-agent', 30_000);
+  assert.equal(
+    shouldRefreshRemoteProbe(probeStore, 'remote-agent', 15_000, 40_000),
+    false
+  );
+  assert.equal(
+    nativeMemoryCapabilityChanged(
+      agentsState[0].memory.nativeCapability,
+      freshApplied.agents[0].memory.nativeCapability
+    ),
+    true
+  );
+  assertions += 24;
 
   return assertions;
 }
@@ -743,31 +945,155 @@ async function verifyRemoteWebSocketAndUiContracts(): Promise<number> {
     (globalThis as any).WebSocket = originalWebSocket;
   }
 
-  // UI & Host Lifecycle Source Contract Verification
-  const modalSrc = readFileSync(
-    join(process.cwd(), 'src/components/ConnectAgentModal.tsx'),
-    'utf8'
-  );
-  assert.ok(modalSrc.includes("data-theme={isLightMode ? 'light' : 'dark'}"));
-  assert.ok(modalSrc.includes('已声明 (已关闭)'));
-  assert.ok(
-    modalSrc.includes(
-      'Boolean(initialAgent?.memory.autoGenerate) !== nextAutoGenerate'
-    )
-  );
+  // Behavioral React SSR UI Rendering Verification (<AcpInspector /> & <ConnectAgentModal />)
+  const baseAgent: Agent = {
+    ...INITIAL_AGENTS[0],
+    status: 'running',
+  };
+  const statusMatrix: Array<{
+    status: Agent['memory']['nativeCapability']['status'];
+    expectedRustTabBadge: string;
+    expectedMemoryTabBadge: string;
+    persistent?: boolean;
+    crossThread?: boolean;
+    expectedPersistenceText: string;
+  }> = [
+    {
+      status: 'enabled',
+      expectedRustTabBadge: '已启用 ✓',
+      expectedMemoryTabBadge: '>enabled<',
+      persistent: true,
+      crossThread: true,
+      expectedPersistenceText: 'YES / YES',
+    },
+    {
+      status: 'disabled',
+      expectedRustTabBadge: '已关闭',
+      expectedMemoryTabBadge: '>disabled<',
+      persistent: false,
+      crossThread: false,
+      expectedPersistenceText: 'NO / NO',
+    },
+    {
+      status: 'unsupported',
+      expectedRustTabBadge: '不支持 ✕',
+      expectedMemoryTabBadge: '>unsupported<',
+      expectedPersistenceText: 'UNKNOWN / UNKNOWN',
+    },
+    {
+      status: 'unknown',
+      expectedRustTabBadge: '待握手 ⚠️',
+      expectedMemoryTabBadge: '>unknown<',
+      expectedPersistenceText: 'UNKNOWN / UNKNOWN',
+    },
+  ];
 
-  const inspectorSrc = readFileSync(
-    join(process.cwd(), 'src/components/AcpInspector.tsx'),
-    'utf8'
-  );
-  assert.ok(inspectorSrc.includes("nativeMemoryCapability.persistent === false"));
-  assert.ok(inspectorSrc.includes("nativeMemoryStatus !== 'unknown'"));
+  for (const item of statusMatrix) {
+    const agentVariant: Agent = {
+      ...baseAgent,
+      memory: {
+        ...baseAgent.memory,
+        mode: item.status === 'disabled' ? 'disabled' : 'native',
+        nativeCapability: {
+          status: item.status,
+          persistent: item.persistent,
+          crossThread: item.crossThread,
+          provider: 'codex-memories',
+          scope: 'runtime',
+        },
+      },
+    };
+    const rustTabHtml = renderToStaticMarkup(
+      React.createElement(AcpInspector, {
+        selectedAgent: agentVariant,
+        rpcLogs: [],
+        workspaceFiles: [],
+        initialTab: 'rust_tauri',
+        onRunAgentSkill: () => {},
+        onClose: () => {},
+      })
+    );
+    assert.ok(rustTabHtml.includes('agentCapabilities.nativeMemory'));
+    assert.ok(rustTabHtml.includes(item.expectedRustTabBadge));
 
-  const appSrc = readFileSync(join(process.cwd(), 'src/App.tsx'), 'utf8');
-  assert.ok(appSrc.includes("if (a.isRemote || a.acpTransport === 'websocket')"));
-  assert.ok(appSrc.includes('cancelRemoteAgentProbe(agentId)'));
-  assert.ok(appSrc.includes('REMOTE_ACP_HEALTH_REFRESH_MS'));
-  assertions += 8;
+    const memoryTabHtml = renderToStaticMarkup(
+      React.createElement(AcpInspector, {
+        selectedAgent: agentVariant,
+        rpcLogs: [],
+        workspaceFiles: [],
+        initialTab: 'memory',
+        onRunAgentSkill: () => {},
+        onClose: () => {},
+      })
+    );
+    assert.ok(memoryTabHtml.includes(item.expectedMemoryTabBadge));
+    assert.ok(memoryTabHtml.includes(item.expectedPersistenceText));
+    assertions += 4;
+  }
+
+  // Render <ConnectAgentModal /> across remote nativeMemory states (enabled / disabled / unsupported / unknown)
+  const remoteAgent: Agent = {
+    ...baseAgent,
+    isRemote: true,
+    acpTransport: 'websocket',
+    remoteUrl: 'ws://127.0.0.1:9000',
+    memory: createAgentMemoryBank('disabled', false),
+  };
+  const modalDisabledHtml = renderToStaticMarkup(
+    React.createElement(ConnectAgentModal, {
+      isOpen: true,
+      onClose: () => {},
+      onConnectAgent: () => {},
+      initialAgent: remoteAgent,
+      initialRemoteTestResult: {
+        ok: true,
+        latencyMs: 14,
+        loadSession: true,
+        resumeSession: true,
+        nativeMemory: {
+          status: 'disabled',
+          persistent: true,
+          crossThread: true,
+          provider: 'remote-codex',
+          scope: 'runtime',
+        },
+      },
+    })
+  );
+  assert.ok(modalDisabledHtml.includes('data-theme="light"'));
+  assert.ok(modalDisabledHtml.includes('已声明 (已关闭)'));
+  assert.ok(modalDisabledHtml.includes('启用 ACP 端点原生长期记忆'));
+  assert.ok(modalDisabledHtml.includes('已关闭原生记忆请求'));
+  // When nativeMemoryEnabled is false (mode === 'disabled'), the autoGenerate sub-checkbox is hidden
+  assert.equal(modalDisabledHtml.includes('允许自动提炼历史对话'), false);
+
+  const modalEnabledHtml = renderToStaticMarkup(
+    React.createElement(ConnectAgentModal, {
+      isOpen: true,
+      onClose: () => {},
+      onConnectAgent: () => {},
+      initialAgent: {
+        ...remoteAgent,
+        memory: createAgentMemoryBank('native', true),
+      },
+      initialRemoteTestResult: {
+        ok: true,
+        latencyMs: 11,
+        loadSession: true,
+        resumeSession: true,
+        nativeMemory: {
+          status: 'enabled',
+          persistent: true,
+          crossThread: true,
+          provider: 'remote-codex',
+          scope: 'runtime',
+        },
+      },
+    })
+  );
+  assert.ok(modalEnabledHtml.includes('已声明 ✓'));
+  assert.ok(modalEnabledHtml.includes('允许自动提炼历史对话'));
+  assertions += 7;
 
   return assertions;
 }
@@ -849,9 +1175,64 @@ async function verifyRealCodexFlow(tempDir: string): Promise<number> {
     );
     const response = recallResult.result?.text_response || '';
     assert.match(response, new RegExp(canaryValue));
-    return 5;
   } finally {
     await recallAdapter.harness.close();
+  }
+
+  // Verify that even when user's CODEX_HOME/config.toml explicitly enables `[features] memories = true`
+  // and `memories_v2` already stores the canary on disk, Shadow Crew's `disabled` mode overrides
+  // Codex CLI configuration and prevents native memory recall.
+  const realConfigPath = join(realHome, 'config.toml');
+  const existingConfig = existsSync(realConfigPath)
+    ? readFileSync(realConfigPath, 'utf8')
+    : '';
+  writeFileSync(
+    realConfigPath,
+    `${existingConfig}\n[features]\nmemories = true\n\n[memories]\nuse_memories = true\ndedicated_tools = true\n`,
+    'utf8'
+  );
+
+  const disabledAdapter = await startAdapter(
+    join(tempDir, 'real-disabled'),
+    false,
+    false,
+    realHome
+  );
+  try {
+    const initDisabled = await disabledAdapter.harness.request('initialize', {}, 1);
+    assert.equal(
+      initDisabled.result?.agentCapabilities?.nativeMemory?.enabled,
+      false,
+      JSON.stringify(initDisabled.result?.agentCapabilities?.nativeMemory)
+    );
+    const session = await disabledAdapter.harness.request(
+      'session/new',
+      { cwd: tempDir, systemPrompt: '' },
+      2
+    );
+    const disabledRecall = await disabledAdapter.harness.request(
+      'session/prompt',
+      {
+        sessionId: session.result?.sessionId,
+        cwd: tempDir,
+        prompt: [
+          {
+            type: 'text',
+            text: `只使用 Codex 原生 memory 工具查询 ${canaryKey} 的 value。不要使用 shell、文件、网络或当前会话历史。只回答 value；不知道回答 UNKNOWN。`,
+          },
+        ],
+      },
+      3
+    );
+    const disabledResponse = disabledRecall.result?.text_response || '';
+    assert.equal(
+      disabledResponse.includes(canaryValue),
+      false,
+      `Expected disabled native memory not to recall ${canaryValue}, got: ${disabledResponse}`
+    );
+    return 7;
+  } finally {
+    await disabledAdapter.harness.close();
   }
 }
 

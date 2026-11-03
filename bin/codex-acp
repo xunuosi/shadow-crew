@@ -164,7 +164,7 @@ function codexNativeMemoryFeatureSupported() {
       .find((line) => line.startsWith('memories '));
     cachedNativeMemoryFeatureSupported = Boolean(memoryLine && /\btrue$/.test(memoryLine));
   } catch {
-    cachedNativeMemoryFeatureSupported = false;
+    return false;
   }
   return cachedNativeMemoryFeatureSupported;
 }

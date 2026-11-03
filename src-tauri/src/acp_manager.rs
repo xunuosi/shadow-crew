@@ -2829,6 +2829,115 @@ fn resolve_session_workspace(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_lazy_initialize_handshake<F>(
+    agent_id: &str,
+    timeout_duration: Duration,
+    initialized: &AtomicBool,
+    pending_requests: &TokioMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>,
+    stdin_tx: &mpsc::Sender<String>,
+    init_error: &TokioMutex<Option<String>>,
+    status_detail: &TokioMutex<Option<String>>,
+    supports_load_session: &AtomicBool,
+    supports_resume_session: &AtomicBool,
+    supports_prompt_image: &AtomicBool,
+    supports_embedded_context: &AtomicBool,
+    native_memory_capability: &TokioMutex<AcpNativeMemoryCapability>,
+    mut on_status_change: F,
+) -> Result<()>
+where
+    F: FnMut(&str, serde_json::Value),
+{
+    if initialized.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    let init_id = next_init_request_id();
+    let (init_tx, init_rx) = oneshot::channel();
+    {
+        let mut map = pending_requests.lock().await;
+        map.insert(init_id, init_tx);
+    }
+    let init_req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": init_id,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": 1,
+            "clientInfo": {
+                "name": "shadow-crew",
+                "version": "0.1.0"
+            },
+            "clientCapabilities": acp_client_capabilities()
+        }
+    });
+    let _ = stdin_tx.send(init_req.to_string()).await;
+    match tokio::time::timeout(timeout_duration, init_rx).await {
+        Ok(Ok(resp)) => {
+            if let Some(err) = resp.get("error") {
+                let err_msg = err
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error");
+                let detail = format!("ACP initialize 握手被拒绝: {}", err_msg);
+                tracing::error!("[Agent {}] lazy {}", agent_id, detail);
+                log_acp_event(agent_id, "INIT_REJECTED", &detail);
+                *init_error.lock().await = Some(detail.clone());
+                *status_detail.lock().await = Some(detail.clone());
+                on_status_change("error", serde_json::Value::String(detail));
+                anyhow::bail!("ACP initialize rejected: {}", err_msg);
+            } else {
+                tracing::info!("[Agent {}] initialize succeeded: {:?}", agent_id, resp);
+                initialized.store(true, Ordering::SeqCst);
+                if let Some(res) = resp.get("result") {
+                    let supported = check_supports_load_session(res);
+                    supports_load_session.store(supported, Ordering::SeqCst);
+                    let supported_resume = check_supports_resume_session(res);
+                    supports_resume_session.store(supported_resume, Ordering::SeqCst);
+                    supports_prompt_image
+                        .store(check_supports_prompt_image(res), Ordering::SeqCst);
+                    supports_embedded_context
+                        .store(check_supports_embedded_context(res), Ordering::SeqCst);
+                    *native_memory_capability.lock().await =
+                        check_native_memory_capability(res);
+                    if supported {
+                        tracing::info!("[Agent {}] Lazy init: Agent reports support for ACP session/load capability", agent_id);
+                    }
+                    if supported_resume {
+                        tracing::info!("[Agent {}] Lazy init: Agent reports support for ACP session/resume capability", agent_id);
+                    }
+                }
+                if init_error.lock().await.take().is_some() {
+                    *status_detail.lock().await = None;
+                    on_status_change("running", serde_json::Value::Null);
+                }
+                Ok(())
+            }
+        }
+        Ok(Err(_)) => {
+            pending_requests.lock().await.remove(&init_id);
+            tracing::warn!(
+                "[Agent {}] initialize response channel closed; keeping initialization retryable",
+                agent_id
+            );
+            anyhow::bail!("ACP initialize response channel closed for agent {}", agent_id);
+        }
+        Err(_) => {
+            pending_requests.lock().await.remove(&init_id);
+            tracing::warn!(
+                "[Agent {}] lazy initialize timed out after {:?}; keeping initialization retryable",
+                agent_id,
+                timeout_duration
+            );
+            anyhow::bail!(
+                "ACP initialize timed out after {:?} for agent {}",
+                timeout_duration,
+                agent_id
+            );
+        }
+    }
+}
+
 impl RunningAgent {
     /// 预检并确保指定 Agent 在当前会话下拥有已建立或已恢复的 ACP sessionId (加锁保护)
     pub async fn ensure_session(
@@ -2877,105 +2986,32 @@ impl RunningAgent {
 
         // 1. 确保已完成 ACP initialize 握手
         if !self.initialized.load(Ordering::SeqCst) {
-            let init_id = next_init_request_id();
-            let (init_tx, init_rx) = oneshot::channel();
-            {
-                let mut map = self.pending_requests.lock().await;
-                map.insert(init_id, init_tx);
-            }
-            let init_req = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": init_id,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": 1,
-                    "clientInfo": {
-                        "name": "shadow-crew",
-                        "version": "0.1.0"
-                    },
-                    "clientCapabilities": acp_client_capabilities()
-                }
-            });
-            let _ = self.stdin_tx.send(init_req.to_string()).await;
-            match tokio::time::timeout(Duration::from_secs(10), init_rx).await {
-                Ok(Ok(resp)) => {
-                    if let Some(err) = resp.get("error") {
-                        let err_msg = err
-                            .get("message")
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("unknown error");
-                        let detail = format!("ACP initialize 握手被拒绝: {}", err_msg);
-                        tracing::error!("[Agent {}] lazy {}", agent_id, detail);
-                        log_acp_event(agent_id, "INIT_REJECTED", &detail);
-                        *self.init_error.lock().await = Some(detail.clone());
-                        *self.status_detail.lock().await = Some(detail.clone());
-                        let _ = self.app_handle.emit(
-                            "acp:status_change",
-                            serde_json::json!({
-                                "agent_id": agent_id,
-                                "status": "error",
-                                "status_detail": detail,
-                            }),
-                        );
-                        anyhow::bail!("ACP initialize rejected: {}", err_msg);
-                    } else {
-                        tracing::info!("[Agent {}] initialize succeeded: {:?}", agent_id, resp);
-                        self.initialized.store(true, Ordering::SeqCst);
-                        if let Some(res) = resp.get("result") {
-                            let supported = check_supports_load_session(res);
-                            self.supports_load_session
-                                .store(supported, Ordering::SeqCst);
-                            let supported_resume = check_supports_resume_session(res);
-                            self.supports_resume_session
-                                .store(supported_resume, Ordering::SeqCst);
-                            self.supports_prompt_image.store(
-                                check_supports_prompt_image(res),
-                                Ordering::SeqCst,
-                            );
-                            self.supports_embedded_context.store(
-                                check_supports_embedded_context(res),
-                                Ordering::SeqCst,
-                            );
-                            *self.native_memory_capability.lock().await =
-                                check_native_memory_capability(res);
-                            if supported {
-                                tracing::info!("[Agent {}] Lazy init: Agent reports support for ACP session/load capability", agent_id);
-                            }
-                            if supported_resume {
-                                tracing::info!("[Agent {}] Lazy init: Agent reports support for ACP session/resume capability", agent_id);
-                            }
-                        }
-                        // 握手恢复成功，清除历史错误态并回正运行态
-                        if self.init_error.lock().await.take().is_some() {
-                            *self.status_detail.lock().await = None;
-                            let _ = self.app_handle.emit(
-                                "acp:status_change",
-                                serde_json::json!({
-                                    "agent_id": agent_id,
-                                    "status": "running",
-                                    "status_detail": serde_json::Value::Null,
-                                }),
-                            );
-                        }
-                    }
-                }
-                Ok(Err(_)) => {
-                    self.pending_requests.lock().await.remove(&init_id);
-                    tracing::warn!(
-                        "[Agent {}] initialize response channel closed; keeping initialization retryable",
-                        agent_id
+            let app_handle = self.app_handle.clone();
+            execute_lazy_initialize_handshake(
+                agent_id,
+                Duration::from_secs(10),
+                &self.initialized,
+                &self.pending_requests,
+                &self.stdin_tx,
+                &self.init_error,
+                &self.status_detail,
+                &self.supports_load_session,
+                &self.supports_resume_session,
+                &self.supports_prompt_image,
+                &self.supports_embedded_context,
+                &self.native_memory_capability,
+                |status, detail| {
+                    let _ = app_handle.emit(
+                        "acp:status_change",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "status": status,
+                            "status_detail": detail,
+                        }),
                     );
-                    anyhow::bail!("ACP initialize response channel closed for agent {}", agent_id);
-                }
-                Err(_) => {
-                    self.pending_requests.lock().await.remove(&init_id);
-                    tracing::warn!(
-                        "[Agent {}] lazy initialize timed out after 10s; keeping initialization retryable",
-                        agent_id
-                    );
-                    anyhow::bail!("ACP initialize timed out after 10s for agent {}", agent_id);
-                }
-            }
+                },
+            )
+            .await?;
         }
 
         // 2. 区分当前交互场景：是当前 Agent 的 1-on-1 私聊，还是多 Agent 频道研讨
@@ -4720,6 +4756,135 @@ mod runtime_status_tests {
         let second = next_init_request_id();
         assert_ne!(first, second);
         assert!(second > first);
+    }
+
+    #[tokio::test]
+    async fn test_initialize_twice_timeout_remains_retryable_and_recovers_capabilities() {
+        use super::{execute_lazy_initialize_handshake, AcpNativeMemoryCapability};
+        use std::collections::HashMap;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
+
+        let initialized = AtomicBool::new(false);
+        let pending_requests: TokioMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>> =
+            TokioMutex::new(HashMap::new());
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(16);
+        let init_error = TokioMutex::new(None::<String>);
+        let status_detail = TokioMutex::new(None::<String>);
+        let supports_load_session = AtomicBool::new(false);
+        let supports_resume_session = AtomicBool::new(false);
+        let supports_prompt_image = AtomicBool::new(false);
+        let supports_embedded_context = AtomicBool::new(false);
+        let native_memory_capability =
+            TokioMutex::new(AcpNativeMemoryCapability::default());
+
+        // Attempt 1 (timeout): simulates first initialize timeout
+        let first_attempt = execute_lazy_initialize_handshake(
+            "agent-retry-test",
+            Duration::from_millis(20),
+            &initialized,
+            &pending_requests,
+            &stdin_tx,
+            &init_error,
+            &status_detail,
+            &supports_load_session,
+            &supports_resume_session,
+            &supports_prompt_image,
+            &supports_embedded_context,
+            &native_memory_capability,
+            |_, _| {},
+        )
+        .await;
+        assert!(first_attempt.is_err());
+        assert!(!initialized.load(Ordering::SeqCst));
+        assert!(pending_requests.lock().await.is_empty());
+        assert_eq!(native_memory_capability.lock().await.status, "unknown");
+        let first_req: serde_json::Value =
+            serde_json::from_str(&stdin_rx.recv().await.unwrap()).unwrap();
+        let first_id = first_req["id"].as_u64().unwrap();
+
+        // Attempt 2 (second timeout): simulates lazy initialize timing out again
+        let second_attempt = execute_lazy_initialize_handshake(
+            "agent-retry-test",
+            Duration::from_millis(20),
+            &initialized,
+            &pending_requests,
+            &stdin_tx,
+            &init_error,
+            &status_detail,
+            &supports_load_session,
+            &supports_resume_session,
+            &supports_prompt_image,
+            &supports_embedded_context,
+            &native_memory_capability,
+            |_, _| {},
+        )
+        .await;
+        assert!(second_attempt.is_err());
+        assert!(
+            !initialized.load(Ordering::SeqCst),
+            "second initialize timeout must NOT lock initialized=true"
+        );
+        assert!(pending_requests.lock().await.is_empty());
+        assert_eq!(native_memory_capability.lock().await.status, "unknown");
+        let second_req: serde_json::Value =
+            serde_json::from_str(&stdin_rx.recv().await.unwrap()).unwrap();
+        let second_id = second_req["id"].as_u64().unwrap();
+        assert_ne!(first_id, second_id);
+
+        // Attempt 3 (succeeds): responds with nativeMemory enabled
+        let handshake_fut = execute_lazy_initialize_handshake(
+            "agent-retry-test",
+            Duration::from_millis(500),
+            &initialized,
+            &pending_requests,
+            &stdin_tx,
+            &init_error,
+            &status_detail,
+            &supports_load_session,
+            &supports_resume_session,
+            &supports_prompt_image,
+            &supports_embedded_context,
+            &native_memory_capability,
+            |_, _| {},
+        );
+        let responder_fut = async {
+            let third_raw = stdin_rx.recv().await.unwrap();
+            let third_req: serde_json::Value = serde_json::from_str(&third_raw).unwrap();
+            let third_id = third_req["id"].as_u64().unwrap();
+            assert_ne!(third_id, second_id);
+            let tx = pending_requests.lock().await.remove(&third_id).unwrap();
+            tx.send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": third_id,
+                "result": {
+                    "agentCapabilities": {
+                        "loadSession": true,
+                        "nativeMemory": {
+                            "supported": true,
+                            "enabled": true,
+                            "persistent": true,
+                            "crossThread": true,
+                            "provider": "codex-memories",
+                            "scope": "runtime"
+                        }
+                    },
+                    "sessionCapabilities": {
+                        "resume": {}
+                    }
+                }
+            }))
+            .unwrap();
+        };
+        let (third_res, _) = tokio::join!(handshake_fut, responder_fut);
+        assert!(third_res.is_ok());
+        assert!(initialized.load(Ordering::SeqCst));
+        assert!(supports_load_session.load(Ordering::SeqCst));
+        assert!(supports_resume_session.load(Ordering::SeqCst));
+        let cap = native_memory_capability.lock().await.clone();
+        assert_eq!(cap.status, "enabled");
+        assert_eq!(cap.provider.as_deref(), Some("codex-memories"));
     }
 
     #[test]

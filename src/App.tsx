@@ -104,11 +104,16 @@ import {
   normalizeHydratedAgent,
 } from './services/agentMemory';
 import {
+  applyRemoteProbeOutcome,
   beginRemoteProbe,
   cancelRemoteProbe,
-  completeRemoteProbe,
+  isAgentActivelyRunning,
+  markRemoteAgentStarting,
+  nativeMemoryCapabilityChanged,
+  recordRemoteProbeSuccess,
   RemoteProbeLease,
   shouldRefreshRemoteProbe,
+  stopAgentRuntimeState,
 } from './services/remoteAgentLifecycle';
 import { isAgentOffline, isAgentOnline } from './utils/agentRuntime';
 import {
@@ -197,21 +202,6 @@ const REMOTE_ACP_PROBE_TIMEOUT_MS = 5_000;
 const REMOTE_ACP_HEALTH_INTERVAL_MS = 5_000;
 const REMOTE_ACP_HEALTH_REFRESH_MS = 15_000;
 
-function nativeMemoryCapabilityChanged(
-  current: Agent['memory']['nativeCapability'],
-  next: Agent['memory']['nativeCapability'] | null | undefined
-): boolean {
-  if (!next) return false;
-  return (
-    current.status !== next.status ||
-    current.persistent !== next.persistent ||
-    current.crossThread !== next.crossThread ||
-    current.provider !== next.provider ||
-    current.scope !== next.scope ||
-    current.detail !== next.detail
-  );
-}
-
 export default function App() {
   // Main View Navigation ('chat' | 'agents') - Default to chat for PRD Messaging Space
   const [mainView, setMainView] = useState<'chat' | 'agents'>('chat');
@@ -219,6 +209,7 @@ export default function App() {
   // 关键防回滚锁：首轮从 SQLite 加载完成前，严禁各 entity 的初始挂载触发 useEffect 覆盖底层数据库
   const isWorkspaceHydratedRef = useRef(false);
   const workspaceBindingSchemaPersistedRef = useRef(false);
+  const syncRunningAgentsWithBackendRef = useRef<(() => Promise<void>) | null>(null);
   const sanitizeMessages = useCallback((list: Message[]): Message[] => {
     return list.map((message) => {
       const migrated = { ...message } as Message & { projectId?: string };
@@ -284,7 +275,7 @@ export default function App() {
               if (baseAgent.role === baseAgent.name && baseAgent.description && baseAgent.description !== baseAgent.name) {
                 baseAgent.role = baseAgent.description.length < 35 ? baseAgent.description : 'Autonomous ACP Daemon';
               }
-              const memoryMigrated = migrateAgentMemoryV1(
+              const memoryMigrated = normalizeHydratedAgent(
                 (updatedWorkspace ? { ...baseAgent, workspace: updatedWorkspace } : baseAgent) as Agent
               ).agent;
               return memoryMigrated;
@@ -292,7 +283,7 @@ export default function App() {
           if (filtered.length > 0) return filtered;
       }
     } catch {}
-    return INITIAL_AGENTS.map((a) => migrateAgentMemoryV1(a).agent);
+    return INITIAL_AGENTS.map((a) => normalizeHydratedAgent(a).agent);
   });
 
   useEffect(() => {
@@ -552,6 +543,7 @@ export default function App() {
               return memoryResult.agent;
             });
             setAgents(sanitizedAgents);
+            void syncRunningAgentsWithBackendRef.current?.();
             if (handleMigrated || memoryMigrated) {
               resetAllSessionWarmState();
               await saveAgentsToDb(sanitizedAgents);
@@ -804,17 +796,7 @@ export default function App() {
       );
 
       if (markStarting) {
-        setAgents((prev) =>
-          prev.map((a) =>
-            a.id === agent.id
-              ? {
-                  ...a,
-                  status: 'starting',
-                  statusDetail: '连接远程 ACP 节点中...',
-                }
-              : a
-          )
-        );
+        setAgents((prev) => markRemoteAgentStarting(prev, agent.id));
       }
 
       let probe: Awaited<ReturnType<typeof probeRemoteAcpConnection>>;
@@ -837,111 +819,16 @@ export default function App() {
         };
       }
 
-      if (
-        !completeRemoteProbe(
-          remoteProbeRuntimeRef.current,
-          agent.id,
-          generation
-        )
-      ) {
-        return;
-      }
-
-      if (!probe.ok) {
-        setAgents((prev) =>
-          prev.map((a) =>
-            a.id === agent.id
-              ? {
-                  ...a,
-                  status: 'error',
-                  statusDetail: probe.error || '远程连接失败',
-                  memory: {
-                    ...a.memory,
-                    nativeCapability: createUnknownNativeMemoryCapability(),
-                  },
-                  capabilities: {
-                    ...(a.capabilities || {
-                      canUseInternalMemory: false,
-                      canAccessWorkspaceFiles: true,
-                      canExecuteSkills: true,
-                      canDelegateToSubAgents: true,
-                      supportsStreaming: true,
-                    }),
-                    canUseInternalMemory: false,
-                  },
-                }
-              : a
-          )
-        );
-        return;
-      }
-
-      const resolvedNativeCapability =
-        probe.nativeMemory || createUnknownNativeMemoryCapability();
-      setAgents((prev) =>
-        prev.map((a) => {
-          if (a.id !== agent.id) return a;
-          const targetCanUseMemory =
-            a.memory.mode === 'native' &&
-            resolvedNativeCapability.status === 'enabled';
-          const capabilityChanged = nativeMemoryCapabilityChanged(
-            a.memory.nativeCapability,
-            resolvedNativeCapability
-          );
-          const loadChanged =
-            probe.loadSession !== undefined &&
-            a.capabilities?.supportsLoadSession !== probe.loadSession;
-          const resumeChanged =
-            probe.resumeSession !== undefined &&
-            a.capabilities?.supportsResumeSession !== probe.resumeSession;
-          const statusChanged = a.status !== 'running';
-          const detail = markStarting
-            ? `远程连接正常 (${probe.latencyMs}ms)`
-            : a.statusDetail;
-          const latency = markStarting ? probe.latencyMs : a.remoteLatencyMs;
-          const latencyChanged =
-            markStarting && a.remoteLatencyMs !== probe.latencyMs;
-          const canUseChanged =
-            Boolean(a.capabilities?.canUseInternalMemory) !== targetCanUseMemory;
-
-          if (
-            !capabilityChanged &&
-            !loadChanged &&
-            !resumeChanged &&
-            !statusChanged &&
-            !latencyChanged &&
-            !canUseChanged
-          ) {
-            return a;
-          }
-
-          return {
-            ...a,
-            status: 'running',
-            remoteLatencyMs: latency,
-            statusDetail: detail,
-            memory: {
-              ...a.memory,
-              nativeCapability: resolvedNativeCapability,
-            },
-            capabilities: {
-              ...(a.capabilities || {
-                canUseInternalMemory: false,
-                canAccessWorkspaceFiles: true,
-                canExecuteSkills: true,
-                canDelegateToSubAgents: true,
-                supportsStreaming: true,
-              }),
-              ...(probe.loadSession !== undefined
-                ? { supportsLoadSession: probe.loadSession }
-                : {}),
-              ...(probe.resumeSession !== undefined
-                ? { supportsResumeSession: probe.resumeSession }
-                : {}),
-              canUseInternalMemory: targetCanUseMemory,
-            },
-          };
-        })
+      setAgents(
+        (prev) =>
+          applyRemoteProbeOutcome(
+            prev,
+            remoteProbeRuntimeRef.current,
+            agent.id,
+            generation,
+            probe,
+            markStarting
+          ).agents
       );
     },
     []
@@ -1437,6 +1324,7 @@ export default function App() {
       }
     }
   }, []);
+  syncRunningAgentsWithBackendRef.current = syncRunningAgentsWithBackend;
 
   // 启动本地 ACP Agent 进程（Tauri stdio 拉起 / Web 运行时平滑转入）
   const spawnLocalAcpAgent = useCallback(
@@ -8251,16 +8139,15 @@ export default function App() {
             setIsConnectModalOpen(true);
           }}
           onToggleAgentStatus={(agentId) => {
-            const currentAgent = agents.find((a) => a.id === agentId);
+            const currentAgent =
+              agentsRef.current.find((a) => a.id === agentId) ||
+              agents.find((a) => a.id === agentId);
             if (!currentAgent) return;
 
-            const isCurrentlyRunning =
-              currentAgent.status === 'running' ||
-              currentAgent.status === 'starting' ||
-              currentAgent.status === 'thinking' ||
-              currentAgent.status === 'using_skill' ||
-              currentAgent.status === 'accessing_workspace' ||
-              currentAgent.status === 'querying_memory';
+            const isCurrentlyRunning = isAgentActivelyRunning(
+              currentAgent,
+              remoteProbeRuntimeRef.current
+            );
 
             if (!isCurrentlyRunning) {
               if (
@@ -8275,35 +8162,11 @@ export default function App() {
               spawnLocalAcpAgent(currentAgent);
             } else {
               // 终止 Agent 进程并重置握手能力探测态
-              if (
-                currentAgent.isRemote ||
-                currentAgent.acpTransport === 'websocket'
-              ) {
-                cancelRemoteAgentProbe(agentId);
-              }
               setAgents((prev) =>
-                prev.map((a) =>
-                  a.id === agentId
-                    ? {
-                        ...a,
-                        status: 'idle',
-                        statusDetail: undefined,
-                        memory: {
-                          ...a.memory,
-                          nativeCapability: createUnknownNativeMemoryCapability(),
-                        },
-                        capabilities: {
-                          ...(a.capabilities || {
-                            canUseInternalMemory: false,
-                            canAccessWorkspaceFiles: true,
-                            canExecuteSkills: true,
-                            canDelegateToSubAgents: true,
-                            supportsStreaming: true,
-                          }),
-                          canUseInternalMemory: false,
-                        },
-                      }
-                    : a
+                stopAgentRuntimeState(
+                  prev,
+                  remoteProbeRuntimeRef.current,
+                  agentId
                 )
               );
               const tauriInvoke =
@@ -8689,6 +8552,9 @@ export default function App() {
           const wasOnline =
             !!existingAgent && existingAgent.status !== 'idle' && existingAgent.status !== 'error';
           const isRemoteAgent = updatedData.isRemote ?? existingAgent?.isRemote ?? false;
+          if (isRemoteAgent && updatedData.status === 'running') {
+            recordRemoteProbeSuccess(remoteProbeRuntimeRef.current, agentId);
+          }
 
           setAgents((prev) =>
             prev.map((a) => {
