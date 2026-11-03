@@ -79,7 +79,7 @@ assert.deepEqual(
   [
     { key: 'ACP_USER_ENV', value: 'kept' },
     { key: ACP_NATIVE_MEMORY_ENV, value: '1' },
-    { key: ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV, value: '1' },
+    { key: ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV, value: '0' },
   ],
   'Agent 启动环境只允许用户显式 ENV 与宿主原生记忆策略，不得注入模型参数'
 );

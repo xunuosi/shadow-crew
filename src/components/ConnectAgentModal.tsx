@@ -97,6 +97,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     error?: string;
     agentInfo?: any;
     loadSession?: boolean;
+    resumeSession?: boolean;
     nativeMemory?: Agent['memory']['nativeCapability'];
     rawRpcResult?: any;
   } | null>(null);
@@ -112,8 +113,28 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   const [nativeMemoryEnabled, setNativeMemoryEnabled] = useState(true);
   const [nativeMemoryAutoGenerate, setNativeMemoryAutoGenerate] = useState(false);
 
-  // Visual Theme support
-  const [isLightMode, setIsLightMode] = useState(true);
+  // Visual Theme support (synced with global data-theme and toggleable inside modal)
+  const [isLightMode, setIsLightMode] = useState(() =>
+    typeof document !== 'undefined'
+      ? document.documentElement.getAttribute('data-theme') !== 'dark'
+      : true
+  );
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const syncFromDocumentTheme = () => {
+      setIsLightMode(document.documentElement.getAttribute('data-theme') !== 'dark');
+    };
+    if (isOpen) {
+      syncFromDocumentTheme();
+    }
+    const observer = new MutationObserver(syncFromDocumentTheme);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
+    return () => observer.disconnect();
+  }, [isOpen]);
 
   // Saving & Re-verification State
   const [isSavingAndVerifying, setIsSavingAndVerifying] = useState(false);
@@ -279,7 +300,15 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     setIsTestingRemote(true);
     setRemoteTestResult(null);
     try {
-      const res = await probeRemoteAcpConnection(trimmedUrl, authToken.trim() || undefined);
+      const res = await probeRemoteAcpConnection(
+        trimmedUrl,
+        authToken.trim() || undefined,
+        5000,
+        {
+          enabled: nativeMemoryEnabled,
+          autoGenerate: nativeMemoryEnabled && nativeMemoryAutoGenerate,
+        }
+      );
       setRemoteTestResult(res);
     } catch (e: any) {
       setRemoteTestResult({
@@ -401,13 +430,37 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     // 在线 Agent 编辑保存后重新校验连通性，更新 online / dismiss 状态
     const wasOnline =
       !!initialAgent && initialAgent.status !== 'idle' && initialAgent.status !== 'error';
-    let healthCheck: { ok: boolean; latencyMs?: number; error?: string } | null = null;
+    const nextMemoryMode = nativeMemoryEnabled ? 'native' : 'disabled';
+    const nextAutoGenerate = nativeMemoryEnabled && nativeMemoryAutoGenerate;
+    let healthCheck: {
+      ok: boolean;
+      latencyMs?: number;
+      error?: string;
+      loadSession?: boolean;
+      resumeSession?: boolean;
+      nativeMemory?: Agent['memory']['nativeCapability'];
+    } | null = null;
     if (initialAgent && wasOnline) {
       if (isRemoteMode && remoteUrl.trim()) {
-        // 远程 ACP：校验 WebSocket 端点连通性
+        // 远程 ACP：校验 WebSocket 端点连通性并携带最新原生记忆策略
         try {
-          const res = await probeRemoteAcpConnection(remoteUrl.trim(), authToken.trim() || undefined);
-          healthCheck = { ok: res.ok, latencyMs: res.latencyMs, error: res.ok ? undefined : res.error };
+          const res = await probeRemoteAcpConnection(
+            remoteUrl.trim(),
+            authToken.trim() || undefined,
+            5000,
+            {
+              enabled: nativeMemoryEnabled,
+              autoGenerate: nextAutoGenerate,
+            }
+          );
+          healthCheck = {
+            ok: res.ok,
+            latencyMs: res.latencyMs,
+            error: res.ok ? undefined : res.error,
+            loadSession: res.loadSession,
+            resumeSession: res.resumeSession,
+            nativeMemory: res.nativeMemory,
+          };
         } catch (err: any) {
           healthCheck = { ok: false, error: err?.message || '远程 ACP 连接校验失败' };
         }
@@ -421,24 +474,38 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     };
 
     const effectiveSupportsLoadSession =
-      isRemoteMode && remoteTestResult?.ok && remoteTestResult.loadSession !== undefined
-        ? remoteTestResult.loadSession
-        : selectedAcp.id === 'claude_code'
-        ? true
-        : initialAgent?.capabilities?.supportsLoadSession;
+      isRemoteMode && healthCheck?.ok && healthCheck.loadSession !== undefined
+        ? healthCheck.loadSession
+        : isRemoteMode && remoteTestResult?.ok && remoteTestResult.loadSession !== undefined
+          ? remoteTestResult.loadSession
+          : selectedAcp.id === 'claude_code'
+            ? true
+            : initialAgent?.capabilities?.supportsLoadSession;
 
     const effectiveSupportsResumeSession =
-      selectedAcp.id === 'codex'
-        ? true
-        : initialAgent?.capabilities?.supportsResumeSession;
-    const nextMemoryMode = nativeMemoryEnabled ? 'native' : 'disabled';
+      isRemoteMode && healthCheck?.ok && healthCheck.resumeSession !== undefined
+        ? healthCheck.resumeSession
+        : isRemoteMode && remoteTestResult?.ok && remoteTestResult.resumeSession !== undefined
+          ? remoteTestResult.resumeSession
+          : selectedAcp.id === 'codex'
+            ? true
+            : initialAgent?.capabilities?.supportsResumeSession;
+
     const nativeMemoryPolicyChanged =
-      Boolean(initialAgent) && initialAgent?.memory.mode !== nextMemoryMode;
-    const nextNativeCapability = nativeMemoryPolicyChanged
-      ? createUnknownNativeMemoryCapability()
-      : isRemoteMode && remoteTestResult?.ok && remoteTestResult.nativeMemory
-        ? remoteTestResult.nativeMemory
-        : initialAgent?.memory.nativeCapability || createUnknownNativeMemoryCapability();
+      Boolean(initialAgent) &&
+      (initialAgent?.memory.mode !== nextMemoryMode ||
+        Boolean(initialAgent?.memory.autoGenerate) !== nextAutoGenerate);
+    const nextNativeCapability =
+      isRemoteMode && healthCheck?.ok && healthCheck.nativeMemory
+        ? healthCheck.nativeMemory
+        : isRemoteMode &&
+            remoteTestResult?.ok &&
+            remoteTestResult.nativeMemory &&
+            remoteTestResult.nativeMemory.status !== 'unknown'
+          ? remoteTestResult.nativeMemory
+          : nativeMemoryPolicyChanged || !wasOnline
+            ? createUnknownNativeMemoryCapability()
+            : initialAgent?.memory.nativeCapability || createUnknownNativeMemoryCapability();
 
     if (initialAgent && onUpdateAgent) {
       const trimmedName = name.trim();
@@ -596,6 +663,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 select-none animate-in fade-in duration-150">
       <div
+        data-theme={isLightMode ? 'light' : 'dark'}
         className={`w-full max-w-xl rounded-3xl shadow-2xl border overflow-hidden flex flex-col max-h-[92vh] ${modalBg}`}
       >
         {/* Modal Header */}
@@ -912,8 +980,12 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                     <div
                       className={`p-2.5 rounded-xl border text-[11px] flex items-center gap-2 ${
                         remoteTestResult.ok
-                          ? 'bg-emerald-50/90 border-emerald-300 text-emerald-800 dark:bg-emerald-500/15 dark:border-emerald-500/30 dark:text-emerald-300'
-                          : 'bg-red-50/90 border-red-300 text-red-800 dark:bg-red-950/30 dark:border-red-800/40 dark:text-red-300'
+                          ? isLightMode
+                            ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                            : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                          : isLightMode
+                            ? 'bg-rose-50 border-rose-300 text-rose-800'
+                            : 'bg-rose-500/15 border-rose-500/30 text-rose-300'
                       }`}
                     >
                       {remoteTestResult.ok ? (
@@ -923,21 +995,39 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                         </>
                       ) : (
                         <>
-                          <span className="w-2 h-2 rounded-full bg-red-500" />
+                          <span className="w-2 h-2 rounded-full bg-rose-500" />
                           <span>连接失败: {remoteTestResult.error}</span>
                         </>
                       )}
                     </div>
 
                     {remoteTestResult.ok && (
-                      <div className="p-2.5 rounded-xl bg-surface-subtle border border-border space-y-2">
-                        <div className="text-[11px] font-semibold text-fg flex items-center justify-between">
+                      <div
+                        className={`p-2.5 rounded-xl border space-y-2 ${
+                          isLightMode
+                            ? 'bg-slate-50 border-slate-200 text-slate-900'
+                            : 'bg-[#0d121c] border-[#1e293b] text-slate-50'
+                        }`}
+                      >
+                        <div className="text-[11px] font-semibold flex items-center justify-between">
                           <span>ACP 握手探测结果 (Capabilities Check)</span>
-                          <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 font-bold">200 OK</span>
+                          <span
+                            className={`text-[10px] font-mono font-bold ${
+                              isLightMode ? 'text-emerald-700' : 'text-emerald-400'
+                            }`}
+                          >
+                            200 OK
+                          </span>
                         </div>
                         {/* 方案 1: 单行精炼能力条 */}
                         {remoteTestResult.loadSession ? (
-                          <div className="p-1.5 px-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-600 dark:text-emerald-300 flex items-center justify-between text-[11px] select-none">
+                          <div
+                            className={`p-1.5 px-2.5 rounded-xl border flex items-center justify-between text-[11px] select-none ${
+                              isLightMode
+                                ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                                : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                            }`}
+                          >
                             <div className="flex items-center gap-1.5 min-w-0 shrink-0">
                               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                               <span className="font-medium whitespace-nowrap">会话恢复</span>
@@ -947,7 +1037,13 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                             </span>
                           </div>
                         ) : (
-                          <div className="p-1.5 px-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-300 flex items-center justify-between text-[11px] select-none">
+                          <div
+                            className={`p-1.5 px-2.5 rounded-xl border flex items-center justify-between text-[11px] select-none ${
+                              isLightMode
+                                ? 'bg-amber-50 border-amber-300 text-amber-800'
+                                : 'bg-amber-500/15 border-amber-500/30 text-amber-300'
+                            }`}
+                          >
                             <div className="flex items-center gap-1.5 min-w-0 shrink-0">
                               <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
                               <span className="font-medium whitespace-nowrap">会话恢复</span>
@@ -960,26 +1056,34 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                         {(() => {
                           const nativeMemoryStatus =
                             remoteTestResult.nativeMemory?.status || 'unknown';
-                          const nativeMemoryEnabled =
+                          const isNativeMemoryActive =
                             nativeMemoryStatus === 'enabled';
-                          const nativeMemoryUnsupported =
+                          const isNativeMemoryDisabled =
+                            nativeMemoryStatus === 'disabled';
+                          const isNativeMemoryUnsupported =
                             nativeMemoryStatus === 'unsupported';
                           return (
                             <div
                               className={`p-1.5 px-2.5 rounded-xl border flex items-center justify-between text-[11px] select-none ${
-                                nativeMemoryEnabled
-                                  ? 'bg-emerald-50 border-emerald-300 text-emerald-800 dark:bg-emerald-500/15 dark:border-emerald-500/30 dark:text-emerald-300'
-                                  : nativeMemoryUnsupported
-                                    ? 'bg-rose-50 border-rose-300 text-rose-800 dark:bg-rose-500/15 dark:border-rose-500/30 dark:text-rose-300'
-                                    : 'bg-amber-50 border-amber-300 text-amber-800 dark:bg-amber-500/15 dark:border-amber-500/30 dark:text-amber-300'
+                                isNativeMemoryActive
+                                  ? isLightMode
+                                    ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                                    : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                                  : isNativeMemoryUnsupported
+                                    ? isLightMode
+                                      ? 'bg-rose-50 border-rose-300 text-rose-800'
+                                      : 'bg-rose-500/15 border-rose-500/30 text-rose-300'
+                                    : isLightMode
+                                      ? 'bg-amber-50 border-amber-300 text-amber-800'
+                                      : 'bg-amber-500/15 border-amber-500/30 text-amber-300'
                               }`}
                             >
                               <div className="flex items-center gap-1.5 min-w-0 shrink-0">
                                 <span
                                   className={`w-1.5 h-1.5 rounded-full ${
-                                    nativeMemoryEnabled
+                                    isNativeMemoryActive
                                       ? 'bg-emerald-500'
-                                      : nativeMemoryUnsupported
+                                      : isNativeMemoryUnsupported
                                         ? 'bg-rose-500'
                                         : 'bg-amber-500'
                                   }`}
@@ -987,11 +1091,13 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                                 <span className="font-medium whitespace-nowrap">原生长期记忆</span>
                               </div>
                               <span className="font-mono text-[10px] font-semibold whitespace-nowrap shrink-0 pl-1">
-                                {nativeMemoryEnabled
+                                {isNativeMemoryActive
                                   ? '已声明 ✓'
-                                  : nativeMemoryUnsupported
-                                    ? '不支持 ✕'
-                                    : '未声明 ⚠️'}
+                                  : isNativeMemoryDisabled
+                                    ? '已声明 (已关闭)'
+                                    : isNativeMemoryUnsupported
+                                      ? '不支持 ✕'
+                                      : '未声明 ⚠️'}
                               </span>
                             </div>
                           );
@@ -1317,11 +1423,13 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           )}
 
           {/* Native Memory Policy */}
-          <div className={`p-3.5 rounded-2xl border space-y-2 ${
-            isLightMode
-              ? 'bg-emerald-50/60 border-emerald-200'
-              : 'bg-emerald-950/20 border-emerald-800/40'
-          }`}>
+          <div
+            className={`p-3.5 rounded-2xl border space-y-2 ${
+              isLightMode
+                ? 'bg-emerald-50 border-emerald-300'
+                : 'bg-emerald-500/15 border-emerald-500/30'
+            }`}
+          >
             <label className="flex items-start gap-2.5 cursor-pointer">
               <input
                 type="checkbox"
@@ -1345,30 +1453,68 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                 className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500"
               />
               <span className="leading-relaxed">
-                <strong className="block text-xs text-fg">
+                <strong
+                  className={`block text-xs ${
+                    isLightMode ? 'text-slate-900' : 'text-slate-50'
+                  }`}
+                >
                   启用 ACP 端点原生长期记忆
                 </strong>
-                <span className="block mt-0.5 text-[11px] text-fg-secondary">
+                <span
+                  className={`block mt-0.5 text-[11px] ${
+                    isLightMode ? 'text-slate-700' : 'text-slate-300'
+                  }`}
+                >
                   记忆由 ACP 端点自己存储、召回和删除；Shadow Crew 不注入、不迁移，也不会因清理 ACP Session 而删除。若多个 Agent 共用同一端点或 CODEX_HOME，原生记忆可能共享；隔离需使用独立运行时。是否真正可用以握手声明与复测结果为准。
                 </span>
               </span>
             </label>
             {nativeMemoryEnabled && (
-              <label className="ml-6 flex items-start gap-2 rounded-xl border border-border bg-surface px-2.5 py-2 cursor-pointer">
+              <label
+                className={`ml-6 flex items-start gap-2 rounded-xl border px-2.5 py-2 cursor-pointer ${
+                  isLightMode
+                    ? 'bg-white border-slate-200'
+                    : 'bg-[#111724] border-[#1e293b]'
+                }`}
+              >
                 <input
                   type="checkbox"
                   checked={nativeMemoryAutoGenerate}
-                  onChange={(e) => setNativeMemoryAutoGenerate(e.target.checked)}
+                  onChange={(e) => {
+                    setNativeMemoryAutoGenerate(e.target.checked);
+                    if (isRemoteMode && remoteTestResult?.nativeMemory) {
+                      setRemoteTestResult((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              nativeMemory: createUnknownNativeMemoryCapability(),
+                            }
+                          : prev
+                      );
+                    }
+                  }}
                   className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500"
                 />
-                <span className="text-[10px] leading-relaxed text-fg-secondary">
-                  <strong className="text-fg">允许自动提炼历史对话</strong>
+                <span
+                  className={`text-[10px] leading-relaxed ${
+                    isLightMode ? 'text-slate-700' : 'text-slate-300'
+                  }`}
+                >
+                  <strong
+                    className={isLightMode ? 'text-slate-900' : 'text-slate-50'}
+                  >
+                    允许自动提炼历史对话
+                  </strong>
                   ：由端点后台任务生成长期记忆。显式“记住”与原生 memory 工具写入不依赖此项；若模型供应方不支持记忆 Agent，请保持关闭。
                 </span>
               </label>
             )}
             {!nativeMemoryEnabled && (
-              <p className="text-[10px] text-amber-800 dark:text-amber-300">
+              <p
+                className={`text-[10px] font-medium ${
+                  isLightMode ? 'text-amber-800' : 'text-amber-300'
+                }`}
+              >
                 已关闭原生记忆请求。支持该开关的适配器会禁用端点长期记忆能力。
               </p>
             )}

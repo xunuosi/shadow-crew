@@ -15,6 +15,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface, Interface } from 'node:readline';
 import { Agent } from '../types';
+import { INITIAL_AGENTS } from '../data/mockData';
 import {
   ACP_NATIVE_MEMORY_ENV,
   ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV,
@@ -23,7 +24,11 @@ import {
   migrateAgentMemoryV1,
   parseNativeMemoryCapability,
 } from './agentMemory';
-import { buildAgentLaunchEnv } from './acpClient';
+import {
+  buildAgentLaunchEnv,
+  probeRemoteAcpConnection,
+  sendPromptToRemoteAcpWebSocket,
+} from './acpClient';
 
 interface AdapterHarness {
   child: ChildProcessWithoutNullStreams;
@@ -299,6 +304,85 @@ async function verifyAdapterAutoGenerateFlow(tempDir: string): Promise<number> {
   }
 }
 
+async function verifyAdapterMetaPolicyOverrideFlow(tempDir: string): Promise<number> {
+  const { harness, actionsFile } = await startAdapter(tempDir, true, false);
+  try {
+    const initDisabled = await harness.request(
+      'initialize',
+      {
+        _meta: {
+          shadowCrew: {
+            nativeMemory: { enabled: false, autoGenerate: true },
+          },
+        },
+      },
+      1
+    );
+    const disabledCap = initDisabled.result?.agentCapabilities?.nativeMemory;
+    assert.equal(disabledCap?.supported, true);
+    assert.equal(disabledCap?.enabled, false);
+
+    const initEnabled = await harness.request(
+      'initialize',
+      {
+        _meta: {
+          shadowCrew: {
+            nativeMemory: { enabled: true, autoGenerate: true },
+          },
+        },
+      },
+      2
+    );
+    const enabledCap = initEnabled.result?.agentCapabilities?.nativeMemory;
+    assert.equal(enabledCap?.supported, true);
+    assert.equal(enabledCap?.enabled, true);
+
+    const session = await harness.request('session/new', { cwd: tempDir }, 3);
+    const sessionId = session.result?.sessionId;
+    await harness.request(
+      'session/prompt',
+      {
+        sessionId,
+        cwd: tempDir,
+        prompt: [{ type: 'text', text: 'meta disabled override' }],
+        _meta: {
+          shadowCrew: {
+            nativeMemory: { enabled: false, autoGenerate: true },
+          },
+        },
+      },
+      4
+    );
+    await harness.request(
+      'session/prompt',
+      {
+        sessionId,
+        cwd: tempDir,
+        prompt: [{ type: 'text', text: 'meta enabled autoGenerate override' }],
+        _meta: {
+          shadowCrew: {
+            nativeMemory: { enabled: true, autoGenerate: true },
+          },
+        },
+      },
+      5
+    );
+
+    const execActions = readActions(actionsFile!).filter((entry) => entry.args[0] === 'exec');
+    assert.equal(execActions.length, 2);
+    assert.ok(!execActions[0].args.includes('memories'));
+    assert.equal(execActions[0].nativeMemory, '0');
+    assert.equal(execActions[0].nativeMemoryAutoGenerate, '0');
+    assert.ok(execActions[1].args.includes('memories'));
+    assert.ok(execActions[1].args.includes('memories.generate_memories=true'));
+    assert.equal(execActions[1].nativeMemory, '1');
+    assert.equal(execActions[1].nativeMemoryAutoGenerate, '1');
+    return 12;
+  } finally {
+    await harness.close();
+  }
+}
+
 function verifyTypeContracts(): number {
   let assertions = 0;
   const parsed = parseNativeMemoryCapability({
@@ -316,6 +400,34 @@ function verifyTypeContracts(): number {
   assert.equal(parsed.status, 'enabled');
   assert.equal(parsed.crossThread, true);
   assertions += 2;
+
+  const missingEnabled = parseNativeMemoryCapability({
+    agentCapabilities: {
+      nativeMemory: {
+        supported: true,
+      },
+    },
+  });
+  assert.equal(missingEnabled.status, 'unknown');
+  const explicitDisabled = parseNativeMemoryCapability({
+    agentCapabilities: {
+      nativeMemory: {
+        supported: true,
+        enabled: false,
+      },
+    },
+  });
+  assert.equal(explicitDisabled.status, 'disabled');
+  const explicitUnsupported = parseNativeMemoryCapability({
+    agentCapabilities: {
+      nativeMemory: {
+        supported: false,
+        enabled: true,
+      },
+    },
+  });
+  assert.equal(explicitUnsupported.status, 'unsupported');
+  assertions += 3;
 
   const oldAgent = {
     id: 'agent-legacy',
@@ -390,6 +502,228 @@ function verifyTypeContracts(): number {
   const disabledWithAuto = createAgentMemoryBank('disabled', true);
   assert.equal(disabledWithAuto.autoGenerate, false);
   assertions += 4;
+
+  // NM-09: Offline persisted v1 agent must NOT retain stale handshake capability across reload
+  const staleOfflineAgent: Agent = {
+    ...migrated.agent,
+    status: 'idle',
+    memory: {
+      ...migrated.agent.memory,
+      schemaVersion: AGENT_MEMORY_SCHEMA_VERSION,
+      mode: 'native',
+      nativeCapability: {
+        status: 'enabled',
+        persistent: true,
+        crossThread: true,
+        provider: 'codex-memories',
+        scope: 'runtime',
+        detail: 'stale capability from previous process',
+        lastCheckedAt: 12345,
+      },
+    },
+    capabilities: {
+      ...migrated.agent.capabilities!,
+      canUseInternalMemory: true,
+    },
+  };
+  const reloadedOffline = migrateAgentMemoryV1(staleOfflineAgent);
+  assert.equal(reloadedOffline.changed, true);
+  assert.equal(reloadedOffline.agent.memory.nativeCapability.status, 'unknown');
+  assert.equal(reloadedOffline.agent.capabilities?.canUseInternalMemory, false);
+
+  // Active online v1 agent preserves runtime-probed nativeCapability
+  const activeOnlineAgent: Agent = {
+    ...staleOfflineAgent,
+    status: 'running',
+  };
+  const reloadedOnline = migrateAgentMemoryV1(activeOnlineAgent);
+  assert.equal(reloadedOnline.changed, false);
+  assert.equal(reloadedOnline.agent.memory.nativeCapability.status, 'enabled');
+  assert.equal(reloadedOnline.agent.capabilities?.canUseInternalMemory, true);
+
+  // INITIAL_AGENTS offline preset must not fake enabled handshake state
+  assert.equal(INITIAL_AGENTS[0].status, 'idle');
+  assert.equal(INITIAL_AGENTS[0].memory.nativeCapability.status, 'unknown');
+  assert.equal(INITIAL_AGENTS[0].memory.autoGenerate, false);
+  assert.equal(INITIAL_AGENTS[0].capabilities?.canUseInternalMemory, false);
+  assertions += 10;
+
+  return assertions;
+}
+
+async function verifyRemoteWebSocketAndUiContracts(): Promise<number> {
+  let assertions = 0;
+  const originalWebSocket = (globalThis as any).WebSocket;
+  const sentMessages: any[] = [];
+  let responder: ((payload: any, ws: any) => void) | null = null;
+
+  class MockWebSocket {
+    static OPEN = 1;
+    readyState = 1;
+    onopen: (() => void) | null = null;
+    onmessage: ((evt: { data: string }) => void) | null = null;
+    onerror: (() => void) | null = null;
+    onclose: (() => void) | null = null;
+
+    constructor(_url: string) {
+      queueMicrotask(() => {
+        this.onopen?.();
+      });
+    }
+
+    send(raw: string) {
+      const parsed = JSON.parse(raw);
+      sentMessages.push(parsed);
+      queueMicrotask(() => {
+        responder?.(parsed, this);
+      });
+    }
+
+    close() {
+      this.readyState = 3;
+      this.onclose?.();
+    }
+  }
+
+  (globalThis as any).WebSocket = MockWebSocket;
+  try {
+    sentMessages.length = 0;
+    responder = (payload, ws) => {
+      if (payload.method === 'initialize') {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            jsonrpc: '2.0',
+            id: payload.id,
+            result: {
+              agentCapabilities: {
+                loadSession: true,
+                nativeMemory: {
+                  supported: true,
+                  enabled: false,
+                  persistent: true,
+                  crossThread: true,
+                  provider: 'remote-codex',
+                  scope: 'runtime',
+                },
+              },
+              sessionCapabilities: {
+                resume: {},
+              },
+            },
+          }),
+        });
+      }
+    };
+
+    const probeDisabled = await probeRemoteAcpConnection(
+      'ws://127.0.0.1:9000',
+      'token-1',
+      2000,
+      { enabled: false, autoGenerate: true }
+    );
+    assert.equal(probeDisabled.ok, true);
+    assert.equal(probeDisabled.loadSession, true);
+    assert.equal(probeDisabled.resumeSession, true);
+    assert.equal(probeDisabled.nativeMemory?.status, 'disabled');
+    assert.deepEqual(sentMessages[0]?.params?._meta?.shadowCrew?.nativeMemory, {
+      enabled: false,
+      autoGenerate: false,
+    });
+    assertions += 5;
+
+    // Fail-closed when initialize returns JSON-RPC error
+    sentMessages.length = 0;
+    responder = (payload, ws) => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          jsonrpc: '2.0',
+          id: payload.id,
+          error: { code: -32000, message: 'Unauthorized handshake' },
+        }),
+      });
+    };
+    const probeError = await probeRemoteAcpConnection('ws://127.0.0.1:9000');
+    assert.equal(probeError.ok, false);
+    assert.match(probeError.error || '', /Unauthorized handshake/);
+    assertions += 2;
+
+    // sendPromptToRemoteAcpWebSocket gates autoGenerate with nativeMemoryEnabled
+    sentMessages.length = 0;
+    responder = (payload, ws) => {
+      if (payload.method === 'initialize') {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            jsonrpc: '2.0',
+            id: payload.id,
+            result: { agentCapabilities: {} },
+          }),
+        });
+      } else if (payload.method === 'session/new') {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            jsonrpc: '2.0',
+            id: payload.id,
+            result: { sessionId: 'remote-sess-1' },
+          }),
+        });
+      } else if (payload.method === 'session/prompt') {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            jsonrpc: '2.0',
+            id: payload.id,
+            result: { text_response: 'REMOTE_OK' },
+          }),
+        });
+      }
+    };
+    const promptRes = await sendPromptToRemoteAcpWebSocket(
+      'ws://127.0.0.1:9000',
+      'hello',
+      'thread-remote-test',
+      undefined,
+      true,
+      'system',
+      undefined,
+      undefined,
+      undefined,
+      false,
+      true
+    );
+    assert.equal(promptRes.textResponse, 'REMOTE_OK');
+    const promptRpc = sentMessages.find((m) => m.method === 'session/prompt');
+    assert.deepEqual(promptRpc?.params?._meta?.shadowCrew?.nativeMemory, {
+      enabled: false,
+      autoGenerate: false,
+    });
+    assertions += 2;
+  } finally {
+    (globalThis as any).WebSocket = originalWebSocket;
+  }
+
+  // UI & Host Lifecycle Source Contract Verification
+  const modalSrc = readFileSync(
+    join(process.cwd(), 'src/components/ConnectAgentModal.tsx'),
+    'utf8'
+  );
+  assert.ok(modalSrc.includes("data-theme={isLightMode ? 'light' : 'dark'}"));
+  assert.ok(modalSrc.includes('已声明 (已关闭)'));
+  assert.ok(
+    modalSrc.includes(
+      'Boolean(initialAgent?.memory.autoGenerate) !== nextAutoGenerate'
+    )
+  );
+
+  const inspectorSrc = readFileSync(
+    join(process.cwd(), 'src/components/AcpInspector.tsx'),
+    'utf8'
+  );
+  assert.ok(inspectorSrc.includes("nativeMemoryCapability.persistent === false"));
+  assert.ok(inspectorSrc.includes("nativeMemoryStatus !== 'unknown'"));
+
+  const appSrc = readFileSync(join(process.cwd(), 'src/App.tsx'), 'utf8');
+  assert.ok(appSrc.includes("if (a.isRemote || a.acpTransport === 'websocket')"));
+  assertions += 6;
+
   return assertions;
 }
 
@@ -481,10 +815,15 @@ async function main(): Promise<void> {
   let assertions = 0;
   try {
     assertions += verifyTypeContracts();
+    assertions += await verifyRemoteWebSocketAndUiContracts();
     assertions += await verifyAdapterEnabledFlow(join(tempDir, 'enabled'));
     assertions += await verifyAdapterDisabledFlow(join(tempDir, 'disabled'));
     assertions += await verifyAdapterAutoGenerateFlow(join(tempDir, 'auto'));
-    if (process.env.SHADOW_CREW_REAL_NATIVE_MEMORY_TEST === '1') {
+    assertions += await verifyAdapterMetaPolicyOverrideFlow(join(tempDir, 'meta'));
+    if (
+      process.env.SHADOW_CREW_REAL_NATIVE_MEMORY_TEST === '1' ||
+      process.argv.includes('--real')
+    ) {
       assertions += await verifyRealCodexFlow(join(tempDir, 'real'));
       console.log(
         `ACP native memory E2E passed (${assertions} assertions, isolated CODEX_HOME).`

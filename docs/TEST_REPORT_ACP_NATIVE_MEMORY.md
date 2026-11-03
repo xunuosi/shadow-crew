@@ -1,174 +1,121 @@
-# ACP 原生长期记忆功能测试报告
+# ACP 原生长期记忆功能测试报告（缺陷修复与回归复测版）
 
-> 测试日期：2026-11-02  
-> 结论：通过，可交付复测  
-> 规范：[SPEC_ACP_NATIVE_MEMORY.md](./SPEC_ACP_NATIVE_MEMORY.md)  
-> 范围：本地 stdio ACP、远程 ACP 能力感知、Codex ACP 原生 Memory、Agent 配置迁移、双主题 UI
+> 测试日期：2026-11-03  
+> 结论：通过，可交付复测（9 项审计缺陷已全部闭环修复并通过回归验证）  
+> 规范依据：[SPEC_ACP_NATIVE_MEMORY.md](./SPEC_ACP_NATIVE_MEMORY.md)、[TECH_SPEC_ACP_ONLY_RUNTIME.md](./TECH_SPEC_ACP_ONLY_RUNTIME.md)  
+> 覆盖范围：本地 stdio ACP、远程 WebSocket ACP 能力感知、Codex ACP 原生 Memory、Agent 生命周期与配置迁移、双主题 UI 对比度
 
-## 1. 实现摘要
+---
 
-1. Agent 增加显式 `memory.mode`（`native | disabled`）与 `autoGenerate` 策略。
-2. ACP `initialize` 支持可选扩展 `agentCapabilities.nativeMemory`。
-3. Rust 运行态解析并回传 `unknown | enabled | disabled | unsupported`，前端每 3 秒同步。
-4. Codex ACP 适配器按策略启用：
-   - `features.memories=true`
-   - `memories.use_memories=true`
-   - `memories.generate_memories=true|false`
-   - `memories.dedicated_tools=true`
-5. `session/prompt` 通过 `_meta.shadowCrew.nativeMemory` 向本地/远程端点传递策略。
-6. 旧 Agent 数据集中迁移到 `schemaVersion=1`；没有在业务层散落旧字段回退。
-7. ACP Session 清理、Topic 切换和 Shadow Crew 重启不会删除端点长期记忆。
+## 1. 实现与架构摘要
 
-## 2. 自动化验证结果
+1. **显式托管策略**：Agent 配置具备 `memory.mode`（`native | disabled`）与 `autoGenerate`（默认 `false`），持久化版本号 `schemaVersion = 1`。
+2. **协议握手能力扩展**：ACP `initialize` 响应解析可选扩展 `agentCapabilities.nativeMemory`，严格要求 `supported === true && enabled === true` 才判定为 `enabled`，`supported === true && enabled === false` 判定为 `disabled`，`supported === false` 判定为 `unsupported`，其余缺失或半声明状态一律归入 `unknown`（遵循 `NM-01` Fail-Closed 原则）。
+3. **运行期探测与离线态严格解耦（`NM-01` / `NM-09`）**：
+   - 应用冷启动/重加载执行 `migrateAgentMemoryV1()` 时，凡非在线运行态（如 `idle` / `error`）的 Agent，其 `memory.nativeCapability` 一律重置为 `unknown`、`capabilities.canUseInternalMemory` 重置为 `false`，杜绝复用上一次进程的握手残留冒充当前状态。
+   - Agent 停止（`onToggleAgentStatus`）、本地进程退出回落 `idle`（`syncRunningAgentsWithBackend`）或复制 Agent（`onDuplicateAgent`）时，均立即重置 `nativeCapability` 为 `unknown`。
+4. **本地与远程双通道策略下发**：
+   - 本地 stdio 通道：启动时通过受控环境变量 `SHADOW_CREW_ACP_NATIVE_MEMORY` / `SHADOW_CREW_ACP_NATIVE_MEMORY_AUTO_GENERATE` 下发策略（屏蔽用户同名 ENV 伪造），并在 `initialize` 与 `session/prompt` 请求中携带 `_meta.shadowCrew.nativeMemory`。
+   - 远程 WebSocket 通道：`probeRemoteAcpConnection()` 与 `sendPromptToRemoteAcpWebSocket()` 在 `initialize` 和 `session/prompt` 中同步携带 `_meta.shadowCrew.nativeMemory`，且 `autoGenerate` 严格受 `nativeMemoryEnabled` 门控；后台本地轮询 `syncRunningAgentsWithBackend` 跳过远程/WebSocket Agent，防止 3 秒轮询冲掉远程在线状态。
+5. **Codex ACP 适配器（`bin/codex-acp`）**：
+   - 同时消费 RPC 请求参数 `_meta.shadowCrew.nativeMemory` 与启动环境变量（`_meta` 优先），按需挂载 `--enable memories`、`memories.use_memories=true`、`memories.generate_memories=true|false`、`memories.dedicated_tools=true`。
+   - Rust `spawn_agent` / `ensure_initialized` 握手超时提升至 10 秒，且 `spawn_agent` 超时不伪造 `initialized = true`，允许首次 `session/prompt` 前通过 `ensure_initialized` 补齐握手能力。
+6. **双主题高对比度 UI（`NM-THEME-01`）**：
+   - `ConnectAgentModal` 容器显式绑定 `data-theme={isLightMode ? 'light' : 'dark'}` 并通过 `MutationObserver` 与全局 `<html data-theme>` 同步，内部状态块与远程探测卡片全部采用显式 `isLightMode` 双主题语义色阶，彻底消除「浅字叠浅底 / 深字叠深底」。
 
-| 验证项 | 命令 | 结果 |
-| --- | --- | --- |
-| TypeScript 类型检查 | `npm run lint` | 通过 |
-| 生产构建 | `npm run build` | 通过（仅保留既有 >500 kB chunk 警告） |
-| 原生记忆协议/适配器回归 | `npm run test:acp-native-memory` | 通过，60 assertions |
-| 真实 Codex 跨 Session E2E | `SHADOW_CREW_REAL_NATIVE_MEMORY_TEST=1 npm run test:acp-native-memory` | 通过，65 assertions，隔离 `CODEX_HOME` |
-| ACP-only 回归 | `npm run test:acp-only` | 通过 |
-| Workspace / ACP Permission / Attachments / DM | 对应 `npm run test:*` | 全部通过 |
-| Rust Desktop | `cargo test -p shadow-crew-desktop --no-fail-fast` | 32/32 |
-| Rust MCP | `cargo test -p shadow-crew-dev-mcp --no-fail-fast` | 9/9 |
-| 普通模式增量编排 | `test-normal-mode-buzz-orchestration.ts` | 54/54 |
-| Mention / Compaction | 对应 TS 套件 | 13/13、140/140 |
-| CognoNexus + G-Frame | `npm run test:cogno && npm run test:cogno:edge` | 全部通过，0 defect |
-| UI 运行期 | Tauri dev 基础渲染 + 同源 Vite 页面 CDP 交互 | 通过；light 与 `data-theme=dark` 变体布局、开关联动及状态保存正常 |
+---
 
-真实 E2E 步骤：
+## 2. 规范可追溯矩阵（Spec-to-Test Traceability）
 
-1. 创建隔离临时 `CODEX_HOME`，仅链接本地 `config.toml`，不污染现有记忆库。
-2. 启动 `bin/codex-acp`，握手确认 native memory 为 `enabled`。
-3. 第一个 ACP Session 只输入“请长期记住 canary”。
-4. 关闭进程，启动第二个独立 ACP Session。
-5. 只询问 canary key，不提供 value。
-6. 新 Session 返回正确 canary value；临时目录测试后自动删除。
+| 规范条目 | 核心契约要求 | 验证层级 | 对应测试与断言证据 | 结果 |
+| --- | --- | --- | --- | --- |
+| **NM-01** | 未声明 `nativeMemory` 或 `supported: true` 但缺失 `enabled` 必须显示 `unknown`，严禁伪装为 `enabled` | 单元层 (TS + Rust) | `test-acp-native-memory.ts` (`verifyTypeContracts`) + `acp_manager.rs` (`test_check_native_memory_capability_contract`) | ✅ 通过 |
+| **NM-02** | Codex 开启原生记忆时，`initialize` 返回 `enabled`，`exec` 注入 `--enable memories` 与 `dedicated_tools=true` | 适配器层 + 真实运行期层 | `verifyAdapterEnabledFlow` (fake CLI) + `verifyRealCodexFlow` (真实 Codex CLI) | ✅ 通过 |
+| **NM-03** | 关闭原生记忆时，`initialize` 返回 `disabled`，`exec` 不包含任何 `memories` 参数 | 适配器层 + 协议层 | `verifyAdapterDisabledFlow` + `verifyAdapterMetaPolicyOverrideFlow` | ✅ 通过 |
+| **NM-04** | 显式长期记忆在第一个 ACP Session 写入后，第二个全新 ACP Session 不带历史上下文仍可召回 | 真实运行期层 (E2E) | `verifyRealCodexFlow`（隔离 `CODEX_HOME`，跨进程跨 Session 召回 `ORBIT-7742-LYNX`） | ✅ 通过 |
+| **NM-05** | 退出原适配器进程并重启新进程后，隔离 `CODEX_HOME` 下的 `memories_v2` 笔记仍可被召回 | 真实运行期层 (E2E) | `verifyRealCodexFlow`（`sourceAdapter.close()` 后拉起全新 `recallAdapter` 进程验证） | ✅ 通过 |
+| **NM-06** | 清理 Shadow Crew ACP Session 仅清理会话映射，不删除端点原生长期记忆 | 宿主集成层 + E2E | `acp_manager.rs` (`test_clear_agent_sessions_with_generation_deletes_db_even_if_memory_empty`) + `NM-SESSION-CLEAR-01` | ✅ 通过 |
+| **NM-07** | 旧版 Agent 数据通过 `migrateAgentMemoryV1` 集中迁移到 `schemaVersion=1`，业务层零旧字段回退 | 单元层 | `verifyTypeContracts` + `test-acp-only-runtime.ts` | ✅ 通过 |
+| **NM-08** | 亮色/暗色主题 × 弹窗内部主题切换 × `enabled/disabled/unknown/unsupported` 状态组合全部可读 | UI 契约与运行期层 | `verifyRemoteWebSocketAndUiContracts` + 双主题渲染检查 | ✅ 通过 |
+| **NM-09** | 离线/重启加载的 Agent 不得保留上次进程的 `enabled` 探测结果；`INITIAL_AGENTS` 离线预设必须为 `unknown` | 单元层 + 宿主状态层 | `verifyTypeContracts` (`staleOfflineAgent` / `activeOnlineAgent` / `INITIAL_AGENTS[0]`) | ✅ 通过 |
+| **NM-10** | 同一 `CODEX_HOME` 共享边界清晰披露；测试使用独立临时 `CODEX_HOME` 物理隔离 | 真实运行期层 + UI 文案 | `verifyRealCodexFlow` + `ConnectAgentModal.tsx` / `AcpInspector.tsx` | ✅ 通过 |
 
-## 3. 自检中发现并修复的问题
+---
 
-| 问题 | 根因 | 修复 |
-| --- | --- | --- |
-| 真实 Codex 写入后新 Session 为 `UNKNOWN` | 只启用 memories feature，未开启专用 memory tools | 增加 `memories.dedicated_tools=true` |
-| 自动提炼在本机模型网关产生后台失败/503 | 记忆提炼 Agent 使用当前自定义网关未注册的模型 | 自动提炼改为 Agent 级显式开关，默认关闭；显式 memory 工具链路真实通过 |
-| ACP Session 缓存固定写入 `$HOME/.shadow-crew` | 适配器未消费 Tauri 已注入的 `SHADOW_CREW_HOME` | 适配器统一使用 `SHADOW_CREW_HOME` |
-| 旧 Agent 数据缺少记忆策略 | 历史结构只有内部展示字段 | 增加 `migrateAgentMemoryV1()` 集中迁移 |
-| 用户可伪造 native memory ENV | 启动环境与用户 ENV 合并时可能重复 | 宿主过滤同名用户项，只下发受控策略值 |
-| 5 秒真实模型超时 | 首次 memory tool 调用可能超过 5 秒 | 真实 E2E 请求超时提升至 45 秒 |
+## 3. 本轮代码审查发现并修复的 9 项缺陷清单
 
-## 4. 复测前置条件
+| 编号 | 严重度 | 缺陷位置与现象 | 根因分析 | 修复方案与回归验证 |
+| --- | --- | --- | --- | --- |
+| **#1** | P1 | `src-tauri/src/acp_manager.rs`：`spawn_agent` 握手 3 秒超时后丢失 `nativeMemory` 能力且不再重试 | `bin/codex-acp` 在 `initialize` 中同步执行 `codex --version` 与 `codex --enable memories features list`，冷启动可能超过 3s；超时分支误设 `initialized = true` 并残留 `pending_requests` | 握手超时提升至 10s；`spawn_agent` 超时清理 `init_id` 且保持 `initialized = false`，由首次 `ensure_initialized` 补齐握手 |
+| **#2** | P1 | `src/services/agentMemory.ts`、`src/data/mockData.ts`、`src/App.tsx`：离线/重启/停止后仍残留 `nativeCapability = enabled`（违反 `NM-01`/`NM-09`） | `migrateAgentMemoryV1` 对 `schemaVersion === 1` 的离线 Agent 直接原样返回旧 `nativeCapability`；`INITIAL_AGENTS[0]` 离线态硬编码了 `enabled`；停止 Agent 未重置探测结果 | `migrateAgentMemoryV1` 对非在线态 Agent 强制重置 `nativeCapability` 为 `unknown`；修复 `INITIAL_AGENTS[0]`；停止/离线回落时重置为 `unknown` |
+| **#3** | P1 | `src/App.tsx`、`src/components/ConnectAgentModal.tsx`：远程 ACP Agent 启动 3 秒后被重置为 `idle`，且启动/保存时丢失 `nativeMemory` 探测结果 | `syncRunningAgentsWithBackend` 未跳过 `isRemote \|\| acpTransport === 'websocket'`；`onToggleAgentStatus` 与保存时 `healthCheck` 未消费 `probe.nativeMemory` | `syncRunningAgentsWithBackend` 跳过远程 Agent；`probeRemoteAcpConnection` 接收并发送 `nativeMemoryPolicy`，启动与保存全链路回写 `nativeMemory` / `loadSession` / `resumeSession` |
+| **#4** | P2 | `src/services/agentMemory.ts`、`src-tauri/src/acp_manager.rs`：`{ supported: true }`（缺失 `enabled`）被误判为 `enabled` | TS 使用 `value.enabled !== false`，Rust 使用 `(Some(true), _) => "enabled"`，与规范表格冲突 | TS 与 Rust 统一要求 `supported === true && enabled === true` 才返回 `"enabled"`，缺失 `enabled` 返回 `"unknown"` |
+| **#5** | P2 | `bin/codex-acp`、`src/services/acpClient.ts`：适配器忽略 `_meta.shadowCrew.nativeMemory`；远程 Prompt 未用 `nativeMemoryEnabled` 门控 `autoGenerate` | `bin/codex-acp` 仅读取进程启动环境变量；`sendPromptToRemoteAcpWebSocket` 直接透传 `Boolean(nativeMemoryAutoGenerate)` | `bin/codex-acp` 新增 `resolveNativeMemoryPolicy(params)` 优先消费 `_meta` 并同步子进程环境；`acpClient.ts` 用 `Boolean(nativeMemoryEnabled && nativeMemoryAutoGenerate)` 门控 |
+| **#6** | P1 | `src/components/ConnectAgentModal.tsx`：全局暗色主题下出现白字叠浅绿底、亮色主题切暗色弹窗出现黑字叠深底（违反 `NM-THEME-01`） | `isLightMode` 未与 `<html data-theme>` 同步，且弹窗内部混用受全局 `<html>` 驱动的 `text-fg` / `dark:*` 与受局部 `isLightMode` 驱动的浅色背景 | 弹窗容器绑定 `data-theme={isLightMode ? 'light' : 'dark'}`，通过 `MutationObserver` 同步全局主题，并将记忆策略区与远程探测区全面改为 `isLightMode` 双主题高对比度配色 |
+| **#7** | P2 | `src/components/AcpInspector.tsx`、`src/components/ConnectAgentModal.tsx`：`persistent: false` 显示为 `UNKNOWN`；`unknown` 状态伪造 `supported: false` 报文；远程 `disabled` 显示为 `未声明 ⚠️` | 三元表达式未区分 `false` 与 `undefined`；`jsonRpcSample` 无条件拼装 `nativeMemory`；远程探测条未分支处理 `disabled` | 精确区分 `YES / NO / UNKNOWN`；仅当 `nativeMemoryStatus !== 'unknown'` 时在示例报文中展示 `nativeMemory`；远程探测条对 `disabled` 显示 `已声明 (已关闭)` |
+| **#8** | P2 | `src/App.tsx`、`src/components/ConnectAgentModal.tsx`：复制 Agent 时旧 `capabilities` 覆盖 `canUseInternalMemory` 且拷贝旧 `nativeCapability`；新建 Agent 丢弃 `capabilities`；仅修改 `autoGenerate` 未触发策略变更重置 | 属性展开顺序将 `...(agent.capabilities \|\| {})` 放在后面；`onConnectAgent` 硬编码 `capabilities`；`nativeMemoryPolicyChanged` 仅比较 `mode` | 修正展开顺序并重置副本 `nativeCapability` 为 `unknown`；`onConnectAgent` 保留 `agentData.capabilities`；`nativeMemoryPolicyChanged` 同时校验 `mode` 与 `autoGenerate` |
+| **#9** | P3 | `src-tauri/src/acp_manager.rs`：Rust 默认 `AcpNativeMemoryCapability` 与前端 TS 默认值不一致（英文 `detail`、`scope: None`、动态时间戳） | Rust `Default` 实现未与前端 `createUnknownNativeMemoryCapability()` 对齐，导致轮询无意义刷新并覆盖中文提示 | 对齐 Rust 默认值为 `scope: Some("unknown")`、中文 `detail: Some("等待 ACP 端点握手声明")`、`last_checked_at: 0`，并在 `App.tsx` 按语义字段比对变更 |
 
-1. 启动 Shadow Crew 桌面端。
-2. 进入 **Agents & 编队**，编辑一个 Codex Agent。
-3. 开启 **启用 ACP 端点原生长期记忆**。
-4. “允许自动提炼历史对话”默认可关闭；显式长期记忆不依赖此项。
-5. 启动该 Agent，确认握手完成。
-6. 用于复测的文本必须包含唯一随机 canary，不能出现在仓库、日志或 Prompt 后续问题中。
+---
 
-## 5. 用户复测用例
+## 4. 分层自动化验证结果与真实性声明
+
+| 验证层级 | 验证项 | 执行命令 | 结果与证据 | 验证性质声明 |
+| --- | --- | --- | --- | --- |
+| **静态类型检查** | TypeScript 全量类型校验 | `npm run lint` | 通过（0 error） | 真实编译器静态检查 |
+| **生产构建检查** | Vite 前端生产打包 | `npm run build` | 通过（2015 modules transformed） | 真实生产打包 |
+| **单元 + 协议 + 适配器层** | 原生记忆契约、迁移、Fake Codex CLI、远程 WS 探针、UI 源码契约 | `npm run test:acp-native-memory` | **通过（100 assertions）** | 纯函数 + Fake Codex 子进程 JSON-RPC + Mock WebSocket 协议交互 |
+| **真实运行期层 (E2E)** | 真实 Codex CLI 跨进程、跨 Session 原生记忆写入与召回 | `npm run test:acp-native-memory -- --real` | **通过（105 assertions，隔离 `CODEX_HOME`）** | **真实 `bin/codex-acp` + 真实本机 Codex CLI + 真实模型网关推理 + 真实 `memories_v2` 落盘与跨进程召回** |
+| **ACP 运行时基线** | ACP-only 运行时与禁用历史字段回归 | `npm run test:acp-only` | 通过 | 纯函数与契约回归 |
+| **Rust 宿主层** | Tauri ACP 管理器、握手解析、Session 隔离、权限与 SQLite | `cargo test -p shadow-crew-desktop --no-fail-fast` | **通过（32/32 tests）** | 真实 Rust 单元与 SQLite/状态机集成测试 |
+| **Rust MCP 工具层** | Dev MCP Server 工具契约与执行 | `cargo test -p shadow-crew-dev-mcp --no-fail-fast` | **通过（9/9 tests）** | 真实 Rust 单元测试 |
+| **全量关联回归** | Workspace / Permission / Permission UI / Attachments / DM / CognoNexus / G-Frame Edge | `npm run test:workspace && npm run test:acp-permission && npm run test:acp-permission-ui && npm run test:chat-attachments && npm run test:dm && npm run test:cogno && npm run test:cogno:edge` | **全部通过（0 defect / 0 warn）** | 真实回归测试套件 |
+
+### 验证覆盖边界说明（符合 `AGENTS.md` 第 2.7 节要求）
+
+- **已覆盖的真实运行期层**：
+  - 本机真实 Codex CLI（`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`）经 `bin/codex-acp` 的 `initialize` 握手探测、第一个 Session 原生 memory 工具写入（落盘至隔离 `CODEX_HOME/memories_v2/extensions/ad_hoc/notes`）、进程退出后第二个全新进程/Session 的跨线程原生 memory 召回。
+  - Rust `shadow-crew-desktop` 后端状态机、握手能力解析与 SQLite 持久化测试。
+- **使用 Fake / Mock 的验证层**：
+  - 远程 WebSocket 握手探针（`probeRemoteAcpConnection`）与远程 Prompt 发送（`sendPromptToRemoteAcpWebSocket`）通过进程内 `MockWebSocket` 验证了完整 JSON-RPC 报文载荷、`_meta.shadowCrew.nativeMemory` 门控与错误 Fail-Closed 行为（本机未额外部署外部独立远程 WebSocket ACP 守护进程）。
+
+---
+
+## 5. 用户复测指南与用例
 
 ### NM-UI-01 配置与能力展示
 
-**步骤**
-
-1. 编辑 Agent，确认记忆开关可见。
-2. 关闭主开关，检查自动提炼开关同步隐藏。
-3. 重新开启主开关，检查自动提炼开关恢复。
-4. 保存并启动 Codex Agent。
-5. 打开 ACP Inspector 的 Memory 页。
-
-**预期**
-
-- 主开关默认允许 native mode。
-- 自动提炼默认关闭。
-- 握手完成后状态显示 `enabled`，提供方为 `codex-memories`，作用域为 `runtime`。
-- 端点未声明扩展时显示 `unknown`，不得显示“支持”。
+1. 打开 **Agents & 编队**，编辑任意 Agent，检查底部「启用 ACP 端点原生长期记忆」卡片。
+2. 关闭主开关，确认「允许自动提炼历史对话」子开关自动隐藏并重置为关闭，且显示琥珀色禁用提示。
+3. 开启主开关，保存并启动本地 Codex Agent，打开右侧 **ACP Inspector → Memory** 标签页：
+   - 握手完成后状态显示 `enabled`，提供方 `codex-memories`，作用域 `runtime`，持久化/跨线程显示 `YES / YES`。
+   - 停止该 Agent 后，状态立即回落为 `unknown`（不再残留上次进程的 `enabled`）。
 
 ### NM-E2E-01 跨 ACP Session 召回
 
-**步骤**
-
-1. 在 Shadow Crew 的 Codex 会话 A 输入：
-
+1. 在 Codex 会话 A 输入：
    ```text
-   请长期记住：SC_NATIVE_MEMORY_CANARY_20261102 = ORBIT-7742-LYNX。
+   请长期记住：SC_NATIVE_MEMORY_CANARY_20261103 = ORBIT-7742-LYNX。
    不要使用 shell、文件或网络。完成后只回复 RECORDED。
    ```
-
 2. 确认返回 `RECORDED`。
-3. 新建一个不同 Topic 或私聊会话 B。
-4. 在新会话只询问：
-
+3. 新建另一个 Topic 或清理当前 Session 后，在新会话询问：
    ```text
-   只使用 Codex 原生 memory 工具，查询 SC_NATIVE_MEMORY_CANARY_20261102 的 value。
+   只使用 Codex 原生 memory 工具，查询 SC_NATIVE_MEMORY_CANARY_20261103 的 value。
    不要使用 shell、文件、网络或当前会话历史。不知道回答 UNKNOWN。
    ```
+4. 预期返回 `ORBIT-7742-LYNX`。
 
-**预期**
+### NM-THEME-01 双主题与弹窗内部主题切换可读性
 
-- 会话 B 返回 `ORBIT-7742-LYNX`。
-- 问题中不包含 value，排除普通对话上下文注入。
-- 若多个 Agent 共用同一 Codex runtime，它们可能看到同一记忆；这是 `scope=runtime` 的预期行为。
+1. 分别在应用全局白昼主题（`data-theme="light"`）和暗夜主题（`data-theme="dark"`）下打开「编辑 Agent」弹窗。
+2. 点击弹窗右上角的太阳/月亮按钮切换弹窗内部明暗模式，检查底部「启用 ACP 端点原生长期记忆」区域及「远程 ACP WebSocket 测试连接」结果区域：
+   - 四种组合（全局亮/暗 × 弹窗亮/暗）下文字对比度均清晰锐利，无浅字叠浅底或深字叠深底。
 
-### NM-RESTART-01 重启持久化
-
-**步骤**
-
-1. 完成 NM-E2E-01 写入。
-2. 完全退出 Shadow Crew。
-3. 重新启动，启动同一个 Codex Agent。
-4. 新建会话询问同一个 canary key。
-
-**预期**
-
-- 仍能召回 canary。
-- 若失败，检查两个进程的 `HOME`、`CODEX_HOME` 是否一致，以及原记忆库是否被手动清理。
-
-### NM-DISABLED-01 关闭原生记忆
-
-**步骤**
-
-1. 关闭 Agent 的 native memory 开关并保存。
-2. 重启 Agent。
-3. 检查 ACP 能力面板。
-4. 用新 canary 输入“请长期记住”，再开新 Session 询问。
-
-**预期**
-
-- 能力状态为 `disabled`。
-- Codex 子进程参数不包含 memories 配置。
-- 不应产生新的长期记忆召回。
-
-### NM-SESSION-CLEAR-01 Session 清理不影响长期记忆
-
-**步骤**
-
-1. 写入 canary 并确认可召回。
-2. 在 Shadow Crew 清理当前 ACP Session/对话。
-3. 新开会话再次查询 canary key。
-
-**预期**
-
-- ACP Session 被重建。
-- 端点长期记忆仍存在。
-- 只有端点自身的记忆删除功能或直接清理其 native memory store 才会遗忘。
-
-### NM-THEME-01 双主题可读性
-
-**步骤**
-
-1. 分别在 light/dark 下打开 Agent 编辑弹窗底部记忆区域。
-2. 检查标题、说明、主开关、自动提炼开关和保存按钮。
-
-**预期**
-
-- 无浅字叠浅底、深字叠深底。
-- 窄窗口无横向溢出。
-- 禁用状态提示可读，语义色成对生效。
+---
 
 ## 6. 已知环境边界
 
-- ACP 协议不规定统一长期记忆格式；其他 Agent 必须实现并声明 `agentCapabilities.nativeMemory`，或消费 `_meta.shadowCrew.nativeMemory`。
-- Codex 自动提炼依赖模型提供方是否支持其后台记忆 Agent。当前本机自定义网关会返回 `model_not_registered`，因此自动提炼默认关闭。
-- 显式 memory/ad_hoc_note 工具写入、跨线程读取与新进程召回已在本机真实通过。
-- 多个 Shadow Crew Agent 共用同一 `CODEX_HOME` 时，Codex 原生 Memory 是共享的；需要实例级隔离时，应使用独立运行目录/端点，或后续接入宿主级记忆命名空间。
+- ACP 协议本身不规定统一的长期记忆存储格式；其他外部 Agent 需实现并声明 `agentCapabilities.nativeMemory` 或消费 `_meta.shadowCrew.nativeMemory`。
+- Codex 后台自动提炼（`memories.generate_memories=true`）依赖模型网关是否注册了 Codex 内部记忆提炼模型；本机自定义网关对后台提炼模型返回 `model_not_registered`，因此默认关闭 `autoGenerate`，显式原生 memory 工具读写与跨线程召回不受影响并已真实跑通。
+- 多个 Agent 共用同一 `CODEX_HOME` 时，Codex 原生长期记忆按 `scope=runtime` 共享；如需实例级物理隔离，请为不同 Agent 配置独立的 `CODEX_HOME`。

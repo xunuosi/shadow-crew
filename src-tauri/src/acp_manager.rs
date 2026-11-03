@@ -94,9 +94,9 @@ impl Default for AcpNativeMemoryCapability {
             persistent: None,
             cross_thread: None,
             provider: None,
-            scope: None,
-            detail: Some("ACP endpoint has not declared agentCapabilities.nativeMemory".to_string()),
-            last_checked_at: now_millis(),
+            scope: Some("unknown".to_string()),
+            detail: Some("等待 ACP 端点握手声明".to_string()),
+            last_checked_at: 0,
         }
     }
 }
@@ -311,7 +311,15 @@ pub fn check_native_memory_capability(result: &serde_json::Value) -> AcpNativeMe
         .and_then(|capabilities| capabilities.get("nativeMemory"))
         .and_then(|value| value.as_object())
     else {
-        return AcpNativeMemoryCapability::default();
+        return AcpNativeMemoryCapability {
+            status: "unknown".to_string(),
+            persistent: None,
+            cross_thread: None,
+            provider: None,
+            scope: Some("unknown".to_string()),
+            detail: Some("ACP 端点未声明 nativeMemory 扩展".to_string()),
+            last_checked_at: now_millis(),
+        };
     };
 
     let supported = raw.get("supported").and_then(|value| value.as_bool());
@@ -319,14 +327,15 @@ pub fn check_native_memory_capability(result: &serde_json::Value) -> AcpNativeMe
     let status = match (supported, enabled) {
         (Some(false), _) => "unsupported",
         (Some(true), Some(false)) => "disabled",
-        (Some(true), _) => "enabled",
+        (Some(true), Some(true)) => "enabled",
         _ => "unknown",
     };
     let scope = raw
         .get("scope")
         .and_then(|value| value.as_str())
         .filter(|value| matches!(*value, "agent" | "workspace" | "runtime"))
-        .map(str::to_string);
+        .unwrap_or("unknown")
+        .to_string();
 
     AcpNativeMemoryCapability {
         status: status.to_string(),
@@ -336,14 +345,14 @@ pub fn check_native_memory_capability(result: &serde_json::Value) -> AcpNativeMe
             .get("provider")
             .and_then(|value| value.as_str())
             .map(str::to_string),
-        scope,
+        scope: Some(scope),
         detail: raw
             .get("detail")
             .and_then(|value| value.as_str())
             .map(str::to_string)
             .or_else(|| {
                 (status == "unknown")
-                    .then(|| "nativeMemory declaration is missing required supported field".to_string())
+                    .then(|| "ACP 端点 nativeMemory 声明缺少有效的 supported/enabled 布尔字段".to_string())
             }),
         last_checked_at: now_millis(),
     }
@@ -2125,7 +2134,7 @@ impl AcpProcessManager {
             },
         );
 
-        // 1. 立即发起 ACP initialize 握手 (超时 3 秒)
+        // 1. 立即发起 ACP initialize 握手 (超时 10 秒，兼容适配器冷启动探测)
         let init_id = 1001u64;
         let (init_tx, init_rx) = oneshot::channel();
         {
@@ -2151,7 +2160,7 @@ impl AcpProcessManager {
         let mut initial_auth_state = "ok".to_string();
         let mut detail_msg: Option<String> = None;
 
-        match tokio::time::timeout(Duration::from_millis(3000), init_rx).await {
+        match tokio::time::timeout(Duration::from_millis(10000), init_rx).await {
             Ok(Ok(resp)) => {
                 if let Some(err) = resp.get("error") {
                     // ACP initialize 返回 JSON-RPC error = Agent 明确拒绝握手，绝不可视为可用
@@ -2211,8 +2220,8 @@ impl AcpProcessManager {
                 *init_error.lock().await = Some(detail);
             }
             Err(_) => {
-                tracing::warn!("[Agent {}] Immediate initialize timed out, marking initialized for backward compat", agent_id);
-                initialized.store(true, Ordering::SeqCst);
+                pending_requests.lock().await.remove(&init_id);
+                tracing::warn!("[Agent {}] Immediate initialize timed out after 10s, deferring to lazy initialize on first session/prompt", agent_id);
             }
         }
 
@@ -2882,7 +2891,7 @@ impl RunningAgent {
                 }
             });
             let _ = self.stdin_tx.send(init_req.to_string()).await;
-            match tokio::time::timeout(Duration::from_secs(5), init_rx).await {
+            match tokio::time::timeout(Duration::from_secs(10), init_rx).await {
                 Ok(Ok(resp)) => {
                     if let Some(err) = resp.get("error") {
                         let err_msg = err
@@ -2944,6 +2953,7 @@ impl RunningAgent {
                     }
                 }
                 _ => {
+                    self.pending_requests.lock().await.remove(&init_id);
                     tracing::warn!(
                         "[Agent {}] initialize timed out or skipped, marking initialized",
                         agent_id
@@ -4637,6 +4647,19 @@ mod runtime_status_tests {
         assert_eq!(unknown.status, "unknown");
         assert!(unknown.persistent.is_none());
         assert!(unknown.cross_thread.is_none());
+        assert_eq!(unknown.scope.as_deref(), Some("unknown"));
+
+        let missing_enabled = serde_json::json!({
+            "agentCapabilities": {
+                "nativeMemory": {
+                    "supported": true
+                }
+            }
+        });
+        assert_eq!(
+            check_native_memory_capability(&missing_enabled).status,
+            "unknown"
+        );
     }
 
     #[test]

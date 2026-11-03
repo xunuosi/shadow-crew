@@ -34,7 +34,7 @@ export const INITIAL_AGENTS: Agent[] = [
     acpCommandOrUrl: 'openclaw acp',
     protocolVersion: '2025-01-01 (ACP v1.0.4)',
     capabilities: {
-      canUseInternalMemory: true,
+      canUseInternalMemory: false,
       canAccessWorkspaceFiles: true,
       canExecuteSkills: true,
       canDelegateToSubAgents: true,
@@ -66,16 +66,16 @@ export const INITIAL_AGENTS: Agent[] = [
     memory: {
       schemaVersion: 1,
       mode: 'native',
-      autoGenerate: true,
+      autoGenerate: false,
       nativeCapability: {
-        status: 'enabled',
-        persistent: true,
-        crossThread: true,
-        provider: 'openclaw-native-memory',
-        scope: 'runtime',
-        detail: 'Mock ACP endpoint advertises native memory',
+        status: 'unknown',
+        persistent: null,
+        crossThread: null,
+        provider: null,
+        scope: 'unknown',
+        detail: '等待 ACP 端点握手声明',
       },
-      internalMemoryPath: '~/.shadow-crew/global_memory.sqlite',
+      internalMemoryPath: '由 ACP 端点管理',
       persistentType: 'sqlite',
       persistentItems: [
         {

@@ -16,7 +16,7 @@ const HOME = os.homedir();
  * 子进程 PATH：GUI 守护进程继承的 PATH 往往不含用户 shell 的安装目录，这里显式补齐。
  * 探针与实际执行共用同一份 PATH，保证"探测通过 = 执行可用"。
  */
-function codexChildEnv() {
+function codexChildEnv(nativeMemoryPolicy) {
   const searchPaths = [
     path.join(HOME, '.local/bin'),
     path.join(HOME, '.cargo/bin'),
@@ -26,6 +26,13 @@ function codexChildEnv() {
   return {
     ...process.env,
     PATH: [...searchPaths, process.env.PATH || ''].filter(Boolean).join(path.delimiter),
+    ...(nativeMemoryPolicy
+      ? {
+          SHADOW_CREW_ACP_NATIVE_MEMORY: nativeMemoryPolicy.enabled ? '1' : '0',
+          SHADOW_CREW_ACP_NATIVE_MEMORY_AUTO_GENERATE:
+            nativeMemoryPolicy.autoGenerate ? '1' : '0',
+        }
+      : {}),
   };
 }
 
@@ -162,16 +169,31 @@ function codexNativeMemoryFeatureSupported() {
   return cachedNativeMemoryFeatureSupported;
 }
 
-function codexNativeMemoryCapability() {
+function resolveNativeMemoryPolicy(params) {
+  const metaPolicy = params?._meta?.shadowCrew?.nativeMemory;
+  const enabled =
+    typeof metaPolicy?.enabled === 'boolean'
+      ? metaPolicy.enabled
+      : NATIVE_MEMORY_ENABLED;
+  const autoGenerate =
+    enabled &&
+    (typeof metaPolicy?.autoGenerate === 'boolean'
+      ? metaPolicy.autoGenerate
+      : NATIVE_MEMORY_AUTO_GENERATE);
+  return { enabled, autoGenerate };
+}
+
+function codexNativeMemoryCapability(params) {
+  const policy = resolveNativeMemoryPolicy(params);
   const supported = codexNativeMemoryFeatureSupported();
-  const enabled = supported && NATIVE_MEMORY_ENABLED;
+  const enabled = supported && policy.enabled;
   let detail = null;
   if (!supported) {
     detail = '当前 Codex CLI 不支持 memories 功能';
-  } else if (!NATIVE_MEMORY_ENABLED) {
+  } else if (!policy.enabled) {
     detail = '已在 Shadow Crew Agent 配置中关闭原生记忆';
   } else {
-    detail = NATIVE_MEMORY_AUTO_GENERATE
+    detail = policy.autoGenerate
       ? '已启用 Codex native memory 专用工具与自动提炼；自动提炼依赖模型提供方能力'
       : '已启用 Codex native memory 专用工具；自动提炼已关闭';
   }
@@ -347,7 +369,7 @@ rl.on('line', async (line) => {
         loadSession: false,
         tools: { listChanged: true },
         streaming: true,
-        nativeMemory: codexNativeMemoryCapability(),
+        nativeMemory: codexNativeMemoryCapability(params),
         sessionCapabilities: {
           resume: {},
         },
@@ -479,8 +501,9 @@ rl.on('line', async (line) => {
     }
 
     const hasThread = Boolean(session.codexThreadId);
+    const nativeMemoryPolicy = resolveNativeMemoryPolicy(params);
     const nativeMemoryActive =
-      NATIVE_MEMORY_ENABLED && codexNativeMemoryFeatureSupported();
+      nativeMemoryPolicy.enabled && codexNativeMemoryFeatureSupported();
     const nativeMemoryDirective = nativeMemoryActive
       ? `[Codex native memory mode]\n当用户明确要求长期记住，或信息属于稳定偏好、项目约定、可复用事故经验时，使用当前可用的原生 memory/ad_hoc_note 工具持久化。不要保存密钥、临时状态或普通讨论流水。`
       : '';
@@ -509,7 +532,7 @@ rl.on('line', async (line) => {
       args.push(
         '--enable', 'memories',
         '-c', 'memories.use_memories=true',
-        '-c', `memories.generate_memories=${NATIVE_MEMORY_AUTO_GENERATE ? 'true' : 'false'}`,
+        '-c', `memories.generate_memories=${nativeMemoryPolicy.autoGenerate ? 'true' : 'false'}`,
         '-c', 'memories.dedicated_tools=true'
       );
     }
@@ -540,7 +563,7 @@ rl.on('line', async (line) => {
 
     const child = spawn(CODEX_BIN, args, {
       cwd: session.cwd && fs.existsSync(session.cwd) ? session.cwd : undefined,
-      env: codexChildEnv(),
+      env: codexChildEnv(nativeMemoryPolicy),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

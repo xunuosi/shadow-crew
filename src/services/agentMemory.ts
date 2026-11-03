@@ -57,8 +57,18 @@ export function migrateAgentMemoryV1(input: Agent): {
     /^~\/\.shadow-crew\/.+_memory\.sqlite$/.test(existingPath);
   const mode = existing?.mode === 'disabled' ? 'disabled' : 'native';
   const autoGenerate = mode === 'native' && existing?.autoGenerate === true;
+  const isOnline =
+    input.status === 'running' ||
+    input.status === 'starting' ||
+    input.status === 'thinking' ||
+    input.status === 'using_skill' ||
+    input.status === 'accessing_workspace' ||
+    input.status === 'querying_memory';
   const nativeCapability =
-    existing?.nativeCapability && existing.nativeCapability.status
+    isOnline &&
+    existing?.schemaVersion === AGENT_MEMORY_SCHEMA_VERSION &&
+    existing?.nativeCapability &&
+    existing.nativeCapability.status
       ? existing.nativeCapability
       : createUnknownNativeMemoryCapability();
   const existingCapabilities = input.capabilities || {
@@ -117,7 +127,11 @@ export function migrateAgentMemoryV1(input: Agent): {
 export function parseNativeMemoryCapability(
   result: unknown
 ): AcpNativeMemoryCapability {
-  const unknown = createUnknownNativeMemoryCapability();
+  const unknown: AcpNativeMemoryCapability = {
+    ...createUnknownNativeMemoryCapability(),
+    detail: 'ACP 端点未声明 nativeMemory 扩展',
+    lastCheckedAt: Date.now(),
+  };
   if (!result || typeof result !== 'object') return unknown;
 
   const capabilities = (result as { agentCapabilities?: unknown }).agentCapabilities;
@@ -127,14 +141,12 @@ export function parseNativeMemoryCapability(
   if (!raw || typeof raw !== 'object') return unknown;
 
   const value = raw as Record<string, unknown>;
-  const supported = value.supported === true;
-  const enabled = value.enabled !== false;
   let status: AcpNativeMemoryCapability['status'] = 'unknown';
   if (value.supported === false) {
     status = 'unsupported';
-  } else if (supported && !enabled) {
+  } else if (value.supported === true && value.enabled === false) {
     status = 'disabled';
-  } else if (supported && enabled) {
+  } else if (value.supported === true && value.enabled === true) {
     status = 'enabled';
   }
 
@@ -156,7 +168,7 @@ export function parseNativeMemoryCapability(
       typeof value.detail === 'string'
         ? value.detail
         : status === 'unknown'
-          ? 'ACP 端点未声明 nativeMemory 扩展'
+          ? 'ACP 端点 nativeMemory 声明缺少有效的 supported/enabled 布尔字段'
           : null,
     lastCheckedAt: Date.now(),
   };

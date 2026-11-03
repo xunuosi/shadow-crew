@@ -594,13 +594,15 @@ export function buildThinkingProcessFromAcp(
 export async function probeRemoteAcpConnection(
   remoteUrl: string,
   authToken?: string,
-  timeoutMs = 6000
+  timeoutMs = 6000,
+  nativeMemoryPolicy?: { enabled: boolean; autoGenerate: boolean }
 ): Promise<{
   ok: boolean;
   latencyMs: number;
   error?: string;
   agentInfo?: any;
   loadSession?: boolean;
+  resumeSession?: boolean;
   nativeMemory?: ReturnType<typeof parseNativeMemoryCapability>;
   rawRpcResult?: any;
 }> {
@@ -643,6 +645,20 @@ export async function probeRemoteAcpConnection(
           params: {
             clientInfo: { name: 'shadow-crew-client', version: '1.0.0' },
             protocolVersion: '2025-01-01',
+            ...(nativeMemoryPolicy
+              ? {
+                  _meta: {
+                    shadowCrew: {
+                      nativeMemory: {
+                        enabled: Boolean(nativeMemoryPolicy.enabled),
+                        autoGenerate: Boolean(
+                          nativeMemoryPolicy.enabled && nativeMemoryPolicy.autoGenerate
+                        ),
+                      },
+                    },
+                  },
+                }
+              : {}),
           },
         };
         ws?.send(JSON.stringify(initReq));
@@ -655,12 +671,30 @@ export async function probeRemoteAcpConnection(
           const latencyMs = Date.now() - startTime;
           try {
             const data = JSON.parse(event.data);
+            if (data?.error) {
+              ws?.close();
+              resolve({
+                ok: false,
+                latencyMs,
+                error: data.error.message || JSON.stringify(data.error),
+                rawRpcResult: data,
+              });
+              return;
+            }
             const agentInfo = data?.result?.agentInfo || { name: 'Remote ACP Agent' };
             const loadSession =
               data?.result?.capabilities?.loadSession ??
               data?.result?.agentCapabilities?.loadSession ??
               data?.result?.capabilities?.sessions?.load ??
               data?.result?.agentCapabilities?.sessions?.load;
+            const resumeRaw =
+              data?.result?.agentCapabilities?.sessionCapabilities?.resume ??
+              data?.result?.sessionCapabilities?.resume ??
+              data?.result?.capabilities?.sessionCapabilities?.resume ??
+              data?.result?.capabilities?.resume ??
+              data?.result?.agentCapabilities?.resume;
+            const resumeSession =
+              resumeRaw !== undefined && resumeRaw !== null && resumeRaw !== false;
             const nativeMemory = parseNativeMemoryCapability(data?.result);
             ws?.close();
             resolve({
@@ -668,6 +702,7 @@ export async function probeRemoteAcpConnection(
               latencyMs,
               agentInfo,
               loadSession: typeof loadSession === 'boolean' ? loadSession : undefined,
+              resumeSession,
               nativeMemory,
               rawRpcResult: data,
             });
@@ -812,8 +847,8 @@ export async function sendPromptToRemoteAcpWebSocket(
                 : {}),
               shadowCrew: {
                 nativeMemory: {
-                  enabled: nativeMemoryEnabled,
-                  autoGenerate: nativeMemoryAutoGenerate,
+                  enabled: Boolean(nativeMemoryEnabled),
+                  autoGenerate: Boolean(nativeMemoryEnabled && nativeMemoryAutoGenerate),
                 },
               },
             },

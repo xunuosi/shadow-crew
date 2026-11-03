@@ -289,16 +289,20 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                           agentCapabilities: {
                             loadSession: isLoadSupported,
                             streaming: selectedAgent.capabilities?.supportsStreaming ?? true,
-                            nativeMemory: {
-                              supported:
-                                nativeMemoryStatus === 'enabled' ||
-                                nativeMemoryStatus === 'disabled',
-                              enabled: nativeMemoryStatus === 'enabled',
-                              persistent: nativeMemoryCapability.persistent,
-                              crossThread: nativeMemoryCapability.crossThread,
-                              provider: nativeMemoryCapability.provider,
-                              scope: nativeMemoryCapability.scope,
-                            },
+                            ...(nativeMemoryStatus !== 'unknown'
+                              ? {
+                                  nativeMemory: {
+                                    supported:
+                                      nativeMemoryStatus === 'enabled' ||
+                                      nativeMemoryStatus === 'disabled',
+                                    enabled: nativeMemoryStatus === 'enabled',
+                                    persistent: nativeMemoryCapability.persistent,
+                                    crossThread: nativeMemoryCapability.crossThread,
+                                    provider: nativeMemoryCapability.provider,
+                                    scope: nativeMemoryCapability.scope,
+                                  },
+                                }
+                              : {}),
                             mcpCapabilities: {
                               http: true,
                               sse: true,
@@ -878,9 +882,17 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                 <div className="rounded-lg border border-border bg-surface p-1.5">
                   <div className="text-fg-muted">持久化 / 跨线程</div>
                   <div className="mt-0.5 font-mono font-semibold text-fg">
-                    {nativeMemoryCapability.persistent === true ? 'YES' : 'UNKNOWN'}
+                    {nativeMemoryCapability.persistent === true
+                      ? 'YES'
+                      : nativeMemoryCapability.persistent === false
+                        ? 'NO'
+                        : 'UNKNOWN'}
                     {' / '}
-                    {nativeMemoryCapability.crossThread === true ? 'YES' : 'UNKNOWN'}
+                    {nativeMemoryCapability.crossThread === true
+                      ? 'YES'
+                      : nativeMemoryCapability.crossThread === false
+                        ? 'NO'
+                        : 'UNKNOWN'}
                   </div>
                 </div>
               </div>
