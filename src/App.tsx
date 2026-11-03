@@ -101,7 +101,15 @@ import {
   createAgentMemoryBank,
   createUnknownNativeMemoryCapability,
   migrateAgentMemoryV1,
+  normalizeHydratedAgent,
 } from './services/agentMemory';
+import {
+  beginRemoteProbe,
+  cancelRemoteProbe,
+  completeRemoteProbe,
+  RemoteProbeLease,
+  shouldRefreshRemoteProbe,
+} from './services/remoteAgentLifecycle';
 import { isAgentOffline, isAgentOnline } from './utils/agentRuntime';
 import {
   saveMessagesBatchToDb,
@@ -184,6 +192,25 @@ import {
   executeAbortAllOrchestration,
   executeUpdateChannelMembersOrchestration,
 } from './services/agentCollaboration';
+
+const REMOTE_ACP_PROBE_TIMEOUT_MS = 5_000;
+const REMOTE_ACP_HEALTH_INTERVAL_MS = 5_000;
+const REMOTE_ACP_HEALTH_REFRESH_MS = 15_000;
+
+function nativeMemoryCapabilityChanged(
+  current: Agent['memory']['nativeCapability'],
+  next: Agent['memory']['nativeCapability'] | null | undefined
+): boolean {
+  if (!next) return false;
+  return (
+    current.status !== next.status ||
+    current.persistent !== next.persistent ||
+    current.crossThread !== next.crossThread ||
+    current.provider !== next.provider ||
+    current.scope !== next.scope ||
+    current.detail !== next.detail
+  );
+}
 
 export default function App() {
   // Main View Navigation ('chat' | 'agents') - Default to chat for PRD Messaging Space
@@ -513,7 +540,7 @@ export default function App() {
             let memoryMigrated = false;
             const sanitizedAgents = fullData.agents.map((ag: Agent) => {
               const expectedHandle = normalizeAgentHandle(ag.name, ag.id);
-              const memoryResult = migrateAgentMemoryV1(ag);
+              const memoryResult = normalizeHydratedAgent(ag);
               memoryMigrated = memoryMigrated || memoryResult.changed;
               if (ag.handle !== expectedHandle) {
                 handleMigrated = true;
@@ -760,6 +787,165 @@ export default function App() {
   agentsRef.current = agents;
   const activeExecutionsRef = useRef(activeExecutions);
   activeExecutionsRef.current = activeExecutions;
+  const remoteProbeRuntimeRef = useRef<Map<string, RemoteProbeLease>>(new Map());
+
+  const cancelRemoteAgentProbe = useCallback(
+    (agentId: string) => {
+      cancelRemoteProbe(remoteProbeRuntimeRef.current, agentId);
+    },
+    []
+  );
+
+  const runRemoteAgentProbe = useCallback(
+    async (agent: Agent, markStarting: boolean): Promise<void> => {
+      const generation = beginRemoteProbe(
+        remoteProbeRuntimeRef.current,
+        agent.id
+      );
+
+      if (markStarting) {
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.id === agent.id
+              ? {
+                  ...a,
+                  status: 'starting',
+                  statusDetail: '连接远程 ACP 节点中...',
+                }
+              : a
+          )
+        );
+      }
+
+      let probe: Awaited<ReturnType<typeof probeRemoteAcpConnection>>;
+      try {
+        probe = await probeRemoteAcpConnection(
+          agent.remoteUrl || agent.acpCommandOrUrl,
+          agent.authToken,
+          REMOTE_ACP_PROBE_TIMEOUT_MS,
+          {
+            enabled: agent.memory.mode === 'native',
+            autoGenerate:
+              agent.memory.mode === 'native' && agent.memory.autoGenerate,
+          }
+        );
+      } catch (error) {
+        probe = {
+          ok: false,
+          latencyMs: 0,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+
+      if (
+        !completeRemoteProbe(
+          remoteProbeRuntimeRef.current,
+          agent.id,
+          generation
+        )
+      ) {
+        return;
+      }
+
+      if (!probe.ok) {
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.id === agent.id
+              ? {
+                  ...a,
+                  status: 'error',
+                  statusDetail: probe.error || '远程连接失败',
+                  memory: {
+                    ...a.memory,
+                    nativeCapability: createUnknownNativeMemoryCapability(),
+                  },
+                  capabilities: {
+                    ...(a.capabilities || {
+                      canUseInternalMemory: false,
+                      canAccessWorkspaceFiles: true,
+                      canExecuteSkills: true,
+                      canDelegateToSubAgents: true,
+                      supportsStreaming: true,
+                    }),
+                    canUseInternalMemory: false,
+                  },
+                }
+              : a
+          )
+        );
+        return;
+      }
+
+      const resolvedNativeCapability =
+        probe.nativeMemory || createUnknownNativeMemoryCapability();
+      setAgents((prev) =>
+        prev.map((a) => {
+          if (a.id !== agent.id) return a;
+          const targetCanUseMemory =
+            a.memory.mode === 'native' &&
+            resolvedNativeCapability.status === 'enabled';
+          const capabilityChanged = nativeMemoryCapabilityChanged(
+            a.memory.nativeCapability,
+            resolvedNativeCapability
+          );
+          const loadChanged =
+            probe.loadSession !== undefined &&
+            a.capabilities?.supportsLoadSession !== probe.loadSession;
+          const resumeChanged =
+            probe.resumeSession !== undefined &&
+            a.capabilities?.supportsResumeSession !== probe.resumeSession;
+          const statusChanged = a.status !== 'running';
+          const detail = markStarting
+            ? `远程连接正常 (${probe.latencyMs}ms)`
+            : a.statusDetail;
+          const latency = markStarting ? probe.latencyMs : a.remoteLatencyMs;
+          const latencyChanged =
+            markStarting && a.remoteLatencyMs !== probe.latencyMs;
+          const canUseChanged =
+            Boolean(a.capabilities?.canUseInternalMemory) !== targetCanUseMemory;
+
+          if (
+            !capabilityChanged &&
+            !loadChanged &&
+            !resumeChanged &&
+            !statusChanged &&
+            !latencyChanged &&
+            !canUseChanged
+          ) {
+            return a;
+          }
+
+          return {
+            ...a,
+            status: 'running',
+            remoteLatencyMs: latency,
+            statusDetail: detail,
+            memory: {
+              ...a.memory,
+              nativeCapability: resolvedNativeCapability,
+            },
+            capabilities: {
+              ...(a.capabilities || {
+                canUseInternalMemory: false,
+                canAccessWorkspaceFiles: true,
+                canExecuteSkills: true,
+                canDelegateToSubAgents: true,
+                supportsStreaming: true,
+              }),
+              ...(probe.loadSession !== undefined
+                ? { supportsLoadSession: probe.loadSession }
+                : {}),
+              ...(probe.resumeSession !== undefined
+                ? { supportsResumeSession: probe.resumeSession }
+                : {}),
+              canUseInternalMemory: targetCanUseMemory,
+            },
+          };
+        })
+      );
+    },
+    []
+  );
 
   const setActiveExecutions = useCallback(
     (
@@ -1124,12 +1310,7 @@ export default function App() {
               const currentCap = a.memory.nativeCapability;
               const hasMemoryChanged =
                 Boolean(nativeMemory) &&
-                (currentCap.status !== nativeMemory.status ||
-                  currentCap.persistent !== nativeMemory.persistent ||
-                  currentCap.crossThread !== nativeMemory.crossThread ||
-                  currentCap.provider !== nativeMemory.provider ||
-                  currentCap.scope !== nativeMemory.scope ||
-                  currentCap.detail !== nativeMemory.detail);
+                nativeMemoryCapabilityChanged(currentCap, nativeMemory);
               const targetCanUseMemory = Boolean(
                 a.memory.mode === 'native' &&
                   (nativeMemory ? nativeMemory.status : currentCap.status) === 'enabled'
@@ -1562,6 +1743,36 @@ export default function App() {
     }, 3000);
     return () => clearInterval(timer);
   }, [syncRunningAgentsWithBackend]);
+
+  // Remote ACP endpoints are not represented by the local process manager,
+  // so maintain an independent health lease for running WebSocket Agents.
+  useEffect(() => {
+    const refreshRemoteAgents = () => {
+      const now = Date.now();
+      agentsRef.current
+        .filter(
+          (agent) =>
+            (agent.isRemote || agent.acpTransport === 'websocket') &&
+            agent.status === 'running'
+        )
+        .forEach((agent) => {
+          if (
+            !shouldRefreshRemoteProbe(
+              remoteProbeRuntimeRef.current,
+              agent.id,
+              REMOTE_ACP_HEALTH_REFRESH_MS,
+              now
+            )
+          ) return;
+          void runRemoteAgentProbe(agent, false);
+        });
+    };
+    const timer = setInterval(
+      refreshRemoteAgents,
+      REMOTE_ACP_HEALTH_INTERVAL_MS
+    );
+    return () => clearInterval(timer);
+  }, [runRemoteAgentProbe]);
 
   // Helper callbacks to open modals for specific channel or active channel
   const handleOpenMembersModal = (channelId?: string) => {
@@ -8052,87 +8263,11 @@ export default function App() {
               currentAgent.status === 'querying_memory';
 
             if (!isCurrentlyRunning) {
-              if (currentAgent.isRemote) {
-                // 远程 ACP 节点：通过 WebSocket 探测连接并同步对端握手能力
-                setAgents((prev) =>
-                  prev.map((a) =>
-                    a.id === agentId ? { ...a, status: 'starting', statusDetail: '连接远程 ACP 节点中...' } : a
-                  )
-                );
-                probeRemoteAcpConnection(
-                  currentAgent.remoteUrl || currentAgent.acpCommandOrUrl,
-                  currentAgent.authToken,
-                  5000,
-                  {
-                    enabled: currentAgent.memory.mode === 'native',
-                    autoGenerate: currentAgent.memory.mode === 'native' && currentAgent.memory.autoGenerate,
-                  }
-                ).then((probe) => {
-                  if (probe.ok) {
-                    const resolvedNativeCap =
-                      probe.nativeMemory || createUnknownNativeMemoryCapability();
-                    setAgents((prev) =>
-                      prev.map((a) =>
-                        a.id === agentId
-                          ? {
-                              ...a,
-                              status: 'running',
-                              remoteLatencyMs: probe.latencyMs,
-                              statusDetail: `远程连接正常 (${probe.latencyMs}ms)`,
-                              memory: {
-                                ...a.memory,
-                                nativeCapability: resolvedNativeCap,
-                              },
-                              capabilities: {
-                                ...(a.capabilities || {
-                                  canUseInternalMemory: false,
-                                  canAccessWorkspaceFiles: true,
-                                  canExecuteSkills: true,
-                                  canDelegateToSubAgents: true,
-                                  supportsStreaming: true,
-                                }),
-                                ...(probe.loadSession !== undefined
-                                  ? { supportsLoadSession: probe.loadSession }
-                                  : {}),
-                                ...(probe.resumeSession !== undefined
-                                  ? { supportsResumeSession: probe.resumeSession }
-                                  : {}),
-                                canUseInternalMemory:
-                                  a.memory.mode === 'native' &&
-                                  resolvedNativeCap.status === 'enabled',
-                              },
-                            }
-                          : a
-                      )
-                    );
-                  } else {
-                    setAgents((prev) =>
-                      prev.map((a) =>
-                        a.id === agentId
-                          ? {
-                              ...a,
-                              status: 'error',
-                              statusDetail: probe.error || '远程连接失败',
-                              memory: {
-                                ...a.memory,
-                                nativeCapability: createUnknownNativeMemoryCapability(),
-                              },
-                              capabilities: {
-                                ...(a.capabilities || {
-                                  canUseInternalMemory: false,
-                                  canAccessWorkspaceFiles: true,
-                                  canExecuteSkills: true,
-                                  canDelegateToSubAgents: true,
-                                  supportsStreaming: true,
-                                }),
-                                canUseInternalMemory: false,
-                              },
-                            }
-                          : a
-                      )
-                    );
-                  }
-                });
+              if (
+                currentAgent.isRemote ||
+                currentAgent.acpTransport === 'websocket'
+              ) {
+                void runRemoteAgentProbe(currentAgent, true);
                 return;
               }
 
@@ -8140,6 +8275,12 @@ export default function App() {
               spawnLocalAcpAgent(currentAgent);
             } else {
               // 终止 Agent 进程并重置握手能力探测态
+              if (
+                currentAgent.isRemote ||
+                currentAgent.acpTransport === 'websocket'
+              ) {
+                cancelRemoteAgentProbe(agentId);
+              }
               setAgents((prev) =>
                 prev.map((a) =>
                   a.id === agentId
@@ -8192,6 +8333,7 @@ export default function App() {
             setIsAcpInspectorOpen(true);
           }}
           onDeleteAgent={(agentId) => {
+            cancelRemoteAgentProbe(agentId);
             clearSessionWarmScope({ agentId });
             setAgents((prev) => prev.filter((a) => a.id !== agentId));
             void revokeAcpPermissionGrantsForAgent(agentId).catch((err) => {
@@ -8536,6 +8678,9 @@ export default function App() {
         duplicateAgent={duplicatingAgent}
         defaultWorkspaceRoot="~/.shadow-crew"
         onUpdateAgent={(agentId, updatedData) => {
+          // Invalidate any in-flight remote probe so an edit cannot be
+          // overwritten by a probe that started with the previous config.
+          cancelRemoteAgentProbe(agentId);
           // 清空已交付公约、花名册缓存与水位线，确保后续全会话即时重装最新的人设与团队花名册
           resetAllSessionWarmState();
           void safelyClearAcpSessions(agentId, undefined, '更新 Agent 配置');

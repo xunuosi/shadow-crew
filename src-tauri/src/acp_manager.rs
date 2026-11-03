@@ -18,6 +18,12 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+static NEXT_INIT_REQUEST_ID: AtomicU64 = AtomicU64::new(1001);
+
+fn next_init_request_id() -> u64 {
+    NEXT_INIT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 /// 格式化并写入本地持久化日志文件 (~/.shadow-crew/logs/acp.log)
 pub fn log_acp_event(agent_id: &str, direction: &str, line: &str) {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
@@ -2135,7 +2141,7 @@ impl AcpProcessManager {
         );
 
         // 1. 立即发起 ACP initialize 握手 (超时 10 秒，兼容适配器冷启动探测)
-        let init_id = 1001u64;
+        let init_id = next_init_request_id();
         let (init_tx, init_rx) = oneshot::channel();
         {
             let mut map = pending_requests.lock().await;
@@ -2871,7 +2877,7 @@ impl RunningAgent {
 
         // 1. 确保已完成 ACP initialize 握手
         if !self.initialized.load(Ordering::SeqCst) {
-            let init_id = 1001u64;
+            let init_id = next_init_request_id();
             let (init_tx, init_rx) = oneshot::channel();
             {
                 let mut map = self.pending_requests.lock().await;
@@ -2911,6 +2917,7 @@ impl RunningAgent {
                                 "status_detail": detail,
                             }),
                         );
+                        anyhow::bail!("ACP initialize rejected: {}", err_msg);
                     } else {
                         tracing::info!("[Agent {}] initialize succeeded: {:?}", agent_id, resp);
                         self.initialized.store(true, Ordering::SeqCst);
@@ -2952,13 +2959,21 @@ impl RunningAgent {
                         }
                     }
                 }
-                _ => {
+                Ok(Err(_)) => {
                     self.pending_requests.lock().await.remove(&init_id);
                     tracing::warn!(
-                        "[Agent {}] initialize timed out or skipped, marking initialized",
+                        "[Agent {}] initialize response channel closed; keeping initialization retryable",
                         agent_id
                     );
-                    self.initialized.store(true, Ordering::SeqCst);
+                    anyhow::bail!("ACP initialize response channel closed for agent {}", agent_id);
+                }
+                Err(_) => {
+                    self.pending_requests.lock().await.remove(&init_id);
+                    tracing::warn!(
+                        "[Agent {}] lazy initialize timed out after 10s; keeping initialization retryable",
+                        agent_id
+                    );
+                    anyhow::bail!("ACP initialize timed out after 10s for agent {}", agent_id);
                 }
             }
         }
@@ -4695,6 +4710,16 @@ mod runtime_status_tests {
             defaults["shadowCrew"]["nativeMemory"]["autoGenerate"],
             serde_json::Value::Bool(false)
         );
+    }
+
+    #[test]
+    fn test_initialize_request_ids_are_unique() {
+        use super::next_init_request_id;
+
+        let first = next_init_request_id();
+        let second = next_init_request_id();
+        assert_ne!(first, second);
+        assert!(second > first);
     }
 
     #[test]

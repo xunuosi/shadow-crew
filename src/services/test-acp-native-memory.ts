@@ -22,6 +22,7 @@ import {
   AGENT_MEMORY_SCHEMA_VERSION,
   createAgentMemoryBank,
   migrateAgentMemoryV1,
+  normalizeHydratedAgent,
   parseNativeMemoryCapability,
 } from './agentMemory';
 import {
@@ -29,6 +30,12 @@ import {
   probeRemoteAcpConnection,
   sendPromptToRemoteAcpWebSocket,
 } from './acpClient';
+import {
+  beginRemoteProbe,
+  cancelRemoteProbe,
+  completeRemoteProbe,
+  shouldRefreshRemoteProbe,
+} from './remoteAgentLifecycle';
 
 interface AdapterHarness {
   child: ChildProcessWithoutNullStreams;
@@ -269,11 +276,15 @@ async function verifyAdapterDisabledFlow(tempDir: string): Promise<number> {
     assert.equal(typeof actionsFile, 'string');
     const execAction = readActions(actionsFile!).find((entry) => entry.args[0] === 'exec');
     assert.ok(execAction);
-    assert.ok(!execAction!.args.includes('memories'));
-    assert.ok(!execAction!.args.includes('memories.dedicated_tools=true'));
+    assert.ok(execAction!.args.includes('--disable'));
+    assert.ok(execAction!.args.includes('memories'));
+    assert.ok(execAction!.args.includes('features.memories=false'));
+    assert.ok(execAction!.args.includes('memories.use_memories=false'));
+    assert.ok(execAction!.args.includes('memories.generate_memories=false'));
+    assert.ok(execAction!.args.includes('memories.dedicated_tools=false'));
     assert.equal(execAction!.nativeMemory, '0');
     assert.equal(execAction!.nativeMemoryAutoGenerate, '0');
-    return 9;
+    return 12;
   } finally {
     await harness.close();
   }
@@ -370,14 +381,18 @@ async function verifyAdapterMetaPolicyOverrideFlow(tempDir: string): Promise<num
 
     const execActions = readActions(actionsFile!).filter((entry) => entry.args[0] === 'exec');
     assert.equal(execActions.length, 2);
-    assert.ok(!execActions[0].args.includes('memories'));
+    assert.ok(execActions[0].args.includes('--disable'));
+    assert.ok(execActions[0].args.includes('features.memories=false'));
+    assert.ok(execActions[0].args.includes('memories.use_memories=false'));
+    assert.ok(execActions[0].args.includes('memories.generate_memories=false'));
+    assert.ok(execActions[0].args.includes('memories.dedicated_tools=false'));
     assert.equal(execActions[0].nativeMemory, '0');
     assert.equal(execActions[0].nativeMemoryAutoGenerate, '0');
     assert.ok(execActions[1].args.includes('memories'));
     assert.ok(execActions[1].args.includes('memories.generate_memories=true'));
     assert.equal(execActions[1].nativeMemory, '1');
     assert.equal(execActions[1].nativeMemoryAutoGenerate, '1');
-    return 12;
+    return 16;
   } finally {
     await harness.close();
   }
@@ -531,22 +546,50 @@ function verifyTypeContracts(): number {
   assert.equal(reloadedOffline.agent.memory.nativeCapability.status, 'unknown');
   assert.equal(reloadedOffline.agent.capabilities?.canUseInternalMemory, false);
 
-  // Active online v1 agent preserves runtime-probed nativeCapability
+  // Reloaded Agents always start without trusting a capability probed by a
+  // previous process, even when the persisted runtime status says running.
   const activeOnlineAgent: Agent = {
     ...staleOfflineAgent,
     status: 'running',
+    statusDetail: 'stale process status',
   };
-  const reloadedOnline = migrateAgentMemoryV1(activeOnlineAgent);
-  assert.equal(reloadedOnline.changed, false);
-  assert.equal(reloadedOnline.agent.memory.nativeCapability.status, 'enabled');
-  assert.equal(reloadedOnline.agent.capabilities?.canUseInternalMemory, true);
+  const reloadedOnline = normalizeHydratedAgent(activeOnlineAgent);
+  assert.equal(reloadedOnline.changed, true);
+  assert.equal(reloadedOnline.agent.status, 'idle');
+  assert.equal(reloadedOnline.agent.statusDetail, undefined);
+  assert.equal(reloadedOnline.agent.memory.nativeCapability.status, 'unknown');
+  assert.equal(reloadedOnline.agent.capabilities?.canUseInternalMemory, false);
 
   // INITIAL_AGENTS offline preset must not fake enabled handshake state
   assert.equal(INITIAL_AGENTS[0].status, 'idle');
   assert.equal(INITIAL_AGENTS[0].memory.nativeCapability.status, 'unknown');
   assert.equal(INITIAL_AGENTS[0].memory.autoGenerate, false);
   assert.equal(INITIAL_AGENTS[0].capabilities?.canUseInternalMemory, false);
-  assertions += 10;
+  assertions += 12;
+
+  // Remote probe leases prevent a late start probe from resurrecting an Agent
+  // after the user has stopped it.
+  const probeStore = new Map<string, {
+    generation: number;
+    inFlight: boolean;
+    lastAttemptAt: number;
+  }>();
+  const staleGeneration = beginRemoteProbe(probeStore, 'remote-agent', 1000);
+  assert.equal(probeStore.get('remote-agent')?.inFlight, true);
+  cancelRemoteProbe(probeStore, 'remote-agent');
+  assert.equal(completeRemoteProbe(probeStore, 'remote-agent', staleGeneration), false);
+  const freshGeneration = beginRemoteProbe(probeStore, 'remote-agent', 2000);
+  assert.equal(completeRemoteProbe(probeStore, 'remote-agent', freshGeneration), true);
+  assert.equal(probeStore.get('remote-agent')?.inFlight, false);
+  assert.equal(
+    shouldRefreshRemoteProbe(probeStore, 'remote-agent', 15_000, 5_000),
+    false
+  );
+  assert.equal(
+    shouldRefreshRemoteProbe(probeStore, 'remote-agent', 15_000, 17_001),
+    true
+  );
+  assertions += 6;
 
   return assertions;
 }
@@ -722,7 +765,9 @@ async function verifyRemoteWebSocketAndUiContracts(): Promise<number> {
 
   const appSrc = readFileSync(join(process.cwd(), 'src/App.tsx'), 'utf8');
   assert.ok(appSrc.includes("if (a.isRemote || a.acpTransport === 'websocket')"));
-  assertions += 6;
+  assert.ok(appSrc.includes('cancelRemoteAgentProbe(agentId)'));
+  assert.ok(appSrc.includes('REMOTE_ACP_HEALTH_REFRESH_MS'));
+  assertions += 8;
 
   return assertions;
 }

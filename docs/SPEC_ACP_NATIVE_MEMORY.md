@@ -38,7 +38,7 @@ interface AgentMemoryBank {
 ```
 
 - `native`：允许适配器启用端点原生长期记忆。
-- `disabled`：明确禁用；支持该策略的适配器不得启用原生 Memory。
+- `disabled`：明确禁用；支持该策略的适配器不仅不得启用原生 Memory，还必须显式覆盖用户级全局配置。
 - `autoGenerate`：是否允许端点从历史对话自动提炼记忆；默认关闭，显式 memory 工具写入不受影响。
 - 旧 Agent 数据通过 `migrateAgentMemoryV1()` 集中迁移，不在 UI 或业务逻辑中散落字段回退。
 
@@ -108,6 +108,7 @@ SHADOW_CREW_ACP_NATIVE_MEMORY_AUTO_GENERATE=1|0
 | 召回策略 | 传入 `-c memories.use_memories=true` |
 | 自动提炼 | 传入 `-c memories.generate_memories=true\|false`，由 Agent 配置决定 |
 | 专用工具 | 传入 `-c memories.dedicated_tools=true` |
+| 显式禁用 | 传入 `--disable memories`、`features.memories=false` 及 `use/generate/dedicated=false` |
 | 工具召回 | 通过 Codex 原生 memory/read/search/ad_hoc_note 工具完成 |
 | 会话持久化 | 沿用 `codex exec resume <thread_id>`；不影响跨线程 Memory |
 | 测试隔离 | 支持 `SHADOW_CREW_HOME` 覆盖 ACP Session 缓存目录 |
@@ -150,3 +151,7 @@ AgentMemoryBank.mode
 | NM-07 | 真实 Codex 新 ACP Session | 通过原生 memory 工具召回另一线程写入的 canary |
 | NM-08 | 清理 ACP Session | 仅清理会话映射，不删除端点 memories |
 | NM-09 | 重启 Shadow Crew | 能力重新握手；端点长期记忆不依赖宿主持久化 |
+| NM-10 | 初始化首次与 lazy retry 均超时 | 始终保持 `initialized=false`，后续 Prompt 可再次重试 |
+| NM-11 | 用户全局配置启用 memories，Agent 设置为 disabled | Codex 子进程收到显式 disable/false 参数 |
+| NM-12 | 远程 Agent 启动/停止/编辑/删除发生 probe 竞态 | generation 失效旧结果；仅最新操作可更新运行态 |
+| NM-13 | 远程 Agent 断线 | 独立健康租约在超时后回落 `error + unknown` |

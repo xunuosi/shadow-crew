@@ -57,20 +57,10 @@ export function migrateAgentMemoryV1(input: Agent): {
     /^~\/\.shadow-crew\/.+_memory\.sqlite$/.test(existingPath);
   const mode = existing?.mode === 'disabled' ? 'disabled' : 'native';
   const autoGenerate = mode === 'native' && existing?.autoGenerate === true;
-  const isOnline =
-    input.status === 'running' ||
-    input.status === 'starting' ||
-    input.status === 'thinking' ||
-    input.status === 'using_skill' ||
-    input.status === 'accessing_workspace' ||
-    input.status === 'querying_memory';
-  const nativeCapability =
-    isOnline &&
-    existing?.schemaVersion === AGENT_MEMORY_SCHEMA_VERSION &&
-    existing?.nativeCapability &&
-    existing.nativeCapability.status
-      ? existing.nativeCapability
-      : createUnknownNativeMemoryCapability();
+  // A hydrated Agent has no verified runtime process yet. Persisted handshake
+  // capabilities are diagnostics from a previous process and must not be
+  // treated as current truth after reload.
+  const nativeCapability = createUnknownNativeMemoryCapability();
   const existingCapabilities = input.capabilities || {
     canUseInternalMemory: false,
     canAccessWorkspaceFiles: true,
@@ -120,6 +110,27 @@ export function migrateAgentMemoryV1(input: Agent): {
       },
     },
     changed,
+  };
+}
+
+/**
+ * Normalizes a persisted Agent before it enters the live workspace. Process
+ * status and handshake capabilities are runtime facts, never durable config.
+ */
+export function normalizeHydratedAgent(input: Agent): {
+  agent: Agent;
+  changed: boolean;
+} {
+  const migrated = migrateAgentMemoryV1(input);
+  const runtimeStateChanged =
+    input.status !== 'idle' || input.statusDetail !== undefined;
+  return {
+    agent: {
+      ...migrated.agent,
+      status: 'idle',
+      statusDetail: undefined,
+    },
+    changed: migrated.changed || runtimeStateChanged,
   };
 }
 
