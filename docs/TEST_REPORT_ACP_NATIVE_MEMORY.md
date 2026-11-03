@@ -33,7 +33,7 @@
 | --- | --- | --- | --- | --- |
 | **NM-01** | 未声明 `nativeMemory` 或 `supported: true` 但缺失 `enabled` 必须显示 `unknown`，严禁伪装为 `enabled` | 单元层 (TS + Rust) | `test-acp-native-memory.ts` (`verifyTypeContracts`) + `acp_manager.rs` (`test_check_native_memory_capability_contract`) | ✅ 通过 |
 | **NM-02** | Codex 开启原生记忆时，`initialize` 返回 `enabled`，`exec` 注入 `--enable memories` 与 `dedicated_tools=true` | 适配器层 + 真实运行期层 | `verifyAdapterEnabledFlow` (fake CLI) + `verifyRealCodexFlow` (真实 Codex CLI) | ✅ 通过 |
-| **NM-03** | 关闭原生记忆时，`initialize` 返回 `disabled`，`exec` 不包含任何 `memories` 参数 | 适配器层 + 协议层 | `verifyAdapterDisabledFlow` + `verifyAdapterMetaPolicyOverrideFlow` | ✅ 通过 |
+| **NM-03** | 关闭原生记忆时，`initialize` 返回 `disabled`，`exec` 显式注入 `--disable memories` 与全部 memories=false 覆盖 | 适配器层 + 真实 CLI 参数层 | `verifyAdapterDisabledFlow` + `verifyAdapterMetaPolicyOverrideFlow` + `codex exec --disable memories --help` | ✅ 通过 |
 | **NM-04** | 显式长期记忆在第一个 ACP Session 写入后，第二个全新 ACP Session 不带历史上下文仍可召回 | 真实运行期层 (E2E) | `verifyRealCodexFlow`（隔离 `CODEX_HOME`，跨进程跨 Session 召回 `ORBIT-7742-LYNX`） | ✅ 通过 |
 | **NM-05** | 退出原适配器进程并重启新进程后，隔离 `CODEX_HOME` 下的 `memories_v2` 笔记仍可被召回 | 真实运行期层 (E2E) | `verifyRealCodexFlow`（`sourceAdapter.close()` 后拉起全新 `recallAdapter` 进程验证） | ✅ 通过 |
 | **NM-06** | 清理 Shadow Crew ACP Session 仅清理会话映射，不删除端点原生长期记忆 | 宿主集成层 + E2E | `acp_manager.rs` (`test_clear_agent_sessions_with_generation_deletes_db_even_if_memory_empty`) + `NM-SESSION-CLEAR-01` | ✅ 通过 |
@@ -41,6 +41,10 @@
 | **NM-08** | 亮色/暗色主题 × 弹窗内部主题切换 × `enabled/disabled/unknown/unsupported` 状态组合全部可读 | UI 契约与运行期层 | `verifyRemoteWebSocketAndUiContracts` + 双主题渲染检查 | ✅ 通过 |
 | **NM-09** | 离线/重启加载的 Agent 不得保留上次进程的 `enabled` 探测结果；`INITIAL_AGENTS` 离线预设必须为 `unknown` | 单元层 + 宿主状态层 | `verifyTypeContracts` (`staleOfflineAgent` / `activeOnlineAgent` / `INITIAL_AGENTS[0]`) | ✅ 通过 |
 | **NM-10** | 同一 `CODEX_HOME` 共享边界清晰披露；测试使用独立临时 `CODEX_HOME` 物理隔离 | 真实运行期层 + UI 文案 | `verifyRealCodexFlow` + `ConnectAgentModal.tsx` / `AcpInspector.tsx` | ✅ 通过 |
+| **NM-11** | 首次 spawn 与 lazy initialize 均失败后保持可重试 | Rust 单元层 + 代码路径审计 | 全局递增 init ID 测试 + `initialized=false` 失败分支 | ✅ 通过 |
+| **NM-12** | 用户全局配置开启 memories 时，Agent disabled 仍必须强制关闭 | Fake CLI + 真实 CLI 参数解析 | `verifyAdapterDisabledFlow` / `verifyAdapterMetaPolicyOverrideFlow` | ✅ 通过 |
+| **NM-13** | 远程 Agent 启动/停止/编辑/删除的迟到 probe 不得复活 Agent | 纯函数生命周期反例 | `remoteAgentLifecycle` generation lease 测试 | ✅ 通过 |
+| **NM-14** | 远程 Agent 断线健康租约超时后回落 error + unknown | 纯函数生命周期 + 代码路径审计 | 15 秒 refresh 判定 + 健康复探失败分支 | ✅ 通过 |
 
 ---
 
