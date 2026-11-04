@@ -125,11 +125,12 @@ function codexUnavailableReason() {
 }
 
 let cachedCodexVersion = null;
+const CODEX_VERSION_PROBE_TIMEOUT_MS = 1500;
 function codexVersion() {
   if (cachedCodexVersion) return cachedCodexVersion;
   try {
     const out = execFileSync(CODEX_BIN, ['--version'], {
-      timeout: 5000,
+      timeout: CODEX_VERSION_PROBE_TIMEOUT_MS,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       env: codexChildEnv(),
@@ -142,7 +143,16 @@ function codexVersion() {
   return cachedCodexVersion;
 }
 
+// Worst-case initialize probe budget stays below the 10s Rust handshake limit:
+// version 1.5s + two native-memory attempts x 2.5s = 6.5s.
+const NATIVE_MEMORY_PROBE_ATTEMPTS = 2;
+const NATIVE_MEMORY_PROBE_TIMEOUT_MS = 2500;
 let cachedNativeMemoryFeatureSupported = null;
+
+/**
+ * @returns {true | false | null} true/false are definitive CLI feature states;
+ * null means the probe remained inconclusive after bounded retries.
+ */
 function codexNativeMemoryFeatureSupported() {
   if (cachedNativeMemoryFeatureSupported !== null) {
     return cachedNativeMemoryFeatureSupported;
@@ -151,22 +161,29 @@ function codexNativeMemoryFeatureSupported() {
     cachedNativeMemoryFeatureSupported = false;
     return false;
   }
-  try {
-    const out = execFileSync(CODEX_BIN, ['--enable', 'memories', 'features', 'list'], {
-      timeout: 5000,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      env: codexChildEnv(),
-    });
-    const memoryLine = out
-      .split('\n')
-      .map((line) => line.trim())
-      .find((line) => line.startsWith('memories '));
-    cachedNativeMemoryFeatureSupported = Boolean(memoryLine && /\btrue$/.test(memoryLine));
-  } catch {
-    return false;
+
+  for (let attempt = 0; attempt < NATIVE_MEMORY_PROBE_ATTEMPTS; attempt += 1) {
+    try {
+      const out = execFileSync(CODEX_BIN, ['--enable', 'memories', 'features', 'list'], {
+        timeout: NATIVE_MEMORY_PROBE_TIMEOUT_MS,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: codexChildEnv(),
+      });
+      const memoryLine = out
+        .split('\n')
+        .map((line) => line.trim())
+        .find((line) => line.startsWith('memories '));
+      cachedNativeMemoryFeatureSupported = Boolean(memoryLine && /\btrue$/.test(memoryLine));
+      return cachedNativeMemoryFeatureSupported;
+    } catch {
+      // A crashed, timed-out, or otherwise unreadable probe is not proof that
+      // the endpoint is unsupported. Retry with a hard bound, then keep the
+      // capability unknown so a later initialize/prompt can probe again.
+    }
   }
-  return cachedNativeMemoryFeatureSupported;
+
+  return null;
 }
 
 function resolveNativeMemoryPolicy(params) {
@@ -186,6 +203,13 @@ function resolveNativeMemoryPolicy(params) {
 function codexNativeMemoryCapability(params) {
   const policy = resolveNativeMemoryPolicy(params);
   const supported = codexNativeMemoryFeatureSupported();
+  if (supported === null) {
+    return {
+      scope: 'runtime',
+      provider: 'codex-memories',
+      detail: '暂时无法确认 Codex memories 功能状态；后续请求将重试探测',
+    };
+  }
   const enabled = supported && policy.enabled;
   let detail = null;
   if (!supported) {
@@ -504,7 +528,7 @@ rl.on('line', async (line) => {
     const nativeMemoryPolicy = resolveNativeMemoryPolicy(params);
     const nativeMemoryFeatureSupported = codexNativeMemoryFeatureSupported();
     const nativeMemoryActive =
-      nativeMemoryPolicy.enabled && nativeMemoryFeatureSupported;
+      nativeMemoryPolicy.enabled && nativeMemoryFeatureSupported === true;
     const nativeMemoryDirective = nativeMemoryActive
       ? `[Codex native memory mode]\n当用户明确要求长期记住，或信息属于稳定偏好、项目约定、可复用事故经验时，使用当前可用的原生 memory/ad_hoc_note 工具持久化。不要保存密钥、临时状态或普通讨论流水。`
       : '';
@@ -536,9 +560,14 @@ rl.on('line', async (line) => {
         '-c', `memories.generate_memories=${nativeMemoryPolicy.autoGenerate ? 'true' : 'false'}`,
         '-c', 'memories.dedicated_tools=true'
       );
-    } else if (!nativeMemoryPolicy.enabled && nativeMemoryFeatureSupported) {
+    } else if (
+      !nativeMemoryPolicy.enabled &&
+      nativeMemoryFeatureSupported !== false
+    ) {
       // Explicitly override user-level config.toml. Merely omitting
       // --enable would not guarantee that endpoint-native memory is disabled.
+      // If the transient feature probe is inconclusive, fail closed by passing
+      // the disable overrides; a definitive unsupported CLI keeps them omitted.
       args.push(
         '--disable', 'memories',
         '-c', 'features.memories=false',

@@ -103,7 +103,7 @@ SHADOW_CREW_ACP_NATIVE_MEMORY_AUTO_GENERATE=1|0
 
 | 环节 | 行为 |
 | --- | --- |
-| 能力探测 | 执行 `codex --enable memories features list` 并读取 `memories` 行 |
+| 能力探测 | 有界重试执行 `codex --enable memories features list`；成功输出判定 `supported`，连续探测异常返回 `unknown`，不得伪装为 `unsupported` |
 | 策略开启 | 传入 `--enable memories` |
 | 召回策略 | 传入 `-c memories.use_memories=true` |
 | 自动提炼 | 传入 `-c memories.generate_memories=true\|false`，由 Agent 配置决定 |
@@ -144,7 +144,7 @@ AgentMemoryBank.mode
 | --- | --- | --- |
 | NM-01 | 旧 Agent JSON 加载 | 一次性迁移为 `schemaVersion=1`，策略为 `native`，能力为 `unknown` |
 | NM-02 | native 模式启动支持 memories 的 Codex | 握手声明 `enabled`，CLI 参数包含三项 memories 配置 |
-| NM-03 | disabled 模式启动 | 握手声明 `disabled`，Prompt 子进程不包含 memories 参数 |
+| NM-03 | disabled 模式启动 | 能力可判定时握手声明 `disabled`，Prompt 子进程收到 `--disable memories` 与 `use/generate/dedicated=false` 显式覆盖 |
 | NM-04 | 用户伪造 `SHADOW_CREW_ACP_NATIVE_MEMORY` ENV | 宿主策略覆盖用户值，结果与 Agent 开关一致 |
 | NM-05 | 端点缺少扩展 | Rust/前端均显示 `unknown`，不宣称支持 |
 | NM-06 | 同一 Codex 会话第二轮 | 使用 `resume <thread_id>`，Session 上下文连续 |
@@ -155,3 +155,5 @@ AgentMemoryBank.mode
 | NM-11 | 用户全局配置启用 memories，Agent 设置为 disabled | Codex 子进程收到显式 disable/false 参数 |
 | NM-12 | 远程 Agent 启动/停止/编辑/删除发生 probe 竞态 | generation 失效旧结果；仅最新操作可更新运行态 |
 | NM-13 | 远程 Agent 断线 | 独立健康租约在超时后回落 `error + unknown` |
+| NM-14 | Codex 特性探测临时失败 | 单次 `initialize` 内有界重试；持续失败上报 `unknown`，后续请求可再次探测且不缓存失败结论 |
+| NM-15 | SSR/内嵌首帧主题 | 亮色与暗色均可通过显式初始主题确定性渲染，不依赖浏览器 `document` |

@@ -67,10 +67,19 @@ interface FakeCodexAction {
   effectiveDedicatedTools: boolean;
 }
 
-function createFakeCodex(tempDir: string): { binary: string; actionsFile: string } {
+interface StartAdapterOptions {
+  featureFailures?: number;
+}
+
+const EXPECTED_NATIVE_MEMORY_PROBE_ATTEMPTS = 2;
+
+function createFakeCodex(
+  tempDir: string
+): { binary: string; actionsFile: string; featureCounterFile: string } {
   mkdirSync(tempDir, { recursive: true });
   const binary = join(tempDir, 'fake-codex.cjs');
   const actionsFile = join(tempDir, 'fake-codex-actions.jsonl');
+  const featureCounterFile = join(tempDir, 'fake-codex-feature-counter.txt');
   writeFileSync(
     binary,
     `#!/usr/bin/env node
@@ -123,6 +132,20 @@ if (args.includes('--version')) {
   process.exit(0);
 }
 if (args.includes('features') && args.includes('list')) {
+  const counterPath = process.env.FAKE_CODEX_FEATURE_COUNTER;
+  let featureRequestCount = 0;
+  if (counterPath) {
+    featureRequestCount = fs.existsSync(counterPath)
+      ? Number(fs.readFileSync(counterPath, 'utf8')) || 0
+      : 0;
+    featureRequestCount += 1;
+    fs.writeFileSync(counterPath, String(featureRequestCount));
+  }
+  const featureFailures = Number(process.env.FAKE_CODEX_FEATURE_FAILURES || 0);
+  if (featureRequestCount <= featureFailures) {
+    console.error('transient feature probe failure ' + featureRequestCount);
+    process.exit(75);
+  }
   console.log(\`memories stable \${effectiveMemoriesEnabled ? 'true' : 'false'}\`);
   process.exit(0);
 }
@@ -144,15 +167,20 @@ process.exit(2);
     'utf8'
   );
   chmodSync(binary, 0o755);
-  return { binary, actionsFile };
+  return { binary, actionsFile, featureCounterFile };
 }
 
 async function startAdapter(
   tempDir: string,
   nativeMemoryEnabled: boolean,
   autoGenerate = false,
-  realHome?: string
-): Promise<{ harness: AdapterHarness; actionsFile?: string }> {
+  realHome?: string,
+  options: StartAdapterOptions = {}
+): Promise<{
+  harness: AdapterHarness;
+  actionsFile?: string;
+  featureCounterFile?: string;
+}> {
   const fake = realHome ? null : createFakeCodex(tempDir);
   const home =
     realHome ||
@@ -201,7 +229,13 @@ async function startAdapter(
       ...(fake ? { CODEX_BINARY: fake.binary } : {}),
       SHADOW_CREW_ACP_NATIVE_MEMORY: nativeMemoryEnabled ? '1' : '0',
       SHADOW_CREW_ACP_NATIVE_MEMORY_AUTO_GENERATE: autoGenerate ? '1' : '0',
-      ...(fake ? { FAKE_CODEX_ACTIONS: fake.actionsFile } : {}),
+      ...(fake
+        ? {
+            FAKE_CODEX_ACTIONS: fake.actionsFile,
+            FAKE_CODEX_FEATURE_COUNTER: fake.featureCounterFile,
+            FAKE_CODEX_FEATURE_FAILURES: String(options.featureFailures || 0),
+          }
+        : {}),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -256,7 +290,11 @@ async function startAdapter(
     },
   };
 
-  return { harness, actionsFile: fake?.actionsFile };
+  return {
+    harness,
+    actionsFile: fake?.actionsFile,
+    featureCounterFile: fake?.featureCounterFile,
+  };
 }
 
 function readActions(actionsFile: string): FakeCodexAction[] {
@@ -265,6 +303,45 @@ function readActions(actionsFile: string): FakeCodexAction[] {
     .split('\n')
     .filter(Boolean)
     .map((line) => JSON.parse(line));
+}
+
+export function upsertTomlSectionValue(
+  content: string,
+  section: string,
+  key: string,
+  value: string
+): string {
+  const lines = content.split(/\r?\n/);
+  const header = `[${section}]`;
+  const sectionStart = lines.findIndex((line) => line.trim() === header);
+
+  if (sectionStart === -1) {
+    const prefix = content.trimEnd();
+    return `${prefix}${prefix ? '\n\n' : ''}${header}\n${key} = ${value}\n`;
+  }
+
+  let sectionEnd = lines.length;
+  for (let index = sectionStart + 1; index < lines.length; index += 1) {
+    if (/^\s*\[/.test(lines[index])) {
+      sectionEnd = index;
+      break;
+    }
+  }
+
+  const keyPattern = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=`);
+  for (let index = sectionStart + 1; index < sectionEnd; index += 1) {
+    if (keyPattern.test(lines[index])) {
+      lines[index] = `${key} = ${value}`;
+      return lines.join('\n');
+    }
+  }
+
+  let insertAt = sectionEnd;
+  while (insertAt > sectionStart + 1 && lines[insertAt - 1].trim() === '') {
+    insertAt -= 1;
+  }
+  lines.splice(insertAt, 0, `${key} = ${value}`);
+  return lines.join('\n');
 }
 
 async function verifyAdapterEnabledFlow(tempDir: string): Promise<number> {
@@ -492,6 +569,87 @@ async function verifyAdapterMetaPolicyOverrideFlow(tempDir: string): Promise<num
   } finally {
     await harness.close();
   }
+}
+
+async function verifyAdapterFeatureProbeRetryFlow(tempDir: string): Promise<number> {
+  let assertions = 0;
+  const transient = await startAdapter(
+    join(tempDir, 'feature-retry'),
+    true,
+    false,
+    undefined,
+    { featureFailures: 1 }
+  );
+  try {
+    const init = await transient.harness.request('initialize', {}, 1);
+    const capability = init.result?.agentCapabilities?.nativeMemory;
+    assert.equal(capability?.supported, true);
+    assert.equal(capability?.enabled, true);
+    assert.equal(
+      readFileSync(transient.featureCounterFile!, 'utf8').trim(),
+      '2',
+      'one transient probe failure must be retried once and then cached'
+    );
+    await transient.harness.request('initialize', {}, 2);
+    assert.equal(
+      readFileSync(transient.featureCounterFile!, 'utf8').trim(),
+      '2',
+      'definitive success must remain process-cached'
+    );
+    assertions += 4;
+  } finally {
+    await transient.harness.close();
+  }
+
+  const exhausted = await startAdapter(
+    join(tempDir, 'feature-unknown'),
+    false,
+    false,
+    undefined,
+    { featureFailures: 99 }
+  );
+  try {
+    const init = await exhausted.harness.request('initialize', {}, 1);
+    const capability = init.result?.agentCapabilities?.nativeMemory;
+    assert.equal(Object.hasOwn(capability || {}, 'supported'), false);
+    assert.equal(Object.hasOwn(capability || {}, 'enabled'), false);
+    assert.match(capability?.detail || '', /无法确认/);
+    assert.equal(
+      readFileSync(exhausted.featureCounterFile!, 'utf8').trim(),
+      String(EXPECTED_NATIVE_MEMORY_PROBE_ATTEMPTS)
+    );
+
+    const session = await exhausted.harness.request(
+      'session/new',
+      { cwd: tempDir },
+      2
+    );
+    await exhausted.harness.request(
+      'session/prompt',
+      {
+        sessionId: session.result?.sessionId,
+        cwd: tempDir,
+        prompt: [{ type: 'text', text: 'fail-closed disabled probe' }],
+      },
+      3
+    );
+    assert.equal(
+      readFileSync(exhausted.featureCounterFile!, 'utf8').trim(),
+      String(EXPECTED_NATIVE_MEMORY_PROBE_ATTEMPTS * 2),
+      'inconclusive probe results must not be cached across requests'
+    );
+    assert.equal(typeof exhausted.actionsFile, 'string');
+    const execAction = readActions(exhausted.actionsFile!).find(
+      (entry) => entry.args[0] === 'exec'
+    );
+    assert.ok(execAction?.args.includes('--disable'));
+    assert.ok(execAction?.args.includes('features.memories=false'));
+    assertions += 7;
+  } finally {
+    await exhausted.harness.close();
+  }
+
+  return assertions;
 }
 
 function verifyTypeContracts(): number {
@@ -775,10 +933,64 @@ function verifyTypeContracts(): number {
   assert.equal(agentsState[0].isModelHealthy, false);
   assert.equal(agentsState[0].memory.nativeCapability.status, 'unknown');
   assert.equal(agentsState[0].capabilities?.canUseInternalMemory, false);
+  const disconnectedNativeCapability = agentsState[0].memory.nativeCapability;
   // Error state must NOT be treated as actively running by Stop All
   assert.equal(isAgentActivelyRunning(agentsState[0], probeStore), false);
 
-  // 4) Edit-save fresh probe records timestamp so 5s poll does not immediately re-probe
+  // 4) A later successful probe recovers both running state and health flag
+  const recoveryGen = beginRemoteProbe(probeStore, 'remote-agent', 25_000);
+  const recovered = applyRemoteProbeOutcome(
+    agentsState,
+    probeStore,
+    'remote-agent',
+    recoveryGen,
+    {
+      ok: true,
+      latencyMs: 9,
+      loadSession: true,
+      resumeSession: true,
+      nativeMemory: {
+        status: 'enabled',
+        persistent: true,
+        crossThread: true,
+        provider: 'remote-codex',
+        scope: 'runtime',
+      },
+    },
+    true
+  );
+  assert.equal(recovered.applied, true);
+  agentsState = recovered.agents;
+  assert.equal(agentsState[0].status, 'running');
+  assert.equal(agentsState[0].isModelHealthy, true);
+  assert.equal(agentsState[0].memory.nativeCapability.status, 'enabled');
+
+  // 5) Health-only recovery must re-materialize the Agent instead of taking the
+  // unchanged early return. All other fields are intentionally identical.
+  const healthOnlyStale = agentsState.map((agent) => ({
+    ...agent,
+    isModelHealthy: false,
+  }));
+  const healthOnlyGeneration = beginRemoteProbe(probeStore, 'remote-agent', 28_000);
+  const healthOnlyRecovered = applyRemoteProbeOutcome(
+    healthOnlyStale,
+    probeStore,
+    'remote-agent',
+    healthOnlyGeneration,
+    {
+      ok: true,
+      latencyMs: 9,
+      loadSession: true,
+      resumeSession: true,
+      nativeMemory: agentsState[0].memory.nativeCapability,
+    },
+    false
+  );
+  assert.equal(healthOnlyRecovered.applied, true);
+  assert.notEqual(healthOnlyRecovered.agents[0], healthOnlyStale[0]);
+  assert.equal(healthOnlyRecovered.agents[0].isModelHealthy, true);
+
+  // 6) Edit-save fresh probe records timestamp so 5s poll does not immediately re-probe
   recordRemoteProbeSuccess(probeStore, 'remote-agent', 30_000);
   assert.equal(
     shouldRefreshRemoteProbe(probeStore, 'remote-agent', 15_000, 40_000),
@@ -786,12 +998,12 @@ function verifyTypeContracts(): number {
   );
   assert.equal(
     nativeMemoryCapabilityChanged(
-      agentsState[0].memory.nativeCapability,
+      disconnectedNativeCapability,
       freshApplied.agents[0].memory.nativeCapability
     ),
     true
   );
-  assertions += 24;
+  assertions += 31;
 
   return assertions;
 }
@@ -1095,6 +1307,37 @@ async function verifyRemoteWebSocketAndUiContracts(): Promise<number> {
   assert.ok(modalEnabledHtml.includes('允许自动提炼历史对话'));
   assertions += 7;
 
+  const modalDisabledDarkHtml = renderToStaticMarkup(
+    React.createElement(ConnectAgentModal, {
+      isOpen: true,
+      onClose: () => {},
+      onConnectAgent: () => {},
+      initialAgent: remoteAgent,
+      initialThemeMode: 'dark',
+      initialRemoteTestResult: {
+        ok: true,
+        latencyMs: 14,
+        loadSession: true,
+        resumeSession: true,
+        nativeMemory: {
+          status: 'disabled',
+          persistent: true,
+          crossThread: true,
+          provider: 'remote-codex',
+          scope: 'runtime',
+        },
+      },
+    })
+  );
+  assert.ok(modalDisabledDarkHtml.includes('data-theme="dark"'));
+  assert.ok(modalDisabledDarkHtml.includes('bg-[#0f141f]'));
+  assert.ok(modalDisabledDarkHtml.includes('bg-emerald-500/15'));
+  assert.ok(modalDisabledDarkHtml.includes('bg-amber-500/15'));
+  assert.ok(modalDisabledDarkHtml.includes('text-amber-300'));
+  assert.ok(modalDisabledDarkHtml.includes('text-slate-50'));
+  assert.equal(modalDisabledDarkHtml.includes('data-theme="light"'), false);
+  assertions += 7;
+
   return assertions;
 }
 
@@ -1102,7 +1345,13 @@ async function verifyRealCodexFlow(tempDir: string): Promise<number> {
   const realHome = join(tempDir, 'real-codex-home');
   const canaryKey = 'ACP_NATIVE_MEMORY_CANARY_20261102';
   const canaryValue = 'ORBIT-7742-LYNX';
+  const logStage = (stage: string) => {
+    if (process.env.SHADOW_CREW_TEST_VERBOSE === '1') {
+      console.log(`[acp-native-memory-real] ${stage}`);
+    }
+  };
 
+  logStage('source: initialize');
   const sourceAdapter = await startAdapter(
     join(tempDir, 'real-source'),
     true,
@@ -1121,6 +1370,7 @@ async function verifyRealCodexFlow(tempDir: string): Promise<number> {
       { cwd: tempDir, systemPrompt: '' },
       2
     );
+    logStage('source: write native memory');
     const writeResult = await sourceAdapter.harness.request(
       'session/prompt',
       {
@@ -1146,6 +1396,7 @@ async function verifyRealCodexFlow(tempDir: string): Promise<number> {
     await sourceAdapter.harness.close();
   }
 
+  logStage('recall: initialize');
   const recallAdapter = await startAdapter(
     join(tempDir, 'real-recall'),
     true,
@@ -1159,6 +1410,7 @@ async function verifyRealCodexFlow(tempDir: string): Promise<number> {
       { cwd: tempDir, systemPrompt: '' },
       2
     );
+    logStage('recall: prompt');
     const recallResult = await recallAdapter.harness.request(
       'session/prompt',
       {
@@ -1186,12 +1438,31 @@ async function verifyRealCodexFlow(tempDir: string): Promise<number> {
   const existingConfig = existsSync(realConfigPath)
     ? readFileSync(realConfigPath, 'utf8')
     : '';
+  let mergedConfig = upsertTomlSectionValue(
+    existingConfig,
+    'features',
+    'memories',
+    'true'
+  );
+  mergedConfig = upsertTomlSectionValue(
+    mergedConfig,
+    'memories',
+    'use_memories',
+    'true'
+  );
+  mergedConfig = upsertTomlSectionValue(
+    mergedConfig,
+    'memories',
+    'dedicated_tools',
+    'true'
+  );
   writeFileSync(
     realConfigPath,
-    `${existingConfig}\n[features]\nmemories = true\n\n[memories]\nuse_memories = true\ndedicated_tools = true\n`,
+    mergedConfig,
     'utf8'
   );
 
+  logStage('disabled: initialize');
   const disabledAdapter = await startAdapter(
     join(tempDir, 'real-disabled'),
     false,
@@ -1200,6 +1471,11 @@ async function verifyRealCodexFlow(tempDir: string): Promise<number> {
   );
   try {
     const initDisabled = await disabledAdapter.harness.request('initialize', {}, 1);
+    assert.equal(
+      initDisabled.result?.agentCapabilities?.nativeMemory?.supported,
+      true,
+      JSON.stringify(initDisabled.result?.agentCapabilities?.nativeMemory)
+    );
     assert.equal(
       initDisabled.result?.agentCapabilities?.nativeMemory?.enabled,
       false,
@@ -1210,6 +1486,7 @@ async function verifyRealCodexFlow(tempDir: string): Promise<number> {
       { cwd: tempDir, systemPrompt: '' },
       2
     );
+    logStage('disabled: prompt');
     const disabledRecall = await disabledAdapter.harness.request(
       'session/prompt',
       {
@@ -1225,12 +1502,13 @@ async function verifyRealCodexFlow(tempDir: string): Promise<number> {
       3
     );
     const disabledResponse = disabledRecall.result?.text_response || '';
+    assert.doesNotMatch(disabledResponse, /Codex 执行退出|failed to load|TOML parse error/i);
     assert.equal(
       disabledResponse.includes(canaryValue),
       false,
       `Expected disabled native memory not to recall ${canaryValue}, got: ${disabledResponse}`
     );
-    return 7;
+    return 10;
   } finally {
     await disabledAdapter.harness.close();
   }
@@ -1246,6 +1524,7 @@ async function main(): Promise<void> {
     assertions += await verifyAdapterDisabledFlow(join(tempDir, 'disabled'));
     assertions += await verifyAdapterAutoGenerateFlow(join(tempDir, 'auto'));
     assertions += await verifyAdapterMetaPolicyOverrideFlow(join(tempDir, 'meta'));
+    assertions += await verifyAdapterFeatureProbeRetryFlow(join(tempDir, 'feature-probe'));
     if (
       process.env.SHADOW_CREW_REAL_NATIVE_MEMORY_TEST === '1' ||
       process.argv.includes('--real')

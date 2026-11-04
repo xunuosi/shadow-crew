@@ -198,6 +198,7 @@ export function applyRemoteProbeOutcome(
       markStarting && a.remoteLatencyMs !== probe.latencyMs;
     const canUseChanged =
       Boolean(a.capabilities?.canUseInternalMemory) !== targetCanUseMemory;
+    const healthChanged = a.isModelHealthy !== true;
 
     if (
       !capabilityChanged &&
@@ -205,7 +206,8 @@ export function applyRemoteProbeOutcome(
       !resumeChanged &&
       !statusChanged &&
       !latencyChanged &&
-      !canUseChanged
+      !canUseChanged &&
+      !healthChanged
     ) {
       return a;
     }
@@ -213,6 +215,7 @@ export function applyRemoteProbeOutcome(
     return {
       ...a,
       status: 'running' as const,
+      isModelHealthy: true,
       remoteLatencyMs: latency,
       statusDetail: detail,
       memory: {

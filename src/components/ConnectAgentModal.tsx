@@ -35,6 +35,8 @@ interface ConnectAgentModalProps {
   isOpen: boolean;
   onClose: () => void;
   onConnectAgent: (newAgent: Partial<Agent>) => void;
+  /** Deterministic first render for embedded/SSR consumers; omitted in production. */
+  initialThemeMode?: 'light' | 'dark';
   defaultWorkspaceRoot?: string;
   initialAgent?: Agent | null;
   duplicateAgent?: Agent | null;
@@ -73,6 +75,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   isOpen,
   onClose,
   onConnectAgent,
+  initialThemeMode,
   defaultWorkspaceRoot,
   initialAgent,
   duplicateAgent,
@@ -152,7 +155,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
   // Visual Theme support (synced with global data-theme and toggleable inside modal)
   const [isLightMode, setIsLightMode] = useState(() =>
-    typeof document !== 'undefined'
+    initialThemeMode
+      ? initialThemeMode === 'light'
+      : typeof document !== 'undefined'
       ? document.documentElement.getAttribute('data-theme') !== 'dark'
       : true
   );
