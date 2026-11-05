@@ -39,8 +39,6 @@ export const INITIAL_AGENTS: Agent[] = [
       canExecuteSkills: true,
       canDelegateToSubAgents: true,
       supportsStreaming: true,
-      supportsLoadSession: true,
-      supportsResumeSession: true,
     },
     workspace: {
       rootPath: '~/.shadow-crew',

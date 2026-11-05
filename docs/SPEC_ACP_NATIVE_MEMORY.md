@@ -158,4 +158,4 @@ AgentMemoryBank.mode
 | NM-14 | Codex 特性探测临时失败 | 单次 `initialize` 内有界重试；持续失败上报 `unknown`，后续请求可再次探测且不缓存失败结论；一旦 `session/prompt` 重试探测成功，响应同步回写 `agentCapabilities.nativeMemory` 供宿主更新状态 |
 | NM-15 | SSR/内嵌首帧主题 | 亮色与暗色均可通过显式初始主题确定性渲染，不依赖浏览器 `document` |
 | NM-16 | 本地退出事件与弹窗保存门控 | 本地进程退出（`acp:status_change=stopped`）及 3s 轮询对账无条件清理残留 `enabled` 能力；新建/离线/本地重启或远程复测失败保存时一律回落 `unknown + canUseInternalMemory=false` |
-| NM-17 | 新启动与 starting 收敛 | 进入 `starting` 时立即失效上一轮 native memory 与 load/resume 握手结果；`spawn_acp_agent` 返回后若后端已无存活实例，starting 必须收敛为 `idle + unknown`，不得因事件丢失永久卡住 |
+| NM-17 | 新启动、模式切换与 starting 收敛 | 进入 `starting`、离线、重加载、复制、保存或远程断线时均统一失效上一轮 `nativeMemory` 与 `supportsLoadSession/supportsResumeSession` 握手结果，且在 `starting/error/auth_required` 期间 UI 展示 `待握手`（严禁误报为 `仅单次` 或伪造 `initialize` 报文）；本地启动期间若用户点击 Stop/编辑/删除，通过 `localSpawnGeneration` 取消在途 spawn 防止迟到报错覆盖 `idle`；本地与远程模式互切保存时先终止旧本地进程并根据探测结果重置运行态；`spawn_acp_agent` 返回后若后端已无存活实例，`starting` 必须收敛为 `idle + unknown` |

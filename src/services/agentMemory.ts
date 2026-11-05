@@ -122,13 +122,34 @@ export function normalizeHydratedAgent(input: Agent): {
   changed: boolean;
 } {
   const migrated = migrateAgentMemoryV1(input);
+  const nextCapabilities = {
+    ...(migrated.agent.capabilities || {
+      canUseInternalMemory: false,
+      canAccessWorkspaceFiles: true,
+      canExecuteSkills: false,
+      canDelegateToSubAgents: false,
+      supportsStreaming: true,
+    }),
+    canUseInternalMemory: false,
+  };
+  const hadHandshakeSessionCaps =
+    nextCapabilities.supportsLoadSession !== undefined ||
+    nextCapabilities.supportsResumeSession !== undefined ||
+    nextCapabilities.loadSession !== undefined;
+  delete nextCapabilities.supportsLoadSession;
+  delete nextCapabilities.supportsResumeSession;
+  delete nextCapabilities.loadSession;
+
   const runtimeStateChanged =
-    input.status !== 'idle' || input.statusDetail !== undefined;
+    input.status !== 'idle' ||
+    input.statusDetail !== undefined ||
+    hadHandshakeSessionCaps;
   return {
     agent: {
       ...migrated.agent,
       status: 'idle',
       statusDetail: undefined,
+      capabilities: nextCapabilities,
     },
     changed: migrated.changed || runtimeStateChanged,
   };

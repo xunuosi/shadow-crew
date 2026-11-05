@@ -71,6 +71,7 @@ const RustTauriArchitectureHub = lazy(() => import('./components/RustTauriArchit
 const AgentDashboard = lazy(() => import('./components/AgentDashboard').then((m) => ({ default: m.AgentDashboard })));
 import {
   sendPromptToAcpAgent,
+  setOnAcpNativeMemoryCapabilityUpdated,
   clearAcpAgentSessions,
   ensureAcpAgentSession,
   buildUnifiedSessionKey,
@@ -105,9 +106,13 @@ import {
 } from './services/agentMemory';
 import {
   applyLocalStatusChangeEvent,
+  applyPromptNativeMemoryCapability,
   applyRemoteProbeOutcome,
+  beginLocalSpawn,
   beginRemoteProbe,
+  cancelLocalSpawn,
   cancelRemoteProbe,
+  completeLocalSpawn,
   isAgentActivelyRunning,
   markRemoteAgentStarting,
   reconcileLocalAgentsRuntimeStatus,
@@ -782,6 +787,18 @@ export default function App() {
   const activeExecutionsRef = useRef(activeExecutions);
   activeExecutionsRef.current = activeExecutions;
   const remoteProbeRuntimeRef = useRef<Map<string, RemoteProbeLease>>(new Map());
+  const localSpawnGenerationRef = useRef<Map<string, number>>(new Map());
+
+  useEffect(() => {
+    setOnAcpNativeMemoryCapabilityUpdated((agentId, capability) => {
+      setAgents((prev) =>
+        applyPromptNativeMemoryCapability(prev, agentId, capability)
+      );
+    });
+    return () => {
+      setOnAcpNativeMemoryCapabilityUpdated(null);
+    };
+  }, []);
 
   const cancelRemoteAgentProbe = useCallback(
     (agentId: string) => {
@@ -1233,6 +1250,10 @@ export default function App() {
   // 启动本地 ACP Agent 进程（Tauri stdio 拉起 / Web 运行时平滑转入）
   const spawnLocalAcpAgent = useCallback(
     async (agent: Agent) => {
+      const generation = beginLocalSpawn(
+        localSpawnGenerationRef.current,
+        agent.id
+      );
       // 启动 Agent 进程: 初始设为 starting 握手过渡态
       setAgents((prev) =>
         prev.map((a) =>
@@ -1256,8 +1277,30 @@ export default function App() {
             cwd: agent.workspace?.rootPath || '~/.shadow-crew',
             envVars: buildAgentLaunchEnv(agent),
           });
+          if (
+            !completeLocalSpawn(
+              localSpawnGenerationRef.current,
+              agent.id,
+              generation
+            )
+          ) {
+            await tauriInvoke('stop_acp_agent', { agentId: agent.id }).catch(
+              () => {}
+            );
+            await syncRunningAgentsWithBackend(true);
+            return;
+          }
           await syncRunningAgentsWithBackend(true);
         } catch (err: any) {
+          if (
+            !completeLocalSpawn(
+              localSpawnGenerationRef.current,
+              agent.id,
+              generation
+            )
+          ) {
+            return;
+          }
           console.warn('Spawn agent error:', err);
           setAgents((prev) =>
             prev.map((a) =>
@@ -2638,7 +2681,13 @@ export default function App() {
             if (Object.keys(next).length === 0) setIsGenerating(false);
             return next;
           });
-          setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'idle' } : a)));
+          setAgents((prev) =>
+            prev.map((a) =>
+              a.id === targetAgent.id
+                ? resetAgentHandshakeCapabilities(a, 'idle', undefined)
+                : a
+            )
+          );
           syncRunningAgentsWithBackend();
           const errorReply: Message = {
             id: `msg-collab-err-${Date.now()}-${targetAgent.id}`,
@@ -2834,7 +2883,15 @@ export default function App() {
             });
           }
 
-          setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'running' } : a)));
+          setAgents((prev) =>
+            applyPromptNativeMemoryCapability(
+              prev.map((a) =>
+                a.id === targetAgent.id ? { ...a, status: 'running' } : a
+              ),
+              targetAgent.id,
+              acpResp.nativeMemoryCapability
+            )
+          );
           syncRunningAgentsWithBackend();
 
           hopOutputs.push({
@@ -6226,7 +6283,13 @@ export default function App() {
           }
 
           setAgents((prev) =>
-            prev.map((a) => (a.id === agent.id ? { ...a, status: 'running' } : a))
+            applyPromptNativeMemoryCapability(
+              prev.map((a) =>
+                a.id === agent.id ? { ...a, status: 'running' } : a
+              ),
+              agent.id,
+              acpResp.nativeMemoryCapability
+            )
           );
           syncRunningAgentsWithBackend();
 
@@ -7783,7 +7846,15 @@ export default function App() {
             };
           });
 
-          setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'running' } : a)));
+          setAgents((prev) =>
+            applyPromptNativeMemoryCapability(
+              prev.map((a) =>
+                a.id === targetAgent.id ? { ...a, status: 'running' } : a
+              ),
+              targetAgent.id,
+              acpResp.nativeMemoryCapability
+            )
+          );
           syncRunningAgentsWithBackend();
 
           logRpc(targetAgent.name, 'agent_to_client', 'session/prompt:result', {
@@ -7835,7 +7906,13 @@ export default function App() {
               [currentThreadId]: nextThreadMsgs,
             };
           });
-          setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'idle' } : a)));
+          setAgents((prev) =>
+            prev.map((a) =>
+              a.id === targetAgent.id
+                ? resetAgentHandshakeCapabilities(a, 'idle', undefined)
+                : a
+            )
+          );
           syncRunningAgentsWithBackend();
         });
     });
@@ -7999,42 +8076,46 @@ export default function App() {
             const cleanName = `${agent.name} 副本`;
             const cleanHandle = `@${cleanName.toLowerCase().replace(/\s+/g, '-')}`;
 
-            const duplicated: Agent = {
-              ...agent,
-              id: newId,
-              name: cleanName,
-              handle: cleanHandle,
-              status: 'idle',
-              statusDetail: undefined,
-              isManagedByYou: true,
-              modelConfig: agent.modelConfig ? { ...agent.modelConfig } : undefined,
-              envVars: agent.envVars ? agent.envVars.map((v) => ({ ...v })) : [],
-              workspace: {
-                ...(agent.workspace || {
-                  rootPath: '~/.shadow-crew',
-                  repoName: 'shadow-crew-workspace',
-                  gitBranch: 'main',
-                  permissionMode: 'full_read_write',
-                  activeFiles: ['~/.shadow-crew/agents'],
-                }),
+            const duplicated = resetAgentHandshakeCapabilities(
+              {
+                ...agent,
+                id: newId,
+                name: cleanName,
+                handle: cleanHandle,
+                status: 'idle',
+                statusDetail: undefined,
+                isManagedByYou: true,
+                modelConfig: agent.modelConfig ? { ...agent.modelConfig } : undefined,
+                envVars: agent.envVars ? agent.envVars.map((v) => ({ ...v })) : [],
+                workspace: {
+                  ...(agent.workspace || {
+                    rootPath: '~/.shadow-crew',
+                    repoName: 'shadow-crew-workspace',
+                    gitBranch: 'main',
+                    permissionMode: 'full_read_write',
+                    activeFiles: ['~/.shadow-crew/agents'],
+                  }),
+                },
+                memory: {
+                  ...createAgentMemoryBank(
+                    agent.memory.mode,
+                    agent.memory.autoGenerate
+                  ),
+                  nativeCapability: createUnknownNativeMemoryCapability(),
+                  cartridges: agent.memory?.cartridges ? [...agent.memory.cartridges] : [],
+                },
+                capabilities: {
+                  canAccessWorkspaceFiles: true,
+                  canExecuteSkills: true,
+                  canDelegateToSubAgents: true,
+                  supportsStreaming: true,
+                  ...(agent.capabilities || {}),
+                  canUseInternalMemory: false,
+                },
               },
-              memory: {
-                ...createAgentMemoryBank(
-                  agent.memory.mode,
-                  agent.memory.autoGenerate
-                ),
-                nativeCapability: createUnknownNativeMemoryCapability(),
-                cartridges: agent.memory?.cartridges ? [...agent.memory.cartridges] : [],
-              },
-              capabilities: {
-                canAccessWorkspaceFiles: true,
-                canExecuteSkills: true,
-                canDelegateToSubAgents: true,
-                supportsStreaming: true,
-                ...(agent.capabilities || {}),
-                canUseInternalMemory: false,
-              },
-            };
+              'idle',
+              undefined
+            );
 
             const nextAgents = [...agents, duplicated];
             setAgents(nextAgents);
@@ -8076,7 +8157,8 @@ export default function App() {
                 stopAgentRuntimeState(
                   prev,
                   remoteProbeRuntimeRef.current,
-                  agentId
+                  agentId,
+                  localSpawnGenerationRef.current
                 )
               );
               const tauriInvoke =
@@ -8107,6 +8189,7 @@ export default function App() {
           }}
           onDeleteAgent={(agentId) => {
             cancelRemoteAgentProbe(agentId);
+            cancelLocalSpawn(localSpawnGenerationRef.current, agentId);
             clearSessionWarmScope({ agentId });
             setAgents((prev) => prev.filter((a) => a.id !== agentId));
             void revokeAcpPermissionGrantsForAgent(agentId).catch((err) => {
@@ -8451,9 +8534,10 @@ export default function App() {
         duplicateAgent={duplicatingAgent}
         defaultWorkspaceRoot="~/.shadow-crew"
         onUpdateAgent={(agentId, updatedData) => {
-          // Invalidate any in-flight remote probe so an edit cannot be
-          // overwritten by a probe that started with the previous config.
+          // Invalidate any in-flight remote probe or local spawn so an edit cannot be
+          // overwritten by an attempt that started with the previous config.
           cancelRemoteAgentProbe(agentId);
+          cancelLocalSpawn(localSpawnGenerationRef.current, agentId);
           // 清空已交付公约、花名册缓存与水位线，确保后续全会话即时重装最新的人设与团队花名册
           resetAllSessionWarmState();
           void safelyClearAcpSessions(agentId, undefined, '更新 Agent 配置');
@@ -8461,7 +8545,16 @@ export default function App() {
           const existingAgent = agents.find((a) => a.id === agentId);
           const wasOnline =
             !!existingAgent && existingAgent.status !== 'idle' && existingAgent.status !== 'error';
-          const isRemoteAgent = updatedData.isRemote ?? existingAgent?.isRemote ?? false;
+          const wasLocalAgent = Boolean(
+            existingAgent &&
+              !existingAgent.isRemote &&
+              existingAgent.acpTransport !== 'websocket'
+          );
+          const isRemoteAgent = Boolean(
+            updatedData.isRemote ??
+              existingAgent?.isRemote ??
+              updatedData.acpTransport === 'websocket'
+          );
           if (isRemoteAgent && updatedData.status === 'running') {
             recordRemoteProbeSuccess(remoteProbeRuntimeRef.current, agentId);
           }
@@ -8469,15 +8562,29 @@ export default function App() {
           setAgents((prev) =>
             prev.map((a) => {
               if (a.id === agentId) {
-                return {
+                const nextStatus =
+                  updatedData.status !== undefined
+                    ? updatedData.status
+                    : isRemoteAgent
+                      ? a.status || 'idle'
+                      : 'idle';
+                const merged: Agent = {
                   ...a,
                   ...updatedData,
-                  status: updatedData.status !== undefined ? updatedData.status : (a.status || 'idle'),
+                  status: nextStatus,
                   workspace: {
                     ...a.workspace,
                     ...(updatedData.workspace || {}),
                   },
                 };
+                if (nextStatus !== 'running') {
+                  return resetAgentHandshakeCapabilities(
+                    merged,
+                    nextStatus,
+                    updatedData.statusDetail
+                  );
+                }
+                return merged;
               }
               return a;
             })
@@ -8577,17 +8684,22 @@ export default function App() {
             });
           }
 
-          // 本地 Agent：停止旧进程；编辑前在线则自动以新配置重启恢复 online
-          // （网关校验未通过时不再重启，保持 dismiss 状态等待用户修复配置）
+          // 若编辑前是本地 Agent（即便切换为远程模式），必须先终止旧本地子进程防泄漏；
+          // 若编辑后仍为本地 Agent 且编辑前在线，则以新配置自动重启恢复 online
           const tauriInvoke =
             typeof window !== 'undefined'
               ? (window as any).__TAURI_INTERNALS__?.invoke || (window as any).__TAURI__?.core?.invoke
               : undefined;
-          if (!isRemoteAgent && tauriInvoke) {
+          if ((wasLocalAgent || !isRemoteAgent) && tauriInvoke) {
             tauriInvoke('stop_acp_agent', { agentId })
               .then(async () => {
                 await syncRunningAgentsWithBackend();
-                if (wasOnline && existingAgent && updatedData.isModelHealthy !== false) {
+                if (
+                  !isRemoteAgent &&
+                  wasOnline &&
+                  existingAgent &&
+                  updatedData.isModelHealthy !== false
+                ) {
                   const respawnAgent: Agent = { ...existingAgent, ...updatedData } as Agent;
                   spawnLocalAcpAgent(respawnAgent);
                 }
@@ -8609,7 +8721,7 @@ export default function App() {
                 ...baseMemory,
                 nativeCapability: createUnknownNativeMemoryCapability(),
               };
-          const newAg: Agent = {
+          const rawNewAg: Agent = {
             id: `agent-${Date.now()}`,
             name: agentData.name || 'Custom Agent',
             handle: agentData.handle || `@${(agentData.name || 'agent').toLowerCase()}`,
@@ -8655,6 +8767,13 @@ export default function App() {
             skills: [],
             memory: effectiveMemory,
           };
+          const newAg = isOnlineOnCreate
+            ? rawNewAg
+            : resetAgentHandshakeCapabilities(
+                rawNewAg,
+                initialStatus,
+                agentData.statusDetail
+              );
           setAgents((prev) => [...prev, newAg]);
           setDuplicatingAgent(null);
         }}

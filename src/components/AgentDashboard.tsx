@@ -564,14 +564,23 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
 
                   {/* 方案 1: 单行精炼能力条 */}
                   {(() => {
-                    const hasResume = Boolean(agent.capabilities?.supportsResumeSession);
-                    const hasLoadSession = Boolean(
-                      agent.capabilities?.supportsLoadSession ?? (agent.capabilities as any)?.loadSession
-                    );
+                    const isHandshakePending =
+                      agent.status === 'idle' ||
+                      agent.status === 'starting' ||
+                      agent.status === 'error' ||
+                      agent.status === 'auth_required';
+                    const hasResume =
+                      !isHandshakePending &&
+                      Boolean(agent.capabilities?.supportsResumeSession);
+                    const hasLoadSession =
+                      !isHandshakePending &&
+                      Boolean(
+                        agent.capabilities?.supportsLoadSession ??
+                          (agent.capabilities as any)?.loadSession
+                      );
                     const isSupported = hasResume || hasLoadSession;
-                    const isIdle = agent.status === 'idle';
 
-                    const detailText = isIdle
+                    const detailText = isHandshakePending
                       ? '待握手'
                       : hasResume
                       ? 'Resume ✓'
@@ -579,8 +588,8 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                       ? 'Load ✓'
                       : '仅单次 ⚠️';
 
-                    const tooltipText = isIdle
-                      ? '进程未启动。点击启动或进行连通性测试后，将自动解析对端 Capabilities。'
+                    const tooltipText = isHandshakePending
+                      ? '进程尚未完成握手。启动并完成 ACP initialize 探测后，将自动展示对端真实 Capabilities。'
                       : hasResume
                       ? 'ACP 对端声明支持 session/resume 轻量挂载。可直接基于现有本地历史快速续接上下文。'
                       : hasLoadSession
@@ -590,11 +599,11 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     return (
                       <div
                         className={`mt-2 p-1.5 px-2.5 rounded-xl border flex items-center justify-between text-[11px] select-none transition-all ${
-                          isIdle
+                          isHandshakePending
                             ? 'bg-surface-subtle border-border text-fg-muted'
                             : isSupported
-                            ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-600 dark:text-emerald-300'
-                            : 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-300'
+                            ? 'bg-emerald-50 border-emerald-300 text-emerald-800 dark:bg-emerald-500/15 dark:border-emerald-500/30 dark:text-emerald-300'
+                            : 'bg-amber-50 border-amber-300 text-amber-800 dark:bg-amber-500/15 dark:border-amber-500/30 dark:text-amber-300'
                         }`}
                         title={tooltipText}
                       >
@@ -602,7 +611,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                         <div className="flex items-center gap-1.5 min-w-0 shrink-0">
                           <span
                             className={`w-1.5 h-1.5 rounded-full ${
-                              isIdle
+                              isHandshakePending
                                 ? 'bg-zinc-400 dark:bg-zinc-500'
                                 : isSupported
                                 ? 'bg-emerald-500 animate-pulse'

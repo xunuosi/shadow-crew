@@ -19,6 +19,8 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Agent } from '../types';
 import { INITIAL_AGENTS } from '../data/mockData';
+import { ThemeProvider } from '../context/ThemeContext';
+import { AgentDashboard } from '../components/AgentDashboard';
 import { AcpInspector } from '../components/AcpInspector';
 import { ConnectAgentModal } from '../components/ConnectAgentModal';
 import {
@@ -33,13 +35,19 @@ import {
 import {
   buildAgentLaunchEnv,
   probeRemoteAcpConnection,
+  sendPromptToAcpAgent,
   sendPromptToRemoteAcpWebSocket,
+  setOnAcpNativeMemoryCapabilityUpdated,
 } from './acpClient';
 import {
   applyLocalStatusChangeEvent,
+  applyPromptNativeMemoryCapability,
   applyRemoteProbeOutcome,
+  beginLocalSpawn,
   beginRemoteProbe,
+  cancelLocalSpawn,
   cancelRemoteProbe,
+  completeLocalSpawn,
   completeRemoteProbe,
   isAgentActivelyRunning,
   markRemoteAgentStarting,
@@ -869,13 +877,43 @@ function verifyTypeContracts(): number {
   assert.equal(reloadedOnline.agent.statusDetail, undefined);
   assert.equal(reloadedOnline.agent.memory.nativeCapability.status, 'unknown');
   assert.equal(reloadedOnline.agent.capabilities?.canUseInternalMemory, false);
+  assert.equal(reloadedOnline.agent.capabilities?.supportsLoadSession, undefined);
+  assert.equal(reloadedOnline.agent.capabilities?.supportsResumeSession, undefined);
+  assert.equal(reloadedOnline.agent.capabilities?.loadSession, undefined);
+
+  // Offline agent with only stale supportsLoadSession/supportsResumeSession must also be cleaned
+  const offlineWithStaleSessionCaps = normalizeHydratedAgent({
+    ...INITIAL_AGENTS[0],
+    status: 'idle',
+    capabilities: {
+      ...INITIAL_AGENTS[0].capabilities!,
+      supportsLoadSession: true,
+      supportsResumeSession: true,
+      loadSession: true,
+    },
+  });
+  assert.equal(offlineWithStaleSessionCaps.changed, true);
+  assert.equal(
+    offlineWithStaleSessionCaps.agent.capabilities?.supportsLoadSession,
+    undefined
+  );
+  assert.equal(
+    offlineWithStaleSessionCaps.agent.capabilities?.supportsResumeSession,
+    undefined
+  );
+  assert.equal(
+    offlineWithStaleSessionCaps.agent.capabilities?.loadSession,
+    undefined
+  );
 
   // INITIAL_AGENTS offline preset must not fake enabled handshake state
   assert.equal(INITIAL_AGENTS[0].status, 'idle');
   assert.equal(INITIAL_AGENTS[0].memory.nativeCapability.status, 'unknown');
   assert.equal(INITIAL_AGENTS[0].memory.autoGenerate, false);
   assert.equal(INITIAL_AGENTS[0].capabilities?.canUseInternalMemory, false);
-  assertions += 12;
+  assert.equal(INITIAL_AGENTS[0].capabilities?.supportsLoadSession, undefined);
+  assert.equal(INITIAL_AGENTS[0].capabilities?.supportsResumeSession, undefined);
+  assertions += 21;
 
   // Behavioral state machine tests for remote Agent lifecycle:
   // 1) Start -> Stop before probe finishes -> late probe does NOT resurrect Agent to running
@@ -989,6 +1027,9 @@ function verifyTypeContracts(): number {
   assert.equal(agentsState[0].isModelHealthy, false);
   assert.equal(agentsState[0].memory.nativeCapability.status, 'unknown');
   assert.equal(agentsState[0].capabilities?.canUseInternalMemory, false);
+  assert.equal(agentsState[0].capabilities?.supportsLoadSession, undefined);
+  assert.equal(agentsState[0].capabilities?.supportsResumeSession, undefined);
+  assert.equal(agentsState[0].capabilities?.loadSession, undefined);
   const disconnectedNativeCapability = agentsState[0].memory.nativeCapability;
   // Error state must NOT be treated as actively running by Stop All
   assert.equal(isAgentActivelyRunning(agentsState[0], probeStore), false);
@@ -1059,7 +1100,7 @@ function verifyTypeContracts(): number {
     ),
     true
   );
-  assertions += 31;
+  assertions += 34;
 
   // 7) Local process exit (`acp:status_change` -> `stopped`) and 3s poll reconciliation:
   //    Verify that stopping/exiting immediately clears `nativeCapability` and `canUseInternalMemory`,
@@ -1207,12 +1248,72 @@ function verifyTypeContracts(): number {
     wasOnline: true,
     nativeMemoryEnabled: true,
     nativeMemoryAutoGenerate: true,
-    healthCheck: { ok: true, nativeMemory: enabledCap },
+    healthCheck: {
+      ok: true,
+      loadSession: true,
+      resumeSession: true,
+      nativeMemory: enabledCap,
+    },
   });
+  assert.equal(savedHealthyOnlineRemote.status, 'running');
   assert.equal(savedHealthyOnlineRemote.nativeCapability.status, 'enabled');
   assert.equal(savedHealthyOnlineRemote.canUseInternalMemory, true);
   assert.equal(savedHealthyOnlineRemote.autoGenerate, true);
-  assertions += 31;
+  assert.equal(savedHealthyOnlineRemote.supportsLoadSession, true);
+  assert.equal(savedHealthyOnlineRemote.supportsResumeSession, true);
+  assert.equal(savedNewRemote.status, 'idle');
+  assert.equal(savedNewRemote.supportsLoadSession, undefined);
+  assert.equal(savedNewRemote.supportsResumeSession, undefined);
+  assert.equal(savedFailedOnlineRemote.status, 'error');
+  assert.equal(savedFailedOnlineRemote.supportsLoadSession, undefined);
+  assert.equal(savedFailedOnlineRemote.supportsResumeSession, undefined);
+  assert.equal(savedOnlineLocal.status, 'idle');
+  assert.equal(savedOnlineLocal.supportsLoadSession, undefined);
+  assert.equal(savedOnlineLocal.supportsResumeSession, undefined);
+
+  // 9) Local spawn generation lease prevents a cancelled in-flight spawn from
+  //    overwriting a stopped idle Agent with error or stale running state.
+  const localSpawnStore = new Map<string, number>();
+  const spawnGen1 = beginLocalSpawn(localSpawnStore, 'local-codex');
+  assert.equal(completeLocalSpawn(localSpawnStore, 'local-codex', spawnGen1), true);
+  const stoppedLocal = stopAgentRuntimeState(
+    [{ ...runningLocalAgent, status: 'starting' }],
+    probeStore,
+    'local-codex',
+    localSpawnStore
+  );
+  assert.equal(stoppedLocal[0].status, 'idle');
+  assert.equal(
+    completeLocalSpawn(localSpawnStore, 'local-codex', spawnGen1),
+    false,
+    'stopAgentRuntimeState must invalidate any in-flight local spawn generation'
+  );
+  const spawnGen2 = beginLocalSpawn(localSpawnStore, 'local-codex');
+  cancelLocalSpawn(localSpawnStore, 'local-codex');
+  assert.equal(completeLocalSpawn(localSpawnStore, 'local-codex', spawnGen2), false);
+
+  // 10) Prompt-level nativeMemory capability recovery updates running remote Agent
+  //     while ignoring idle/stopped Agents.
+  const remoteUnknownRunning: Agent = {
+    ...baseRemoteAgent,
+    status: 'running',
+    memory: createAgentMemoryBank('native', false),
+  };
+  const updatedFromPrompt = applyPromptNativeMemoryCapability(
+    [remoteUnknownRunning],
+    'remote-agent',
+    enabledCap
+  );
+  assert.equal(updatedFromPrompt[0].memory.nativeCapability.status, 'enabled');
+  assert.equal(updatedFromPrompt[0].capabilities?.canUseInternalMemory, true);
+  const ignoredForIdle = applyPromptNativeMemoryCapability(
+    [{ ...remoteUnknownRunning, status: 'idle' }],
+    'remote-agent',
+    enabledCap
+  );
+  assert.equal(ignoredForIdle[0].memory.nativeCapability.status, 'unknown');
+  assert.equal(ignoredForIdle[0].capabilities?.canUseInternalMemory, false);
+  assertions += 50;
 
   return assertions;
 }
@@ -1337,31 +1438,54 @@ async function verifyRemoteWebSocketAndUiContracts(): Promise<number> {
           data: JSON.stringify({
             jsonrpc: '2.0',
             id: payload.id,
-            result: { text_response: 'REMOTE_OK' },
+            result: {
+              text_response: 'REMOTE_OK',
+              agentCapabilities: {
+                nativeMemory: {
+                  supported: true,
+                  enabled: true,
+                  persistent: true,
+                  crossThread: true,
+                  provider: 'remote-codex',
+                  scope: 'runtime',
+                },
+              },
+            },
           }),
         });
       }
     };
-    const promptRes = await sendPromptToRemoteAcpWebSocket(
-      'ws://127.0.0.1:9000',
-      'hello',
-      'thread-remote-test',
-      undefined,
-      true,
-      'system',
-      undefined,
-      undefined,
-      undefined,
-      false,
-      true
-    );
+    let callbackAgentId = '';
+    let callbackStatus = '';
+    setOnAcpNativeMemoryCapabilityUpdated((agentId, cap) => {
+      callbackAgentId = agentId;
+      callbackStatus = cap.status;
+    });
+    const promptRes = await sendPromptToAcpAgent({
+      agent: {
+        ...INITIAL_AGENTS[0],
+        id: 'remote-prompt-recover',
+        isRemote: true,
+        acpTransport: 'websocket',
+        remoteUrl: 'ws://127.0.0.1:9000',
+        status: 'running',
+        memory: createAgentMemoryBank('disabled', true),
+      },
+      roomId: 'thread-remote-test',
+      prompt: 'hello',
+      systemPrompt: 'system',
+    });
+    setOnAcpNativeMemoryCapabilityUpdated(null);
     assert.equal(promptRes.textResponse, 'REMOTE_OK');
+    assert.equal(promptRes.nativeMemoryCapability?.status, 'enabled');
+    assert.equal(callbackAgentId, 'remote-prompt-recover');
+    assert.equal(callbackStatus, 'enabled');
     const promptRpc = sentMessages.find((m) => m.method === 'session/prompt');
     assert.deepEqual(promptRpc?.params?._meta?.shadowCrew?.nativeMemory, {
       enabled: false,
       autoGenerate: false,
     });
-    assertions += 2;
+    assertions += 5;
   } finally {
     (globalThis as any).WebSocket = originalWebSocket;
   }
@@ -1545,7 +1669,55 @@ async function verifyRemoteWebSocketAndUiContracts(): Promise<number> {
   assert.ok(modalDisabledDarkHtml.includes('text-amber-300'));
   assert.ok(modalDisabledDarkHtml.includes('text-slate-50'));
   assert.equal(modalDisabledDarkHtml.includes('data-theme="light"'), false);
-  assertions += 7;
+
+  // Verify that while an Agent is in `starting` or `error` (where handshake capabilities
+  // are cleared), neither <AgentDashboard /> nor <AcpInspector /> misreports session recovery
+  // as "仅单次 ⚠️" / "未实现" or fabricates an initialize response before handshake completes.
+  const startingAgent: Agent = {
+    ...INITIAL_AGENTS[0],
+    status: 'starting',
+    statusDetail: 'ACP 进程启动与协议握手中...',
+  };
+  const dashboardStartingHtml = renderToStaticMarkup(
+    React.createElement(
+      ThemeProvider,
+      null,
+      React.createElement(AgentDashboard, {
+        agents: [startingAgent],
+        teams: [],
+        channels: [],
+        onOpenConnectAgentModal: () => {},
+        onDuplicateAgent: () => {},
+        onOpenCreateTeamModal: () => {},
+        onOpenAgentDefaultsModal: () => {},
+        onOpenPermissionCenter: () => {},
+        onEditAgent: () => {},
+        onToggleAgentStatus: () => {},
+        onLaunchTeamThread: () => {},
+        onStart1on1Chat: () => {},
+        onInspectAgent: () => {},
+        onDeleteAgent: () => {},
+        onDeleteTeam: () => {},
+      })
+    )
+  );
+  assert.ok(dashboardStartingHtml.includes('待握手'));
+  assert.equal(dashboardStartingHtml.includes('仅单次 ⚠️'), false);
+
+  const inspectorStartingHtml = renderToStaticMarkup(
+    React.createElement(AcpInspector, {
+      selectedAgent: startingAgent,
+      rpcLogs: [],
+      workspaceFiles: [],
+      initialTab: 'rust_tauri',
+      onRunAgentSkill: () => {},
+      onClose: () => {},
+    })
+  );
+  assert.ok(inspectorStartingHtml.includes('recovery: pending'));
+  assert.equal(inspectorStartingHtml.includes('未实现'), false);
+  assert.equal(inspectorStartingHtml.includes('"id": 101'), false);
+  assertions += 12;
 
   return assertions;
 }

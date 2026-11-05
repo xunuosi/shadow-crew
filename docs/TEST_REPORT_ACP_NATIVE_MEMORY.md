@@ -1,7 +1,7 @@
-# ACP 原生长期记忆功能测试报告（七轮深度复核与行为回归终版）
+# ACP 原生长期记忆功能测试报告（八轮深度复核与行为回归终版）
 
 > 测试日期：2026-11-05
-> 结论：通过，可交付复测（历轮审计缺陷已闭环；本轮继续修复启动态旧握手能力残留，以及 `stopped` 事件丢失时 starting 状态无法收敛的生命周期死角）
+> 结论：通过，可交付复测（历轮审计缺陷已全部闭环；本轮针对最新提交 `c4d1438` 深入逆向复查，进一步发现并修复 5 项衍生与边界缺陷：starting 期间会话恢复徽章误闪 `仅单次 ⚠️`、全链路握手能力清理补齐、本地/远程模式互切进程泄漏与假在线、本地 spawn/stop 异步竞态，以及远程 WebSocket `session/prompt` 能力恢复回写）
 > 规范依据：[SPEC_ACP_NATIVE_MEMORY.md](./SPEC_ACP_NATIVE_MEMORY.md)、[TECH_SPEC_ACP_ONLY_RUNTIME.md](./TECH_SPEC_ACP_ONLY_RUNTIME.md)
 > 覆盖范围：本地 stdio ACP、远程 WebSocket ACP 能力感知、Codex ACP 原生 Memory、Agent 生命周期与配置迁移、双主题 UI 行为渲染与对比度
 
@@ -46,10 +46,10 @@
 | **NM-11** | 用户全局 TOML 开启 memories 时，disabled 仍强制关闭且不召回 canary | Fake CLI + 真实 E2E | 真实配置经 TOML section upsert 后验证 `supported=true / enabled=false` 且查询不含 canary | ✅ 通过 |
 | **NM-12** | 远程启动/停止/编辑/删除发生 probe 竞态时，迟到结果不得覆盖新状态 | 状态机行为测试 | `verifyTypeContracts` 的 generation 租约断言 | ✅ 通过 |
 | **NM-13** | 远程 15 秒复探断线回落 `error + isModelHealthy=false + unknown`；后续成功必须同时恢复 health | 状态机行为测试 | 断线断言 + “仅 health 不同”的成功恢复判别用例 | ✅ 通过 |
-| **NM-14** | Codex 特性探测单次有界重试；持续异常上报 `unknown` 而非 `unsupported`，后续 `session/prompt` 重试成功后回写能力 | 适配器层 + Rust 宿主层 | `verifyAdapterFeatureProbeRetryFlow` + `test_maybe_refresh_native_memory_capability_on_prompt_result` | ✅ 通过 |
+| **NM-14** | Codex 特性探测单次有界重试；持续异常上报 `unknown` 而非 `unsupported`，后续 `session/prompt` 重试成功后回写能力（含本地 stdio 与远程 WebSocket） | 适配器层 + Rust 宿主层 + 远程客户端层 | `verifyAdapterFeatureProbeRetryFlow` + `test_maybe_refresh_native_memory_capability_on_prompt_result` + `applyPromptNativeMemoryCapability` | ✅ 通过 |
 | **NM-15** | SSR/内嵌环境亮暗首帧可通过显式初始主题确定性渲染 | React SSR 行为渲染层 | `verifyRemoteWebSocketAndUiContracts` 对显式 `dark` 容器及语义色类进行断言 | ✅ 通过 |
 | **NM-16** | 本地进程退出事件与 3s 轮询对账清理残留能力；弹窗新建/离线/复测失败保存严禁写入 `enabled` | 状态机行为测试 | `verifyTypeContracts`（`applyLocalStatusChangeEvent` / `reconcileLocalAgentsRuntimeStatus` / `resolveSavedAgentNativeMemoryState`） | ✅ 通过 |
-| **NM-17** | 新启动必须失效旧握手结果；spawn 返回后不存在的进程不得永久卡在 `starting` | 状态机行为测试 | `verifyTypeContracts` 对 starting 重置、普通轮询保留、post-spawn 强制收敛进行判别断言 | ✅ 通过 |
+| **NM-17** | 新启动/断线/重载/复制/保存统一失效旧握手结果；`starting/error` 期间 UI 显示 `待握手` 而非 `仅单次 ⚠️`；本地 spawn/stop 竞态防护与 post-spawn 收敛 | 状态机行为测试 + React SSR 渲染层 | `verifyTypeContracts` + `<AgentDashboard />` & `<AcpInspector />` `starting` 态渲染断言 | ✅ 通过 |
 
 ---
 
@@ -102,6 +102,16 @@
 | --- | --- | --- | --- | --- |
 | **R7-1** | P1 | `src/App.tsx`、`src/services/remoteAgentLifecycle.ts`：本地/远程 Agent 进入新 `starting` 时仍可能短暂保留上一轮 `nativeCapability=enabled` 与 load/resume 支持；本地 spawn 成功返回但后端进程已消失且 `stopped` 事件丢失时，3 秒轮询会因 starting 保护而永久不收敛 | 1. `markRemoteAgentStarting` 与 `spawnLocalAcpAgent` 只修改 status，没有先失效握手结果。<br>2. `resetAgentHandshakeCapabilities` 仅清理 native memory，未清理 `supportsLoadSession`、`supportsResumeSession`、`loadSession`。<br>3. 普通轮询为避免 spawn 尚未落库的窗口期误判，有意跳过 starting；但 spawn IPC 已返回后仍使用普通轮询，缺少显式收敛阶段。 | 1. 本地与远程进入 starting 均复用完整握手失效函数，同时清除 native memory、canUseInternalMemory 与 load/resume 三类旧结果。<br>2. `reconcileLocalAgentsRuntimeStatus` 新增 `settleUnmatchedStarting` 选项；普通 3s 轮询保留 in-flight starting，`spawn_acp_agent` 返回后立即执行强制对账，后端无存活实例则回落 `idle + unknown`。<br>3. 新增普通轮询“不误杀”与 post-spawn“必须收敛”双向判别断言。 |
 
+### 3.6 第八轮（针对提交 `c4d1438` 的深度逆向审计）新发现的 5 项衍生与残留缺陷及闭环修复
+
+| 编号 | 严重度 | 缺陷位置与现象 | 根因分析 | 修复方案与判别性验证 |
+| --- | --- | --- | --- | --- |
+| **R8-1** | P1 | `src/components/AgentDashboard.tsx`、`src/components/AcpInspector.tsx`：`c4d1438` 在 `starting`（及 `error / auth_required`）时清空 `supportsResumeSession / supportsLoadSession` 后，Agent 卡片上的「会话恢复」徽章在启动握手中与报错态闪烁誤报 **`仅单次 ⚠️`**（Tooltip 提示“对端未实现 session/resume 或 session/load”）；同时 `AcpInspector` 将 `starting` 归入 `isRunning`，在握手完成前誤报 `未实现` 并渲染伪造的 `initialize` 响应报文 | `AgentDashboard` 仅以 `agent.status === 'idle'` 判断 `待握手`，非 `idle` 且 `supportsResumeSession/supportsLoadSession` 为空时直接落入 `仅单次 ⚠️`；`AcpInspector` 的 `isRunning` 包含了 `selectedAgent.status === 'starting'` | 1. `AgentDashboard` 将 `idle / starting / error / auth_required` 统一判定为 `isHandshakePending`，展示 `待握手` 并补齐双主题高对比度语义类名。<br>2. `AcpInspector` 从 `isRunning` 中剔除 `starting`，并对 `isResumeSupported / isLoadSupported` 增加 `isRunning` 门控。<br>3. 新增 `<AgentDashboard />` 与 `<AcpInspector />` 在 `status: 'starting'` 下的 SSR 渲染断言，确认显示 `待握手` / `recovery: pending`，且绝不包含 `仅单次 ⚠️`、`未实现` 或伪造 `id: 101` 报文。 |
+| **R8-2** | P1 | `src/services/agentMemory.ts`、`src/data/mockData.ts`、`src/services/remoteAgentLifecycle.ts`、`src/components/ConnectAgentModal.tsx`、`src/App.tsx`：全链路握手能力清理不一致——① `normalizeHydratedAgent` 与 `INITIAL_AGENTS[0]` 未清除离线预设或持久化残留的 `supportsLoadSession / supportsResumeSession`；② 远程 15s 复探失败（`!probe.ok`）未清除旧 `supportsLoadSession / supportsResumeSession`；③ `ConnectAgentModal` 保存时按静态模板（`claude_code/codex`）硬编码 `supportsLoadSession: true` 或回退读取旧值；④ `onDuplicateAgent` 与异常回落 `idle` 分支仍复制或保留旧 load/resume 能力 | `c4d1438` 仅修改了 `resetAgentHandshakeCapabilities`，未同步收口 Hydration、远程断线分支、弹窗保存以及复制/异常回落路径 | 1. `normalizeHydratedAgent` 与 `INITIAL_AGENTS[0]` 彻底移除离线态的 `supportsLoadSession / supportsResumeSession / loadSession`。<br>2. `applyRemoteProbeOutcome(!probe.ok)` 与 `reconcileLocalAgentsRuntimeStatus(isUnavailableStatus)` 统一调用 `resetAgentHandshakeCapabilities`。<br>3. `resolveSavedAgentNativeMemoryState` 统一计算 `status` 与 `supportsLoadSession / supportsResumeSession`，仅在在线远程 Agent 复测成功（`healthCheck.ok`）时保留。<br>4. `onDuplicateAgent`、`onConnectAgent` 与异常回落分支全部接入 `resetAgentHandshakeCapabilities`。 |
+| **R8-3** | P1 | `src/App.tsx`、`src/components/ConnectAgentModal.tsx`：编辑 Agent 在「本地 stdio」与「远程 WebSocket」之间切换模式保存时，存在本地子进程泄漏与假 `running` 状态 | 1. 在线本地 Agent 编辑切换为远程 WebSocket 模式时，`onUpdateAgent` 判定 `isRemoteAgent === true` 而跳过 `stop_acp_agent`，导致旧本地子进程在后台泄漏运行。<br>2. 在线远程 Agent 编辑切换为本地 stdio 模式时，`updatedData.status` 为 `undefined`，`onUpdateAgent` 保留了旧 `status: 'running'`，导致尚未执行完美条件或网关未就绪时界面直接假显示 `running`。 | 1. `resolveSavedAgentNativeMemoryState` 在非远程在线复测通过场景下显式返回 `status: 'idle'`。<br>2. `onUpdateAgent` 记录 `wasLocalAgent`，只要编辑前是本地 Agent（即便切换为远程模式）均先调用 `stop_acp_agent` 终止旧本地子进程；仅当编辑后仍为本地 Agent 且编辑前在线时才执行 `spawnLocalAcpAgent` 重启。 |
+| **R8-4** | P2 | `src/App.tsx`、`src/services/remoteAgentLifecycle.ts`：本地 Agent 在 `spawn_acp_agent`（最长 10s 握手）在途期间，用户点击 Stop、编辑或删除后，迟到的 `spawn_acp_agent` 完成或报错会覆盖 `idle` 状态（报错分支把已停止的 `idle` Agent 写成 `error`） | 本地 `spawnLocalAcpAgent` 缺少类似远程探测的 generation 租约保护，Stop/Edit/Delete 无法使在途的 `spawnLocalAcpAgent` 失效 | 新增 `beginLocalSpawn` / `completeLocalSpawn` / `cancelLocalSpawn` 并接入 `stopAgentRuntimeState`、`onDeleteAgent` 与 `onUpdateAgent`；若在途 `spawn_acp_agent` 被取消，resolve 时立即调用 `stop_acp_agent` 回收进程，reject 时直接丢弃而不覆盖 `idle`。 |
+| **R8-5** | P2 | `src/services/acpClient.ts`、`src/services/remoteAgentLifecycle.ts`、`src/App.tsx`：远程 WebSocket 通道在 `initialize` 返回 `unknown`、后续 `session/prompt` 响应恢复并返回 `agentCapabilities.nativeMemory` 时，前端未同步更新 Agent 的 `nativeCapability`（`NM-14` 在远程通道未闭环） | `R6-3` 仅在 Rust `acp_manager.rs` 实现了本地 stdio 的 `maybe_refresh_native_memory_capability`，远程 WebSocket 客户端 `sendPromptToRemoteAcpWebSocket` 未解析并回写 Prompt 响应中的 `agentCapabilities.nativeMemory` | `sendPromptToRemoteAcpWebSocket` 解析 `msg.result.agentCapabilities.nativeMemory`，通过 `setOnAcpNativeMemoryCapabilityUpdated` 与 `applyPromptNativeMemoryCapability` 自动刷新在线远程 Agent 的 `nativeCapability` 与 `canUseInternalMemory`。 |
+
 ---
 
 ## 4. 分层自动化验证结果与真实性声明
@@ -110,8 +120,8 @@
 | --- | --- | --- | --- | --- |
 | **静态类型检查** | TypeScript 全量类型校验 | `npm run lint` | 通过（0 error） | 真实编译器静态检查 |
 | **生产构建检查** | Vite 前端生产打包 | `npm run build` | 通过（2016 modules transformed） | 真实生产打包 |
-| **单元 + 协议 + 状态机 + UI 渲染层** | 原生记忆契约、迁移、用户 TOML 覆盖、Codex 探测三态/重试恢复、本地退出/启动/保存门控、远程 WS、状态机与 React SSR | `npm run test:acp-native-memory` | **通过（237 assertions）** | 纯函数 + Fake Codex 子进程 JSON-RPC + Mock WebSocket + 状态机行为测试 + React `renderToStaticMarkup` 组件树渲染 |
-| **真实运行期层 (E2E)** | 真实 Codex CLI 跨进程写入、跨 Session 召回 + 用户 TOML `memories=true` 下 `disabled` 强制阻断召回 | `npm run test:acp-native-memory -- --real` | **通过（247 assertions，隔离 `CODEX_HOME`）** | **真实 `bin/codex-acp` + 真实本机 Codex CLI + 真实模型网关推理 + 真实 `memories_v2` 落盘、跨进程召回与 `disabled` 阻断召回** |
+| **单元 + 协议 + 状态机 + UI 渲染层** | 原生记忆契约、迁移、用户 TOML 覆盖、Codex 探测三态/重试恢复、本地退出/启动/保存门控、本地 spawn 租约、远程 WS、状态机与 React SSR | `npm run test:acp-native-memory` | **通过（276 assertions）** | 纯函数 + Fake Codex 子进程 JSON-RPC + Mock WebSocket + 状态机行为测试 + React `renderToStaticMarkup` 组件树渲染 |
+| **真实运行期层 (E2E)** | 真实 Codex CLI 跨进程写入、跨 Session 召回 + 用户 TOML `memories=true` 下 `disabled` 强制阻断召回 | `npm run test:acp-native-memory -- --real` | **通过（286 assertions，隔离 `CODEX_HOME`）** | **真实 `bin/codex-acp` + 真实本机 Codex CLI + 真实模型网关推理 + 真实 `memories_v2` 落盘、跨进程召回与 `disabled` 阻断召回** |
 | **ACP 运行时基线** | ACP-only 运行时与禁用历史字段回归 | `npm run test:acp-only` | 通过 | 纯函数与契约回归 |
 | **Rust 宿主层** | Tauri ACP 管理器、握手解析、连续两次超时重试恢复、Prompt 能力刷新、Session 隔离、权限与 SQLite | `cargo test -p shadow-crew-desktop --no-fail-fast` | **通过（35/35 tests）** | 真实 Rust 单元与异步握手/SQLite 状态机集成测试 |
 | **Rust MCP 工具层** | Dev MCP Server 工具契约与执行 | `cargo test -p shadow-crew-dev-mcp --no-fail-fast` | **通过（9/9 tests）** | 真实 Rust 单元测试 |
@@ -121,10 +131,10 @@
 - **已覆盖的真实运行期层**：
   - 本机真实 Codex CLI（`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`）经 `bin/codex-acp` 的 `initialize` 握手探测、第一个 Session 原生 memory 工具写入（落盘至隔离 `CODEX_HOME/memories_v2/extensions/ad_hoc/notes`）、进程退出后第二个全新进程/Session 的跨线程原生 memory 召回，以及在隔离 `CODEX_HOME/config.toml` 原位 upsert `[features]/[memories]` 后以 `disabled` 模式启动第三个真实 Codex 进程，验证 `supported=true / enabled=false` 且无法召回 canary。
   - Rust `shadow-crew-desktop` 后端状态机、连续两次 `initialize` 超时后第三次握手恢复、握手能力解析与 SQLite 持久化测试。
-  - 更早一轮真实 E2E 曾遇到一次 45 秒模型响应超时（不是确定性断言失败）；补充分阶段诊断后均能完整通过。本轮最新真实运行通过 247 assertions，完成真实写入、跨进程召回和 disabled 阻断。
+  - 更早一轮真实 E2E 曾遇到一次 45 秒模型响应超时（不是确定性断言失败）；补充分阶段诊断后均能完整通过。本轮最新真实运行通过 286 assertions，完成真实写入、跨进程召回和 disabled 阻断。
 - **使用 Fake / Mock / SSR 的验证层**：
-  - 远程 WebSocket 握手探针（`probeRemoteAcpConnection`）与远程 Prompt 发送（`sendPromptToRemoteAcpWebSocket`）通过进程内 `MockWebSocket` 验证了完整 JSON-RPC 报文载荷、`_meta.shadowCrew.nativeMemory` 门控与错误 Fail-Closed 行为；远程 Agent 启停竞态、迟到 probe 拒绝与 15 秒断线回落通过 `remoteAgentLifecycle.ts` 状态机对 `Agent[]` 进行了行为验证。
-  - `AcpInspector` 与 `ConnectAgentModal` 通过 `react-dom/server` 的 `renderToStaticMarkup` 执行了组件树渲染与状态矩阵验证；暗色首帧通过显式 `initialThemeMode` 验证，不属于真实桌面 UI 截图证据。
+  - 远程 WebSocket 握手探针（`probeRemoteAcpConnection`）与远程 Prompt 发送（`sendPromptToRemoteAcpWebSocket` / `sendPromptToAcpAgent`）通过进程内 `MockWebSocket` 验证了完整 JSON-RPC 报文载荷、`_meta.shadowCrew.nativeMemory` 门控、Prompt 级能力恢复回调与错误 Fail-Closed 行为；远程 Agent 启停竞态、迟到 probe 拒绝、本地 spawn 租约取消与 15 秒断线回落通过 `remoteAgentLifecycle.ts` 状态机对 `Agent[]` 进行了行为验证。
+  - `AgentDashboard`、`AcpInspector` 与 `ConnectAgentModal` 通过 `react-dom/server` 的 `renderToStaticMarkup` 执行了组件树渲染与状态矩阵验证（含 `starting` 握手态不误报 `仅单次 ⚠️` / `未实现`）；暗色首帧通过显式 `initialThemeMode` 验证，不属于真实桌面 UI 截图证据。
 
 ---
 

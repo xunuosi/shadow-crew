@@ -520,24 +520,6 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       modelConfig: undefined,
     };
 
-    const effectiveSupportsLoadSession =
-      isRemoteMode && healthCheck?.ok && healthCheck.loadSession !== undefined
-        ? healthCheck.loadSession
-        : isRemoteMode && remoteTestResult?.ok && remoteTestResult.loadSession !== undefined
-          ? remoteTestResult.loadSession
-          : !isRemoteMode && selectedAcp.id === 'claude_code'
-            ? true
-            : initialAgent?.capabilities?.supportsLoadSession;
-
-    const effectiveSupportsResumeSession =
-      isRemoteMode && healthCheck?.ok && healthCheck.resumeSession !== undefined
-        ? healthCheck.resumeSession
-        : isRemoteMode && remoteTestResult?.ok && remoteTestResult.resumeSession !== undefined
-          ? remoteTestResult.resumeSession
-          : !isRemoteMode && selectedAcp.id === 'codex'
-            ? true
-            : initialAgent?.capabilities?.supportsResumeSession;
-
     const savedMemoryState = resolveSavedAgentNativeMemoryState({
       isEditMode: Boolean(initialAgent && onUpdateAgent),
       isRemoteMode,
@@ -550,6 +532,25 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     if (initialAgent && onUpdateAgent) {
       const trimmedName = name.trim();
       const finalHandle = normalizeAgentHandle(trimmedName, initialAgent.id);
+      const nextCapabilities = {
+        ...(initialAgent.capabilities || {
+          canUseInternalMemory: false,
+          canAccessWorkspaceFiles: true,
+          canExecuteSkills: true,
+          canDelegateToSubAgents: true,
+          supportsStreaming: true,
+        }),
+        canUseInternalMemory: savedMemoryState.canUseInternalMemory,
+      };
+      delete nextCapabilities.supportsLoadSession;
+      delete nextCapabilities.supportsResumeSession;
+      delete nextCapabilities.loadSession;
+      if (savedMemoryState.supportsLoadSession !== undefined) {
+        nextCapabilities.supportsLoadSession = savedMemoryState.supportsLoadSession;
+      }
+      if (savedMemoryState.supportsResumeSession !== undefined) {
+        nextCapabilities.supportsResumeSession = savedMemoryState.supportsResumeSession;
+      }
 
       onUpdateAgent(initialAgent.id, {
         name: trimmedName,
@@ -565,6 +566,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         envVars: finalEnvVars,
         acpTransport: transport,
         acpCommandOrUrl: resolvedCommand,
+        status: savedMemoryState.status,
         memory: {
           ...initialAgent.memory,
           mode: savedMemoryState.mode,
@@ -572,28 +574,12 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           nativeCapability: savedMemoryState.nativeCapability,
         },
         ...modelPayload,
-        capabilities: {
-          ...(initialAgent.capabilities || {
-            canUseInternalMemory: false,
-            canAccessWorkspaceFiles: true,
-            canExecuteSkills: true,
-            canDelegateToSubAgents: true,
-            supportsStreaming: true,
-          }),
-          ...(effectiveSupportsLoadSession !== undefined
-            ? { supportsLoadSession: effectiveSupportsLoadSession }
-            : {}),
-          ...(effectiveSupportsResumeSession !== undefined
-            ? { supportsResumeSession: effectiveSupportsResumeSession }
-            : {}),
-          canUseInternalMemory: savedMemoryState.canUseInternalMemory,
-        },
+        capabilities: nextCapabilities,
         ...(healthCheck
           ? {
               isModelHealthy: healthCheck.ok,
               ...(isRemoteMode
                 ? {
-                    status: (healthCheck.ok ? 'running' : 'error') as Agent['status'],
                     remoteLatencyMs: healthCheck.ok ? healthCheck.latencyMs : undefined,
                   }
                 : {}),
@@ -601,7 +587,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                 ? `连通校验通过${healthCheck.latencyMs !== undefined ? ` (${healthCheck.latencyMs}ms)` : ''}`
                 : `连通校验未通过: ${healthCheck.error || '未知错误'}`,
             }
-          : { statusDetail: initialAgent.statusDetail }),
+          : { statusDetail: undefined }),
       });
     } else {
       const trimmedName = name.trim();
@@ -630,12 +616,6 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           canExecuteSkills: true,
           canDelegateToSubAgents: true,
           supportsStreaming: true,
-          ...(effectiveSupportsLoadSession !== undefined
-            ? { supportsLoadSession: effectiveSupportsLoadSession }
-            : {}),
-          ...(effectiveSupportsResumeSession !== undefined
-            ? { supportsResumeSession: effectiveSupportsResumeSession }
-            : {}),
         },
         workspace: {
           rootPath: defaultWorkspaceRoot || '.',

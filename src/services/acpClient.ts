@@ -316,12 +316,26 @@ export interface AcpAgentResponse {
   cartridgeCitation?: CartridgeCitation;
   workspaceDiffs?: TopicPatchDiffItem[];
   executionMeta?: TopicExecutionUiMeta;
+  nativeMemoryCapability?: ReturnType<typeof parseNativeMemoryCapability>;
   durationMs: number;
   isRealProcess: boolean;
   isEmptyTurn?: boolean;
   isError?: boolean;
   stopReason?: string;
   raw?: any;
+}
+
+type AcpNativeMemoryUpdateListener = (
+  agentId: string,
+  capability: ReturnType<typeof parseNativeMemoryCapability>
+) => void;
+
+let onNativeMemoryCapabilityUpdated: AcpNativeMemoryUpdateListener | null = null;
+
+export function setOnAcpNativeMemoryCapabilityUpdated(
+  listener: AcpNativeMemoryUpdateListener | null
+): void {
+  onNativeMemoryCapabilityUpdated = listener;
 }
 
 /**
@@ -890,11 +904,21 @@ export async function sendPromptToRemoteAcpWebSocket(
                   accumulatedText ||
                   msg.result.text_response ||
                   (typeof msg.result === 'string' ? msg.result : JSON.stringify(msg.result));
+                const hasNativeMemoryDecl =
+                  msg.result &&
+                  typeof msg.result === 'object' &&
+                  msg.result.agentCapabilities &&
+                  typeof msg.result.agentCapabilities === 'object' &&
+                  msg.result.agentCapabilities.nativeMemory &&
+                  typeof msg.result.agentCapabilities.nativeMemory === 'object';
 
                 resolve({
                   textResponse: finalReply,
                   memoryActions: msg.result.memory_actions || memoryActions,
                   workspaceDiffs: readOnlyGuard ? [] : msg.result.workspace_diffs || [],
+                  ...(hasNativeMemoryDecl
+                    ? { nativeMemoryCapability: parseNativeMemoryCapability(msg.result) }
+                    : {}),
                   durationMs,
                   isRealProcess: true,
                   raw: msg,
@@ -1051,6 +1075,15 @@ export async function sendPromptToAcpAgent(
       agent.memory.mode === 'native',
       agent.memory.autoGenerate
     );
+    if (
+      remoteRes.nativeMemoryCapability &&
+      remoteRes.nativeMemoryCapability.status !== 'unknown'
+    ) {
+      onNativeMemoryCapabilityUpdated?.(
+        agent.id,
+        remoteRes.nativeMemoryCapability
+      );
+    }
     return remoteRes;
   }
 

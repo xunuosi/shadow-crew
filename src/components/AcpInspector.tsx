@@ -263,22 +263,19 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
             {(() => {
               const isRunning =
                 selectedAgent.status === 'running' ||
-                selectedAgent.status === 'starting' ||
                 selectedAgent.status === 'thinking' ||
                 selectedAgent.status === 'using_skill' ||
                 selectedAgent.status === 'accessing_workspace' ||
                 selectedAgent.status === 'querying_memory';
 
-              const isResumeSupported = selectedAgent.capabilities?.supportsResumeSession === true;
+              const isResumeSupported =
+                isRunning && selectedAgent.capabilities?.supportsResumeSession === true;
               const isLoadSupported =
-                selectedAgent.capabilities?.supportsLoadSession === true ||
-                (selectedAgent.capabilities as any)?.loadSession === true;
+                isRunning &&
+                (selectedAgent.capabilities?.supportsLoadSession === true ||
+                  (selectedAgent.capabilities as any)?.loadSession === true);
               const isRecoverySupported = isResumeSupported || isLoadSupported;
-              const isRecoveryUnsupported =
-                (selectedAgent.capabilities?.supportsResumeSession === false &&
-                  (selectedAgent.capabilities?.supportsLoadSession === false ||
-                    (selectedAgent.capabilities as any)?.loadSession === false)) ||
-                (isRunning && !isRecoverySupported && selectedAgent.status !== 'starting');
+              const isRecoveryUnsupported = isRunning && !isRecoverySupported;
 
               const jsonRpcSample =
                 isRunning || isRecoverySupported || isRecoveryUnsupported
