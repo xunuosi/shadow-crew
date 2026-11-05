@@ -104,14 +104,16 @@ import {
   normalizeHydratedAgent,
 } from './services/agentMemory';
 import {
+  applyLocalStatusChangeEvent,
   applyRemoteProbeOutcome,
   beginRemoteProbe,
   cancelRemoteProbe,
   isAgentActivelyRunning,
   markRemoteAgentStarting,
-  nativeMemoryCapabilityChanged,
+  reconcileLocalAgentsRuntimeStatus,
   recordRemoteProbeSuccess,
   RemoteProbeLease,
+  resetAgentHandshakeCapabilities,
   shouldRefreshRemoteProbe,
   stopAgentRuntimeState,
 } from './services/remoteAgentLifecycle';
@@ -1173,104 +1175,7 @@ export default function App() {
     try {
       const runtimeStatuses: AgentRuntimeStatus[] = await tauriInvoke('get_agents_runtime_status');
       if (Array.isArray(runtimeStatuses)) {
-        setAgents((prev) => {
-          let hasChange = false;
-          const next = prev.map((a) => {
-            if (a.isRemote || a.acpTransport === 'websocket') {
-              return a;
-            }
-            const match = runtimeStatuses.find((s) => s.agent_id === a.id);
-            if (match && match.is_alive) {
-              const targetStatus = match.status === 'idle' ? 'idle' : (match.status as any);
-              const targetDetail = match.status_detail || undefined;
-              const remoteSupportsLoad = match.supportsLoadSession ?? match.supports_load_session;
-              const remoteSupportsResume = match.supportsResumeSession ?? match.supports_resume_session;
-              const nativeMemory = match.nativeMemory ?? match.native_memory;
-              const hasLoadChanged =
-                remoteSupportsLoad !== undefined &&
-                remoteSupportsLoad !== null &&
-                a.capabilities?.supportsLoadSession !== remoteSupportsLoad;
-              const hasResumeChanged =
-                remoteSupportsResume !== undefined &&
-                remoteSupportsResume !== null &&
-                a.capabilities?.supportsResumeSession !== remoteSupportsResume;
-              const currentCap = a.memory.nativeCapability;
-              const hasMemoryChanged =
-                Boolean(nativeMemory) &&
-                nativeMemoryCapabilityChanged(currentCap, nativeMemory);
-              const targetCanUseMemory = Boolean(
-                a.memory.mode === 'native' &&
-                  (nativeMemory ? nativeMemory.status : currentCap.status) === 'enabled'
-              );
-              const hasCanUseMemoryChanged =
-                Boolean(a.capabilities?.canUseInternalMemory) !== targetCanUseMemory;
-              if (
-                a.status !== targetStatus ||
-                a.statusDetail !== targetDetail ||
-                hasLoadChanged ||
-                hasResumeChanged ||
-                hasMemoryChanged ||
-                hasCanUseMemoryChanged
-              ) {
-                hasChange = true;
-                return {
-                  ...a,
-                  status: targetStatus,
-                  statusDetail: targetDetail,
-                  memory: nativeMemory
-                    ? {
-                        ...a.memory,
-                        nativeCapability: nativeMemory,
-                      }
-                    : a.memory,
-                  capabilities: {
-                    ...(a.capabilities || {
-                      canUseInternalMemory: false,
-                      canAccessWorkspaceFiles: true,
-                      canExecuteSkills: true,
-                      canDelegateToSubAgents: true,
-                      supportsStreaming: true,
-                    }),
-                    ...(remoteSupportsLoad !== undefined && remoteSupportsLoad !== null
-                      ? { supportsLoadSession: remoteSupportsLoad }
-                      : {}),
-                    ...(remoteSupportsResume !== undefined && remoteSupportsResume !== null
-                      ? { supportsResumeSession: remoteSupportsResume }
-                      : {}),
-                    canUseInternalMemory: targetCanUseMemory,
-                  },
-                };
-              }
-              return a;
-            } else {
-              // If not in active backend pool, revert to idle if not currently starting
-              if (a.status !== 'idle' && a.status !== 'starting') {
-                hasChange = true;
-                return {
-                  ...a,
-                  status: 'idle',
-                  statusDetail: undefined,
-                  memory: {
-                    ...a.memory,
-                    nativeCapability: createUnknownNativeMemoryCapability(),
-                  },
-                  capabilities: {
-                    ...(a.capabilities || {
-                      canUseInternalMemory: false,
-                      canAccessWorkspaceFiles: true,
-                      canExecuteSkills: true,
-                      canDelegateToSubAgents: true,
-                      supportsStreaming: true,
-                    }),
-                    canUseInternalMemory: false,
-                  },
-                };
-              }
-              return a;
-            }
-          });
-          return hasChange ? next : prev;
-        });
+        setAgents((prev) => reconcileLocalAgentsRuntimeStatus(prev, runtimeStatuses).agents);
         return;
       }
     } catch {
@@ -1292,26 +1197,15 @@ export default function App() {
                 }
                 return a;
               } else {
-                if (a.status === 'running') {
+                if (
+                  a.status !== 'starting' &&
+                  (a.status !== 'idle' ||
+                    a.statusDetail !== undefined ||
+                    a.memory.nativeCapability.status !== 'unknown' ||
+                    Boolean(a.capabilities?.canUseInternalMemory))
+                ) {
                   hasChange = true;
-                  return {
-                    ...a,
-                    status: 'idle' as const,
-                    memory: {
-                      ...a.memory,
-                      nativeCapability: createUnknownNativeMemoryCapability(),
-                    },
-                    capabilities: {
-                      ...(a.capabilities || {
-                        canUseInternalMemory: false,
-                        canAccessWorkspaceFiles: true,
-                        canExecuteSkills: true,
-                        canDelegateToSubAgents: true,
-                        supportsStreaming: true,
-                      }),
-                      canUseInternalMemory: false,
-                    },
-                  };
+                  return resetAgentHandshakeCapabilities(a, 'idle', undefined);
                 }
                 return a;
               }
@@ -1351,7 +1245,9 @@ export default function App() {
           console.warn('Spawn agent error:', err);
           setAgents((prev) =>
             prev.map((a) =>
-              a.id === agent.id ? { ...a, status: 'error', statusDetail: String(err) } : a
+              a.id === agent.id
+                ? resetAgentHandshakeCapabilities(a, 'error', String(err))
+                : a
             )
           );
         }
@@ -1359,11 +1255,11 @@ export default function App() {
         setAgents((prev) =>
           prev.map((a) =>
             a.id === agent.id
-              ? {
-                  ...a,
-                  status: 'error',
-                  statusDetail: '当前环境没有本地 ACP 进程通道，请使用桌面端或连接远程 ACP。',
-                }
+              ? resetAgentHandshakeCapabilities(
+                  a,
+                  'error',
+                  '当前环境没有本地 ACP 进程通道，请使用桌面端或连接远程 ACP。'
+                )
               : a
           )
         );
@@ -1426,21 +1322,9 @@ export default function App() {
     tauriListen('acp:status_change', (event: any) => {
       const payload = event?.payload;
       if (payload && payload.agent_id) {
-        // 当 Agent 停止或断开连接时，仅更新 UI 状态为 idle，严禁静默销毁已持久化的会话与水位线，
-        // 确保 Agent 重新连接后能优先通过 Layer 1 (session/load) 原地恢复会话上下文
-        setAgents((prev) =>
-          prev.map((a) => {
-            if (a.id === payload.agent_id) {
-              const newStatus = payload.status === 'stopped' ? 'idle' : payload.status;
-              return {
-                ...a,
-                status: newStatus,
-                statusDetail: payload.status_detail || undefined,
-              };
-            }
-            return a;
-          })
-        );
+        // 当 Agent 停止或断开连接时，仅更新 UI 状态为 idle 并重置握手探测能力，
+        // 严禁静默销毁已持久化的会话与水位线，确保 Agent 重新连接后能优先通过 Layer 1 (session/load) 原地恢复会话上下文
+        setAgents((prev) => applyLocalStatusChangeEvent(prev, payload));
       }
     }).then((fn: any) => {
       unlisten = fn;
@@ -6105,7 +5989,11 @@ export default function App() {
           if (Object.keys(next).length === 0) setIsGenerating(false);
           return next;
         });
-        setAgents((prev) => prev.map((a) => (a.id === agent.id ? { ...a, status: 'idle' } : a)));
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.id === agent.id ? resetAgentHandshakeCapabilities(a, 'idle', undefined) : a
+          )
+        );
         syncRunningAgentsWithBackend();
 
         const errorReply: Message = {
@@ -7699,7 +7587,13 @@ export default function App() {
           if (Object.keys(next).length === 0) setIsGenerating(false);
           return next;
         });
-        setAgents((prev) => prev.map((a) => (a.id === targetAgent.id ? { ...a, status: 'idle' } : a)));
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.id === targetAgent.id
+              ? resetAgentHandshakeCapabilities(a, 'idle', undefined)
+              : a
+          )
+        );
         syncRunningAgentsWithBackend();
 
         const errorReply: Message = {
@@ -8686,6 +8580,19 @@ export default function App() {
           }
         }}
         onConnectAgent={(agentData) => {
+          const initialStatus = agentData.status || 'idle';
+          const isOnlineOnCreate = initialStatus === 'running';
+          const baseMemory =
+            agentData.memory || {
+              ...createAgentMemoryBank('native'),
+              nativeCapability: createUnknownNativeMemoryCapability(),
+            };
+          const effectiveMemory = isOnlineOnCreate
+            ? baseMemory
+            : {
+                ...baseMemory,
+                nativeCapability: createUnknownNativeMemoryCapability(),
+              };
           const newAg: Agent = {
             id: `agent-${Date.now()}`,
             name: agentData.name || 'Custom Agent',
@@ -8694,7 +8601,7 @@ export default function App() {
             role: agentData.role || 'Specialized Agent',
             description: agentData.description || agentData.role || 'Custom ACP Agent',
             color: '#06b6d4',
-            status: agentData.status || 'idle',
+            status: initialStatus,
             modelBadge: agentData.modelBadge || (agentData.isRemote ? 'Remote ACP' : 'ACP Stdio'),
             modelConfig: agentData.modelConfig,
             isModelHealthy: agentData.isModelHealthy,
@@ -8718,8 +8625,9 @@ export default function App() {
               supportsStreaming: true,
               ...(agentData.capabilities || {}),
               canUseInternalMemory:
-                agentData.memory?.mode === 'native' &&
-                agentData.memory?.nativeCapability.status === 'enabled',
+                isOnlineOnCreate &&
+                effectiveMemory.mode === 'native' &&
+                effectiveMemory.nativeCapability.status === 'enabled',
             },
             workspace: {
               rootPath: agentData.workspace?.rootPath || '~/.shadow-crew',
@@ -8729,11 +8637,7 @@ export default function App() {
               activeFiles: ['~/.shadow-crew/agents'],
             },
             skills: [],
-            memory:
-              agentData.memory || {
-                ...createAgentMemoryBank('native'),
-                nativeCapability: createUnknownNativeMemoryCapability(),
-              },
+            memory: effectiveMemory,
           };
           setAgents((prev) => [...prev, newAg]);
           setDuplicatingAgent(null);

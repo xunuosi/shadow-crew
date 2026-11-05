@@ -1,4 +1,4 @@
-import { AcpNativeMemoryCapability, Agent } from '../types';
+import { AcpNativeMemoryCapability, Agent, AgentRuntimeStatus } from '../types';
 import { createUnknownNativeMemoryCapability } from './agentMemory';
 
 export interface RemoteProbeLease {
@@ -243,6 +243,32 @@ export function applyRemoteProbeOutcome(
   return { agents: nextAgents, applied: true };
 }
 
+export function resetAgentHandshakeCapabilities(
+  agent: Agent,
+  nextStatus: Agent['status'] = 'idle',
+  statusDetail: string | undefined = undefined
+): Agent {
+  return {
+    ...agent,
+    status: nextStatus,
+    statusDetail,
+    memory: {
+      ...agent.memory,
+      nativeCapability: createUnknownNativeMemoryCapability(),
+    },
+    capabilities: {
+      ...(agent.capabilities || {
+        canUseInternalMemory: false,
+        canAccessWorkspaceFiles: true,
+        canExecuteSkills: true,
+        canDelegateToSubAgents: true,
+        supportsStreaming: true,
+      }),
+      canUseInternalMemory: false,
+    },
+  };
+}
+
 export function stopAgentRuntimeState(
   agents: Agent[],
   store: Map<string, RemoteProbeLease>,
@@ -250,15 +276,103 @@ export function stopAgentRuntimeState(
 ): Agent[] {
   cancelRemoteProbe(store, agentId);
   return agents.map((a) =>
-    a.id === agentId
-      ? {
+    a.id === agentId ? resetAgentHandshakeCapabilities(a, 'idle', undefined) : a
+  );
+}
+
+export function applyLocalStatusChangeEvent(
+  agents: Agent[],
+  payload: {
+    agent_id: string;
+    status: string;
+    status_detail?: string | null;
+  }
+): Agent[] {
+  return agents.map((a) => {
+    if (a.id !== payload.agent_id) return a;
+    const newStatus = (
+      payload.status === 'stopped' ? 'idle' : payload.status
+    ) as Agent['status'];
+    const nextDetail = payload.status_detail || undefined;
+    if (
+      newStatus === 'idle' ||
+      newStatus === 'error' ||
+      newStatus === 'auth_required'
+    ) {
+      return resetAgentHandshakeCapabilities(a, newStatus, nextDetail);
+    }
+    return {
+      ...a,
+      status: newStatus,
+      statusDetail: nextDetail,
+    };
+  });
+}
+
+export function reconcileLocalAgentsRuntimeStatus(
+  agents: Agent[],
+  runtimeStatuses: AgentRuntimeStatus[]
+): { agents: Agent[]; changed: boolean } {
+  let hasChange = false;
+  const next = agents.map((a) => {
+    if (a.isRemote || a.acpTransport === 'websocket') {
+      return a;
+    }
+    const match = runtimeStatuses.find((s) => s.agent_id === a.id);
+    if (match && match.is_alive) {
+      const targetStatus = (
+        match.status === 'idle' ? 'idle' : match.status
+      ) as Agent['status'];
+      const targetDetail = match.status_detail || undefined;
+      const isUnavailableStatus =
+        targetStatus === 'idle' ||
+        targetStatus === 'error' ||
+        targetStatus === 'auth_required';
+      const remoteSupportsLoad =
+        match.supportsLoadSession ?? match.supports_load_session;
+      const remoteSupportsResume =
+        match.supportsResumeSession ?? match.supports_resume_session;
+      const nativeMemory = isUnavailableStatus
+        ? createUnknownNativeMemoryCapability()
+        : (match.nativeMemory ?? match.native_memory);
+      const hasLoadChanged =
+        remoteSupportsLoad !== undefined &&
+        remoteSupportsLoad !== null &&
+        a.capabilities?.supportsLoadSession !== remoteSupportsLoad;
+      const hasResumeChanged =
+        remoteSupportsResume !== undefined &&
+        remoteSupportsResume !== null &&
+        a.capabilities?.supportsResumeSession !== remoteSupportsResume;
+      const currentCap = a.memory.nativeCapability;
+      const hasMemoryChanged =
+        Boolean(nativeMemory) &&
+        nativeMemoryCapabilityChanged(currentCap, nativeMemory);
+      const targetCanUseMemory = Boolean(
+        !isUnavailableStatus &&
+          a.memory.mode === 'native' &&
+          (nativeMemory ? nativeMemory.status : currentCap.status) === 'enabled'
+      );
+      const hasCanUseMemoryChanged =
+        Boolean(a.capabilities?.canUseInternalMemory) !== targetCanUseMemory;
+      if (
+        a.status !== targetStatus ||
+        a.statusDetail !== targetDetail ||
+        hasLoadChanged ||
+        hasResumeChanged ||
+        hasMemoryChanged ||
+        hasCanUseMemoryChanged
+      ) {
+        hasChange = true;
+        return {
           ...a,
-          status: 'idle',
-          statusDetail: undefined,
-          memory: {
-            ...a.memory,
-            nativeCapability: createUnknownNativeMemoryCapability(),
-          },
+          status: targetStatus,
+          statusDetail: targetDetail,
+          memory: nativeMemory
+            ? {
+                ...a.memory,
+                nativeCapability: nativeMemory,
+              }
+            : a.memory,
           capabilities: {
             ...(a.capabilities || {
               canUseInternalMemory: false,
@@ -267,9 +381,71 @@ export function stopAgentRuntimeState(
               canDelegateToSubAgents: true,
               supportsStreaming: true,
             }),
-            canUseInternalMemory: false,
+            ...(remoteSupportsLoad !== undefined && remoteSupportsLoad !== null
+              ? { supportsLoadSession: remoteSupportsLoad }
+              : {}),
+            ...(remoteSupportsResume !== undefined &&
+            remoteSupportsResume !== null
+              ? { supportsResumeSession: remoteSupportsResume }
+              : {}),
+            canUseInternalMemory: targetCanUseMemory,
           },
-        }
-      : a
-  );
+        };
+      }
+      return a;
+    }
+
+    // If not in active backend pool, revert to idle + unknown capability if not currently starting.
+    // Even if `acp:status_change` already transitioned `status` to `'idle'`, any residual
+    // `nativeCapability` or `canUseInternalMemory` from the exited process must be cleared.
+    if (
+      a.status !== 'starting' &&
+      (a.status !== 'idle' ||
+        a.statusDetail !== undefined ||
+        a.memory.nativeCapability.status !== 'unknown' ||
+        Boolean(a.capabilities?.canUseInternalMemory))
+    ) {
+      hasChange = true;
+      return resetAgentHandshakeCapabilities(a, 'idle', undefined);
+    }
+    return a;
+  });
+  return { agents: hasChange ? next : agents, changed: hasChange };
+}
+
+export function resolveSavedAgentNativeMemoryState(options: {
+  isEditMode: boolean;
+  isRemoteMode: boolean;
+  wasOnline: boolean;
+  nativeMemoryEnabled: boolean;
+  nativeMemoryAutoGenerate: boolean;
+  healthCheck?: {
+    ok: boolean;
+    nativeMemory?: AcpNativeMemoryCapability;
+  } | null;
+}): {
+  mode: 'native' | 'disabled';
+  autoGenerate: boolean;
+  nativeCapability: AcpNativeMemoryCapability;
+  canUseInternalMemory: boolean;
+} {
+  const mode = options.nativeMemoryEnabled ? 'native' : 'disabled';
+  const autoGenerate =
+    options.nativeMemoryEnabled && options.nativeMemoryAutoGenerate;
+  const nativeCapability =
+    options.isEditMode &&
+    options.isRemoteMode &&
+    options.wasOnline &&
+    options.healthCheck?.ok &&
+    options.healthCheck.nativeMemory
+      ? options.healthCheck.nativeMemory
+      : createUnknownNativeMemoryCapability();
+  const canUseInternalMemory =
+    options.nativeMemoryEnabled && nativeCapability.status === 'enabled';
+  return {
+    mode,
+    autoGenerate,
+    nativeCapability,
+    canUseInternalMemory,
+  };
 }

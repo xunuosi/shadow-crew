@@ -36,6 +36,7 @@ import {
   sendPromptToRemoteAcpWebSocket,
 } from './acpClient';
 import {
+  applyLocalStatusChangeEvent,
   applyRemoteProbeOutcome,
   beginRemoteProbe,
   cancelRemoteProbe,
@@ -43,7 +44,9 @@ import {
   isAgentActivelyRunning,
   markRemoteAgentStarting,
   nativeMemoryCapabilityChanged,
+  reconcileLocalAgentsRuntimeStatus,
   recordRemoteProbeSuccess,
+  resolveSavedAgentNativeMemoryState,
   shouldRefreshRemoteProbe,
   stopAgentRuntimeState,
 } from './remoteAgentLifecycle';
@@ -649,6 +652,56 @@ async function verifyAdapterFeatureProbeRetryFlow(tempDir: string): Promise<numb
     await exhausted.harness.close();
   }
 
+  // When initialize exhausts its bounded retries (2 failures -> unknown), a subsequent
+  // session/prompt that succeeds on attempt 3 must both activate native memory CLI flags
+  // AND report the recovered agentCapabilities.nativeMemory in the prompt result so the
+  // host can transition out of `unknown`.
+  const recoveredOnPrompt = await startAdapter(
+    join(tempDir, 'feature-recover-on-prompt'),
+    true,
+    false,
+    undefined,
+    { featureFailures: EXPECTED_NATIVE_MEMORY_PROBE_ATTEMPTS }
+  );
+  try {
+    const init = await recoveredOnPrompt.harness.request('initialize', {}, 1);
+    assert.equal(
+      parseNativeMemoryCapability(init.result).status,
+      'unknown',
+      'initialize must report unknown when both bounded attempts fail'
+    );
+    const session = await recoveredOnPrompt.harness.request(
+      'session/new',
+      { cwd: tempDir },
+      2
+    );
+    const promptRes = await recoveredOnPrompt.harness.request(
+      'session/prompt',
+      {
+        sessionId: session.result?.sessionId,
+        cwd: tempDir,
+        prompt: [{ type: 'text', text: 'recover native memory on prompt' }],
+      },
+      3
+    );
+    const recoveredCap = parseNativeMemoryCapability(promptRes.result);
+    assert.equal(recoveredCap.status, 'enabled');
+    assert.equal(recoveredCap.provider, 'codex-memories');
+    assert.equal(
+      readFileSync(recoveredOnPrompt.featureCounterFile!, 'utf8').trim(),
+      String(EXPECTED_NATIVE_MEMORY_PROBE_ATTEMPTS + 1),
+      'session/prompt must succeed on the 3rd probe attempt without extra redundant probes'
+    );
+    const execAction = readActions(recoveredOnPrompt.actionsFile!).find(
+      (entry) => entry.args[0] === 'exec'
+    );
+    assert.ok(execAction?.args.includes('--enable'));
+    assert.ok(execAction?.args.includes('memories'));
+    assertions += 6;
+  } finally {
+    await recoveredOnPrompt.harness.close();
+  }
+
   return assertions;
 }
 
@@ -1004,6 +1057,102 @@ function verifyTypeContracts(): number {
     true
   );
   assertions += 31;
+
+  // 7) Local process exit (`acp:status_change` -> `stopped`) and 3s poll reconciliation:
+  //    Verify that stopping/exiting immediately clears `nativeCapability` and `canUseInternalMemory`,
+  //    and even if `status` was already `'idle'`, `reconcileLocalAgentsRuntimeStatus` cleans up
+  //    any residual `enabled` capability.
+  const runningLocalAgent: Agent = {
+    ...migrated.agent,
+    id: 'local-codex',
+    isRemote: false,
+    acpTransport: 'stdio',
+    status: 'running',
+    memory: {
+      ...migrated.agent.memory,
+      mode: 'native',
+      nativeCapability: {
+        status: 'enabled',
+        persistent: true,
+        crossThread: true,
+        provider: 'codex-memories',
+        scope: 'runtime',
+      },
+    },
+    capabilities: {
+      ...migrated.agent.capabilities!,
+      canUseInternalMemory: true,
+    },
+  };
+  const afterStoppedEvent = applyLocalStatusChangeEvent([runningLocalAgent], {
+    agent_id: 'local-codex',
+    status: 'stopped',
+  });
+  assert.equal(afterStoppedEvent[0].status, 'idle');
+  assert.equal(afterStoppedEvent[0].memory.nativeCapability.status, 'unknown');
+  assert.equal(afterStoppedEvent[0].capabilities?.canUseInternalMemory, false);
+
+  const idleWithStaleCap: Agent = {
+    ...runningLocalAgent,
+    status: 'idle',
+  };
+  const reconciledIdle = reconcileLocalAgentsRuntimeStatus([idleWithStaleCap], []);
+  assert.equal(reconciledIdle.changed, true);
+  assert.equal(reconciledIdle.agents[0].status, 'idle');
+  assert.equal(reconciledIdle.agents[0].memory.nativeCapability.status, 'unknown');
+  assert.equal(reconciledIdle.agents[0].capabilities?.canUseInternalMemory, false);
+
+  // 8) Modal save capability state resolution (`resolveSavedAgentNativeMemoryState`):
+  //    - New/offline remote Agent must NOT save `enabled` capability while `idle`.
+  //    - Online remote Agent whose save-time `healthCheck` fails (`ok: false`) must reset to `unknown`.
+  //    - Online local Agent on save resets to `unknown` pending respawn handshake.
+  //    - Online remote Agent with `healthCheck.ok === true` preserves probed `enabled` capability.
+  const enabledCap = runningLocalAgent.memory.nativeCapability;
+  const savedNewRemote = resolveSavedAgentNativeMemoryState({
+    isEditMode: false,
+    isRemoteMode: true,
+    wasOnline: false,
+    nativeMemoryEnabled: true,
+    nativeMemoryAutoGenerate: false,
+    healthCheck: null,
+  });
+  assert.equal(savedNewRemote.nativeCapability.status, 'unknown');
+  assert.equal(savedNewRemote.canUseInternalMemory, false);
+
+  const savedFailedOnlineRemote = resolveSavedAgentNativeMemoryState({
+    isEditMode: true,
+    isRemoteMode: true,
+    wasOnline: true,
+    nativeMemoryEnabled: true,
+    nativeMemoryAutoGenerate: false,
+    healthCheck: { ok: false },
+  });
+  assert.equal(savedFailedOnlineRemote.nativeCapability.status, 'unknown');
+  assert.equal(savedFailedOnlineRemote.canUseInternalMemory, false);
+
+  const savedOnlineLocal = resolveSavedAgentNativeMemoryState({
+    isEditMode: true,
+    isRemoteMode: false,
+    wasOnline: true,
+    nativeMemoryEnabled: true,
+    nativeMemoryAutoGenerate: false,
+    healthCheck: null,
+  });
+  assert.equal(savedOnlineLocal.nativeCapability.status, 'unknown');
+  assert.equal(savedOnlineLocal.canUseInternalMemory, false);
+
+  const savedHealthyOnlineRemote = resolveSavedAgentNativeMemoryState({
+    isEditMode: true,
+    isRemoteMode: true,
+    wasOnline: true,
+    nativeMemoryEnabled: true,
+    nativeMemoryAutoGenerate: true,
+    healthCheck: { ok: true, nativeMemory: enabledCap },
+  });
+  assert.equal(savedHealthyOnlineRemote.nativeCapability.status, 'enabled');
+  assert.equal(savedHealthyOnlineRemote.canUseInternalMemory, true);
+  assert.equal(savedHealthyOnlineRemote.autoGenerate, true);
+  assertions += 16;
 
   return assertions;
 }

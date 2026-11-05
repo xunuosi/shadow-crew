@@ -155,5 +155,6 @@ AgentMemoryBank.mode
 | NM-11 | 用户全局配置启用 memories，Agent 设置为 disabled | Codex 子进程收到显式 disable/false 参数 |
 | NM-12 | 远程 Agent 启动/停止/编辑/删除发生 probe 竞态 | generation 失效旧结果；仅最新操作可更新运行态 |
 | NM-13 | 远程 Agent 断线 | 独立健康租约在超时后回落 `error + unknown` |
-| NM-14 | Codex 特性探测临时失败 | 单次 `initialize` 内有界重试；持续失败上报 `unknown`，后续请求可再次探测且不缓存失败结论 |
+| NM-14 | Codex 特性探测临时失败 | 单次 `initialize` 内有界重试；持续失败上报 `unknown`，后续请求可再次探测且不缓存失败结论；一旦 `session/prompt` 重试探测成功，响应同步回写 `agentCapabilities.nativeMemory` 供宿主更新状态 |
 | NM-15 | SSR/内嵌首帧主题 | 亮色与暗色均可通过显式初始主题确定性渲染，不依赖浏览器 `document` |
+| NM-16 | 本地退出事件与弹窗保存门控 | 本地进程退出（`acp:status_change=stopped`）及 3s 轮询对账无条件清理残留 `enabled` 能力；新建/离线/本地重启或远程复测失败保存时一律回落 `unknown + canUseInternalMemory=false` |

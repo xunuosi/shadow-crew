@@ -27,6 +27,7 @@ import {
   createAgentMemoryBank,
   createUnknownNativeMemoryCapability,
 } from '../services/agentMemory';
+import { resolveSavedAgentNativeMemoryState } from '../services/remoteAgentLifecycle';
 import { DEFAULT_MODEL_NAME } from '../config/models';
 import { normalizeAgentHandle } from '../services/agentCollaboration';
 import { AgentRuntimeStatus } from '../types';
@@ -163,6 +164,10 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   );
 
   useEffect(() => {
+    if (initialThemeMode) {
+      setIsLightMode(initialThemeMode === 'light');
+      return;
+    }
     if (typeof document === 'undefined') return;
     const syncFromDocumentTheme = () => {
       setIsLightMode(document.documentElement.getAttribute('data-theme') !== 'dark');
@@ -176,7 +181,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       attributeFilter: ['data-theme'],
     });
     return () => observer.disconnect();
-  }, [isOpen]);
+  }, [isOpen, initialThemeMode]);
 
   // Saving & Re-verification State
   const [isSavingAndVerifying, setIsSavingAndVerifying] = useState(false);
@@ -520,7 +525,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         ? healthCheck.loadSession
         : isRemoteMode && remoteTestResult?.ok && remoteTestResult.loadSession !== undefined
           ? remoteTestResult.loadSession
-          : selectedAcp.id === 'claude_code'
+          : !isRemoteMode && selectedAcp.id === 'claude_code'
             ? true
             : initialAgent?.capabilities?.supportsLoadSession;
 
@@ -529,25 +534,18 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         ? healthCheck.resumeSession
         : isRemoteMode && remoteTestResult?.ok && remoteTestResult.resumeSession !== undefined
           ? remoteTestResult.resumeSession
-          : selectedAcp.id === 'codex'
+          : !isRemoteMode && selectedAcp.id === 'codex'
             ? true
             : initialAgent?.capabilities?.supportsResumeSession;
 
-    const nativeMemoryPolicyChanged =
-      Boolean(initialAgent) &&
-      (initialAgent?.memory.mode !== nextMemoryMode ||
-        Boolean(initialAgent?.memory.autoGenerate) !== nextAutoGenerate);
-    const nextNativeCapability =
-      isRemoteMode && healthCheck?.ok && healthCheck.nativeMemory
-        ? healthCheck.nativeMemory
-        : isRemoteMode &&
-            remoteTestResult?.ok &&
-            remoteTestResult.nativeMemory &&
-            remoteTestResult.nativeMemory.status !== 'unknown'
-          ? remoteTestResult.nativeMemory
-          : nativeMemoryPolicyChanged || !wasOnline
-            ? createUnknownNativeMemoryCapability()
-            : initialAgent?.memory.nativeCapability || createUnknownNativeMemoryCapability();
+    const savedMemoryState = resolveSavedAgentNativeMemoryState({
+      isEditMode: Boolean(initialAgent && onUpdateAgent),
+      isRemoteMode,
+      wasOnline,
+      nativeMemoryEnabled,
+      nativeMemoryAutoGenerate,
+      healthCheck,
+    });
 
     if (initialAgent && onUpdateAgent) {
       const trimmedName = name.trim();
@@ -569,9 +567,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         acpCommandOrUrl: resolvedCommand,
         memory: {
           ...initialAgent.memory,
-          mode: nextMemoryMode,
-          autoGenerate: nativeMemoryEnabled && nativeMemoryAutoGenerate,
-          nativeCapability: nextNativeCapability,
+          mode: savedMemoryState.mode,
+          autoGenerate: savedMemoryState.autoGenerate,
+          nativeCapability: savedMemoryState.nativeCapability,
         },
         ...modelPayload,
         capabilities: {
@@ -588,8 +586,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           ...(effectiveSupportsResumeSession !== undefined
             ? { supportsResumeSession: effectiveSupportsResumeSession }
             : {}),
-          canUseInternalMemory:
-            nativeMemoryEnabled && nextNativeCapability.status === 'enabled',
+          canUseInternalMemory: savedMemoryState.canUseInternalMemory,
         },
         ...(healthCheck
           ? {
@@ -628,8 +625,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         acpCommandOrUrl: resolvedCommand,
         protocolVersion: '2025-01-01 (ACP v1.0.4)',
         capabilities: {
-          canUseInternalMemory:
-            nativeMemoryEnabled && nextNativeCapability.status === 'enabled',
+          canUseInternalMemory: savedMemoryState.canUseInternalMemory,
           canAccessWorkspaceFiles: !isRemoteMode || !readOnlyGuard,
           canExecuteSkills: true,
           canDelegateToSubAgents: true,
@@ -651,13 +647,10 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         skills: [],
         memory: {
           ...createAgentMemoryBank(
-            nextMemoryMode,
-            nativeMemoryEnabled && nativeMemoryAutoGenerate
+            savedMemoryState.mode,
+            savedMemoryState.autoGenerate
           ),
-          nativeCapability:
-            isRemoteMode && remoteTestResult?.ok && remoteTestResult.nativeMemory
-              ? remoteTestResult.nativeMemory
-              : createUnknownNativeMemoryCapability(),
+          nativeCapability: savedMemoryState.nativeCapability,
         },
         isJoinedCurrentRoom: true,
       });
@@ -757,6 +750,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
               type="button"
               onClick={() => {
                 setConnectTab('local');
+                setRemoteTestResult(null);
                 const firstRuntime = runtimes[0] || FALLBACK_PRESET_RUNTIMES[0];
                 setName(firstRuntime?.name || 'New ACP Agent');
                 setDescription(firstRuntime?.description || 'Local Agent Client Protocol endpoint.');
@@ -774,6 +768,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
               type="button"
               onClick={() => {
                 setConnectTab('remote');
+                setRemoteTestResult(null);
                 setName('Remote ACP Agent');
                 setDescription('Remote ACP process connected via WebSocket / Relay Hub.');
               }}
@@ -991,7 +986,10 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                     type="text"
                     required
                     value={remoteUrl}
-                    onChange={(e) => setRemoteUrl(e.target.value)}
+                    onChange={(e) => {
+                      setRemoteUrl(e.target.value);
+                      if (remoteTestResult) setRemoteTestResult(null);
+                    }}
                     placeholder="ws://192.168.1.55:9000 或 wss://hub.shadowcrew.ai/..."
                     className={`flex-1 rounded-xl px-3.5 py-2 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
                   />
@@ -1165,7 +1163,10 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                 <input
                   type="password"
                   value={authToken}
-                  onChange={(e) => setAuthToken(e.target.value)}
+                  onChange={(e) => {
+                    setAuthToken(e.target.value);
+                    if (remoteTestResult) setRemoteTestResult(null);
+                  }}
                   placeholder="由对方生成的临时访问密钥 (Bearer token)"
                   className={`w-full rounded-xl px-3.5 py-2 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
                 />

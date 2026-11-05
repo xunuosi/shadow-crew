@@ -200,9 +200,7 @@ function resolveNativeMemoryPolicy(params) {
   return { enabled, autoGenerate };
 }
 
-function codexNativeMemoryCapability(params) {
-  const policy = resolveNativeMemoryPolicy(params);
-  const supported = codexNativeMemoryFeatureSupported();
+function buildCodexNativeMemoryCapability(policy, supported) {
   if (supported === null) {
     return {
       scope: 'runtime',
@@ -230,6 +228,12 @@ function codexNativeMemoryCapability(params) {
     provider: 'codex-memories',
     detail,
   };
+}
+
+function codexNativeMemoryCapability(params) {
+  const policy = resolveNativeMemoryPolicy(params);
+  const supported = codexNativeMemoryFeatureSupported();
+  return buildCodexNativeMemoryCapability(policy, supported);
 }
 
 // 会话状态管理与持久化缓存 (独立会话文件存储，彻底杜绝多进程覆盖 ~/.shadow-crew/cache/codex_sessions/<sessionId>.json)
@@ -527,6 +531,10 @@ rl.on('line', async (line) => {
     const hasThread = Boolean(session.codexThreadId);
     const nativeMemoryPolicy = resolveNativeMemoryPolicy(params);
     const nativeMemoryFeatureSupported = codexNativeMemoryFeatureSupported();
+    const promptNativeMemoryCapability = buildCodexNativeMemoryCapability(
+      nativeMemoryPolicy,
+      nativeMemoryFeatureSupported
+    );
     const nativeMemoryActive =
       nativeMemoryPolicy.enabled && nativeMemoryFeatureSupported === true;
     const nativeMemoryDirective = nativeMemoryActive
@@ -672,11 +680,17 @@ rl.on('line', async (line) => {
         sendResult(id, {
           text_response: `⚠️ Codex 执行退出 (exit code: ${code})\n${stderrBuffer.trim()}`,
           stopReason: 'error',
+          agentCapabilities: {
+            nativeMemory: promptNativeMemoryCapability,
+          },
         });
       } else {
         sendResult(id, {
           text_response: fullOutput || '（Codex 执行完成，无输出文本）',
           stopReason: 'completed',
+          agentCapabilities: {
+            nativeMemory: promptNativeMemoryCapability,
+          },
         });
       }
     });

@@ -364,6 +364,16 @@ pub fn check_native_memory_capability(result: &serde_json::Value) -> AcpNativeMe
     }
 }
 
+pub fn maybe_refresh_native_memory_capability(
+    result: &serde_json::Value,
+) -> Option<AcpNativeMemoryCapability> {
+    result
+        .get("agentCapabilities")
+        .and_then(|capabilities| capabilities.get("nativeMemory"))
+        .and_then(|value| value.as_object())?;
+    Some(check_native_memory_capability(result))
+}
+
 fn build_native_memory_prompt_meta(
     enabled: Option<bool>,
     auto_generate: Option<bool>,
@@ -3828,6 +3838,11 @@ impl RunningAgent {
                         );
                     }
                 }
+                if let Some(res) = resp.get("result") {
+                    if let Some(refreshed) = maybe_refresh_native_memory_capability(res) {
+                        *self.native_memory_capability.lock().await = refreshed;
+                    }
+                }
                 Ok(resp)
             }
             Err(timeout_err_msg) => {
@@ -5049,5 +5064,35 @@ mod runtime_status_tests {
         assert_eq!(json_val["isNew"], true);
         assert_eq!(json_val["loadFailed"], false);
         assert_eq!(json_val["recoveryMode"], "resume");
+    }
+
+    #[test]
+    fn test_maybe_refresh_native_memory_capability_on_prompt_result() {
+        use super::maybe_refresh_native_memory_capability;
+
+        let plain_prompt_result = serde_json::json!({
+            "text_response": "OK",
+            "stopReason": "completed"
+        });
+        assert!(maybe_refresh_native_memory_capability(&plain_prompt_result).is_none());
+
+        let recovered_prompt_result = serde_json::json!({
+            "text_response": "OK",
+            "stopReason": "completed",
+            "agentCapabilities": {
+                "nativeMemory": {
+                    "supported": true,
+                    "enabled": true,
+                    "persistent": true,
+                    "crossThread": true,
+                    "provider": "codex-memories",
+                    "scope": "runtime"
+                }
+            }
+        });
+        let refreshed =
+            maybe_refresh_native_memory_capability(&recovered_prompt_result).unwrap();
+        assert_eq!(refreshed.status, "enabled");
+        assert_eq!(refreshed.provider.as_deref(), Some("codex-memories"));
     }
 }
