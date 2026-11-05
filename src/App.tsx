@@ -1165,7 +1165,9 @@ export default function App() {
   }, [agents, currentUserId]);
 
   // Synchronize Agent running status with Tauri backend process manager
-  const syncRunningAgentsWithBackend = useCallback(async () => {
+  const syncRunningAgentsWithBackend = useCallback(async (
+    settleUnmatchedStarting = false
+  ) => {
     if (typeof window === 'undefined') return;
     const tauriInvoke =
       (window as any).__TAURI_INTERNALS__?.invoke ||
@@ -1175,7 +1177,12 @@ export default function App() {
     try {
       const runtimeStatuses: AgentRuntimeStatus[] = await tauriInvoke('get_agents_runtime_status');
       if (Array.isArray(runtimeStatuses)) {
-        setAgents((prev) => reconcileLocalAgentsRuntimeStatus(prev, runtimeStatuses).agents);
+        setAgents(
+          (prev) =>
+            reconcileLocalAgentsRuntimeStatus(prev, runtimeStatuses, {
+              settleUnmatchedStarting,
+            }).agents
+        );
         return;
       }
     } catch {
@@ -1198,11 +1205,14 @@ export default function App() {
                 return a;
               } else {
                 if (
-                  a.status !== 'starting' &&
+                  (a.status !== 'starting' || settleUnmatchedStarting) &&
                   (a.status !== 'idle' ||
                     a.statusDetail !== undefined ||
                     a.memory.nativeCapability.status !== 'unknown' ||
-                    Boolean(a.capabilities?.canUseInternalMemory))
+                    Boolean(a.capabilities?.canUseInternalMemory) ||
+                    a.capabilities?.supportsLoadSession !== undefined ||
+                    a.capabilities?.supportsResumeSession !== undefined ||
+                    a.capabilities?.loadSession !== undefined)
                 ) {
                   hasChange = true;
                   return resetAgentHandshakeCapabilities(a, 'idle', undefined);
@@ -1226,7 +1236,13 @@ export default function App() {
       // 启动 Agent 进程: 初始设为 starting 握手过渡态
       setAgents((prev) =>
         prev.map((a) =>
-          a.id === agent.id ? { ...a, status: 'starting', statusDetail: 'ACP 进程启动与协议握手中...' } : a
+          a.id === agent.id
+            ? resetAgentHandshakeCapabilities(
+                a,
+                'starting',
+                'ACP 进程启动与协议握手中...'
+              )
+            : a
         )
       );
 
@@ -1240,7 +1256,7 @@ export default function App() {
             cwd: agent.workspace?.rootPath || '~/.shadow-crew',
             envVars: buildAgentLaunchEnv(agent),
           });
-          syncRunningAgentsWithBackend();
+          await syncRunningAgentsWithBackend(true);
         } catch (err: any) {
           console.warn('Spawn agent error:', err);
           setAgents((prev) =>

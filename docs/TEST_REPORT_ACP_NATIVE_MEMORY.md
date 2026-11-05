@@ -1,7 +1,7 @@
-# ACP 原生长期记忆功能测试报告（六轮深度复核与行为回归终版）
+# ACP 原生长期记忆功能测试报告（七轮深度复核与行为回归终版）
 
 > 测试日期：2026-11-05
-> 结论：通过，可交付复测（历轮审计缺陷及最新提交复核发现的本地退出竞态残留、弹窗保存门控漏洞、`session/prompt` 探测恢复回写 3 项衍生问题均已彻底闭环）
+> 结论：通过，可交付复测（历轮审计缺陷已闭环；本轮继续修复启动态旧握手能力残留，以及 `stopped` 事件丢失时 starting 状态无法收敛的生命周期死角）
 > 规范依据：[SPEC_ACP_NATIVE_MEMORY.md](./SPEC_ACP_NATIVE_MEMORY.md)、[TECH_SPEC_ACP_ONLY_RUNTIME.md](./TECH_SPEC_ACP_ONLY_RUNTIME.md)
 > 覆盖范围：本地 stdio ACP、远程 WebSocket ACP 能力感知、Codex ACP 原生 Memory、Agent 生命周期与配置迁移、双主题 UI 行为渲染与对比度
 
@@ -13,7 +13,7 @@
 2. **协议握手能力扩展**：ACP `initialize` 响应解析可选扩展 `agentCapabilities.nativeMemory`，严格要求 `supported === true && enabled === true` 才判定为 `enabled`，`supported === true && enabled === false` 判定为 `disabled`，`supported === false` 判定为 `unsupported`，其余缺失或半声明状态一律归入 `unknown`（遵循 `NM-05` Fail-Closed 原则）。
 3. **运行期探测与离线态严格解耦（`NM-05` / `NM-09`）**：
    - 应用冷启动/重加载统一经过 `normalizeHydratedAgent()`（覆盖 `localStorage` 初始化回退、`INITIAL_AGENTS` 预设以及 SQLite `syncWorkspaceWithDb` 异步 hydration 全入口）：持久化的 `running/starting` 状态、`statusDetail` 和上次进程的 `nativeCapability` 全部作废，Agent 以 `idle + unknown + canUseInternalMemory=false` 进入工作区，并在 SQLite hydration 完成后立即触发 `syncRunningAgentsWithBackend` 同步真实运行态。
-   - Agent 停止、本地进程退出、复制 Agent、编辑 Agent 或删除 Agent 时，均立即重置 `nativeCapability` 为 `unknown`。
+   - Agent 停止、本地进程退出、复制 Agent、编辑 Agent、删除 Agent 或进入新的 `starting` 时，均立即重置 `nativeCapability` 为 `unknown`，并失效上一轮 load/resume 握手结果。
 4. **本地与远程双通道策略下发与生命周期状态机**：
    - 本地 stdio 通道：启动时通过受控环境变量 `SHADOW_CREW_ACP_NATIVE_MEMORY` / `SHADOW_CREW_ACP_NATIVE_MEMORY_AUTO_GENERATE` 下发策略（屏蔽用户同名 ENV 伪造），并在 `initialize` 与 `session/prompt` 请求中携带 `_meta.shadowCrew.nativeMemory`。
    - 远程 WebSocket 通道：`probeRemoteAcpConnection()` 与 `sendPromptToRemoteAcpWebSocket()` 在 `initialize` 和 `session/prompt` 中同步携带 `_meta.shadowCrew.nativeMemory`，且 `autoGenerate` 严格受 `nativeMemoryEnabled` 门控；后台本地轮询 `syncRunningAgentsWithBackend` 跳过远程/WebSocket Agent，防止 3 秒轮询冲掉远程在线状态。
@@ -49,6 +49,7 @@
 | **NM-14** | Codex 特性探测单次有界重试；持续异常上报 `unknown` 而非 `unsupported`，后续 `session/prompt` 重试成功后回写能力 | 适配器层 + Rust 宿主层 | `verifyAdapterFeatureProbeRetryFlow` + `test_maybe_refresh_native_memory_capability_on_prompt_result` | ✅ 通过 |
 | **NM-15** | SSR/内嵌环境亮暗首帧可通过显式初始主题确定性渲染 | React SSR 行为渲染层 | `verifyRemoteWebSocketAndUiContracts` 对显式 `dark` 容器及语义色类进行断言 | ✅ 通过 |
 | **NM-16** | 本地进程退出事件与 3s 轮询对账清理残留能力；弹窗新建/离线/复测失败保存严禁写入 `enabled` | 状态机行为测试 | `verifyTypeContracts`（`applyLocalStatusChangeEvent` / `reconcileLocalAgentsRuntimeStatus` / `resolveSavedAgentNativeMemoryState`） | ✅ 通过 |
+| **NM-17** | 新启动必须失效旧握手结果；spawn 返回后不存在的进程不得永久卡在 `starting` | 状态机行为测试 | `verifyTypeContracts` 对 starting 重置、普通轮询保留、post-spawn 强制收敛进行判别断言 | ✅ 通过 |
 
 ---
 
@@ -95,6 +96,12 @@
 | **R6-2** | P1 | `src/components/ConnectAgentModal.tsx`、`src/App.tsx`：① 在线远程 Agent 编辑保存时若 `healthCheck` 失败（变为 `error`），仍保留旧的 `nativeCapability=enabled`；② 新建/复制/离线远程 Agent 在弹窗点过“测试连通性”后保存，导致未启动的 `idle` Agent 被写入 `enabled`；③ 修改 `remoteUrl`/`authToken` 未清空旧 `remoteTestResult`；④ 显式 `initialThemeMode="dark"` 在客户端挂载时被 `useEffect` 覆盖 | 1. `nextNativeCapability` 三元表达式在 `healthCheck.ok === false` 且未改动记忆开关时落入 `initialAgent.memory.nativeCapability` 分支。<br>2. 新建/离线保存分支直接读取了仅供弹窗内预览的 `remoteTestResult.nativeMemory`。<br>3. `remoteUrl`、`authToken` 的 `onChange` 及本地/远程 Tab 切换未清空 `remoteTestResult`。<br>4. `useEffect` 在 `isOpen` 时无条件按 `document.documentElement` 覆盖 `initialThemeMode`。 | 1. 抽离 `resolveSavedAgentNativeMemoryState`：仅当 `isEditMode && isRemoteMode && wasOnline && healthCheck?.ok` 时保留在线复测能力；新建、复制、离线编辑、本地重启编辑或远程复测失败一律回落 `unknown + canUseInternalMemory=false`。<br>2. 修改 `remoteUrl`、`authToken` 或切换 Tab 时立即清空 `remoteTestResult`。<br>3. 传入 `initialThemeMode` 时锁定首帧与挂载主题，不被未设置 `data-theme` 的 `document` 冲掉。 |
 | **R6-3** | P2 | `bin/codex-acp`、`src-tauri/src/acp_manager.rs`：`initialize` 阶段 2 次特性探测均临时失败返回 `unknown` 后，后续 `session/prompt` 即使在适配器内重试探测成功，宿主侧 `RunningAgent.native_memory_capability` 仍永久停留在 `unknown`（`NM-14` 半闭环） | `bin/codex-acp` 在 `session/prompt` 虽重新探测并启用 `--enable memories`，但响应 `result` 未附带恢复后的 `agentCapabilities.nativeMemory`，且 Rust `send_session_prompt` 未从 Prompt 响应刷新 `native_memory_capability`。 | 1. `bin/codex-acp` 复用当轮 `session/prompt` 探测结果（不额外增加子进程探测次数），在 `session/prompt` 结果中附带 `agentCapabilities.nativeMemory`。<br>2. Rust 新增 `maybe_refresh_native_memory_capability`，在 `send_session_prompt` 收到包含 `agentCapabilities.nativeMemory` 的响应时自动刷新能力状态。<br>3. 新增 `featureFailures=2` 用例验证 `initialize(unknown) -> session/prompt(enabled)` 全链路恢复。 |
 
+### 3.5 第七轮逆向审查：启动态握手残留与 starting 收敛
+
+| 编号 | 严重度 | 缺陷位置与现象 | 根因分析 | 修复方案与判别性验证 |
+| --- | --- | --- | --- | --- |
+| **R7-1** | P1 | `src/App.tsx`、`src/services/remoteAgentLifecycle.ts`：本地/远程 Agent 进入新 `starting` 时仍可能短暂保留上一轮 `nativeCapability=enabled` 与 load/resume 支持；本地 spawn 成功返回但后端进程已消失且 `stopped` 事件丢失时，3 秒轮询会因 starting 保护而永久不收敛 | 1. `markRemoteAgentStarting` 与 `spawnLocalAcpAgent` 只修改 status，没有先失效握手结果。<br>2. `resetAgentHandshakeCapabilities` 仅清理 native memory，未清理 `supportsLoadSession`、`supportsResumeSession`、`loadSession`。<br>3. 普通轮询为避免 spawn 尚未落库的窗口期误判，有意跳过 starting；但 spawn IPC 已返回后仍使用普通轮询，缺少显式收敛阶段。 | 1. 本地与远程进入 starting 均复用完整握手失效函数，同时清除 native memory、canUseInternalMemory 与 load/resume 三类旧结果。<br>2. `reconcileLocalAgentsRuntimeStatus` 新增 `settleUnmatchedStarting` 选项；普通 3s 轮询保留 in-flight starting，`spawn_acp_agent` 返回后立即执行强制对账，后端无存活实例则回落 `idle + unknown`。<br>3. 新增普通轮询“不误杀”与 post-spawn“必须收敛”双向判别断言。 |
+
 ---
 
 ## 4. 分层自动化验证结果与真实性声明
@@ -103,8 +110,8 @@
 | --- | --- | --- | --- | --- |
 | **静态类型检查** | TypeScript 全量类型校验 | `npm run lint` | 通过（0 error） | 真实编译器静态检查 |
 | **生产构建检查** | Vite 前端生产打包 | `npm run build` | 通过（2016 modules transformed） | 真实生产打包 |
-| **单元 + 协议 + 状态机 + UI 渲染层** | 原生记忆契约、迁移、用户 TOML 覆盖、Codex 探测三态/重试恢复、本地退出与保存门控、远程 WS、状态机与 React SSR | `npm run test:acp-native-memory` | **通过（222 assertions）** | 纯函数 + Fake Codex 子进程 JSON-RPC + Mock WebSocket + 状态机行为测试 + React `renderToStaticMarkup` 组件树渲染 |
-| **真实运行期层 (E2E)** | 真实 Codex CLI 跨进程写入、跨 Session 召回 + 用户 TOML `memories=true` 下 `disabled` 强制阻断召回 | `npm run test:acp-native-memory -- --real` | **通过（232 assertions，隔离 `CODEX_HOME`）** | **真实 `bin/codex-acp` + 真实本机 Codex CLI + 真实模型网关推理 + 真实 `memories_v2` 落盘、跨进程召回与 `disabled` 阻断召回** |
+| **单元 + 协议 + 状态机 + UI 渲染层** | 原生记忆契约、迁移、用户 TOML 覆盖、Codex 探测三态/重试恢复、本地退出/启动/保存门控、远程 WS、状态机与 React SSR | `npm run test:acp-native-memory` | **通过（237 assertions）** | 纯函数 + Fake Codex 子进程 JSON-RPC + Mock WebSocket + 状态机行为测试 + React `renderToStaticMarkup` 组件树渲染 |
+| **真实运行期层 (E2E)** | 真实 Codex CLI 跨进程写入、跨 Session 召回 + 用户 TOML `memories=true` 下 `disabled` 强制阻断召回 | `npm run test:acp-native-memory -- --real` | **通过（247 assertions，隔离 `CODEX_HOME`）** | **真实 `bin/codex-acp` + 真实本机 Codex CLI + 真实模型网关推理 + 真实 `memories_v2` 落盘、跨进程召回与 `disabled` 阻断召回** |
 | **ACP 运行时基线** | ACP-only 运行时与禁用历史字段回归 | `npm run test:acp-only` | 通过 | 纯函数与契约回归 |
 | **Rust 宿主层** | Tauri ACP 管理器、握手解析、连续两次超时重试恢复、Prompt 能力刷新、Session 隔离、权限与 SQLite | `cargo test -p shadow-crew-desktop --no-fail-fast` | **通过（35/35 tests）** | 真实 Rust 单元与异步握手/SQLite 状态机集成测试 |
 | **Rust MCP 工具层** | Dev MCP Server 工具契约与执行 | `cargo test -p shadow-crew-dev-mcp --no-fail-fast` | **通过（9/9 tests）** | 真实 Rust 单元测试 |
@@ -114,7 +121,7 @@
 - **已覆盖的真实运行期层**：
   - 本机真实 Codex CLI（`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`）经 `bin/codex-acp` 的 `initialize` 握手探测、第一个 Session 原生 memory 工具写入（落盘至隔离 `CODEX_HOME/memories_v2/extensions/ad_hoc/notes`）、进程退出后第二个全新进程/Session 的跨线程原生 memory 召回，以及在隔离 `CODEX_HOME/config.toml` 原位 upsert `[features]/[memories]` 后以 `disabled` 模式启动第三个真实 Codex 进程，验证 `supported=true / enabled=false` 且无法召回 canary。
   - Rust `shadow-crew-desktop` 后端状态机、连续两次 `initialize` 超时后第三次握手恢复、握手能力解析与 SQLite 持久化测试。
-  - 真实 E2E 首次运行遇到一次 45 秒模型响应超时（不是确定性断言失败）；补充分阶段诊断后连续两次完整通过（207、210 assertions），均完成真实写入、跨进程召回和 disabled 阻断。
+  - 更早一轮真实 E2E 曾遇到一次 45 秒模型响应超时（不是确定性断言失败）；补充分阶段诊断后均能完整通过。本轮最新真实运行通过 247 assertions，完成真实写入、跨进程召回和 disabled 阻断。
 - **使用 Fake / Mock / SSR 的验证层**：
   - 远程 WebSocket 握手探针（`probeRemoteAcpConnection`）与远程 Prompt 发送（`sendPromptToRemoteAcpWebSocket`）通过进程内 `MockWebSocket` 验证了完整 JSON-RPC 报文载荷、`_meta.shadowCrew.nativeMemory` 门控与错误 Fail-Closed 行为；远程 Agent 启停竞态、迟到 probe 拒绝与 15 秒断线回落通过 `remoteAgentLifecycle.ts` 状态机对 `Agent[]` 进行了行为验证。
   - `AcpInspector` 与 `ConnectAgentModal` 通过 `react-dom/server` 的 `renderToStaticMarkup` 执行了组件树渲染与状态矩阵验证；暗色首帧通过显式 `initialThemeMode` 验证，不属于真实桌面 UI 截图证据。

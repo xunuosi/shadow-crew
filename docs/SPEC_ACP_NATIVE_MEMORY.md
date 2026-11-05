@@ -158,3 +158,4 @@ AgentMemoryBank.mode
 | NM-14 | Codex 特性探测临时失败 | 单次 `initialize` 内有界重试；持续失败上报 `unknown`，后续请求可再次探测且不缓存失败结论；一旦 `session/prompt` 重试探测成功，响应同步回写 `agentCapabilities.nativeMemory` 供宿主更新状态 |
 | NM-15 | SSR/内嵌首帧主题 | 亮色与暗色均可通过显式初始主题确定性渲染，不依赖浏览器 `document` |
 | NM-16 | 本地退出事件与弹窗保存门控 | 本地进程退出（`acp:status_change=stopped`）及 3s 轮询对账无条件清理残留 `enabled` 能力；新建/离线/本地重启或远程复测失败保存时一律回落 `unknown + canUseInternalMemory=false` |
+| NM-17 | 新启动与 starting 收敛 | 进入 `starting` 时立即失效上一轮 native memory 与 load/resume 握手结果；`spawn_acp_agent` 返回后若后端已无存活实例，starting 必须收敛为 `idle + unknown`，不得因事件丢失永久卡住 |

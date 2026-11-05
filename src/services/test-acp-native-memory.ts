@@ -846,6 +846,9 @@ function verifyTypeContracts(): number {
     capabilities: {
       ...migrated.agent.capabilities!,
       canUseInternalMemory: true,
+      supportsLoadSession: true,
+      supportsResumeSession: true,
+      loadSession: true,
     },
   };
   const reloadedOffline = migrateAgentMemoryV1(staleOfflineAgent);
@@ -1091,6 +1094,12 @@ function verifyTypeContracts(): number {
   assert.equal(afterStoppedEvent[0].status, 'idle');
   assert.equal(afterStoppedEvent[0].memory.nativeCapability.status, 'unknown');
   assert.equal(afterStoppedEvent[0].capabilities?.canUseInternalMemory, false);
+  assert.equal(afterStoppedEvent[0].capabilities?.supportsLoadSession, undefined);
+  assert.equal(
+    afterStoppedEvent[0].capabilities?.supportsResumeSession,
+    undefined
+  );
+  assert.equal(afterStoppedEvent[0].capabilities?.loadSession, undefined);
 
   const idleWithStaleCap: Agent = {
     ...runningLocalAgent,
@@ -1101,6 +1110,57 @@ function verifyTypeContracts(): number {
   assert.equal(reconciledIdle.agents[0].status, 'idle');
   assert.equal(reconciledIdle.agents[0].memory.nativeCapability.status, 'unknown');
   assert.equal(reconciledIdle.agents[0].capabilities?.canUseInternalMemory, false);
+
+  // A fresh start invalidates all previous initialize-derived capabilities.
+  const staleRemoteForStart: Agent = {
+    ...runningLocalAgent,
+    id: 'remote-start-invalidates',
+    isRemote: true,
+    acpTransport: 'websocket',
+    capabilities: {
+      ...runningLocalAgent.capabilities!,
+      supportsLoadSession: true,
+      supportsResumeSession: true,
+    },
+  };
+  const markedRemoteStarting = markRemoteAgentStarting(
+    [staleRemoteForStart],
+    staleRemoteForStart.id
+  );
+  assert.equal(markedRemoteStarting[0].status, 'starting');
+  assert.equal(markedRemoteStarting[0].memory.nativeCapability.status, 'unknown');
+  assert.equal(markedRemoteStarting[0].capabilities?.canUseInternalMemory, false);
+  assert.equal(markedRemoteStarting[0].capabilities?.supportsLoadSession, undefined);
+  assert.equal(
+    markedRemoteStarting[0].capabilities?.supportsResumeSession,
+    undefined
+  );
+  assert.equal(markedRemoteStarting[0].capabilities?.loadSession, undefined);
+
+  // Normal polling preserves an in-flight starting state, while explicit post-spawn
+  // reconciliation must settle a starting Agent whose backend process is gone.
+  const staleStartingAgent: Agent = {
+    ...runningLocalAgent,
+    status: 'starting',
+  };
+  const stillStarting = reconcileLocalAgentsRuntimeStatus(
+    [staleStartingAgent],
+    []
+  );
+  assert.equal(stillStarting.changed, false);
+  assert.equal(stillStarting.agents[0].status, 'starting');
+  const settledStarting = reconcileLocalAgentsRuntimeStatus(
+    [staleStartingAgent],
+    [],
+    { settleUnmatchedStarting: true }
+  );
+  assert.equal(settledStarting.changed, true);
+  assert.equal(settledStarting.agents[0].status, 'idle');
+  assert.equal(settledStarting.agents[0].memory.nativeCapability.status, 'unknown');
+  assert.equal(
+    settledStarting.agents[0].capabilities?.canUseInternalMemory,
+    false
+  );
 
   // 8) Modal save capability state resolution (`resolveSavedAgentNativeMemoryState`):
   //    - New/offline remote Agent must NOT save `enabled` capability while `idle`.
@@ -1152,7 +1212,7 @@ function verifyTypeContracts(): number {
   assert.equal(savedHealthyOnlineRemote.nativeCapability.status, 'enabled');
   assert.equal(savedHealthyOnlineRemote.canUseInternalMemory, true);
   assert.equal(savedHealthyOnlineRemote.autoGenerate, true);
-  assertions += 16;
+  assertions += 31;
 
   return assertions;
 }

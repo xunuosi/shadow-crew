@@ -123,11 +123,11 @@ export function markRemoteAgentStarting(
 ): Agent[] {
   return agents.map((a) =>
     a.id === agentId
-      ? {
-          ...a,
-          status: 'starting',
-          statusDetail: '连接远程 ACP 节点中...',
-        }
+      ? resetAgentHandshakeCapabilities(
+          a,
+          'starting',
+          '连接远程 ACP 节点中...'
+        )
       : a
   );
 }
@@ -248,6 +248,22 @@ export function resetAgentHandshakeCapabilities(
   nextStatus: Agent['status'] = 'idle',
   statusDetail: string | undefined = undefined
 ): Agent {
+  const capabilities = {
+    ...(agent.capabilities || {
+      canUseInternalMemory: false,
+      canAccessWorkspaceFiles: true,
+      canExecuteSkills: true,
+      canDelegateToSubAgents: true,
+      supportsStreaming: true,
+    }),
+    canUseInternalMemory: false,
+  };
+  // Load/resume are initialize handshake results, not stable Agent metadata.
+  // They must be re-probed after every process/connection start.
+  delete capabilities.supportsLoadSession;
+  delete capabilities.supportsResumeSession;
+  delete capabilities.loadSession;
+
   return {
     ...agent,
     status: nextStatus,
@@ -256,16 +272,7 @@ export function resetAgentHandshakeCapabilities(
       ...agent.memory,
       nativeCapability: createUnknownNativeMemoryCapability(),
     },
-    capabilities: {
-      ...(agent.capabilities || {
-        canUseInternalMemory: false,
-        canAccessWorkspaceFiles: true,
-        canExecuteSkills: true,
-        canDelegateToSubAgents: true,
-        supportsStreaming: true,
-      }),
-      canUseInternalMemory: false,
-    },
+    capabilities,
   };
 }
 
@@ -311,7 +318,8 @@ export function applyLocalStatusChangeEvent(
 
 export function reconcileLocalAgentsRuntimeStatus(
   agents: Agent[],
-  runtimeStatuses: AgentRuntimeStatus[]
+  runtimeStatuses: AgentRuntimeStatus[],
+  options: { settleUnmatchedStarting?: boolean } = {}
 ): { agents: Agent[]; changed: boolean } {
   let hasChange = false;
   const next = agents.map((a) => {
@@ -399,11 +407,14 @@ export function reconcileLocalAgentsRuntimeStatus(
     // Even if `acp:status_change` already transitioned `status` to `'idle'`, any residual
     // `nativeCapability` or `canUseInternalMemory` from the exited process must be cleared.
     if (
-      a.status !== 'starting' &&
+      (a.status !== 'starting' || options.settleUnmatchedStarting === true) &&
       (a.status !== 'idle' ||
         a.statusDetail !== undefined ||
         a.memory.nativeCapability.status !== 'unknown' ||
-        Boolean(a.capabilities?.canUseInternalMemory))
+        Boolean(a.capabilities?.canUseInternalMemory) ||
+        a.capabilities?.supportsLoadSession !== undefined ||
+        a.capabilities?.supportsResumeSession !== undefined ||
+        a.capabilities?.loadSession !== undefined)
     ) {
       hasChange = true;
       return resetAgentHandshakeCapabilities(a, 'idle', undefined);
