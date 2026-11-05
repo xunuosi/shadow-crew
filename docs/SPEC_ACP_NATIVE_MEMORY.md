@@ -159,3 +159,4 @@ AgentMemoryBank.mode
 | NM-15 | SSR/内嵌首帧主题 | 亮色与暗色均可通过显式初始主题确定性渲染，不依赖浏览器 `document` |
 | NM-16 | 本地退出事件与弹窗保存门控 | 本地进程退出（`acp:status_change=stopped`）及 3s 轮询对账无条件清理残留 `enabled` 能力；新建/离线/本地重启或远程复测失败保存时一律回落 `unknown + canUseInternalMemory=false` |
 | NM-17 | 新启动、模式切换与 starting 收敛 | 进入 `starting`、离线、重加载、复制、保存或远程断线时均统一失效上一轮 `nativeMemory` 与 `supportsLoadSession/supportsResumeSession` 握手结果，且在 `starting/error/auth_required` 期间 UI 展示 `待握手`（严禁误报为 `仅单次` 或伪造 `initialize` 报文）；本地启动期间若用户点击 Stop/编辑/删除，通过 `localSpawnGeneration` 取消在途 spawn 防止迟到报错覆盖 `idle`；本地与远程模式互切保存时先终止旧本地进程并根据探测结果重置运行态；`spawn_acp_agent` 返回后若后端已无存活实例，`starting` 必须收敛为 `idle + unknown` |
+| NM-18 | Spawn 所有权、删除回收与 Prompt 来源隔离 | 旧 spawn 的迟到清理不得按同一 `agentId` 误停更新一代进程；编辑重启前必须校验配置意图 generation；删除本地 Agent 必须停止后台子进程；Prompt 返回的 `nativeMemory` 仅在来源 Agent 的传输、URL、Token、ENV、工作区与记忆策略仍与当前 Agent 一致，且当前仍活跃时回写，严禁复活已停止 Agent |

@@ -50,11 +50,13 @@ import {
   completeLocalSpawn,
   completeRemoteProbe,
   isAgentActivelyRunning,
+  isCurrentLocalSpawnGeneration,
   markRemoteAgentStarting,
   nativeMemoryCapabilityChanged,
   reconcileLocalAgentsRuntimeStatus,
   recordRemoteProbeSuccess,
   resolveSavedAgentNativeMemoryState,
+  shouldStopLocalAgentProcess,
   shouldRefreshRemoteProbe,
   stopAgentRuntimeState,
 } from './remoteAgentLifecycle';
@@ -1289,8 +1291,38 @@ function verifyTypeContracts(): number {
     'stopAgentRuntimeState must invalidate any in-flight local spawn generation'
   );
   const spawnGen2 = beginLocalSpawn(localSpawnStore, 'local-codex');
-  cancelLocalSpawn(localSpawnStore, 'local-codex');
+  const cancelledSpawnGen = cancelLocalSpawn(localSpawnStore, 'local-codex');
   assert.equal(completeLocalSpawn(localSpawnStore, 'local-codex', spawnGen2), false);
+  assert.equal(
+    isCurrentLocalSpawnGeneration(
+      localSpawnStore,
+      'local-codex',
+      cancelledSpawnGen
+    ),
+    true
+  );
+
+  const supersededSpawn = beginLocalSpawn(localSpawnStore, 'local-codex');
+  assert.equal(
+    isCurrentLocalSpawnGeneration(
+      localSpawnStore,
+      'local-codex',
+      cancelledSpawnGen
+    ),
+    false
+  );
+  const newerSpawn = beginLocalSpawn(localSpawnStore, 'local-codex');
+  assert.equal(
+    completeLocalSpawn(localSpawnStore, 'local-codex', supersededSpawn),
+    false
+  );
+  cancelLocalSpawn(localSpawnStore, 'local-codex');
+  assert.equal(
+    isCurrentLocalSpawnGeneration(localSpawnStore, 'local-codex', newerSpawn),
+    false
+  );
+  assert.equal(shouldStopLocalAgentProcess(runningLocalAgent), true);
+  assert.equal(shouldStopLocalAgentProcess(staleRemoteForStart), false);
 
   // 10) Prompt-level nativeMemory capability recovery updates running remote Agent
   //     while ignoring idle/stopped Agents.
@@ -1306,6 +1338,86 @@ function verifyTypeContracts(): number {
   );
   assert.equal(updatedFromPrompt[0].memory.nativeCapability.status, 'enabled');
   assert.equal(updatedFromPrompt[0].capabilities?.canUseInternalMemory, true);
+  const promptSourceAgent: Agent = {
+    ...remoteUnknownRunning,
+    status: 'thinking',
+    remoteUrl: 'ws://127.0.0.1:9100/old',
+  };
+  const appliedForSameSource = applyPromptNativeMemoryCapability(
+    [
+      {
+        ...remoteUnknownRunning,
+        remoteUrl: promptSourceAgent.remoteUrl,
+      },
+    ],
+    'remote-agent',
+    enabledCap,
+    promptSourceAgent
+  );
+  assert.equal(appliedForSameSource[0].memory.nativeCapability.status, 'enabled');
+  assert.equal(appliedForSameSource[0].capabilities?.canUseInternalMemory, true);
+
+  const ignoredForChangedEndpoint = applyPromptNativeMemoryCapability(
+    [
+      {
+        ...remoteUnknownRunning,
+        remoteUrl: 'ws://127.0.0.1:9100/new',
+      },
+    ],
+    'remote-agent',
+    enabledCap,
+    promptSourceAgent
+  );
+  assert.equal(
+    ignoredForChangedEndpoint[0].memory.nativeCapability.status,
+    'unknown'
+  );
+  assert.equal(
+    ignoredForChangedEndpoint[0].capabilities?.canUseInternalMemory,
+    false
+  );
+
+  const ignoredForPolicyChange = applyPromptNativeMemoryCapability(
+    [
+      {
+        ...remoteUnknownRunning,
+        remoteUrl: promptSourceAgent.remoteUrl,
+        memory: createAgentMemoryBank('disabled', false),
+      },
+    ],
+    'remote-agent',
+    enabledCap,
+    promptSourceAgent
+  );
+  assert.equal(
+    ignoredForPolicyChange[0].memory.nativeCapability.status,
+    'unknown'
+  );
+  assert.equal(ignoredForPolicyChange[0].capabilities?.canUseInternalMemory, false);
+  const localPromptSource: Agent = {
+    ...runningLocalAgent,
+    id: 'remote-agent',
+    status: 'thinking',
+  };
+  const ignoredAfterLocalToRemote = applyPromptNativeMemoryCapability(
+    [
+      {
+        ...remoteUnknownRunning,
+        remoteUrl: 'ws://127.0.0.1:9100/new',
+      },
+    ],
+    'remote-agent',
+    enabledCap,
+    localPromptSource
+  );
+  assert.equal(
+    ignoredAfterLocalToRemote[0].memory.nativeCapability.status,
+    'unknown'
+  );
+  assert.equal(
+    ignoredAfterLocalToRemote[0].capabilities?.canUseInternalMemory,
+    false
+  );
   const ignoredForIdle = applyPromptNativeMemoryCapability(
     [{ ...remoteUnknownRunning, status: 'idle' }],
     'remote-agent',
@@ -1313,7 +1425,18 @@ function verifyTypeContracts(): number {
   );
   assert.equal(ignoredForIdle[0].memory.nativeCapability.status, 'unknown');
   assert.equal(ignoredForIdle[0].capabilities?.canUseInternalMemory, false);
-  assertions += 50;
+  const ignoredForStarting = applyPromptNativeMemoryCapability(
+    [{ ...remoteUnknownRunning, status: 'starting' }],
+    'remote-agent',
+    enabledCap,
+    promptSourceAgent
+  );
+  assert.equal(ignoredForStarting[0].status, 'starting');
+  assert.equal(
+    ignoredForStarting[0].memory.nativeCapability.status,
+    'unknown'
+  );
+  assertions += 65;
 
   return assertions;
 }

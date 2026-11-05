@@ -114,11 +114,13 @@ import {
   cancelRemoteProbe,
   completeLocalSpawn,
   isAgentActivelyRunning,
+  isCurrentLocalSpawnGeneration,
   markRemoteAgentStarting,
   reconcileLocalAgentsRuntimeStatus,
   recordRemoteProbeSuccess,
   RemoteProbeLease,
   resetAgentHandshakeCapabilities,
+  shouldStopLocalAgentProcess,
   shouldRefreshRemoteProbe,
   stopAgentRuntimeState,
 } from './services/remoteAgentLifecycle';
@@ -790,9 +792,14 @@ export default function App() {
   const localSpawnGenerationRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
-    setOnAcpNativeMemoryCapabilityUpdated((agentId, capability) => {
+    setOnAcpNativeMemoryCapabilityUpdated((agentId, capability, sourceAgent) => {
       setAgents((prev) =>
-        applyPromptNativeMemoryCapability(prev, agentId, capability)
+        applyPromptNativeMemoryCapability(
+          prev,
+          agentId,
+          capability,
+          sourceAgent
+        )
       );
     });
     return () => {
@@ -1284,9 +1291,8 @@ export default function App() {
               generation
             )
           ) {
-            await tauriInvoke('stop_acp_agent', { agentId: agent.id }).catch(
-              () => {}
-            );
+            // The operation that cancelled this spawn owns process cleanup,
+            // preventing a late same-agentId stop from killing a newer spawn.
             await syncRunningAgentsWithBackend(true);
             return;
           }
@@ -1299,6 +1305,7 @@ export default function App() {
               generation
             )
           ) {
+            await syncRunningAgentsWithBackend(true);
             return;
           }
           console.warn('Spawn agent error:', err);
@@ -2886,10 +2893,15 @@ export default function App() {
           setAgents((prev) =>
             applyPromptNativeMemoryCapability(
               prev.map((a) =>
-                a.id === targetAgent.id ? { ...a, status: 'running' } : a
+                a.id === targetAgent.id &&
+                a.status !== 'starting' &&
+                isAgentActivelyRunning(a)
+                  ? { ...a, status: 'running' }
+                  : a
               ),
               targetAgent.id,
-              acpResp.nativeMemoryCapability
+              acpResp.nativeMemoryCapability,
+              targetAgent
             )
           );
           syncRunningAgentsWithBackend();
@@ -6285,10 +6297,15 @@ export default function App() {
           setAgents((prev) =>
             applyPromptNativeMemoryCapability(
               prev.map((a) =>
-                a.id === agent.id ? { ...a, status: 'running' } : a
+                a.id === agent.id &&
+                a.status !== 'starting' &&
+                isAgentActivelyRunning(a)
+                  ? { ...a, status: 'running' }
+                  : a
               ),
               agent.id,
-              acpResp.nativeMemoryCapability
+              acpResp.nativeMemoryCapability,
+              agent
             )
           );
           syncRunningAgentsWithBackend();
@@ -7849,10 +7866,15 @@ export default function App() {
           setAgents((prev) =>
             applyPromptNativeMemoryCapability(
               prev.map((a) =>
-                a.id === targetAgent.id ? { ...a, status: 'running' } : a
+                a.id === targetAgent.id &&
+                a.status !== 'starting' &&
+                isAgentActivelyRunning(a)
+                  ? { ...a, status: 'running' }
+                  : a
               ),
               targetAgent.id,
-              acpResp.nativeMemoryCapability
+              acpResp.nativeMemoryCapability,
+              targetAgent
             )
           );
           syncRunningAgentsWithBackend();
@@ -8188,10 +8210,26 @@ export default function App() {
             setIsAcpInspectorOpen(true);
           }}
           onDeleteAgent={(agentId) => {
+            const deletedAgent = agentsRef.current.find((agent) => agent.id === agentId);
             cancelRemoteAgentProbe(agentId);
             cancelLocalSpawn(localSpawnGenerationRef.current, agentId);
             clearSessionWarmScope({ agentId });
             setAgents((prev) => prev.filter((a) => a.id !== agentId));
+            const tauriInvoke =
+              typeof window !== 'undefined'
+                ? (window as any).__TAURI_INTERNALS__?.invoke || (window as any).__TAURI__?.core?.invoke
+                : undefined;
+            if (
+              deletedAgent &&
+              shouldStopLocalAgentProcess(deletedAgent) &&
+              tauriInvoke
+            ) {
+              void tauriInvoke('stop_acp_agent', { agentId })
+                .then(() => syncRunningAgentsWithBackend(true))
+                .catch((err: any) => {
+                  console.warn('Delete agent process cleanup error:', err);
+                });
+            }
             void revokeAcpPermissionGrantsForAgent(agentId).catch((err) => {
               console.warn('[App] Failed to revoke ACP permission grants on agent deletion:', err);
             });
@@ -8537,7 +8575,10 @@ export default function App() {
           // Invalidate any in-flight remote probe or local spawn so an edit cannot be
           // overwritten by an attempt that started with the previous config.
           cancelRemoteAgentProbe(agentId);
-          cancelLocalSpawn(localSpawnGenerationRef.current, agentId);
+          const editGeneration = cancelLocalSpawn(
+            localSpawnGenerationRef.current,
+            agentId
+          );
           // 清空已交付公约、花名册缓存与水位线，确保后续全会话即时重装最新的人设与团队花名册
           resetAllSessionWarmState();
           void safelyClearAcpSessions(agentId, undefined, '更新 Agent 配置');
@@ -8698,7 +8739,12 @@ export default function App() {
                   !isRemoteAgent &&
                   wasOnline &&
                   existingAgent &&
-                  updatedData.isModelHealthy !== false
+                  updatedData.isModelHealthy !== false &&
+                  isCurrentLocalSpawnGeneration(
+                    localSpawnGenerationRef.current,
+                    agentId,
+                    editGeneration
+                  )
                 ) {
                   const respawnAgent: Agent = { ...existingAgent, ...updatedData } as Agent;
                   spawnLocalAcpAgent(respawnAgent);

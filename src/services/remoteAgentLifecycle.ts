@@ -100,8 +100,24 @@ export function completeLocalSpawn(
 export function cancelLocalSpawn(
   store: Map<string, number>,
   agentId: string
-): void {
-  store.set(agentId, (store.get(agentId) || 0) + 1);
+): number {
+  const nextGen = (store.get(agentId) || 0) + 1;
+  store.set(agentId, nextGen);
+  return nextGen;
+}
+
+export function isCurrentLocalSpawnGeneration(
+  store: Map<string, number>,
+  agentId: string,
+  generation: number
+): boolean {
+  return store.get(agentId) === generation;
+}
+
+export function shouldStopLocalAgentProcess(
+  agent: Pick<Agent, 'isRemote' | 'acpTransport'>
+): boolean {
+  return !agent.isRemote && agent.acpTransport !== 'websocket';
 }
 
 export function recordRemoteProbeSuccess(
@@ -516,13 +532,49 @@ export function resolveSavedAgentNativeMemoryState(options: {
 export function applyPromptNativeMemoryCapability(
   agents: Agent[],
   agentId: string,
-  capability: AcpNativeMemoryCapability | null | undefined
+  capability: AcpNativeMemoryCapability | null | undefined,
+  sourceAgent?: Agent
 ): Agent[] {
   if (!capability || capability.status === 'unknown') {
     return agents;
   }
+  const sourceIdentity = sourceAgent
+    ? JSON.stringify({
+        remote: Boolean(
+          sourceAgent.isRemote ||
+            sourceAgent.acpTransport === 'websocket' ||
+            sourceAgent.remoteUrl
+        ),
+        remoteUrl: sourceAgent.remoteUrl || '',
+        commandOrUrl: sourceAgent.acpCommandOrUrl || '',
+        authToken: sourceAgent.authToken || '',
+        envVars: sourceAgent.envVars || [],
+        workspaceRoot: sourceAgent.workspace?.rootPath || '',
+        memoryMode: sourceAgent.memory.mode,
+        autoGenerate: Boolean(sourceAgent.memory.autoGenerate),
+      })
+    : null;
   return agents.map((a) => {
-    if (a.id !== agentId || !isAgentActivelyRunning(a)) return a;
+    if (
+      a.id !== agentId ||
+      a.status === 'starting' ||
+      !isAgentActivelyRunning(a)
+    ) {
+      return a;
+    }
+    if (sourceIdentity) {
+      const currentIdentity = JSON.stringify({
+        remote: Boolean(a.isRemote || a.acpTransport === 'websocket' || a.remoteUrl),
+        remoteUrl: a.remoteUrl || '',
+        commandOrUrl: a.acpCommandOrUrl || '',
+        authToken: a.authToken || '',
+        envVars: a.envVars || [],
+        workspaceRoot: a.workspace?.rootPath || '',
+        memoryMode: a.memory.mode,
+        autoGenerate: Boolean(a.memory.autoGenerate),
+      });
+      if (sourceIdentity !== currentIdentity) return a;
+    }
     const targetCanUseMemory =
       a.memory.mode === 'native' && capability.status === 'enabled';
     if (

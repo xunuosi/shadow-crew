@@ -327,7 +327,8 @@ export interface AcpAgentResponse {
 
 type AcpNativeMemoryUpdateListener = (
   agentId: string,
-  capability: ReturnType<typeof parseNativeMemoryCapability>
+  capability: ReturnType<typeof parseNativeMemoryCapability>,
+  sourceAgent?: Agent
 ) => void;
 
 let onNativeMemoryCapabilityUpdated: AcpNativeMemoryUpdateListener | null = null;
@@ -1081,7 +1082,8 @@ export async function sendPromptToAcpAgent(
     ) {
       onNativeMemoryCapabilityUpdated?.(
         agent.id,
-        remoteRes.nativeMemoryCapability
+        remoteRes.nativeMemoryCapability,
+        agent
       );
     }
     return remoteRes;
