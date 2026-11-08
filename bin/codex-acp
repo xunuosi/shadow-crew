@@ -23,8 +23,15 @@ function codexChildEnv(nativeMemoryPolicy) {
     '/opt/homebrew/bin',
     '/usr/local/bin',
   ];
+  const envCopy = { ...process.env };
+  if (
+    process.env.SHADOW_CREW_PORTABLE_EXPERT_AGENT === '1' ||
+    Boolean(process.env.SHADOW_CREW_EXPERT_PACK_ID)
+  ) {
+    delete envCopy.CODEX_DANGEROUSLY_BYPASS_SANDBOX;
+  }
   return {
-    ...process.env,
+    ...envCopy,
     PATH: [...searchPaths, process.env.PATH || ''].filter(Boolean).join(path.delimiter),
     ...(nativeMemoryPolicy
       ? {
@@ -186,7 +193,18 @@ function codexNativeMemoryFeatureSupported() {
   return null;
 }
 
+function isPortableExpertRequest(params) {
+  return (
+    process.env.SHADOW_CREW_PORTABLE_EXPERT_AGENT === '1' ||
+    Boolean(process.env.SHADOW_CREW_EXPERT_PACK_ID) ||
+    Boolean(params?._meta?.shadowCrew?.expertPack)
+  );
+}
+
 function resolveNativeMemoryPolicy(params) {
+  if (isPortableExpertRequest(params)) {
+    return { enabled: false, autoGenerate: false };
+  }
   const metaPolicy = params?._meta?.shadowCrew?.nativeMemory;
   const enabled =
     typeof metaPolicy?.enabled === 'boolean'
@@ -440,11 +458,11 @@ rl.on('line', async (line) => {
     return;
   }
 
-  // 3. session/resume
-  if (method === 'session/resume') {
+  // 3. session/resume & session/load
+  if (method === 'session/resume' || method === 'session/load') {
     const targetSessionId = params?.sessionId;
     if (!targetSessionId) {
-      sendError(id, -32602, 'Missing sessionId parameter for session/resume');
+      sendError(id, -32602, `Missing sessionId parameter for ${method}`);
       return;
     }
     const session = loadSession(targetSessionId);
@@ -529,6 +547,7 @@ rl.on('line', async (line) => {
     }
 
     const hasThread = Boolean(session.codexThreadId);
+    const portableExpert = isPortableExpertRequest(params);
     const nativeMemoryPolicy = resolveNativeMemoryPolicy(params);
     const nativeMemoryFeatureSupported = codexNativeMemoryFeatureSupported();
     const promptNativeMemoryCapability = buildCodexNativeMemoryCapability(
@@ -536,7 +555,9 @@ rl.on('line', async (line) => {
       nativeMemoryFeatureSupported
     );
     const nativeMemoryActive =
-      nativeMemoryPolicy.enabled && nativeMemoryFeatureSupported === true;
+      !portableExpert &&
+      nativeMemoryPolicy.enabled &&
+      nativeMemoryFeatureSupported === true;
     const nativeMemoryDirective = nativeMemoryActive
       ? `[Codex native memory mode]\n当用户明确要求长期记住，或信息属于稳定偏好、项目约定、可复用事故经验时，使用当前可用的原生 memory/ad_hoc_note 工具持久化。不要保存密钥、临时状态或普通讨论流水。`
       : '';
@@ -569,13 +590,12 @@ rl.on('line', async (line) => {
         '-c', 'memories.dedicated_tools=true'
       );
     } else if (
-      !nativeMemoryPolicy.enabled &&
-      nativeMemoryFeatureSupported !== false
+      portableExpert ||
+      (!nativeMemoryPolicy.enabled && nativeMemoryFeatureSupported !== false)
     ) {
       // Explicitly override user-level config.toml. Merely omitting
       // --enable would not guarantee that endpoint-native memory is disabled.
-      // If the transient feature probe is inconclusive, fail closed by passing
-      // the disable overrides; a definitive unsupported CLI keeps them omitted.
+      // Portable Expert Agents unconditionally pass all 5 memory disable flags.
       args.push(
         '--disable', 'memories',
         '-c', 'features.memories=false',
@@ -585,11 +605,15 @@ rl.on('line', async (line) => {
       );
     }
 
-    if (process.env.CODEX_DANGEROUSLY_BYPASS_SANDBOX === '1') {
+    if (!portableExpert && process.env.CODEX_DANGEROUSLY_BYPASS_SANDBOX === '1') {
       args.push('--dangerously-bypass-approvals-and-sandbox');
     } else if (!hasThread) {
-      const sandboxMode = process.env.CODEX_SANDBOX || 'workspace-write';
+      const sandboxMode = portableExpert
+        ? 'workspace-write'
+        : process.env.CODEX_SANDBOX || 'workspace-write';
       args.push('-s', sandboxMode);
+    } else if (portableExpert) {
+      args.push('-c', 'sandbox_mode="workspace-write"');
     }
 
     args.push('--skip-git-repo-check', '--json');

@@ -1161,6 +1161,7 @@ pub struct RunningAgent {
     pub cwd: String,
     pub app_handle: AppHandle,
     pub last_activity: Arc<AtomicU64>,
+    pub expert_pack_id: Option<String>,
     /// 单 Agent 内部指令互斥锁：确保向同一 Agent 连续下发指令时不发生 stdio 管道竞态，
     /// 而不同 Agent 之间拥有独立的 RunningAgent 实例与子进程，完全并发、互不阻塞！
     pub prompt_lock: Arc<TokioMutex<()>>,
@@ -1532,6 +1533,23 @@ impl AcpProcessManager {
             cmd.env("SHINOBI_DEV_MCP_PATH", mcp_path);
         }
 
+        // 检测是否为挂载了 .scpack 的便携式专家 Agent (Portable Expert Agent)
+        let mut detected_expert_pack_id: Option<String> = None;
+        let mut is_portable_expert = false;
+        if let Some(ref vars) = env_vars {
+            for item in vars {
+                let (k, v) = item.clone().into_pair();
+                let tk = k.trim();
+                let tv = v.trim();
+                if tk == "SHADOW_CREW_EXPERT_PACK_ID" && !tv.is_empty() {
+                    detected_expert_pack_id = Some(tv.to_string());
+                    is_portable_expert = true;
+                } else if tk == "SHADOW_CREW_PORTABLE_EXPERT_AGENT" && (tv == "1" || tv.eq_ignore_ascii_case("true")) {
+                    is_portable_expert = true;
+                }
+            }
+        }
+
         // 注入用户配置的环境变量 (如 ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL 等)
         if let Some(ref vars) = env_vars {
             for item in vars {
@@ -1539,6 +1557,21 @@ impl AcpProcessManager {
                 let trimmed_k = k.trim();
                 let trimmed_v = v.trim();
                 if !trimmed_k.is_empty() && !trimmed_v.is_empty() {
+                    // Fail-Closed 安全门禁: 便携式专家 Agent 严禁注入 CODEX_DANGEROUSLY_BYPASS_SANDBOX 或覆盖 CODEX_HOME
+                    if is_portable_expert
+                        && (trimmed_k == "CODEX_DANGEROUSLY_BYPASS_SANDBOX"
+                            || trimmed_k == "CODEX_HOME")
+                    {
+                        log_acp_event(
+                            agent_id,
+                            "SECURITY_BLOCK",
+                            &format!(
+                                "Blocked unsafe env var `{}` on Portable Expert Agent",
+                                trimmed_k
+                            ),
+                        );
+                        continue;
+                    }
                     cmd.env(trimmed_k, trimmed_v);
                     let display_val = if trimmed_k.to_uppercase().contains("KEY")
                         || trimmed_k.to_uppercase().contains("TOKEN")
@@ -1561,6 +1594,10 @@ impl AcpProcessManager {
                     );
                 }
             }
+        }
+        if is_portable_expert {
+            cmd.env("SHADOW_CREW_PORTABLE_EXPERT_AGENT", "1");
+            cmd.env_remove("CODEX_DANGEROUSLY_BYPASS_SANDBOX");
         }
         let mut child: Child = cmd.spawn().with_context(|| {
             format!(
@@ -1929,6 +1966,35 @@ impl AcpProcessManager {
                                 &params,
                                 permission_options.clone(),
                             );
+                            let targets_sensitive_host_path = view
+                                .paths
+                                .iter()
+                                .chain(view.outside_workspace_paths.iter())
+                                .any(|p| {
+                                    let low = p.to_lowercase();
+                                    low.contains("/.codex")
+                                        || low.contains("\\.codex")
+                                        || low.contains("/.ssh")
+                                        || low.contains("\\.ssh")
+                                        || low.ends_with("/config.toml")
+                                        || low.ends_with("/auth.json")
+                                });
+                            if targets_sensitive_host_path
+                                || (is_portable_expert && !view.outside_workspace_paths.is_empty())
+                            {
+                                let _ = stdin_tx_reader
+                                    .send(permission_cancelled_response(rpc_id).to_string())
+                                    .await;
+                                log_acp_event(
+                                    &agent_id_clone,
+                                    "PERM_SECURITY_BLOCKED",
+                                    &format!(
+                                        "Auto-denied permission request {} targeting protected host/outside-workspace path: {:?}",
+                                        request_id, view.outside_workspace_paths
+                                    ),
+                                );
+                                continue;
+                            }
                             let grant_key = SessionPermissionGrantKey {
                                 session_id: session_id.clone(),
                                 grant: PermissionGrantKey {
@@ -2146,6 +2212,7 @@ impl AcpProcessManager {
                 cwd: shadow_crew_home_str,
                 app_handle: app_handle.clone(),
                 last_activity: last_activity.clone(),
+                expert_pack_id: detected_expert_pack_id,
                 prompt_lock: Arc::new(TokioMutex::new(())),
             },
         );
@@ -3616,8 +3683,57 @@ impl RunningAgent {
             is_dm,
         );
         let workspace_cwd = resolved_workspace.cwd.to_string_lossy().to_string();
+
+        // 若当前 Agent 绑定了 .scpack 专家能力包，执行宿主侧确定性预检索 (Pre-Retrieval) 与只读包裹注入
+        let mut effective_prompt = prompt.to_string();
+        let mut effective_native_memory_enabled = native_memory_enabled;
+        let mut effective_native_memory_auto_generate = native_memory_auto_generate;
+        let mut expert_pack_meta: Option<serde_json::Value> = None;
+
+        if let Some(ref pack_id) = self.expert_pack_id {
+            let packs_root = crate::db_manager::get_shadow_crew_home_dir().join("packs");
+            let retrieval = shadow_crew_protocol::scpack::retrieve_and_build_expertise_prompt(
+                &packs_root,
+                pack_id,
+                prompt,
+                0.15,
+            )
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            effective_prompt = retrieval.composedPrompt.clone();
+            // Fail-Closed: 挂载 .scpack 的便携式专家 Agent 强制关闭底层原生记忆读写，防止外部知识污染 B 端全局 ~/.codex/memories_v2
+            effective_native_memory_enabled = Some(false);
+            effective_native_memory_auto_generate = Some(false);
+
+            let meta_obj = serde_json::json!({
+                "packageId": retrieval.packageId,
+                "version": retrieval.packageVersion,
+                "matchedPlaybooks": retrieval.matchedPlaybookPaths,
+                "topScore": retrieval.topScore,
+                "sanitizationWarnings": retrieval.sanitizationWarnings,
+                "portableExpertMode": true
+            });
+            let _ = self.app_handle.emit(
+                "acp:expert_pack_retrieved",
+                serde_json::json!({
+                    "agentId": agent_id,
+                    "sessionId": &current_session_id,
+                    "expertPack": &meta_obj
+                }),
+            );
+            log_acp_event(
+                agent_id,
+                "EXPERT_PACK_INJECT",
+                &format!(
+                    "pack={} matched={:?} score={:.3}",
+                    pack_id, retrieval.matchedPlaybookPaths, retrieval.topScore
+                ),
+            );
+            expert_pack_meta = Some(meta_obj);
+        }
+
         let prompt_blocks = build_prompt_content_blocks(
-            prompt,
+            &effective_prompt,
             attachments,
             self.supports_prompt_image.load(Ordering::SeqCst),
             self.supports_embedded_context.load(Ordering::SeqCst),
@@ -3637,6 +3753,19 @@ impl RunningAgent {
             active_reqs.insert(current_session_id.clone(), req_id);
         }
 
+        let mut meta_val = build_native_memory_prompt_meta(
+            effective_native_memory_enabled,
+            effective_native_memory_auto_generate,
+        );
+        if let Some(ep_meta) = expert_pack_meta {
+            if let Some(sc_obj) = meta_val
+                .get_mut("shadowCrew")
+                .and_then(|v| v.as_object_mut())
+            {
+                sc_obj.insert("expertPack".to_string(), ep_meta);
+            }
+        }
+
         let mut prompt_params = serde_json::json!({
             "sessionId": &current_session_id,
             "sessionKey": &session_key,
@@ -3645,10 +3774,7 @@ impl RunningAgent {
             "workspaceBindingId": &resolved_workspace.workspace_binding_id,
             "artifactRoot": resolved_workspace.artifact_root.to_string_lossy(),
             "prompt": prompt_blocks,
-            "_meta": build_native_memory_prompt_meta(
-                native_memory_enabled,
-                native_memory_auto_generate
-            )
+            "_meta": meta_val
         });
         if is_dm || is_dm_topic {
             prompt_params["agentId"] = serde_json::Value::String(agent_id.to_string());

@@ -1098,6 +1098,149 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
     })
 }
 
+#[tauri::command]
+async fn probe_codex_memory_sources_cmd(
+    codex_home: Option<String>,
+    workspace_cwd: Option<String>,
+    include_v1: Option<bool>,
+) -> Result<shadow_crew_protocol::scpack::CodexSourceProbeReport, String> {
+    let resolved_home = codex_home
+        .filter(|s| !s.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            std::path::PathBuf::from(home).join(".codex")
+        });
+    let opts = shadow_crew_protocol::scpack::ProbeOptions {
+        workspace_cwd,
+        include_v1: include_v1.unwrap_or(false),
+        simulate_concurrent_mutation: false,
+    };
+    shadow_crew_protocol::scpack::probe_codex_memory_sources(&resolved_home, &opts)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn export_codex_scpack_cmd(
+    req: shadow_crew_protocol::scpack::BuildScpackRequest,
+    output_path: Option<String>,
+    install_locally: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let built = shadow_crew_protocol::scpack::build_scpack_from_probe(&req)
+        .map_err(|e| e.to_string())?;
+
+    if let Some(ref out) = output_path {
+        if !out.trim().is_empty() {
+            if let Some(parent) = std::path::Path::new(out).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::write(out, &built.archive_bytes).map_err(|e| e.to_string())?;
+        }
+    }
+
+    if install_locally.unwrap_or(true) {
+        let packs_root = db_manager::get_shadow_crew_home_dir().join("packs");
+        shadow_crew_protocol::scpack::verify_and_install_scpack(&built.archive_bytes, &packs_root)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(serde_json::json!({
+        "manifest": built.manifest,
+        "indexMd": built.index_md,
+        "searchIndex": built.search_index,
+        "archiveBase64": BASE64_STANDARD.encode(&built.archive_bytes),
+        "archiveSizeBytes": built.archive_bytes.len()
+    }))
+}
+
+#[tauri::command]
+async fn import_scpack_cmd(
+    file_path: Option<String>,
+    archive_base64: Option<String>,
+) -> Result<shadow_crew_protocol::scpack::ScpackManifest, String> {
+    let bytes = if let Some(b64) = archive_base64.filter(|s| !s.trim().is_empty()) {
+        BASE64_STANDARD
+            .decode(b64.trim())
+            .map_err(|e| format!("[ERR_INTEGRITY_MISMATCH] Invalid base64 archive: {}", e))?
+    } else if let Some(fp) = file_path.filter(|s| !s.trim().is_empty()) {
+        std::fs::read(&fp)
+            .map_err(|e| format!("[ERR_PACK_MISSING] Failed to read {}: {}", fp, e))?
+    } else {
+        return Err("[ERR_PACK_MISSING] Either file_path or archive_base64 is required".to_string());
+    };
+
+    let packs_root = db_manager::get_shadow_crew_home_dir().join("packs");
+    shadow_crew_protocol::scpack::verify_and_install_scpack(&bytes, &packs_root)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_installed_scpacks_cmd(
+) -> Result<Vec<shadow_crew_protocol::scpack::ScpackManifest>, String> {
+    let packs_root = db_manager::get_shadow_crew_home_dir().join("packs");
+    if !packs_root.exists() {
+        return Ok(Vec::new());
+    }
+    let rev = shadow_crew_protocol::scpack::load_revocation_list(&packs_root);
+    let mut manifests = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&packs_root) {
+        for ent in entries.flatten() {
+            let fname = ent.file_name().to_string_lossy().to_string();
+            if fname.starts_with('.') || rev.revokedPackageIds.contains(&fname) {
+                continue;
+            }
+            let mpath = ent.path().join("manifest.json");
+            if mpath.is_file() {
+                if let Ok(bytes) = std::fs::read(&mpath) {
+                    if let Ok(m) = serde_json::from_slice::<shadow_crew_protocol::scpack::ScpackManifest>(&bytes) {
+                        if !rev.revokedSigners.contains(&m.security.signerFingerprint) {
+                            manifests.push(m);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    manifests.sort_by(|a, b| b.createdAt.cmp(&a.createdAt));
+    Ok(manifests)
+}
+
+#[tauri::command]
+async fn uninstall_scpack_cmd(
+    package_id: String,
+    revoke: Option<bool>,
+) -> Result<bool, String> {
+    let packs_root = db_manager::get_shadow_crew_home_dir().join("packs");
+    shadow_crew_protocol::scpack::uninstall_scpack(&packs_root, &package_id, revoke.unwrap_or(false))
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn retrieve_scpack_expertise_cmd(
+    package_id: String,
+    prompt: String,
+    min_bm25_threshold: Option<f64>,
+) -> Result<shadow_crew_protocol::scpack::PreRetrievalResult, String> {
+    let packs_root = db_manager::get_shadow_crew_home_dir().join("packs");
+    shadow_crew_protocol::scpack::retrieve_and_build_expertise_prompt(
+        &packs_root,
+        &package_id,
+        &prompt,
+        min_bm25_threshold.unwrap_or(0.15),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn validate_b_side_codex_env_cmd(
+    input: shadow_crew_protocol::scpack::BSidePreflightInput,
+) -> Result<bool, String> {
+    shadow_crew_protocol::scpack::validate_b_side_codex_environment(&input)
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -1164,6 +1307,13 @@ async fn main() {
             get_channel_dir_info,
             open_agent_artifacts_dir,
             get_agent_dir_info,
+            probe_codex_memory_sources_cmd,
+            export_codex_scpack_cmd,
+            import_scpack_cmd,
+            list_installed_scpacks_cmd,
+            uninstall_scpack_cmd,
+            retrieve_scpack_expertise_cmd,
+            validate_b_side_codex_env_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shadow-crew tauri desktop application");
