@@ -1036,6 +1036,7 @@ const FORBIDDEN_PATH_PATTERNS: &[&str] = &[
     "config.toml",
     "auth",
     "auth.json",
+    ".claude.json",
     "logs_",
     "mcp-oauth-locks",
     ".env",
@@ -1056,6 +1057,8 @@ pub fn assert_codex_path_allowed(rel_or_abs_path: &str) -> ScpackResult<()> {
             || segment.starts_with("auth_")
             || (segment.starts_with("logs_") && segment.contains(".sqlite"))
             || segment == "mcp-oauth-locks"
+            || segment == ".claude.json"
+            || segment.starts_with(".claude.json")
             || segment == ".env"
             || segment == ".ssh"
             || segment == "id_rsa"
@@ -1076,6 +1079,10 @@ pub fn assert_codex_path_allowed(rel_or_abs_path: &str) -> ScpackResult<()> {
         }
     }
     Ok(())
+}
+
+pub fn assert_acp_path_allowed(rel_or_abs_path: &str) -> ScpackResult<()> {
+    assert_codex_path_allowed(rel_or_abs_path)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1114,6 +1121,8 @@ pub struct RedactionMatchItem {
 #[serde(rename_all = "camelCase")]
 pub struct CodexSourceProbeReport {
     pub codexHome: String,
+    #[serde(default = "default_source_harness")]
+    pub sourceHarness: String,
     pub sources: Vec<SourceStatusEntry>,
     pub stage1ConsolidationStatus: String,
     pub stage1LastError: Option<String>,
@@ -1121,6 +1130,12 @@ pub struct CodexSourceProbeReport {
     pub redactionMatches: Vec<RedactionMatchItem>,
     pub redactionPassed: bool,
 }
+
+fn default_source_harness() -> String {
+    "codex".to_string()
+}
+
+pub type AcpSourceProbeReport = CodexSourceProbeReport;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1868,6 +1883,7 @@ fn probe_codex_memory_sources_once(
 
     Ok(CodexSourceProbeReport {
         codexHome: codex_home.to_string_lossy().to_string(),
+        sourceHarness: "codex".to_string(),
         sources,
         stage1ConsolidationStatus: stage1_consolidation_status,
         stage1LastError: stage1_last_error,
@@ -1958,6 +1974,325 @@ pub fn extract_triggers_from_text(text: &str) -> Vec<String> {
     triggers.into_iter().collect()
 }
 
+pub fn probe_claude_code_sources(
+    claude_home: &Path,
+    options: &ProbeOptions,
+) -> ScpackResult<CodexSourceProbeReport> {
+    let mut sources = Vec::new();
+    let mut raw_units: Vec<ExtractedMemoryUnit> = Vec::new();
+    let mut all_matches: Vec<RedactionMatchItem> = Vec::new();
+
+    assert_codex_path_allowed(&claude_home.to_string_lossy())?;
+
+    // --- C1: Claude Project Memories & CLAUDE.md ---
+    let mut c1_count = 0usize;
+    if let Some(ws) = &options.workspace_cwd {
+        let ws_path = Path::new(ws);
+        let claude_md = ws_path.join("CLAUDE.md");
+        if claude_md.exists() {
+            if let Ok(content) = fs::read_to_string(&claude_md) {
+                if !content.trim().is_empty() {
+                    c1_count += 1;
+                    raw_units.push(ExtractedMemoryUnit {
+                        id: "claude-project-contract".to_string(),
+                        title: "CLAUDE.md Architectural Contracts & Invariants".to_string(),
+                        sourceType: "claude_project_memory".to_string(),
+                        priority: 100,
+                        triggers: extract_triggers_from_text(&content),
+                        tags: vec!["claude_md".to_string(), "architectural_contract".to_string()],
+                        content,
+                        originPath: "CLAUDE.md".to_string(),
+                    });
+                }
+            }
+        }
+    }
+    if c1_count == 0 {
+        if let Ok(curr) = std::env::current_dir() {
+            let claude_md = curr.join("CLAUDE.md");
+            if claude_md.exists() {
+                if let Ok(content) = fs::read_to_string(&claude_md) {
+                    if !content.trim().is_empty() {
+                        c1_count += 1;
+                        raw_units.push(ExtractedMemoryUnit {
+                            id: "claude-project-contract".to_string(),
+                            title: "CLAUDE.md Architectural Contracts & Invariants".to_string(),
+                            sourceType: "claude_project_memory".to_string(),
+                            priority: 100,
+                            triggers: extract_triggers_from_text(&content),
+                            tags: vec!["claude_md".to_string(), "architectural_contract".to_string()],
+                            content,
+                            originPath: "CLAUDE.md".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let projects_root = claude_home.join("projects");
+    if projects_root.exists() {
+        if let Ok(entries) = fs::read_dir(&projects_root) {
+            for ent in entries.flatten() {
+                let p = ent.path();
+                if p.is_dir() {
+                    let proj_slug = p.file_name().and_then(|s| s.to_str()).unwrap_or("project");
+                    for f in walkdir::WalkDir::new(&p).max_depth(3).into_iter().filter_map(Result::ok) {
+                        if f.file_type().is_file() {
+                            let fname = f.file_name().to_string_lossy();
+                            if fname.ends_with(".md") && !fname.starts_with('.') {
+                                if let Ok(content) = fs::read_to_string(f.path()) {
+                                    if !content.trim().is_empty() {
+                                        c1_count += 1;
+                                        let stem = f.path().file_stem().and_then(|s| s.to_str()).unwrap_or("memory");
+                                        let rel_origin = f.path().strip_prefix(claude_home).unwrap_or(f.path()).to_string_lossy().to_string();
+                                        raw_units.push(ExtractedMemoryUnit {
+                                            id: format!("claude-mem-{}-{}", sanitize_slug(proj_slug), sanitize_slug(stem)),
+                                            title: format!("Claude Project Memory ({}: {})", proj_slug, stem),
+                                            sourceType: "claude_project_memory".to_string(),
+                                            priority: 95,
+                                            triggers: extract_triggers_from_text(&content),
+                                            tags: vec!["claude_memory".to_string(), sanitize_slug(proj_slug)],
+                                            content,
+                                            originPath: rel_origin,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    sources.push(SourceStatusEntry {
+        sourceId: "C1".to_string(),
+        label: "Claude Code Project Memories & CLAUDE.md".to_string(),
+        status: if c1_count > 0 { "ready" } else { "empty" }.to_string(),
+        itemCount: c1_count,
+        detail: format!("Extracted {} project memory / CLAUDE.md contract file(s)", c1_count),
+    });
+
+    // --- C2: ~/.claude/skills/ ---
+    let mut c2_count = 0usize;
+    let skills_root = claude_home.join("skills");
+    if skills_root.exists() {
+        if let Ok(entries) = fs::read_dir(&skills_root) {
+            for ent in entries.flatten() {
+                let fname = ent.file_name().to_string_lossy().to_string();
+                if fname.starts_with('.') || fname == ".system" {
+                    continue;
+                }
+                let p = ent.path();
+                if p.is_dir() {
+                    let skill_md = p.join("SKILL.md");
+                    let readme_md = p.join("README.md");
+                    let target_file = if skill_md.exists() {
+                        Some(skill_md)
+                    } else if readme_md.exists() {
+                        Some(readme_md)
+                    } else {
+                        None
+                    };
+                    if let Some(target) = target_file {
+                        if let Ok(content) = fs::read_to_string(&target) {
+                            if !content.trim().is_empty() {
+                                c2_count += 1;
+                                raw_units.push(ExtractedMemoryUnit {
+                                    id: format!("claude-skill-{}", sanitize_slug(&fname)),
+                                    title: format!("Claude Skill: {}", fname),
+                                    sourceType: "skill".to_string(),
+                                    priority: 88,
+                                    triggers: extract_triggers_from_text(&format!("{} {}", fname, content)),
+                                    tags: vec!["skill".to_string(), fname.clone()],
+                                    content,
+                                    originPath: format!(
+                                        "skills/{}/{}",
+                                        fname,
+                                        target.file_name().unwrap().to_string_lossy()
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                } else if p.is_file() && fname.ends_with(".md") {
+                    if let Ok(content) = fs::read_to_string(&p) {
+                        if !content.trim().is_empty() {
+                            c2_count += 1;
+                            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("skill");
+                            raw_units.push(ExtractedMemoryUnit {
+                                id: format!("claude-skill-{}", sanitize_slug(stem)),
+                                title: format!("Claude Skill: {}", stem),
+                                sourceType: "skill".to_string(),
+                                priority: 88,
+                                triggers: extract_triggers_from_text(&format!("{} {}", stem, content)),
+                                tags: vec!["skill".to_string(), stem.to_string()],
+                                content,
+                                originPath: format!("skills/{}", fname),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    sources.push(SourceStatusEntry {
+        sourceId: "C2".to_string(),
+        label: "Claude Code Custom Skills (~/.claude/skills/)".to_string(),
+        status: if c2_count > 0 { "ready" } else { "empty" }.to_string(),
+        itemCount: c2_count,
+        detail: format!("Extracted {} custom skill(s)", c2_count),
+    });
+
+    // --- C3: ~/.claude/settings.json ---
+    let mut c3_count = 0usize;
+    let settings_path = claude_home.join("settings.json");
+    if settings_path.exists() {
+        if let Ok(raw_json) = fs::read_to_string(&settings_path) {
+            if let Ok(val) = serde_json::from_str::<Value>(&raw_json) {
+                let mut distilled_lines = Vec::new();
+                if let Some(obj) = val.as_object() {
+                    for (k, v) in obj {
+                        let lk = k.to_lowercase();
+                        if lk.contains("key")
+                            || lk.contains("token")
+                            || lk.contains("auth")
+                            || lk.contains("secret")
+                            || lk.contains("pass")
+                        {
+                            continue;
+                        }
+                        if let Some(s) = v.as_str() {
+                            distilled_lines.push(format!("- **{}**: {}", k, s));
+                        } else if v.is_boolean() || v.is_number() {
+                            distilled_lines.push(format!("- **{}**: {}", k, v));
+                        } else if let Some(arr) = v.as_array() {
+                            let str_arr: Vec<String> = arr
+                                .iter()
+                                .filter_map(|x| x.as_str())
+                                .map(|s| s.to_string())
+                                .collect();
+                            if !str_arr.is_empty() {
+                                distilled_lines.push(format!("- **{}**: [{}]", k, str_arr.join(", ")));
+                            }
+                        }
+                    }
+                }
+                if !distilled_lines.is_empty() {
+                    c3_count += 1;
+                    let content = format!(
+                        "# Claude Code Global Preferences & Environment Standards\n\n{}\n",
+                        distilled_lines.join("\n")
+                    );
+                    raw_units.push(ExtractedMemoryUnit {
+                        id: "claude-settings-global".to_string(),
+                        title: "Claude Code Global Preferences & Invariants".to_string(),
+                        sourceType: "ad_hoc_note".to_string(),
+                        priority: 85,
+                        triggers: extract_triggers_from_text(&content),
+                        tags: vec!["settings".to_string(), "preferences".to_string()],
+                        content,
+                        originPath: "settings.json".to_string(),
+                    });
+                }
+            }
+        }
+    }
+    sources.push(SourceStatusEntry {
+        sourceId: "C3".to_string(),
+        label: "Claude Code Global Settings (~/.claude/settings.json)".to_string(),
+        status: if c3_count > 0 { "ready" } else { "empty" }.to_string(),
+        itemCount: c3_count,
+        detail: format!("Extracted {} sanitized configuration section(s)", c3_count),
+    });
+
+    // --- C4: ~/.claude/history.jsonl ---
+    let mut c4_count = 0usize;
+    let history_path = claude_home.join("history.jsonl");
+    if history_path.exists() {
+        if let Ok(hist_text) = fs::read_to_string(&history_path) {
+            let mut prompt_findings = Vec::new();
+            for line in hist_text.lines().rev().take(150) {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+                    if let Some(txt) = val
+                        .get("prompt")
+                        .or_else(|| val.get("text"))
+                        .or_else(|| val.get("display"))
+                        .and_then(|v| v.as_str())
+                    {
+                        let t = txt.trim();
+                        if t.len() > 15
+                            && !prompt_findings.contains(&t.to_string())
+                            && prompt_findings.len() < 25
+                        {
+                            prompt_findings.push(t.to_string());
+                        }
+                    }
+                }
+            }
+            if !prompt_findings.is_empty() {
+                c4_count += 1;
+                let content = format!(
+                    "# Claude Code Distilled Interaction Patterns\n\n## High-Value Engineering Inquiries\n{}\n",
+                    prompt_findings
+                        .iter()
+                        .map(|p| format!("- {}", p))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+                raw_units.push(ExtractedMemoryUnit {
+                    id: "claude-history-distilled".to_string(),
+                    title: "Claude Code Historical Workflow Trajectories".to_string(),
+                    sourceType: "rollout_distilled".to_string(),
+                    priority: 75,
+                    triggers: extract_triggers_from_text(&content),
+                    tags: vec!["history".to_string(), "trajectory".to_string()],
+                    content,
+                    originPath: "history.jsonl".to_string(),
+                });
+            }
+        }
+    }
+    sources.push(SourceStatusEntry {
+        sourceId: "C4".to_string(),
+        label: "Claude Code Interaction History (~/.claude/history.jsonl)".to_string(),
+        status: if c4_count > 0 { "ready" } else { "empty" }.to_string(),
+        itemCount: c4_count,
+        detail: format!("Distilled {} high-value interaction patterns", c4_count),
+    });
+
+    // Redaction gate
+    let mut redacted_units = Vec::with_capacity(raw_units.len());
+    for mut unit in raw_units {
+        let (clean_title, m1) =
+            redact_text_and_audit(&unit.title, &unit.id, options.workspace_cwd.as_deref());
+        let (clean_content, m2) =
+            redact_text_and_audit(&unit.content, &unit.id, options.workspace_cwd.as_deref());
+        verify_zero_residual_secrets(&clean_title)?;
+        verify_zero_residual_secrets(&clean_content)?;
+        all_matches.extend(m1);
+        all_matches.extend(m2);
+        unit.title = clean_title;
+        unit.content = clean_content;
+        unit.triggers = extract_triggers_from_text(&format!("{} {}", unit.title, unit.content));
+        redacted_units.push(unit);
+    }
+
+    Ok(CodexSourceProbeReport {
+        codexHome: claude_home.to_string_lossy().to_string(),
+        sourceHarness: "claude-code".to_string(),
+        sources,
+        stage1ConsolidationStatus: "not_applicable_claude_code".to_string(),
+        stage1LastError: None,
+        units: redacted_units,
+        redactionMatches: all_matches,
+        redactionPassed: true,
+    })
+}
+
 // ============================================================================
 // 6. .scpack Compiler, POSIX TAR.GZ Builder & Fail-Closed Importer
 // ============================================================================
@@ -1976,6 +2311,8 @@ pub struct BuildScpackRequest {
     pub user_confirmed_redaction: bool,
     pub signing_seed_hex: Option<String>,
     pub probe_report: CodexSourceProbeReport,
+    #[serde(default)]
+    pub source_harness: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2017,7 +2354,7 @@ pub fn build_scpack_from_probe(req: &BuildScpackRequest) -> ScpackResult<BuiltSc
 
         match unit.sourceType.as_str() {
             "stage1_summary" => stage1_count += 1,
-            "ad_hoc_note" => {
+            "ad_hoc_note" | "claude_project_memory" => {
                 adhoc_count += 1;
                 for line in unit.content.lines() {
                     let t = line.trim();
@@ -2026,8 +2363,8 @@ pub fn build_scpack_from_probe(req: &BuildScpackRequest) -> ScpackResult<BuiltSc
                     }
                 }
             }
-            "skill" => skills_count += 1,
-            "rollout_distilled" => rollout_count += 1,
+            "skill" | "claude_skill" => skills_count += 1,
+            "rollout_distilled" | "claude_history" => rollout_count += 1,
             _ => {}
         }
 
@@ -2106,7 +2443,28 @@ pub fn build_scpack_from_probe(req: &BuildScpackRequest) -> ScpackResult<BuiltSc
     }
     let merkle_root = compute_merkle_root(&file_digests);
 
-    let export_mode = if req.probe_report.stage1ConsolidationStatus == "degraded_stage1_error"
+    let is_claude = req.source_harness.as_deref() == Some("claude-code")
+        || req.probe_report.sourceHarness == "claude-code";
+
+    let (source_harness, primary_runtime, min_cli_ver, experimental_runtimes) = if is_claude {
+        (
+            "claude-code".to_string(),
+            "claude-agent-acp".to_string(),
+            "1.0.0".to_string(),
+            vec!["codex-acp".to_string(), "openclaw-acp".to_string()],
+        )
+    } else {
+        (
+            "codex".to_string(),
+            "codex-acp".to_string(),
+            MIN_CODEX_CLI_VERSION.to_string(),
+            vec!["claude-agent-acp".to_string(), "openclaw-acp".to_string()],
+        )
+    };
+
+    let export_mode = if is_claude {
+        "claude_code_distilled".to_string()
+    } else if req.probe_report.stage1ConsolidationStatus == "degraded_stage1_error"
         || stage1_count == 0
     {
         "degraded_fallback_s2_s4_s5".to_string()
@@ -2148,7 +2506,7 @@ pub fn build_scpack_from_probe(req: &BuildScpackRequest) -> ScpackResult<BuiltSc
         createdAt: Utc::now().to_rfc3339(),
         exportedBy: ScpackExportedBy {
             shadowCrewVersion: "0.1.0".to_string(),
-            sourceHarness: "codex".to_string(),
+            sourceHarness: source_harness,
             sourceCliVersion: req.source_cli_version.clone(),
             exportMode: export_mode,
             author: req
@@ -2160,13 +2518,13 @@ pub fn build_scpack_from_probe(req: &BuildScpackRequest) -> ScpackResult<BuiltSc
                 .to_string(),
         },
         runtimeCompatibility: ScpackRuntimeCompatibility {
-            primaryRuntime: "codex-acp".to_string(),
-            minCliVersion: MIN_CODEX_CLI_VERSION.to_string(),
+            primaryRuntime: primary_runtime,
+            minCliVersion: min_cli_ver,
             requiredCapabilities: vec![
                 "prompt_injection_v1".to_string(),
                 "workspace_write_sandbox".to_string(),
             ],
-            experimentalRuntimes: vec!["claude-agent-acp".to_string(), "openclaw-acp".to_string()],
+            experimentalRuntimes: experimental_runtimes,
         },
         provenance: ScpackProvenance {
             sourceRepoFingerprint: req.source_repo_fingerprint.clone(),
@@ -3509,6 +3867,7 @@ mod tests {
             user_confirmed_redaction: false,
             signing_seed_hex: None,
             probe_report: report,
+            source_harness: None,
         })
         .unwrap_err();
         assert_eq!(unconfirmed_err.code, ScpackErrorCode::ErrSecretDetected);
@@ -3571,6 +3930,7 @@ mod tests {
             user_confirmed_redaction: true,
             signing_seed_hex: None,
             probe_report: report,
+            source_harness: None,
         })
         .expect("build scpack should succeed");
 
@@ -3706,5 +4066,126 @@ mod tests {
             .code,
             ScpackErrorCode::ErrVersionMismatch
         );
+    }
+
+    #[test]
+    fn test_claude_code_sources_probing_packaging_and_roundtrip() {
+        let temp_dir = std::env::temp_dir().join(format!("shadow-crew-claude-test-{}", next_unique_id()));
+        let claude_home = temp_dir.join(".claude");
+        let ws_dir = temp_dir.join("workspace");
+        let packs_root = temp_dir.join("packs");
+        fs::create_dir_all(&claude_home).unwrap();
+        fs::create_dir_all(&ws_dir).unwrap();
+        fs::create_dir_all(&packs_root).unwrap();
+
+        // 1. C1: CLAUDE.md in workspace root with a sensitive secret that MUST be redacted
+        let claude_md_content = "# Project Architecture & Principles\n\
+            - Principle: Clean Architecture with Rust protocol and React 19 UI.\n\
+            - Secret Key: sk-ant-api03-abcdef1234567890abcdef12345678\n\
+            - Path: /Users/xunuosi/secret-repo/internal\n\
+            - Command: npm run test\n";
+        fs::write(ws_dir.join("CLAUDE.md"), claude_md_content).unwrap();
+
+        // Project memory in ~/.claude/projects/
+        let proj_dir = claude_home.join("projects/-test-project");
+        fs::create_dir_all(&proj_dir).unwrap();
+        fs::write(
+            proj_dir.join("memory.md"),
+            "# Project Memory\n- Database is SQLite 3.45 with WAL enabled.\n- Always use RFC 8785 canonicalization.\n",
+        )
+        .unwrap();
+
+        // 2. C2: ~/.claude/skills/
+        let skill_dir = claude_home.join("skills/refactor-expert");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Refactor Expert Skill\nUse AST-guided diffing when applying patches.\n",
+        )
+        .unwrap();
+
+        // 3. C3: ~/.claude/settings.json
+        fs::write(
+            claude_home.join("settings.json"),
+            serde_json::json!({
+                "theme": "dark",
+                "defaultModel": "claude-3-7-sonnet",
+                "apiKey": "sk-ant-SECRET-DO-NOT-LEAK",
+                "env": ["CARGO_TERM_COLOR=always"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        // 4. C4: ~/.claude/history.jsonl
+        fs::write(
+            claude_home.join("history.jsonl"),
+            "{\"prompt\":\"How do we run cargo test on shadow-crew-protocol?\"}\n{\"prompt\":\"Explain the BWM mathematical solver in CognoNexus.\"}\n",
+        )
+        .unwrap();
+
+        // 5. Hard blacklist check: assert_codex_path_allowed on .claude.json
+        assert!(assert_codex_path_allowed("/path/to/.claude.json").is_err());
+
+        // Probe Claude Code sources
+        let report = probe_claude_code_sources(
+            &claude_home,
+            &ProbeOptions {
+                workspace_cwd: Some(ws_dir.to_string_lossy().to_string()),
+                include_v1: false,
+                simulate_concurrent_mutation: false,
+            },
+        )
+        .expect("probe_claude_code_sources should succeed");
+
+        assert_eq!(report.sourceHarness, "claude-code");
+        assert_eq!(report.sources.len(), 4);
+        assert!(report.units.len() >= 4);
+        assert!(report.redactionPassed);
+        assert!(!report.redactionMatches.is_empty());
+
+        // Verify zero secrets remain in extracted playbooks
+        for unit in &report.units {
+            assert!(!unit.content.contains("sk-ant-api03-abcdef"));
+            assert!(!unit.content.contains("sk-ant-SECRET-DO-NOT-LEAK"));
+        }
+
+        // Build .scpack artifact
+        let build_req = BuildScpackRequest {
+            package_id: "claude-engineering-expert-1-0-0".to_string(),
+            name: "Claude Engineering Expert Pack".to_string(),
+            description: "Distilled Claude Code Playbooks and Architecture contracts".to_string(),
+            version: "1.0.0".to_string(),
+            author: Some("Lead Engineer B".to_string()),
+            source_cli_version: "claude-cli 1.0.0".to_string(),
+            source_repo_fingerprint: "blake3:claude-test-fingerprint".to_string(),
+            user_confirmed_redaction: true,
+            signing_seed_hex: None,
+            probe_report: report,
+            source_harness: Some("claude-code".to_string()),
+        };
+
+        let built = build_scpack_from_probe(&build_req).expect("build_scpack_from_probe ok");
+        assert_eq!(built.manifest.exportedBy.sourceHarness, "claude-code");
+        assert_eq!(built.manifest.runtimeCompatibility.primaryRuntime, "claude-agent-acp");
+        assert!(built.archive_bytes.len() > 100);
+
+        // Import .scpack into B-Side packs directory
+        let imported = verify_and_install_scpack(&built.archive_bytes, &packs_root)
+            .expect("verify_and_install_scpack ok");
+        assert_eq!(imported.name, "Claude Engineering Expert Pack");
+
+        // Test BM25 retrieval from imported pack
+        let ret = retrieve_and_build_expertise_prompt(
+            &packs_root,
+            &built.manifest.packageId,
+            "How do we configure SQLite and WAL mode?",
+            0.1,
+        )
+        .expect("retrieval ok");
+        assert!(!ret.matchedPlaybookPaths.is_empty());
+        assert!(ret.injectedBlock.contains("SQLite 3.45 with WAL enabled"));
+
+        let _ = force_remove_dir_all(&temp_dir);
     }
 }

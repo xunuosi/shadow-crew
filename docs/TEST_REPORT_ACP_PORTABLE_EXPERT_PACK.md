@@ -1,8 +1,8 @@
 # Shadow Crew ACP 可迁移专家智能体能力包 (`.scpack` v1.0) 可行性评估与多轮测试报告
 
 - **技术规范文档**：[`docs/TECH_SPEC_ACP_PORTABLE_EXPERT_PACK.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/TECH_SPEC_ACP_PORTABLE_EXPERT_PACK.md)
-- **v1.0 唯一正式支持范围**：**A 端 Codex (`codex-cli 0.166.0-alpha.6`) → `.scpack` → B 端 Codex (`codex-acp`)**
-- **实验性排除范围（Non-v1.0 Experimental）**：Claude Code (`claude-agent-acp`)、OpenClaw (`openclaw acp`)、Codex 原生 `external_agent_memory_import` (Claude Memory Importer) 均已标注为 `Experimental` 并排除在 v1.0 正式承诺之外。
+- **v1.0 正式支持范围**：**支持 OpenAI Codex (`codex-acp`) 与 Claude Code (`claude-agent-acp`)**。提供独立的导入/导出向导入口（无需预先创建 Shadow Crew Agent 即可直接蒸馏与分发）。
+- **实验性排除范围（Non-v1.0 Experimental）**：OpenClaw (`openclaw acp`) 与 Codex 原生 `external_agent_memory_import` 排除在正式支持之外。
 - **统一存储根目录**：`~/.shadow-crew/`（能力包安装目录：`~/.shadow-crew/packs/<packageId>/`；吊销列表：`~/.shadow-crew/packs/revoked_packs.json`）。
 
 ---
@@ -82,6 +82,36 @@
      - 自动降级提取出 **3 篇 Playbooks/Skills**（含金丝雀笔记 `2026-11-02T00-00-00-sc-codex-memory-contract.md`、`phase2_workspace_diff.md` 与 `skills/hatch-pet/SKILL.md`）；
      - 签名导出 `.scpack` 并完成 BM25 预检索，100% 准确召回 `SC_CODEX_MEMORY_CONTRACT_20261102 = CYAN-8192-RAVEN`。
 2. **真实运行期验证层汇总**：
-   - `crates/shadow-crew-protocol`：6/6 项测试通过（真实 SQLite Online Backup、POSIX `.tar.gz`、BLAKE3、RFC 8785 JCS、RFC 8032 Ed25519、BM25 与反注入净化）。
-   - `src-tauri` (`shadow-crew-desktop`)：37/37 项测试通过（含 `scpack_tauri_commands_match_frontend_ui_contracts_and_real_codex_schema` 与 `real_host_codex_home_probe_and_export_roundtrip_if_accessible`）。
-   - `src/services/test-acp-portable-expert-pack.ts`：126 项断言全部通过（含真实 `bin/codex-acp` 子进程 `session/new`、`session/resume`、`session/load` 五层记忆隔离 E2E 与 `window.__TAURI_INTERNALS__.invoke` IPC 契约测试）。
+   - `crates/shadow-crew-protocol`：7/7 项测试通过（含新增 `test_claude_code_sources_probing_packaging_and_roundtrip`）。
+   - `src-tauri` (`shadow-crew-desktop`)：38/38 项测试通过（含新增 `scpack_tauri_commands_support_claude_code_harness_roundtrip`）。
+   - `src/services/test-acp-portable-expert-pack.ts`：135 项断言全部通过（含新增 `T8.6` Claude Code 探测、导出、导入与检索测试）。
+
+---
+
+## 六、双运行时扩展：支持 OpenAI Codex 与 Claude Code（2026-11-08 架构演进）
+
+针对产品设计诉求（无需预先创建 Agent 即可直接蒸馏分发经验包，且支持 **OpenAI Codex** 与 **Claude Code**），系统完成以下架构升级：
+
+1. **独立产品入口（Decoupled Harness Entry）**：
+   - 彻底解除导出功能对预置 Agent 的强依赖，在 `AgentDashboard` 顶部保留独立的「专家能力包 (.scpack)」入口，明确定义为底层 ACP 运行时的经验包蒸馏工具。
+2. **知识源双矩阵切换（Source Harness Selector）**：
+   - **🟢 OpenAI Codex (`~/.codex`)**：
+     - 数据源矩阵 S1~S6（`memories_v2_1.sqlite`、`ad_hoc` 笔记、`AGENTS.md`、`skills`、`state_5.sqlite` 线程）；
+     - 保留 S1 `503` 故障自动降级与 `jobs.last_error` 脱敏机制。
+   - **🟣 Claude Code (`~/.claude` & `CLAUDE.md`)**：
+     - 数据源矩阵 C1~C4：
+       - **C1_CLAUDE_PROJECT_MEMORIES**：工作区顶层 `CLAUDE.md` 架构契约与 `~/.claude/projects/` 项目上下文记忆；
+       - **C2_CLAUDE_SKILLS**：用户自定义技能 `~/.claude/skills/`；
+       - **C3_CLAUDE_SETTINGS**：全局配置 `~/.claude/settings.json`（严格过滤敏感键）；
+       - **C4_CLAUDE_HISTORY**：历史工程交互轨迹 `~/.claude/history.jsonl`。
+3. **Claude Code 物理硬黑名单与两阶段脱敏**：
+   - 物理硬黑名单拦截 `~/.claude.json`（存放 Claude CLI 官方 OAuth 与 API Token，严禁任何形式读取或归档，命中直接触发 `ERR_SECRET_DETECTED`）；
+   - 正则引擎全面覆盖 `sk-ant-api03-*`、`sk-proj-*` 等敏感密钥，通过零残留扫描与用户确认门禁方可签名归档。
+4. **统一签名、验签与 BM25 预检索闭环**：
+   - 导出的 `.scpack` 在 `manifest.exportedBy.sourceHarness` 标记真实来源（`codex` / `claude-code`），并在 `runtimeCompatibility` 声明主运行时（`codex-acp` / `claude-agent-acp`）；
+   - B 端导入安装后均统一支持确定性 BM25 预检索与专家分身挂载。
+5. **验证证据**：
+   - `cargo test -p shadow-crew-protocol`：7/7 passed.
+   - `cargo test --manifest-path src-tauri/Cargo.toml attachment_tests`：6/6 passed.
+   - `npx tsx src/services/test-acp-portable-expert-pack.ts`：135 assertions passed.
+   - `npm run lint` & `npm run build`：0 errors.

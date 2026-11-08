@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
+  AcpHarnessType,
   Agent,
   AgentTeam,
   Channel,
@@ -37,7 +38,9 @@ import { AgentAvatarArtwork, TeamArtwork } from './AgentAvatarArtwork';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { isAgentActivelyRunning } from '../services/remoteAgentLifecycle';
 import {
+  probeAcpMemorySources,
   probeCodexMemorySources,
+  exportAcpScpack,
   exportCodexScpack,
   importScpack,
   listInstalledScpacks,
@@ -94,6 +97,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   // Portable Expert Pack (.scpack v1.0) Wizard State
   const [isScpackModalOpen, setIsScpackModalOpen] = useState(false);
   const [scpackTab, setScpackTab] = useState<'export' | 'import'>('export');
+  const [selectedHarness, setSelectedHarness] = useState<AcpHarnessType>('codex');
   const [probeReport, setProbeReport] = useState<CodexSourceProbeReport | null>(null);
   const [isProbingScpack, setIsProbingScpack] = useState(false);
   const [scpackPackageName, setScpackPackageName] = useState('Codex Architecture Expert Pack');
@@ -108,12 +112,12 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   const [scpackError, setScpackError] = useState<string | null>(null);
   const [scpackNotice, setScpackNotice] = useState<string | null>(null);
 
-  const refreshScpacksAndProbe = async () => {
+  const refreshScpacksAndProbe = async (targetHarness: AcpHarnessType = selectedHarness) => {
     setIsProbingScpack(true);
     setScpackError(null);
     try {
       const [report, packs] = await Promise.all([
-        probeCodexMemorySources(),
+        probeAcpMemorySources(targetHarness),
         listInstalledScpacks(),
       ]);
       setProbeReport(report);
@@ -123,6 +127,24 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
     } finally {
       setIsProbingScpack(false);
     }
+  };
+
+  const handleSelectHarness = (harness: AcpHarnessType) => {
+    setSelectedHarness(harness);
+    setScpackError(null);
+    setScpackNotice(null);
+    if (harness === 'claude-code') {
+      setScpackPackageName('Claude Code Engineering Expert Pack');
+      setScpackDescription('Distilled Claude Code Playbooks, CLAUDE.md contracts & architectural patterns');
+      setScpackOutputPath('~/.shadow-crew/exports/claude-expert.scpack');
+      setScpackImportPath('~/.shadow-crew/exports/claude-expert.scpack');
+    } else {
+      setScpackPackageName('Codex Architecture Expert Pack');
+      setScpackDescription('Distilled Codex Playbooks, AGENTS.md contracts & verified debugging patterns');
+      setScpackOutputPath('~/.shadow-crew/exports/codex-expert.scpack');
+      setScpackImportPath('~/.shadow-crew/exports/codex-expert.scpack');
+    }
+    void refreshScpacksAndProbe(harness);
   };
 
   const hasAgentSessionRecovery = (a: Agent) =>
@@ -842,7 +864,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                       ACP 专家能力包 (.scpack v1.0)
                     </h3>
                     <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-50 border-blue-300 text-blue-800 dark:bg-blue-500/15 dark:border-blue-500/30 dark:text-blue-300 border">
-                      A Codex → .scpack → B Codex
+                      跨环境分发 · 支持 Codex 与 Claude Code
                     </span>
                   </div>
                   <p className="text-xs text-fg-secondary mt-0.5">
@@ -873,7 +895,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                 }`}
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>A 端：探测 6 源并导出 .scpack</span>
+                <span>A 端：探测并导出 .scpack</span>
               </button>
               <button
                 onClick={() => {
@@ -910,8 +932,63 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
 
               {scpackTab === 'export' ? (
                 <div className="space-y-4">
-                  {/* S1 503 Degradation Banner */}
-                  {probeReport?.s1_degraded_notice && (
+                  {/* Harness Source Selector */}
+                  <div className="p-3 rounded-2xl bg-surface-subtle border border-border space-y-2">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <span className="font-bold text-fg">
+                        选择知识源运行时 (Harness)
+                      </span>
+                      <span className="text-[10px] text-fg-muted font-mono">
+                        独立入口导出 · 支持 Codex 与 Claude Code
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => handleSelectHarness('codex')}
+                        className={`p-3 rounded-xl border text-left cursor-pointer transition-all flex items-start gap-2.5 ${
+                          selectedHarness === 'codex'
+                            ? 'bg-blue-50/70 border-blue-400 dark:bg-blue-500/20 dark:border-blue-500/50 shadow-xs'
+                            : 'bg-surface border-border hover:bg-surface-hover'
+                        }`}
+                      >
+                        <div className="w-2.5 h-2.5 rounded-full bg-blue-500 mt-1 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-fg flex items-center gap-1.5">
+                            <span>OpenAI Codex</span>
+                            <span className="text-[10px] font-mono text-fg-muted">(~/.codex)</span>
+                          </div>
+                          <div className="text-[11px] text-fg-secondary mt-0.5">
+                            S1~S6 矩阵：Native Memories v2、Ad-hoc 笔记、Custom Skills 与 SQLite 会话
+                          </div>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleSelectHarness('claude-code')}
+                        className={`p-3 rounded-xl border text-left cursor-pointer transition-all flex items-start gap-2.5 ${
+                          selectedHarness === 'claude-code'
+                            ? 'bg-purple-50/70 border-purple-400 dark:bg-purple-500/20 dark:border-purple-500/50 shadow-xs'
+                            : 'bg-surface border-border hover:bg-surface-hover'
+                        }`}
+                      >
+                        <div className="w-2.5 h-2.5 rounded-full bg-purple-500 mt-1 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-fg flex items-center gap-1.5">
+                            <span>Claude Code</span>
+                            <span className="text-[10px] font-mono text-fg-muted">(~/.claude & CLAUDE.md)</span>
+                          </div>
+                          <div className="text-[11px] text-fg-secondary mt-0.5">
+                            C1~C4 矩阵：项目记忆与 CLAUDE.md、Custom Skills、Settings 偏好与历史轨迹
+                          </div>
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* S1 503 Degradation Banner (Codex Only) */}
+                  {selectedHarness === 'codex' && probeReport?.s1_degraded_notice && (
                     <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-500/15 border border-amber-300 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 flex items-start gap-2">
                       <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                       <div>
@@ -921,18 +998,24 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     </div>
                   )}
 
-                  {/* 6-Source Probe Table */}
+                  {/* Source Probe Table */}
                   <div className="p-3.5 rounded-2xl bg-surface-subtle border border-border space-y-2.5">
                     <div className="flex items-center justify-between flex-wrap gap-2">
                       <span className="font-bold text-fg">
-                        Codex 6 类数据源探测矩阵 (S1~S6 · SQLite Online Backup 快照)
+                        {selectedHarness === 'claude-code'
+                          ? 'Claude Code 4 类数据源探测矩阵 (C1~C4 · 项目记忆、Skills、Settings 与历史)'
+                          : 'Codex 6 类数据源探测矩阵 (S1~S6 · SQLite Online Backup 快照)'}
                       </span>
                       <button
                         onClick={() => void refreshScpacksAndProbe()}
                         disabled={isProbingScpack}
                         className="px-2.5 py-1 rounded-lg bg-surface hover:bg-surface-hover border border-border text-[11px] text-fg-secondary hover:text-fg cursor-pointer"
                       >
-                        {isProbingScpack ? '探测中...' : '重新扫描 ~/.codex'}
+                        {isProbingScpack
+                          ? '探测中...'
+                          : selectedHarness === 'claude-code'
+                          ? '重新扫描 ~/.claude'
+                          : '重新扫描 ~/.codex'}
                       </button>
                     </div>
                     <div className="space-y-1.5">
@@ -1036,7 +1119,8 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                         setScpackError(null);
                         setScpackNotice(null);
                         try {
-                          const manifest = await exportCodexScpack({
+                          const manifest = await exportAcpScpack({
+                            harness: selectedHarness,
                             packageName: scpackPackageName,
                             version: scpackVersion,
                             author: scpackAuthor,
@@ -1124,7 +1208,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-bold text-sm text-fg">{pack.name}</span>
                               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-50 border border-blue-300 text-blue-800 dark:bg-blue-500/15 dark:border-blue-500/30 dark:text-blue-300">
-                                v{pack.version} · 基于 {pack.author} 的经验构建 · 本地运行时
+                                v{pack.version} · {pack.source_harness === 'claude-code' ? 'Claude Code 经验' : 'Codex 经验'} · 基于 {pack.author} 的经验构建 · 本地运行时
                               </span>
                               {pack.revoked && (
                                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-rose-50 border border-rose-300 text-rose-800 dark:bg-rose-500/15 dark:border-rose-500/30 dark:text-rose-300">

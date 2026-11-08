@@ -11,12 +11,14 @@ import {
   CODEX_MEMORY_CANARY_KEY,
   CODEX_MEMORY_CANARY_VALUE,
   createPortableExpertAgentFromPack,
+  exportAcpScpack,
   exportCodexScpack,
   importScpack,
   isCodexPathBlacklisted,
   jcsCanonicalize,
   jcsCanonicalizeManifestWithoutSignature,
   listInstalledScpacks,
+  probeAcpMemorySources,
   probeCodexMemorySources,
   rankPlaybooksBm25,
   redactTextAndAudit,
@@ -680,15 +682,15 @@ process.stdin.on('end', () => {
       __TAURI_INTERNALS__: {
         invoke: async (cmd: string, args?: Record<string, unknown>) => {
           recordedIpcCalls.push({ cmd, args });
-          if (cmd === 'probe_codex_memory_sources_cmd') {
-            check('codexHome' in (args || {}), 'probe_codex_memory_sources_cmd passes codexHome');
-            check('workspaceRoot' in (args || {}), 'probe_codex_memory_sources_cmd passes workspaceRoot');
+          if (cmd === 'probe_acp_memory_sources_cmd' || cmd === 'probe_codex_memory_sources_cmd') {
+            check('codexHome' in (args || {}) || 'homeDir' in (args || {}), 'probe passes codexHome/homeDir');
+            check('workspaceRoot' in (args || {}), 'probe passes workspaceRoot');
             return probe;
           }
-          if (cmd === 'export_codex_scpack_cmd') {
-            check('packageName' in (args || {}), 'export_codex_scpack_cmd passes packageName');
-            check('userConfirmedRedaction' in (args || {}), 'export_codex_scpack_cmd passes userConfirmedRedaction');
-            check('outputPath' in (args || {}), 'export_codex_scpack_cmd passes outputPath');
+          if (cmd === 'export_acp_scpack_cmd' || cmd === 'export_codex_scpack_cmd') {
+            check('packageName' in (args || {}), 'export passes packageName');
+            check('userConfirmedRedaction' in (args || {}), 'export passes userConfirmedRedaction');
+            check('outputPath' in (args || {}), 'export passes outputPath');
             return manifest;
           }
           if (cmd === 'import_scpack_cmd') {
@@ -749,6 +751,48 @@ process.stdin.on('end', () => {
   }
 
   // --------------------------------------------------------------------------
+  // T8.6: Claude Code Harness Support (C1~C4 Probe, Export, Import & Retrieval)
+  // --------------------------------------------------------------------------
+  console.log('▶ [T8.6] Verifying Claude Code Harness Support (C1~C4 Probe, Export, Import & Retrieval)...');
+
+  const claudeProbe = await probeAcpMemorySources('claude-code', '~/.claude', process.cwd());
+  checkEqual(claudeProbe.source_harness, 'claude-code', 'Claude Code probe reports source_harness="claude-code"');
+  checkEqual(claudeProbe.sources.length, 4, 'Claude Code probe returns 4 sources (C1~C4)');
+  checkEqual(claudeProbe.sources[0].source_id, 'C1_CLAUDE_PROJECT_MEMORIES', 'Source C1 is C1_CLAUDE_PROJECT_MEMORIES');
+  checkEqual(claudeProbe.sources[1].source_id, 'C2_CLAUDE_SKILLS', 'Source C2 is C2_CLAUDE_SKILLS');
+  check(claudeProbe.redaction_audit.zero_residual_verified, 'Claude Code probe verifies zero residual secrets');
+
+  const claudeExport = await exportAcpScpack({
+    harness: 'claude-code',
+    packageName: 'Claude Code Engineering Pack',
+    version: '1.0.0',
+    author: 'Lead Architect B',
+    description: 'Distilled Claude Code playbooks',
+    outputPath: '~/.shadow-crew/exports/claude-expert.scpack',
+    userConfirmedRedaction: true,
+  });
+  checkEqual(
+    claudeExport.runtime_requirement.target_runtime,
+    'claude-code',
+    'Exported manifest targets claude-code runtime'
+  );
+  checkEqual(
+    claudeExport.runtime_requirement.acp_adapter,
+    'claude-agent-acp',
+    'Exported manifest specifies claude-agent-acp adapter'
+  );
+
+  const claudeRetrieval = await retrieveScpackExpertise(
+    claudeExport.package_id,
+    'How do we configure Multi-Agent Turn Barrier?',
+    3
+  );
+  check(
+    claudeRetrieval.augmented_prompt.includes('Multi-Agent Turn Barrier'),
+    'Claude Code pre-retrieval injects Turn Barrier architectural playbooks'
+  );
+
+  // --------------------------------------------------------------------------
   // T9: Rust Protocol & Desktop Unit/Integration Suite Execution
   // --------------------------------------------------------------------------
   console.log('▶ [T9] Executing Rust shadow-crew-protocol, src-tauri IPC & shadow-crew-dev-mcp test suites...');
@@ -758,8 +802,8 @@ process.stdin.on('end', () => {
     encoding: 'utf8',
   });
   check(
-    rustProtocolOut.includes('test result: ok. 6 passed; 0 failed'),
-    'Rust shadow-crew-protocol 6/6 scpack tests passed'
+    rustProtocolOut.includes('test result: ok. 7 passed; 0 failed'),
+    'Rust shadow-crew-protocol 7/7 scpack tests passed'
   );
 
   const rustTauriIpcOut = execSync(
@@ -772,6 +816,10 @@ process.stdin.on('end', () => {
   check(
     rustTauriIpcOut.includes('scpack_tauri_commands_match_frontend_ui_contracts_and_real_codex_schema ... ok'),
     'Rust src-tauri scpack IPC contract & real stage1_outputs schema test passed'
+  );
+  check(
+    rustTauriIpcOut.includes('scpack_tauri_commands_support_claude_code_harness_roundtrip ... ok'),
+    'Rust src-tauri scpack Claude Code harness roundtrip test passed'
   );
 
   const rustMcpOut = execSync('cargo test -p shadow-crew-dev-mcp --offline', {

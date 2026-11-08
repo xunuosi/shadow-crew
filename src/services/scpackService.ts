@@ -1,4 +1,5 @@
 import {
+  AcpHarnessType,
   Agent,
   AgentExpertPackBinding,
   BSideRuntimeCheck,
@@ -315,6 +316,7 @@ export function jcsCanonicalizeManifestWithoutSignature(manifest: ScpackManifest
 export const CODEX_BLACKLISTED_NAMES = [
   'auth.json',
   'config.toml',
+  '.claude.json',
   'logs_1.sqlite',
   'logs_2.sqlite',
   'history.jsonl',
@@ -697,19 +699,101 @@ export function registerInMemoryScpackForWebOrTest(
 // Public Service API (Tauri IPC + Web Fallback)
 // ============================================================================
 
-export async function probeCodexMemorySources(
-  codexHome?: string,
+export async function probeAcpMemorySources(
+  harness: AcpHarnessType = 'codex',
+  homeDir?: string,
   workspaceRoot?: string
 ): Promise<CodexSourceProbeReport> {
   if (isTauriRuntime()) {
     try {
-      return await tauriInvoke<CodexSourceProbeReport>('probe_codex_memory_sources_cmd', {
-        codexHome: codexHome ?? null,
+      return await tauriInvoke<CodexSourceProbeReport>('probe_acp_memory_sources_cmd', {
+        harness,
+        homeDir: homeDir ?? null,
+        codexHome: homeDir ?? null,
         workspaceRoot: workspaceRoot ?? null,
       });
     } catch (err) {
       throw parseScpackError(err);
     }
+  }
+
+  if (harness === 'claude-code') {
+    const sampleClaude = [
+      '# Claude Code Production Principles & Architecture Contracts',
+      '- Architecture: Multi-Agent Turn Barrier synchronization and RFC 8785 canonicalization.',
+      '- Security: Always strip sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz123456 and /Users/alice/secret before export.',
+      '- Sandboxed Execution: Use workspace-write sandbox boundaries.',
+    ].join('\n');
+
+    const { redactedText, findings } = redactTextAndAudit('CLAUDE.md', sampleClaude);
+    verifyZeroResidualSecrets('CLAUDE.md', redactedText);
+
+    const playbook: ScpackPlaybookEntry = {
+      id: 'pb-c1-001',
+      title: 'CLAUDE.md Architecture & Turn Barrier Contract',
+      domain: 'claude-project-memory',
+      source_id: 'C1_CLAUDE_PROJECT_MEMORIES',
+      relative_path: 'playbooks/01-claude-project-contract.md',
+      keywords: ['claude', 'turn-barrier', 'architecture', 'rfc8785', 'tauri'],
+      summary: redactedText.slice(0, 180),
+      content_markdown: redactedText,
+      blake3_digest: blake3Prefixed(redactedText),
+    };
+
+    const sources: CodexMemorySourceStatus[] = [
+      {
+        source_id: 'C1_CLAUDE_PROJECT_MEMORIES',
+        label: 'Claude Code Project Memories & CLAUDE.md',
+        availability: 'active',
+        item_count: 1,
+        detail: 'Extracted 1 CLAUDE.md architectural contract',
+        is_experimental: false,
+      },
+      {
+        source_id: 'C2_CLAUDE_SKILLS',
+        label: 'Claude Code Custom Skills (~/.claude/skills/)',
+        availability: 'active',
+        item_count: 1,
+        detail: 'Extracted 1 custom skill(s)',
+        is_experimental: false,
+      },
+      {
+        source_id: 'C3_CLAUDE_SETTINGS',
+        label: 'Claude Code Global Settings (~/.claude/settings.json)',
+        availability: 'active',
+        item_count: 1,
+        detail: 'Extracted 1 sanitized configuration section(s)',
+        is_experimental: false,
+      },
+      {
+        source_id: 'C4_CLAUDE_HISTORY',
+        label: 'Claude Code Interaction History (~/.claude/history.jsonl)',
+        availability: 'active',
+        item_count: 1,
+        detail: 'Distilled 1 high-value interaction pattern(s)',
+        is_experimental: false,
+      },
+    ];
+
+    const redaction_audit: RedactionAuditReport = {
+      scanned_files: 2,
+      scanned_bytes: sampleClaude.length,
+      total_redactions: findings.length,
+      findings,
+      blacklisted_paths_skipped: ['.claude.json', 'auth.json', 'history.jsonl'],
+      zero_residual_verified: true,
+    };
+
+    return {
+      codex_home: homeDir || '~/.claude',
+      source_harness: 'claude-code',
+      codex_cli_version: 'claude-cli 1.0.0',
+      sources,
+      extracted_playbooks: [playbook],
+      extracted_skills: [],
+      redaction_audit,
+      snapshot_watermark: blake3Prefixed(sampleClaude),
+    };
   }
 
   // Browser / Dev Preview synthesis with real Redaction Gate
@@ -797,7 +881,8 @@ export async function probeCodexMemorySources(
   };
 
   return {
-    codex_home: codexHome || '~/.codex',
+    codex_home: homeDir || '~/.codex',
+    source_harness: 'codex',
     codex_cli_version: 'codex-cli 0.166.0-alpha.6',
     sources,
     extracted_playbooks: [playbook],
@@ -809,13 +894,22 @@ export async function probeCodexMemorySources(
   };
 }
 
-export async function exportCodexScpack(params: {
+export async function probeCodexMemorySources(
+  codexHome?: string,
+  workspaceRoot?: string
+): Promise<CodexSourceProbeReport> {
+  return probeAcpMemorySources('codex', codexHome, workspaceRoot);
+}
+
+export async function exportAcpScpack(params: {
+  harness?: AcpHarnessType;
   packageName: string;
   version: string;
   author: string;
   description: string;
   outputPath: string;
   userConfirmedRedaction: boolean;
+  homeDir?: string;
   codexHome?: string;
   workspaceRoot?: string;
 }): Promise<ScpackManifest> {
@@ -825,16 +919,19 @@ export async function exportCodexScpack(params: {
       'Export blocked: user_confirmed_redaction must be true after reviewing Redaction Audit preview'
     );
   }
+  const harness = params.harness || 'codex';
   if (isTauriRuntime()) {
     try {
-      return await tauriInvoke<ScpackManifest>('export_codex_scpack_cmd', {
+      return await tauriInvoke<ScpackManifest>('export_acp_scpack_cmd', {
+        harness,
         packageName: params.packageName,
         version: params.version,
         author: params.author,
         description: params.description,
         outputPath: params.outputPath,
         userConfirmedRedaction: params.userConfirmedRedaction,
-        codexHome: params.codexHome ?? null,
+        homeDir: params.homeDir ?? params.codexHome ?? null,
+        codexHome: params.codexHome ?? params.homeDir ?? null,
         workspaceRoot: params.workspaceRoot ?? null,
       });
     } catch (err) {
@@ -842,7 +939,7 @@ export async function exportCodexScpack(params: {
     }
   }
 
-  const probe = await probeCodexMemorySources(params.codexHome, params.workspaceRoot);
+  const probe = await probeAcpMemorySources(harness, params.homeDir || params.codexHome, params.workspaceRoot);
   const packageId = `scpack-${Date.now()}`;
   const files = probe.extracted_playbooks.map((pb) => ({
     path: pb.relative_path,
@@ -850,6 +947,7 @@ export async function exportCodexScpack(params: {
     blake3: pb.blake3_digest,
   }));
   const merkleRoot = blake3Prefixed(files.map((f) => `${f.path}:${f.blake3}`).join('\n'));
+  const isClaude = harness === 'claude-code';
   const manifest: ScpackManifest = {
     schema_version: 'scpack-1.0',
     package_id: packageId,
@@ -860,9 +958,9 @@ export async function exportCodexScpack(params: {
     created_at: new Date().toISOString(),
     source_snapshot_watermark: probe.snapshot_watermark,
     runtime_requirement: {
-      target_runtime: 'codex',
-      acp_adapter: 'codex-acp',
-      min_cli_version: '0.166.0-alpha.6',
+      target_runtime: harness,
+      acp_adapter: isClaude ? 'claude-agent-acp' : 'codex-acp',
+      min_cli_version: isClaude ? '1.0.0' : '0.166.0-alpha.6',
       recommended_sandbox_mode: 'workspace-write',
       force_disable_native_memory: true,
     },
@@ -893,6 +991,8 @@ export async function exportCodexScpack(params: {
       created_at: manifest.created_at,
       merkle_root_blake3: manifest.merkle_root_blake3,
       signer_public_key_hex: manifest.signature?.signer_public_key_hex || '',
+      source_harness: harness,
+      primary_runtime: manifest.runtime_requirement.acp_adapter,
       playbook_count: probe.extracted_playbooks.length,
       skill_count: probe.extracted_skills.length,
       revoked: false,
@@ -902,6 +1002,22 @@ export async function exportCodexScpack(params: {
   );
 
   return manifest;
+}
+
+export async function exportCodexScpack(params: {
+  packageName: string;
+  version: string;
+  author: string;
+  description: string;
+  outputPath: string;
+  userConfirmedRedaction: boolean;
+  codexHome?: string;
+  workspaceRoot?: string;
+}): Promise<ScpackManifest> {
+  return exportAcpScpack({
+    ...params,
+    harness: 'codex',
+  });
 }
 
 export async function importScpack(scpackPath: string): Promise<InstalledScpackSummary> {

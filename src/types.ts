@@ -195,13 +195,21 @@ export type ScpackErrorCode =
   | 'ERR_AUTH_REQUIRED'
   | 'ERR_VERSION_MISMATCH';
 
+export type AcpHarnessType = 'codex' | 'claude-code';
+
 export type CodexMemorySourceId =
   | 'S1_CODEX_MEMORIES_V2'
   | 'S2_AD_HOC_MD'
   | 'S3_AGENTS_MD'
   | 'S4_CODEX_SKILLS'
   | 'S5_SQLITE_SESSIONS'
-  | 'S6_CLAUDE_IMPORTER';
+  | 'S6_CLAUDE_IMPORTER'
+  | 'C1_CLAUDE_PROJECT_MEMORIES'
+  | 'C2_CLAUDE_SKILLS'
+  | 'C3_CLAUDE_SETTINGS'
+  | 'C4_CLAUDE_HISTORY';
+
+export type AcpMemorySourceId = CodexMemorySourceId;
 
 export type CodexSourceAvailability =
   | 'active'
@@ -250,6 +258,7 @@ export interface ScpackPlaybookEntry {
 
 export interface CodexSourceProbeReport {
   codex_home: string;
+  source_harness?: AcpHarnessType;
   codex_cli_version?: string | null;
   sources: CodexMemorySourceStatus[];
   extracted_playbooks: ScpackPlaybookEntry[];
@@ -311,6 +320,8 @@ export interface InstalledScpackSummary {
   created_at: string;
   merkle_root_blake3: string;
   signer_public_key_hex: string;
+  source_harness?: AcpHarnessType | string;
+  primary_runtime?: string;
   playbook_count: number;
   skill_count: number;
   revoked: boolean;
