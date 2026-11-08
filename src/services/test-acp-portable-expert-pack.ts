@@ -669,9 +669,89 @@ process.stdin.on('end', () => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 
   // --------------------------------------------------------------------------
+  // T8.5: Tauri IPC Bridge Contract Verification (isTauriRuntime() === true)
+  // --------------------------------------------------------------------------
+  console.log('▶ [T8.5] Verifying Tauri IPC Bridge Contract (window.__TAURI_INTERNALS__.invoke)...');
+  const recordedIpcCalls: Array<{ cmd: string; args: Record<string, unknown> | undefined }> = [];
+  const g = globalThis as any;
+  const prevWindow = g.window;
+  try {
+    g.window = {
+      __TAURI_INTERNALS__: {
+        invoke: async (cmd: string, args?: Record<string, unknown>) => {
+          recordedIpcCalls.push({ cmd, args });
+          if (cmd === 'probe_codex_memory_sources_cmd') {
+            check('codexHome' in (args || {}), 'probe_codex_memory_sources_cmd passes codexHome');
+            check('workspaceRoot' in (args || {}), 'probe_codex_memory_sources_cmd passes workspaceRoot');
+            return probe;
+          }
+          if (cmd === 'export_codex_scpack_cmd') {
+            check('packageName' in (args || {}), 'export_codex_scpack_cmd passes packageName');
+            check('userConfirmedRedaction' in (args || {}), 'export_codex_scpack_cmd passes userConfirmedRedaction');
+            check('outputPath' in (args || {}), 'export_codex_scpack_cmd passes outputPath');
+            return manifest;
+          }
+          if (cmd === 'import_scpack_cmd') {
+            check('scpackPath' in (args || {}), 'import_scpack_cmd passes scpackPath');
+            return ourPack!;
+          }
+          if (cmd === 'list_installed_scpacks_cmd') {
+            return [ourPack!];
+          }
+          if (cmd === 'retrieve_scpack_expertise_cmd') {
+            check('packageId' in (args || {}), 'retrieve_scpack_expertise_cmd passes packageId');
+            check('userPrompt' in (args || {}), 'retrieve_scpack_expertise_cmd passes userPrompt');
+            return retrieval;
+          }
+          if (cmd === 'uninstall_scpack_cmd') {
+            check('packageId' in (args || {}), 'uninstall_scpack_cmd passes packageId');
+            check('addToRevoked' in (args || {}), 'uninstall_scpack_cmd passes addToRevoked');
+            return true;
+          }
+          throw new Error(`[ERR_SCHEMA_UNSUPPORTED] Unexpected command ${cmd}`);
+        },
+      },
+    };
+
+    const ipcProbe = await probeCodexMemorySources('~/.codex', '/workspace/shadow-crew');
+    checkEqual(ipcProbe.sources.length, 6, 'Tauri IPC probe returns 6 sources');
+    check(
+      typeof ipcProbe.redaction_audit.total_redactions === 'number',
+      'Tauri IPC probe includes redaction_audit.total_redactions'
+    );
+
+    const ipcExport = await exportCodexScpack({
+      packageName: 'IPC Export Pack',
+      version: '1.0.0',
+      author: 'Senior Architect A',
+      description: 'IPC export test',
+      outputPath: '~/.shadow-crew/exports/ipc.scpack',
+      userConfirmedRedaction: true,
+    });
+    checkEqual(ipcExport.package_id, manifest.package_id, 'Tauri IPC export returns ScpackManifest');
+
+    const ipcImported = await importScpack('~/.shadow-crew/exports/ipc.scpack');
+    checkEqual(ipcImported.package_id, ourPack!.package_id, 'Tauri IPC import returns InstalledScpackSummary');
+
+    const ipcListed = await listInstalledScpacks();
+    checkEqual(ipcListed.length, 1, 'Tauri IPC listInstalledScpacks returns array');
+
+    const ipcRetrieved = await retrieveScpackExpertise(manifest.package_id, 'Canary query', 3);
+    check(
+      ipcRetrieved.augmented_prompt.includes(CODEX_MEMORY_CANARY_VALUE),
+      'Tauri IPC retrieveScpackExpertise returns PreRetrievalResult'
+    );
+
+    await uninstallScpack(manifest.package_id, true);
+    checkEqual(recordedIpcCalls.length, 6, 'All 6 Tauri IPC commands invoked via __TAURI_INTERNALS__');
+  } finally {
+    g.window = prevWindow;
+  }
+
+  // --------------------------------------------------------------------------
   // T9: Rust Protocol & Desktop Unit/Integration Suite Execution
   // --------------------------------------------------------------------------
-  console.log('▶ [T9] Executing Rust shadow-crew-protocol & shadow-crew-dev-mcp test suites...');
+  console.log('▶ [T9] Executing Rust shadow-crew-protocol, src-tauri IPC & shadow-crew-dev-mcp test suites...');
 
   const rustProtocolOut = execSync('cargo test -p shadow-crew-protocol --offline', {
     cwd: process.cwd(),
@@ -680,6 +760,18 @@ process.stdin.on('end', () => {
   check(
     rustProtocolOut.includes('test result: ok. 6 passed; 0 failed'),
     'Rust shadow-crew-protocol 6/6 scpack tests passed'
+  );
+
+  const rustTauriIpcOut = execSync(
+    'cargo test --manifest-path src-tauri/Cargo.toml attachment_tests --offline',
+    {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    }
+  );
+  check(
+    rustTauriIpcOut.includes('scpack_tauri_commands_match_frontend_ui_contracts_and_real_codex_schema ... ok'),
+    'Rust src-tauri scpack IPC contract & real stage1_outputs schema test passed'
   );
 
   const rustMcpOut = execSync('cargo test -p shadow-crew-dev-mcp --offline', {

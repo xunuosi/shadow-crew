@@ -913,6 +913,8 @@ pub struct ScpackExportedBy {
     pub sourceHarness: String,
     pub sourceCliVersion: String,
     pub exportMode: String,
+    #[serde(default)]
+    pub author: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1305,9 +1307,15 @@ fn verify_memories_v2_schema(conn: &Connection) -> ScpackResult<()> {
 
     check_columns(
         "stage1_outputs",
-        &["thread_id", "raw_memory", "rollout_summary", "cwd"],
+        &[
+            "thread_id",
+            "source_updated_at",
+            "raw_memory",
+            "rollout_summary",
+            "generated_at",
+        ],
     )?;
-    check_columns("jobs", &["kind", "status", "last_error"])?;
+    check_columns("jobs", &["kind", "job_key", "status", "last_error"])?;
     Ok(())
 }
 
@@ -1351,7 +1359,7 @@ pub fn redact_text_and_audit(
         ),
         (
             "internal_gateway",
-            r"https?://[A-Za-z0-9.\-]*qianxin-inc\.cn[^\s\x22\x27\)]*",
+            r"(?:https?://)?[A-Za-z0-9.\-]*qianxin-inc\.cn(?::\d+)?(?:/[^\s\x22\x27`:,\)]*)?",
             "https://<REDACTED_INTERNAL_GATEWAY>",
         ),
         (
@@ -1404,7 +1412,7 @@ pub fn verify_zero_residual_secrets(text: &str) -> ScpackResult<()> {
     let check_patterns = [
         (r"sk-[A-Za-z0-9_\-]{12,}", "Residual sk-* API key detected"),
         (
-            r"(?i)Bearer\s+(?!<REDACTED)[A-Za-z0-9._\-]{16,}",
+            r"(?i)Bearer\s+[A-Za-z0-9._\-]{16,}",
             "Residual Bearer token detected",
         ),
         (
@@ -1417,10 +1425,14 @@ pub fn verify_zero_residual_secrets(text: &str) -> ScpackResult<()> {
         ),
     ];
     for (pat, msg) in &check_patterns {
-        if let Ok(re) = Regex::new(pat) {
-            if re.is_match(text) {
-                return Err(ScpackError::new(ScpackErrorCode::ErrSecretDetected, *msg));
-            }
+        let re = Regex::new(pat).map_err(|e| {
+            ScpackError::new(
+                ScpackErrorCode::ErrSecretDetected,
+                format!("Invalid residual check regex {}: {}", pat, e),
+            )
+        })?;
+        if re.is_match(text) {
+            return Err(ScpackError::new(ScpackErrorCode::ErrSecretDetected, *msg));
         }
     }
     Ok(())
@@ -1465,8 +1477,30 @@ fn probe_codex_memory_sources_once(
 ) -> ScpackResult<CodexSourceProbeReport> {
     let mut sources = Vec::new();
     let mut raw_units: Vec<ExtractedMemoryUnit> = Vec::new();
+    let mut all_matches: Vec<RedactionMatchItem> = Vec::new();
     let mut stage1_consolidation_status = "healthy".to_string();
     let mut stage1_last_error: Option<String> = None;
+
+    // Pre-snapshot state_5.sqlite so S1 (stage1_outputs) and S5 (threads) can both use thread cwd mapping
+    let state_db = codex_home.join("state_5.sqlite");
+    let snap_s5_opt = if state_db.exists() {
+        Some(snapshot_sqlite_online_backup(&state_db, snap_dir, "state_5.sqlite")?)
+    } else {
+        None
+    };
+
+    let mut thread_cwd_map: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(ref snap_s5) = snap_s5_opt {
+        if let Ok(conn5) = Connection::open_with_flags(snap_s5, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+            if let Ok(mut stmt) = conn5.prepare("SELECT id, cwd FROM threads") {
+                if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+                    for (tid, cwd) in rows.flatten() {
+                        thread_cwd_map.insert(tid, cwd);
+                    }
+                }
+            }
+        }
+    }
 
     // --- S1: memories_v2_1.sqlite ---
     let s1_db_path = codex_home.join("memories_v2_1.sqlite");
@@ -1492,7 +1526,7 @@ fn probe_codex_memory_sources_once(
             .collect();
 
         let mut s1_stmt = conn
-            .prepare("SELECT thread_id, raw_memory, rollout_summary, cwd, COALESCE(rollout_slug, '') FROM stage1_outputs")
+            .prepare("SELECT thread_id, raw_memory, rollout_summary, COALESCE(rollout_slug, '') FROM stage1_outputs")
             .map_err(|e| ScpackError::new(ScpackErrorCode::ErrSchemaUnsupported, e.to_string()))?;
         let rows = s1_stmt
             .query_map([], |row| {
@@ -1501,13 +1535,13 @@ fn probe_codex_memory_sources_once(
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
                 ))
             })
             .map_err(|e| ScpackError::new(ScpackErrorCode::ErrSchemaUnsupported, e.to_string()))?;
 
         for r in rows.flatten() {
-            let (thread_id, raw_mem, summary, cwd, slug) = r;
+            let (thread_id, raw_mem, summary, slug) = r;
+            let cwd = thread_cwd_map.get(&thread_id).cloned().unwrap_or_default();
             if let Some(ws) = &options.workspace_cwd {
                 if !cwd.is_empty() && !cwd.starts_with(ws) && !ws.starts_with(&cwd) {
                     continue;
@@ -1533,7 +1567,14 @@ fn probe_codex_memory_sources_once(
 
         if s1_count == 0 && !job_errors.is_empty() {
             stage1_consolidation_status = "degraded_stage1_error".to_string();
-            stage1_last_error = job_errors.first().cloned();
+            let (clean_err, err_matches) = redact_text_and_audit(
+                &job_errors[0],
+                "S1.jobs.last_error",
+                options.workspace_cwd.as_deref(),
+            );
+            verify_zero_residual_secrets(&clean_err)?;
+            all_matches.extend(err_matches);
+            stage1_last_error = Some(clean_err.clone());
             sources.push(SourceStatusEntry {
                 sourceId: "S1".to_string(),
                 label: "memories_v2_1.sqlite (stage1_outputs & jobs)".to_string(),
@@ -1541,7 +1582,7 @@ fn probe_codex_memory_sources_once(
                 itemCount: 0,
                 detail: format!(
                     "stage1_outputs is empty due to consolidation job error: {}",
-                    job_errors[0]
+                    clean_err
                 ),
             });
         } else {
@@ -1723,10 +1764,8 @@ fn probe_codex_memory_sources_once(
 
     // --- S5: state_5.sqlite threads + sessions/YYYY/MM/DD/rollout-*.jsonl ---
     let mut s5_count = 0usize;
-    let state_db = codex_home.join("state_5.sqlite");
-    if state_db.exists() {
-        let snap_s5 = snapshot_sqlite_online_backup(&state_db, snap_dir, "state_5.sqlite")?;
-        if let Ok(conn) = Connection::open_with_flags(&snap_s5, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+    if let Some(ref snap_s5) = snap_s5_opt {
+        if let Ok(conn) = Connection::open_with_flags(snap_s5, OpenFlags::SQLITE_OPEN_READ_ONLY) {
             let has_threads: bool = conn
                 .query_row(
                     "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='threads'",
@@ -1811,7 +1850,6 @@ fn probe_codex_memory_sources_once(
     });
 
     // Run Two-Stage Redaction Gate over all extracted units
-    let mut all_matches = Vec::new();
     let mut redacted_units = Vec::with_capacity(raw_units.len());
     for mut unit in raw_units {
         let (clean_title, m1) =
@@ -1931,6 +1969,8 @@ pub struct BuildScpackRequest {
     pub name: String,
     pub description: String,
     pub version: String,
+    #[serde(default)]
+    pub author: Option<String>,
     pub source_cli_version: String,
     pub source_repo_fingerprint: String,
     pub user_confirmed_redaction: bool,
@@ -2111,6 +2151,13 @@ pub fn build_scpack_from_probe(req: &BuildScpackRequest) -> ScpackResult<BuiltSc
             sourceHarness: "codex".to_string(),
             sourceCliVersion: req.source_cli_version.clone(),
             exportMode: export_mode,
+            author: req
+                .author
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Senior Architect A")
+                .to_string(),
         },
         runtimeCompatibility: ScpackRuntimeCompatibility {
             primaryRuntime: "codex-acp".to_string(),
@@ -3288,11 +3335,12 @@ mod tests {
                  source_updated_at INTEGER NOT NULL,
                  raw_memory TEXT NOT NULL,
                  rollout_summary TEXT NOT NULL,
-                 cwd TEXT NOT NULL,
-                 git_branch TEXT,
                  rollout_slug TEXT,
                  generated_at INTEGER NOT NULL,
-                 selected_for_phase2 INTEGER NOT NULL DEFAULT 0
+                 usage_count INTEGER,
+                 last_usage INTEGER,
+                 selected_for_phase2 INTEGER NOT NULL DEFAULT 0,
+                 selected_for_phase2_source_updated_at INTEGER
              );
              CREATE TABLE jobs (
                  kind TEXT NOT NULL,
@@ -3321,8 +3369,8 @@ mod tests {
             .unwrap();
         } else {
             conn.execute(
-                "INSERT INTO stage1_outputs (thread_id, source_updated_at, raw_memory, rollout_summary, cwd, rollout_slug, generated_at)
-                 VALUES ('thread-alpha', 100, 'Use rusqlite Online Backup API instead of fs::copy', 'SQLite WAL backup safety rule', '/Users/alice/work/shadow-crew', 'sqlite-wal-backup', 101)",
+                "INSERT INTO stage1_outputs (thread_id, source_updated_at, raw_memory, rollout_summary, rollout_slug, generated_at)
+                 VALUES ('thread-alpha', 100, 'Use rusqlite Online Backup API instead of fs::copy', 'SQLite WAL backup safety rule', 'sqlite-wal-backup', 101)",
                 [],
             )
             .unwrap();
@@ -3455,6 +3503,7 @@ mod tests {
             name: "Test Pack".to_string(),
             description: "Desc".to_string(),
             version: "1.0.0".to_string(),
+            author: Some("Senior Architect A".to_string()),
             source_cli_version: "0.166.0-alpha.6".to_string(),
             source_repo_fingerprint: "sha256:repo".to_string(),
             user_confirmed_redaction: false,
@@ -3516,6 +3565,7 @@ mod tests {
             name: "Shadow Crew Codex Expert".to_string(),
             description: "Portable Codex Expertise".to_string(),
             version: "1.0.0".to_string(),
+            author: Some("Senior Architect A".to_string()),
             source_cli_version: "0.166.0-alpha.6".to_string(),
             source_repo_fingerprint: "sha256:1234".to_string(),
             user_confirmed_redaction: true,
