@@ -793,6 +793,15 @@ process.stdin.on('end', () => {
   );
 
   // --------------------------------------------------------------------------
+  // T8.7: Claude Code Blacklist & Security Isolation
+  // --------------------------------------------------------------------------
+  console.log('▶ [T8.7] Verifying Claude Code Blacklist Enforcement & Sensitive Env Invariants...');
+
+  check(isCodexPathBlacklisted('.claude.json'), '.claude.json must be blacklisted');
+  check(isCodexPathBlacklisted('/Users/user/.claude.json'), 'Absolute .claude.json must be blacklisted');
+  check(isCodexPathBlacklisted('~/.claude/auth.json'), 'Claude auth.json must be blacklisted');
+
+  // --------------------------------------------------------------------------
   // T9: Rust Protocol & Desktop Unit/Integration Suite Execution
   // --------------------------------------------------------------------------
   console.log('▶ [T9] Executing Rust shadow-crew-protocol, src-tauri IPC & shadow-crew-dev-mcp test suites...');
@@ -802,8 +811,8 @@ process.stdin.on('end', () => {
     encoding: 'utf8',
   });
   check(
-    rustProtocolOut.includes('test result: ok. 7 passed; 0 failed'),
-    'Rust shadow-crew-protocol 7/7 scpack tests passed'
+    rustProtocolOut.includes('test result: ok. 8 passed; 0 failed'),
+    'Rust shadow-crew-protocol 8/8 scpack tests passed'
   );
 
   const rustTauriIpcOut = execSync(

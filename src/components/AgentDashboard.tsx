@@ -133,6 +133,8 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
     setSelectedHarness(harness);
     setScpackError(null);
     setScpackNotice(null);
+    setUserConfirmedRedaction(false);
+    setExportedManifest(null);
     if (harness === 'claude-code') {
       setScpackPackageName('Claude Code Engineering Expert Pack');
       setScpackDescription('Distilled Claude Code Playbooks, CLAUDE.md contracts & architectural patterns');
@@ -244,7 +246,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
               void refreshScpacksAndProbe();
             }}
             className="px-3.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100/80 dark:bg-blue-500/15 dark:hover:bg-blue-500/25 border border-blue-300 dark:border-blue-500/30 text-xs text-blue-800 dark:text-blue-300 font-medium flex items-center gap-2 transition-all cursor-pointer shadow-xs"
-            title="导出或导入可迁移专家智能体能力包 (.scpack v1.0 · Codex ACP)"
+            title="导出或导入可迁移专家智能体能力包 (.scpack v1.0 · 支持 Codex & Claude Code)"
           >
             <Package className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
             <span>专家能力包 (.scpack)</span>

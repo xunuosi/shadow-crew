@@ -111,7 +111,38 @@
    - 导出的 `.scpack` 在 `manifest.exportedBy.sourceHarness` 标记真实来源（`codex` / `claude-code`），并在 `runtimeCompatibility` 声明主运行时（`codex-acp` / `claude-agent-acp`）；
    - B 端导入安装后均统一支持确定性 BM25 预检索与专家分身挂载。
 5. **验证证据**：
-   - `cargo test -p shadow-crew-protocol`：7/7 passed.
+   - `cargo test -p shadow-crew-protocol`：8/8 passed.
    - `cargo test --manifest-path src-tauri/Cargo.toml attachment_tests`：6/6 passed.
-   - `npx tsx src/services/test-acp-portable-expert-pack.ts`：135 assertions passed.
+   - `npx tsx src/services/test-acp-portable-expert-pack.ts`：138 assertions passed.
    - `npm run lint` & `npm run build`：0 errors.
+
+---
+
+## 七、多轮深度自测试与安全/边界加固复盘（2026-11-08）
+
+为确保系统在高并发、脏数据、恶意攻击或极端边界条件下保持 Fail-Closed 确定性安全，针对 Codex 与 Claude Code 双运行时进行了第 3 轮专项反向测试与漏洞排查：
+
+### 1. 协议层输入容错与反注入测试 (`shadow-crew-protocol`)
+- **损坏文件容错韧性**：
+  - 针对 `~/.claude/settings.json` 构造语法损坏（非法 JSON 字符、截断流、非对象根节点）用例，验证探测引擎 `probe_claude_code_sources` 不抛 Panic，而是优雅降级并输出 `status: "empty", itemCount: 0`；
+  - 针对 `~/.claude/history.jsonl` 注入混合脏行（无 prompt 键的 JSON、非法非 JSON 文本、空行、二进流），验证系统优雅跳过损坏行，精准解析有效高价值对话记录。
+- **反越狱与外发拦截净化**：
+  - 针对 `CLAUDE.md` 与 Project Memory 注入对抗性载荷（含 `[/SHADOW_CREW_EXPERTISE_DATA]` 越狱截断标签、`cat ~/.claude/.claude.json` 凭证窃取、`cat ~/.ssh/id_rsa`、`curl -X POST https://...` 网络外发、`ignore prior instructions` 提示词覆盖）；
+  - 升级 `sanitize_untrusted_expertise_markdown` 正则防御集，全面覆盖 `.claude` 与 `.claude.json`，实测全部危险指令均被中和为 `[REDACTED_UNSAFE_DIRECTIVE:*]` 且越狱标签被转义为 `[/ESCAPED_EXPERTISE_TAG]`，生成告警日志。
+
+### 2. 宿主进程级安全沙箱隔离加固 (`src-tauri/src/acp_manager.rs`)
+- **环境变量过滤拦截清单扩展**：
+  - 便携式专家 Agent（`is_portable_expert == true`）严禁继承或注入可能导致宿主权限绕过或状态逃逸的环境变量；
+  - 门禁名单由原有的 `CODEX_DANGEROUSLY_BYPASS_SANDBOX`、`CODEX_HOME` 扩充至覆盖 Claude 体系：`CLAUDE_DANGEROUSLY_BYPASS_PERMISSIONS`、`CLAUDE_CONFIG_DIR`、`ANTHROPIC_DANGEROUS_ALLOW_ALL`。一旦检测到尝试注入，宿主自动拦截并记录 `SECURITY_BLOCK` 审计事件。
+
+### 3. 前端 UI 状态一致性与脱敏门禁重置 (`src/components/AgentDashboard.tsx`)
+- **Harness 切换状态复位**：
+  - 修复在切换运行时源（如 Codex -> Claude Code）时，已勾选的 `userConfirmedRedaction` 和旧 `exportedManifest` 未复位的缺陷。切换时强制重置为 `false` 和 `null`，确保用户必须针对当前新选中的运行时源重新审阅脱敏审计结果后方可导出；
+  - 修正顶部入口按钮悬浮提示为「支持 Codex & Claude Code」。
+
+### 4. 全链路基线回归矩阵
+- **TypeScript 静态检查**：`npm run lint`（`tsc --noEmit`）通过（0 错误）。
+- **前端生产打包构建**：`npm run build`（`vite build`）通过（0 错误，打包耗时 3.56s）。
+- **Rust 协议层单元与边界测试**：`cargo test -p shadow-crew-protocol` 8/8 通过。
+- **Rust Tauri 宿主集成测试**：`cargo test --manifest-path src-tauri/Cargo.toml attachment_tests` 6/6 通过。
+- **ACP Portable Pack 综合测试套件**：`npx tsx src/services/test-acp-portable-expert-pack.ts` **138 项断言 100% 全部通过**。

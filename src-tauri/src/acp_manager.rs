@@ -1557,10 +1557,13 @@ impl AcpProcessManager {
                 let trimmed_k = k.trim();
                 let trimmed_v = v.trim();
                 if !trimmed_k.is_empty() && !trimmed_v.is_empty() {
-                    // Fail-Closed 安全门禁: 便携式专家 Agent 严禁注入 CODEX_DANGEROUSLY_BYPASS_SANDBOX 或覆盖 CODEX_HOME
+                    // Fail-Closed 安全门禁: 便携式专家 Agent 严禁注入沙箱/权限绕过变量或原生配置覆盖变量
                     if is_portable_expert
                         && (trimmed_k == "CODEX_DANGEROUSLY_BYPASS_SANDBOX"
-                            || trimmed_k == "CODEX_HOME")
+                            || trimmed_k == "CODEX_HOME"
+                            || trimmed_k == "CLAUDE_DANGEROUSLY_BYPASS_PERMISSIONS"
+                            || trimmed_k == "CLAUDE_CONFIG_DIR"
+                            || trimmed_k == "ANTHROPIC_DANGEROUS_ALLOW_ALL")
                     {
                         log_acp_event(
                             agent_id,
