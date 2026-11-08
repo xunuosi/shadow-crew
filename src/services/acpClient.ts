@@ -1,4 +1,4 @@
-import { Agent, CartridgeCitation, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem, TopicExecutionUiMeta, ModuleDecompositionDraft, ModuleComplexityLevel, MessageAttachment } from '../types';
+import { Agent, CartridgeCitation, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem, TopicExecutionUiMeta, ModuleDecompositionDraft, ModuleComplexityLevel, MessageAttachment, PreRetrievalResult } from '../types';
 import { isAgentOffline } from '../utils/agentRuntime';
 import { buildAgentPersonaPrompt } from './agentCollaboration';
 import {
@@ -6,6 +6,7 @@ import {
   ACP_NATIVE_MEMORY_ENV,
   parseNativeMemoryCapability,
 } from './agentMemory';
+import { retrieveScpackExpertise } from './scpackService';
 
 export interface AcpSendPromptOptions {
   agent: Agent;
@@ -317,6 +318,7 @@ export interface AcpAgentResponse {
   workspaceDiffs?: TopicPatchDiffItem[];
   executionMeta?: TopicExecutionUiMeta;
   nativeMemoryCapability?: ReturnType<typeof parseNativeMemoryCapability>;
+  scpackRetrieval?: PreRetrievalResult;
   durationMs: number;
   isRealProcess: boolean;
   isEmptyTurn?: boolean;
@@ -961,22 +963,56 @@ export async function sendPromptToRemoteAcpWebSocket(
 /**
  * 构造 ACP 进程启动环境变量。
  * 该变量只表达当前 Agent 是否允许开启端点原生长期记忆，具体实现仍由适配器负责。
+ * 若绑定了 Portable Expert Pack (.scpack)，强制关闭端点原生记忆、注入包标识并阻断越权沙箱环境变量。
  */
 export function buildAgentLaunchEnv(agent: Agent): Array<{ key: string; value: string }> {
-  const vars = (agent.envVars || []).filter(
-    (item) =>
-      item.key.trim() !== ACP_NATIVE_MEMORY_ENV &&
-      item.key.trim() !== ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV
-  );
-  vars.push({
-    key: ACP_NATIVE_MEMORY_ENV,
-    value: agent.memory.mode === 'native' ? '1' : '0',
+  const isExpertPackBound = Boolean(agent.expertPack?.packageId);
+  const vars = (agent.envVars || []).filter((item) => {
+    const k = item.key.trim();
+    if (k === ACP_NATIVE_MEMORY_ENV || k === ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV) {
+      return false;
+    }
+    if (isExpertPackBound) {
+      if (
+        k === 'SHADOW_CREW_EXPERT_PACK_ID' ||
+        k === 'SHADOW_CREW_PORTABLE_EXPERT_AGENT' ||
+        k === 'CODEX_DANGEROUSLY_BYPASS_SANDBOX' ||
+        k === 'CODEX_HOME'
+      ) {
+        return false;
+      }
+    }
+    return true;
   });
-  vars.push({
-    key: ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV,
-    value:
-      agent.memory.mode === 'native' && agent.memory.autoGenerate ? '1' : '0',
-  });
+
+  if (isExpertPackBound && agent.expertPack) {
+    vars.push({
+      key: 'SHADOW_CREW_EXPERT_PACK_ID',
+      value: agent.expertPack.packageId,
+    });
+    vars.push({
+      key: 'SHADOW_CREW_PORTABLE_EXPERT_AGENT',
+      value: '1',
+    });
+    vars.push({
+      key: ACP_NATIVE_MEMORY_ENV,
+      value: '0',
+    });
+    vars.push({
+      key: ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV,
+      value: '0',
+    });
+  } else {
+    vars.push({
+      key: ACP_NATIVE_MEMORY_ENV,
+      value: agent.memory.mode === 'native' ? '1' : '0',
+    });
+    vars.push({
+      key: ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV,
+      value:
+        agent.memory.mode === 'native' && agent.memory.autoGenerate ? '1' : '0',
+    });
+  }
   return vars;
 }
 
@@ -1028,8 +1064,15 @@ export async function sendPromptToAcpAgent(
         : `${personaPrompt}\n\n${options.systemPrompt}`)
     : personaPrompt;
 
+  const isExpertPackBound = Boolean(agent.expertPack?.packageId);
+  const effectiveNativeMemoryEnabled = isExpertPackBound ? false : agent.memory.mode === 'native';
+  const effectiveNativeMemoryAutoGenerate = isExpertPackBound
+    ? false
+    : Boolean(agent.memory.mode === 'native' && agent.memory.autoGenerate);
+
   // ACP 上下文、长期记忆和压缩均由 Agent 端点自行管理。
-  const enhancedPrompt = prompt;
+  let enhancedPrompt = prompt;
+  let scpackRetrieval: PreRetrievalResult | undefined;
 
   // 1.1 严格通信准入：若 Agent 未由用户点击 Start 开启通信（idle），或进程/握手异常（error），拒绝发起通信
   if (isAgentOffline(agent)) {
@@ -1042,6 +1085,21 @@ export async function sendPromptToAcpAgent(
       durationMs: Date.now() - startTime,
       isRealProcess: false,
     };
+  }
+
+  // 1.2 若绑定了 .scpack 专家能力包，执行确定性 BM25 预检索与 Fail-Closed 校验
+  if (isExpertPackBound && agent.expertPack) {
+    try {
+      scpackRetrieval = await retrieveScpackExpertise(agent.expertPack.packageId, prompt, 3);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        textResponse: `🛑 **专家能力包 (.scpack) Fail-Closed 熔断**：【${agent.name}】绑定的专家能力包 \`${agent.expertPack.packageId}\` 校验或预检索失败：${message}`,
+        durationMs: Date.now() - startTime,
+        isRealProcess: false,
+        isError: true,
+      };
+    }
   }
 
   // 2. 判定是否为远程 Agent (WebSocket / Relay Hub)
@@ -1061,6 +1119,9 @@ export async function sendPromptToAcpAgent(
         isError: true,
       };
     }
+    if (scpackRetrieval && !enhancedPrompt.includes('[SHADOW_CREW_EXPERTISE_DATA]')) {
+      enhancedPrompt = scpackRetrieval.augmented_prompt;
+    }
     const targetUrl = agent.remoteUrl || agent.acpCommandOrUrl;
     console.log(`[ACP Client] Dispatching prompt to Remote ACP: ${targetUrl} (${agent.name})`);
     const remoteRes = await sendPromptToRemoteAcpWebSocket(
@@ -1073,8 +1134,8 @@ export async function sendPromptToAcpAgent(
       options.workspaceBindingId,
       options.workspaceCwd,
       options.scopeType,
-      agent.memory.mode === 'native',
-      agent.memory.autoGenerate
+      effectiveNativeMemoryEnabled,
+      effectiveNativeMemoryAutoGenerate
     );
     if (
       remoteRes.nativeMemoryCapability &&
@@ -1086,7 +1147,10 @@ export async function sendPromptToAcpAgent(
         agent
       );
     }
-    return remoteRes;
+    return {
+      ...remoteRes,
+      ...(scpackRetrieval ? { scpackRetrieval } : {}),
+    };
   }
 
   // 3. 检查是否处于 Tauri 桌面端环境 (本地 stdio 进程)
@@ -1148,8 +1212,8 @@ export async function sendPromptToAcpAgent(
         cwd: targetCwd,
         envVars: launchEnvVars,
         systemPrompt: resolvedSystemPrompt,
-        nativeMemoryEnabled: agent.memory.mode === 'native',
-        nativeMemoryAutoGenerate: agent.memory.autoGenerate,
+        nativeMemoryEnabled: effectiveNativeMemoryEnabled,
+        nativeMemoryAutoGenerate: effectiveNativeMemoryAutoGenerate,
         discussionMode: options.discussionMode,
         scopeType: options.scopeType,
         attachments: promptAttachments,
@@ -1176,6 +1240,7 @@ export async function sendPromptToAcpAgent(
           mcpToolCalls: res.mcp_tool_calls || [],
           workspaceDiffs: nativeDiffs,
           executionMeta,
+          ...(scpackRetrieval ? { scpackRetrieval } : {}),
           durationMs,
           isRealProcess: true,
           raw: response,
@@ -1191,6 +1256,7 @@ export async function sendPromptToAcpAgent(
           mcpToolCalls: response.mcp_tool_calls || [],
           workspaceDiffs: nativeDiffs,
           executionMeta,
+          ...(scpackRetrieval ? { scpackRetrieval } : {}),
           durationMs,
           isRealProcess: true,
           raw: response,

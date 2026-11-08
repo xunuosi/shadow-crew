@@ -8143,6 +8143,15 @@ export default function App() {
             setAgents(nextAgents);
             await saveAgentsToDb(nextAgents);
           }}
+          onCreateExpertAgentFromPack={async (expertAgent) => {
+            const exists = agents.some((a) => a.id === expertAgent.id);
+            const finalAgent = exists
+              ? { ...expertAgent, id: `${expertAgent.id}-${Date.now()}` }
+              : expertAgent;
+            const nextAgents = [...agents, finalAgent];
+            setAgents(nextAgents);
+            await saveAgentsToDb(nextAgents);
+          }}
           onOpenCreateTeamModal={() => setIsCreateTeamModalOpen(true)}
           onOpenAgentDefaultsModal={() => setIsAgentDefaultsModalOpen(true)}
           onOpenPermissionCenter={() => setIsPermissionCenterOpen(true)}

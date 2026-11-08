@@ -708,6 +708,28 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
         {/* TAB 2: AGENT INTERNAL MEMORY BANK & MOUNTED CARTRIDGES */}
         {activeTab === 'memory' && (
           <div className="space-y-3.5">
+            {/* Portable Expert Pack (.scpack v1.0) Binding Card */}
+            {selectedAgent.expertPack && (
+              <div className="p-3 rounded-2xl bg-blue-50 dark:bg-blue-500/15 border border-blue-300 dark:border-blue-500/30 space-y-2">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="font-bold text-xs text-blue-800 dark:text-blue-300 flex items-center gap-1.5">
+                    <span>📦</span>
+                    <span>{selectedAgent.expertPack.badgeLabel}</span>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-surface border border-border text-fg">
+                    scpack-1.0 · v{selectedAgent.expertPack.version}
+                  </span>
+                </div>
+                <div className="p-2.5 rounded-xl bg-surface border border-border font-mono text-[10px] text-fg-secondary space-y-1 break-all">
+                  <div><span className="text-fg-muted">package_id: </span><span className="text-fg">{selectedAgent.expertPack.packageId}</span></div>
+                  <div><span className="text-fg-muted">install_dir: </span><span className="text-fg">{selectedAgent.expertPack.installDir}</span></div>
+                  <div><span className="text-fg-muted">merkle_root: </span><span className="text-emerald-600 dark:text-emerald-400">{selectedAgent.expertPack.merkleRootBlake3}</span></div>
+                  <div><span className="text-fg-muted">native_memory: </span><span className="text-amber-800 dark:text-amber-300">LOCKED DISABLED (--disable memories · 5-layer isolation)</span></div>
+                  <div><span className="text-fg-muted">retrieval_mode: </span><span className="text-blue-600 dark:text-blue-400">Host Deterministic BM25 Pre-Retrieval ([SHADOW_CREW_EXPERTISE_DATA])</span></div>
+                </div>
+              </div>
+            )}
+
             {/* Quick Action Toolbar: Export & Import Cartridges */}
             <div className="grid grid-cols-2 gap-2">
               {onOpenImportModal && (

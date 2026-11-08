@@ -1,5 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Agent, AgentTeam, Channel } from '../types';
+import {
+  Agent,
+  AgentTeam,
+  Channel,
+  CodexSourceProbeReport,
+  InstalledScpackSummary,
+  ScpackManifest,
+} from '../types';
 import { 
   Plus, 
   Sliders, 
@@ -19,10 +26,24 @@ import {
   Terminal,
   Copy,
   ShieldCheck,
+  Package,
+  Download,
+  Upload,
+  CheckCircle2,
+  AlertTriangle,
+  X,
 } from 'lucide-react';
 import { AgentAvatarArtwork, TeamArtwork } from './AgentAvatarArtwork';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { isAgentActivelyRunning } from '../services/remoteAgentLifecycle';
+import {
+  probeCodexMemorySources,
+  exportCodexScpack,
+  importScpack,
+  listInstalledScpacks,
+  uninstallScpack,
+  createPortableExpertAgentFromPack,
+} from '../services/scpackService';
 
 interface AgentDashboardProps {
   agents: Agent[];
@@ -38,6 +59,7 @@ interface AgentDashboardProps {
   onInspectAgent: (agentId: string) => void;
   onEditAgent?: (agent: Agent) => void;
   onDuplicateAgent?: (agent: Agent) => void;
+  onCreateExpertAgentFromPack?: (agent: Agent) => void;
   onDeleteAgent?: (agentId: string) => void;
   onDeleteTeam?: (teamId: string) => void;
   isSidebarCollapsed?: boolean;
@@ -58,6 +80,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   onInspectAgent,
   onEditAgent,
   onDuplicateAgent,
+  onCreateExpertAgentFromPack,
   onDeleteAgent,
   onDeleteTeam,
   isSidebarCollapsed = false,
@@ -67,6 +90,40 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   const [activeTeamMenuId, setActiveTeamMenuId] = useState<string | null>(null);
   const [allStopped, setAllStopped] = useState(false);
   const [sessionFilter, setSessionFilter] = useState<'all' | 'supported' | 'unsupported' | 'pending'>('all');
+
+  // Portable Expert Pack (.scpack v1.0) Wizard State
+  const [isScpackModalOpen, setIsScpackModalOpen] = useState(false);
+  const [scpackTab, setScpackTab] = useState<'export' | 'import'>('export');
+  const [probeReport, setProbeReport] = useState<CodexSourceProbeReport | null>(null);
+  const [isProbingScpack, setIsProbingScpack] = useState(false);
+  const [scpackPackageName, setScpackPackageName] = useState('Codex Architecture Expert Pack');
+  const [scpackVersion, setScpackVersion] = useState('1.0.0');
+  const [scpackAuthor, setScpackAuthor] = useState('Senior Architect A');
+  const [scpackDescription, setScpackDescription] = useState('Distilled Codex Playbooks, AGENTS.md contracts & verified debugging patterns');
+  const [scpackOutputPath, setScpackOutputPath] = useState('~/.shadow-crew/exports/codex-expert.scpack');
+  const [userConfirmedRedaction, setUserConfirmedRedaction] = useState(false);
+  const [exportedManifest, setExportedManifest] = useState<ScpackManifest | null>(null);
+  const [scpackImportPath, setScpackImportPath] = useState('~/.shadow-crew/exports/codex-expert.scpack');
+  const [installedScpacks, setInstalledScpacks] = useState<InstalledScpackSummary[]>([]);
+  const [scpackError, setScpackError] = useState<string | null>(null);
+  const [scpackNotice, setScpackNotice] = useState<string | null>(null);
+
+  const refreshScpacksAndProbe = async () => {
+    setIsProbingScpack(true);
+    setScpackError(null);
+    try {
+      const [report, packs] = await Promise.all([
+        probeCodexMemorySources(),
+        listInstalledScpacks(),
+      ]);
+      setProbeReport(report);
+      setInstalledScpacks(packs);
+    } catch (e: any) {
+      setScpackError(e?.message || String(e));
+    } finally {
+      setIsProbingScpack(false);
+    }
+  };
 
   const hasAgentSessionRecovery = (a: Agent) =>
     Boolean(
@@ -158,6 +215,18 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
         <div className="flex flex-wrap items-center justify-end gap-2.5">
           {/* Quick Theme Switcher Pill */}
           <ThemeSwitcher variant="compact" />
+
+          <button
+            onClick={() => {
+              setIsScpackModalOpen(true);
+              void refreshScpacksAndProbe();
+            }}
+            className="px-3.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100/80 dark:bg-blue-500/15 dark:hover:bg-blue-500/25 border border-blue-300 dark:border-blue-500/30 text-xs text-blue-800 dark:text-blue-300 font-medium flex items-center gap-2 transition-all cursor-pointer shadow-xs"
+            title="导出或导入可迁移专家智能体能力包 (.scpack v1.0 · Codex ACP)"
+          >
+            <Package className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+            <span>专家能力包 (.scpack)</span>
+          </button>
 
           {onOpenPermissionCenter && (
             <button
@@ -558,6 +627,15 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                             {isRemote ? 'Remote ACP' : 'ACP Stdio'}
                           </span>
                         </div>
+                        {agent.expertPack && (
+                          <div
+                            className="text-[10px] px-2 py-0.5 rounded-full font-medium inline-flex items-center gap-1 border max-w-full truncate bg-blue-50 border-blue-300 text-blue-800 dark:bg-blue-500/15 dark:border-blue-500/30 dark:text-blue-300"
+                            title={`${agent.expertPack.badgeLabel} · Package: ${agent.expertPack.packageId} · Native Memory: Disabled (--disable memories)`}
+                          >
+                            <Package className="w-2.5 h-2.5 shrink-0 text-blue-600 dark:text-blue-400" />
+                            <span className="truncate">{agent.expertPack.badgeLabel}</span>
+                          </div>
+                        )}
                       </div>
                     );
                   })()}
@@ -747,6 +825,360 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
           })}
         </div>
       </section>
+
+      {/* 4. Portable Expert Pack (.scpack v1.0) Wizard Modal */}
+      {isScpackModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-3xl max-h-[90vh] bg-surface border border-border rounded-3xl shadow-2xl flex flex-col overflow-hidden text-fg">
+            {/* Modal Header */}
+            <div className="p-5 border-b border-border bg-surface-subtle flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-9 h-9 rounded-2xl bg-blue-50 dark:bg-blue-500/15 border border-blue-300 dark:border-blue-500/30 flex items-center justify-center shrink-0">
+                  <Package className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-bold text-base text-fg">
+                      ACP 专家能力包 (.scpack v1.0)
+                    </h3>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-50 border-blue-300 text-blue-800 dark:bg-blue-500/15 dark:border-blue-500/30 dark:text-blue-300 border">
+                      A Codex → .scpack → B Codex
+                    </span>
+                  </div>
+                  <p className="text-xs text-fg-secondary mt-0.5">
+                    全离线蒸馏、两阶段脱敏门禁、RFC 8785 JCS + Ed25519 签名、B 端确定性 BM25 预检索与原生记忆隔离
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsScpackModalOpen(false)}
+                className="p-1.5 rounded-xl text-fg-muted hover:text-fg hover:bg-surface border border-transparent hover:border-border cursor-pointer ml-auto shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Mode Switch Tabs */}
+            <div className="px-5 pt-3 border-b border-border bg-surface-subtle flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => {
+                  setScpackTab('export');
+                  setScpackError(null);
+                  setScpackNotice(null);
+                }}
+                className={`px-3.5 py-2 text-xs font-semibold border-b-2 flex items-center gap-1.5 cursor-pointer transition-all ${
+                  scpackTab === 'export'
+                    ? 'border-blue-600 text-blue-800 dark:border-blue-400 dark:text-blue-300'
+                    : 'border-transparent text-fg-secondary hover:text-fg'
+                }`}
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>A 端：探测 6 源并导出 .scpack</span>
+              </button>
+              <button
+                onClick={() => {
+                  setScpackTab('import');
+                  setScpackError(null);
+                  setScpackNotice(null);
+                }}
+                className={`px-3.5 py-2 text-xs font-semibold border-b-2 flex items-center gap-1.5 cursor-pointer transition-all ${
+                  scpackTab === 'import'
+                    ? 'border-emerald-600 text-emerald-800 dark:border-emerald-400 dark:text-emerald-300'
+                    : 'border-transparent text-fg-secondary hover:text-fg'
+                }`}
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>B 端：验签安装 .scpack 与创建专家分身 ({installedScpacks.length})</span>
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-5 overflow-y-auto space-y-4 text-xs flex-1 select-text">
+              {scpackError && (
+                <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-500/15 border border-rose-300 dark:border-rose-500/30 text-rose-800 dark:text-rose-300 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1 break-words font-mono text-[11px]">{scpackError}</div>
+                </div>
+              )}
+
+              {scpackNotice && (
+                <div className="p-3 rounded-2xl bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-300 flex items-start gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1 break-words">{scpackNotice}</div>
+                </div>
+              )}
+
+              {scpackTab === 'export' ? (
+                <div className="space-y-4">
+                  {/* S1 503 Degradation Banner */}
+                  {probeReport?.s1_degraded_notice && (
+                    <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-500/15 border border-amber-300 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="font-bold">S1 原生记忆管线自动降级保护已触发</div>
+                        <div className="mt-0.5 text-[11px]">{probeReport.s1_degraded_notice}</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 6-Source Probe Table */}
+                  <div className="p-3.5 rounded-2xl bg-surface-subtle border border-border space-y-2.5">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <span className="font-bold text-fg">
+                        Codex 6 类数据源探测矩阵 (S1~S6 · SQLite Online Backup 快照)
+                      </span>
+                      <button
+                        onClick={() => void refreshScpacksAndProbe()}
+                        disabled={isProbingScpack}
+                        className="px-2.5 py-1 rounded-lg bg-surface hover:bg-surface-hover border border-border text-[11px] text-fg-secondary hover:text-fg cursor-pointer"
+                      >
+                        {isProbingScpack ? '探测中...' : '重新扫描 ~/.codex'}
+                      </button>
+                    </div>
+                    <div className="space-y-1.5">
+                      {(probeReport?.sources || []).map((src) => (
+                        <div
+                          key={src.source_id}
+                          className="p-2.5 rounded-xl bg-surface border border-border flex items-center justify-between gap-2 flex-wrap"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-semibold text-fg">{src.label}</span>
+                              {src.is_experimental && (
+                                <span className="text-[10px] px-1.5 py-0.2 rounded bg-purple-50 border border-purple-300 text-purple-800 dark:bg-purple-500/15 dark:border-purple-500/30 dark:text-purple-300 font-mono">
+                                  Experimental (Non-v1.0)
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-fg-secondary mt-0.5">{src.detail}</div>
+                          </div>
+                          <span
+                            className={`text-[10px] font-mono px-2 py-0.5 rounded-full border shrink-0 ml-auto ${
+                              src.availability === 'active'
+                                ? 'bg-emerald-50 border-emerald-300 text-emerald-800 dark:bg-emerald-500/15 dark:border-emerald-500/30 dark:text-emerald-300'
+                                : src.availability === 'degraded_empty_503'
+                                ? 'bg-amber-50 border-amber-300 text-amber-800 dark:bg-amber-500/15 dark:border-amber-500/30 dark:text-amber-300'
+                                : 'bg-surface-subtle border-border text-fg-muted'
+                            }`}
+                          >
+                            {src.availability} ({src.item_count})
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Two-Stage Redaction Gate Audit */}
+                  {probeReport && (
+                    <div className="p-3.5 rounded-2xl bg-surface-subtle border border-border space-y-2">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <span className="font-bold text-fg">
+                          两阶段脱敏门禁审计 (Redaction Audit · Zero-Residual Verification)
+                        </span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-300 text-emerald-800 dark:bg-emerald-500/15 dark:border-emerald-500/30 dark:text-emerald-300">
+                          已替换 {probeReport.redaction_audit.total_redactions} 处敏感项 · 零残留校验通过
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-fg-secondary">
+                        物理黑名单已拦截：<code className="font-mono">{probeReport.redaction_audit.blacklisted_paths_skipped.join(', ') || 'auth.json, config.toml, logs_1.sqlite, history.jsonl'}</code>
+                      </div>
+                      <label className="pt-1 flex items-center gap-2 cursor-pointer text-fg font-medium">
+                        <input
+                          type="checkbox"
+                          checked={userConfirmedRedaction}
+                          onChange={(e) => setUserConfirmedRedaction(e.target.checked)}
+                          className="rounded border-border"
+                        />
+                        <span>我已审阅脱敏审计结果，确认不包含未授权机密信息（必填门禁）</span>
+                      </label>
+                    </div>
+                  )}
+
+                  {/* Package Metadata Form */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] text-fg-secondary mb-1">能力包名称</label>
+                      <input
+                        value={scpackPackageName}
+                        onChange={(e) => setScpackPackageName(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-xl bg-surface border border-border text-fg text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-fg-secondary mb-1">导出者署名 (Author)</label>
+                      <input
+                        value={scpackAuthor}
+                        onChange={(e) => setScpackAuthor(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-xl bg-surface border border-border text-fg text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-fg-secondary mb-1">语义化版本 (SemVer)</label>
+                      <input
+                        value={scpackVersion}
+                        onChange={(e) => setScpackVersion(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-xl bg-surface border border-border text-fg text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-fg-secondary mb-1">导出路径 (.scpack)</label>
+                      <input
+                        value={scpackOutputPath}
+                        onChange={(e) => setScpackOutputPath(e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-xl bg-surface border border-border text-fg text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-2">
+                    <button
+                      onClick={async () => {
+                        setScpackError(null);
+                        setScpackNotice(null);
+                        try {
+                          const manifest = await exportCodexScpack({
+                            packageName: scpackPackageName,
+                            version: scpackVersion,
+                            author: scpackAuthor,
+                            description: scpackDescription,
+                            outputPath: scpackOutputPath,
+                            userConfirmedRedaction,
+                          });
+                          setExportedManifest(manifest);
+                          const packs = await listInstalledScpacks();
+                          setInstalledScpacks(packs);
+                          setScpackNotice(
+                            `已成功导出并签名 .scpack 能力包（ID: ${manifest.package_id}，Merkle Root: ${manifest.merkle_root_blake3.slice(0, 24)}...）`
+                          );
+                        } catch (e: any) {
+                          setScpackError(e?.message || String(e));
+                        }
+                      }}
+                      className="px-4 py-2 rounded-xl bg-accent text-accent-fg font-semibold text-xs cursor-pointer shadow-xs"
+                    >
+                      签名并导出 .scpack 能力包
+                    </button>
+                  </div>
+
+                  {exportedManifest && (
+                    <div className="p-3 rounded-2xl bg-surface border border-border font-mono text-[11px] space-y-1">
+                      <div className="font-bold text-fg">已生成 Manifest (RFC 8785 JCS + Ed25519)</div>
+                      <div>package_id: {exportedManifest.package_id}</div>
+                      <div>merkle_root: {exportedManifest.merkle_root_blake3}</div>
+                      <div>signer_pubkey: {exportedManifest.signature?.signer_public_key_hex}</div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* Import Bar */}
+                  <div className="p-3.5 rounded-2xl bg-surface-subtle border border-border space-y-2.5">
+                    <div className="font-bold text-fg">
+                      从本地路径导入 .scpack 能力包（Fail-Closed 验签与只读挂载至 ~/.shadow-crew/packs/）
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <input
+                        value={scpackImportPath}
+                        onChange={(e) => setScpackImportPath(e.target.value)}
+                        placeholder="输入 .scpack 文件路径..."
+                        className="flex-1 min-w-[220px] px-3 py-1.5 rounded-xl bg-surface border border-border text-fg text-xs font-mono"
+                      />
+                      <button
+                        onClick={async () => {
+                          setScpackError(null);
+                          setScpackNotice(null);
+                          try {
+                            const summary = await importScpack(scpackImportPath);
+                            const packs = await listInstalledScpacks();
+                            setInstalledScpacks(packs);
+                            setScpackNotice(
+                              `已验签并只读安装能力包「${summary.name}」(${summary.package_id})，包含 ${summary.playbook_count} 篇 Playbooks。`
+                            );
+                          } catch (e: any) {
+                            setScpackError(e?.message || String(e));
+                          }
+                        }}
+                        className="px-3.5 py-1.5 rounded-xl bg-accent text-accent-fg font-semibold text-xs cursor-pointer shrink-0"
+                      >
+                        验签并安装 .scpack
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Installed Packs List */}
+                  <div className="space-y-2.5">
+                    <div className="font-bold text-fg">
+                      已安装的专家能力包 (~/.shadow-crew/packs/)
+                    </div>
+                    {installedScpacks.length === 0 ? (
+                      <div className="p-4 rounded-2xl bg-surface-subtle border border-border text-center text-fg-muted">
+                        暂无已安装的 .scpack 能力包。可先在「A 端」导出或在上方导入。
+                      </div>
+                    ) : (
+                      installedScpacks.map((pack) => (
+                        <div
+                          key={pack.package_id}
+                          className="p-3.5 rounded-2xl bg-surface border border-border flex items-center justify-between gap-3 flex-wrap"
+                        >
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-sm text-fg">{pack.name}</span>
+                              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-50 border border-blue-300 text-blue-800 dark:bg-blue-500/15 dark:border-blue-500/30 dark:text-blue-300">
+                                v{pack.version} · 基于 {pack.author} 的经验构建 · 本地运行时
+                              </span>
+                              {pack.revoked && (
+                                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-rose-50 border border-rose-300 text-rose-800 dark:bg-rose-500/15 dark:border-rose-500/30 dark:text-rose-300">
+                                  REVOKED
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-fg-secondary">{pack.description}</div>
+                            <div className="text-[10px] font-mono text-fg-muted break-all">
+                              ID: {pack.package_id} · Playbooks: {pack.playbook_count} · Merkle: {pack.merkle_root_blake3.slice(0, 22)}...
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0 ml-auto">
+                            {onCreateExpertAgentFromPack && !pack.revoked && (
+                              <button
+                                onClick={() => {
+                                  const expertAgent = createPortableExpertAgentFromPack(pack);
+                                  onCreateExpertAgentFromPack(expertAgent);
+                                  setScpackNotice(
+                                    `已基于「${pack.name}」创建 B 端专家分身 Agent（已锁定 --disable memories 与 -s workspace-write）`
+                                  );
+                                }}
+                                className="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-500/15 dark:hover:bg-emerald-500/25 border border-emerald-300 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-300 font-semibold text-xs cursor-pointer"
+                              >
+                                + 创建专家分身 Agent
+                              </button>
+                            )}
+                            <button
+                              onClick={async () => {
+                                try {
+                                  await uninstallScpack(pack.package_id, true);
+                                  const packs = await listInstalledScpacks();
+                                  setInstalledScpacks(packs);
+                                  setScpackNotice(`已吊销并卸载能力包 ${pack.package_id}`);
+                                } catch (e: any) {
+                                  setScpackError(e?.message || String(e));
+                                }
+                              }}
+                              className="px-2.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-500/15 border border-rose-300 dark:border-rose-500/30 text-rose-800 dark:text-rose-300 text-xs cursor-pointer"
+                            >
+                              吊销并卸载
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

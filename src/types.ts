@@ -177,6 +177,186 @@ export interface AgentWorkspaceConfig {
   activeFiles: string[];
 }
 
+// ==================== ACP Portable Expert Pack (.scpack v1.0) ====================
+
+export type ScpackErrorCode =
+  | 'ERR_PACK_TOO_LARGE'
+  | 'ERR_TOO_MANY_FILES'
+  | 'ERR_PATH_TRAVERSAL'
+  | 'ERR_SYMLINK_FORBIDDEN'
+  | 'ERR_INTEGRITY_MISMATCH'
+  | 'ERR_SIGNATURE_INVALID'
+  | 'ERR_PACK_REVOKED'
+  | 'ERR_PACK_MISSING'
+  | 'ERR_SCHEMA_UNSUPPORTED'
+  | 'ERR_SNAPSHOT_INCONSISTENT'
+  | 'ERR_SECRET_DETECTED'
+  | 'ERR_RUNTIME_MISSING'
+  | 'ERR_AUTH_REQUIRED'
+  | 'ERR_VERSION_MISMATCH';
+
+export type CodexMemorySourceId =
+  | 'S1_CODEX_MEMORIES_V2'
+  | 'S2_AD_HOC_MD'
+  | 'S3_AGENTS_MD'
+  | 'S4_CODEX_SKILLS'
+  | 'S5_SQLITE_SESSIONS'
+  | 'S6_CLAUDE_IMPORTER';
+
+export type CodexSourceAvailability =
+  | 'active'
+  | 'degraded_empty_503'
+  | 'disabled_by_default'
+  | 'missing'
+  | 'locked_busy';
+
+export interface CodexMemorySourceStatus {
+  source_id: CodexMemorySourceId;
+  label: string;
+  availability: CodexSourceAvailability;
+  item_count: number;
+  detail: string;
+  is_experimental: boolean;
+}
+
+export interface RedactionFinding {
+  rule_id: string;
+  source_path: string;
+  line_number: number;
+  redacted_preview: string;
+  replacement_token: string;
+}
+
+export interface RedactionAuditReport {
+  scanned_files: number;
+  scanned_bytes: number;
+  total_redactions: number;
+  findings: RedactionFinding[];
+  blacklisted_paths_skipped: string[];
+  zero_residual_verified: boolean;
+}
+
+export interface ScpackPlaybookEntry {
+  id: string;
+  title: string;
+  domain: string;
+  source_id: CodexMemorySourceId;
+  relative_path: string;
+  keywords: string[];
+  summary: string;
+  content_markdown: string;
+  blake3_digest: string;
+}
+
+export interface CodexSourceProbeReport {
+  codex_home: string;
+  codex_cli_version?: string | null;
+  sources: CodexMemorySourceStatus[];
+  extracted_playbooks: ScpackPlaybookEntry[];
+  extracted_skills: ScpackPlaybookEntry[];
+  redaction_audit: RedactionAuditReport;
+  snapshot_watermark: string;
+  s1_degraded_notice?: string | null;
+}
+
+export interface ScpackFileDigest {
+  path: string;
+  size_bytes: number;
+  blake3: string;
+}
+
+export interface ScpackRuntimeRequirement {
+  target_runtime: string;
+  acp_adapter: string;
+  min_cli_version: string;
+  recommended_sandbox_mode: string;
+  force_disable_native_memory: boolean;
+}
+
+export interface ScpackSignatureBlock {
+  algorithm: 'ed25519';
+  canonicalization: 'RFC8785-JCS';
+  signer_public_key_hex: string;
+  signature_hex: string;
+  signed_at: string;
+}
+
+export interface ScpackManifest {
+  schema_version: 'scpack-1.0';
+  package_id: string;
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  created_at: string;
+  source_snapshot_watermark: string;
+  runtime_requirement: ScpackRuntimeRequirement;
+  files: ScpackFileDigest[];
+  merkle_root_blake3: string;
+  redaction_summary: {
+    total_redactions: number;
+    zero_residual_verified: boolean;
+    user_confirmed: boolean;
+  };
+  signature?: ScpackSignatureBlock | null;
+}
+
+export interface InstalledScpackSummary {
+  package_id: string;
+  name: string;
+  version: string;
+  author: string;
+  description: string;
+  install_dir: string;
+  created_at: string;
+  merkle_root_blake3: string;
+  signer_public_key_hex: string;
+  playbook_count: number;
+  skill_count: number;
+  revoked: boolean;
+}
+
+export interface PreRetrievalMatchedPlaybook {
+  id: string;
+  title: string;
+  domain: string;
+  relative_path: string;
+  bm25_score: number;
+}
+
+export interface PreRetrievalResult {
+  package_id: string;
+  package_name: string;
+  matched_playbooks: PreRetrievalMatchedPlaybook[];
+  injected_block: string;
+  augmented_prompt: string;
+  sanitization_warnings: string[];
+}
+
+export interface BSideRuntimeCheck {
+  codex_cli_installed: boolean;
+  codex_cli_version?: string | null;
+  codex_acp_available: boolean;
+  auth_ready: boolean;
+  version_compatible: boolean;
+  warning_message?: string | null;
+}
+
+export interface AgentExpertPackBinding {
+  packageId: string;
+  packageName: string;
+  version: string;
+  author: string;
+  installDir: string;
+  merkleRootBlake3: string;
+  signerPublicKeyHex: string;
+  /** B 端专家分身诚实标识：基于 A 的经验构建 · 本地运行时 */
+  badgeLabel: string;
+  forceDisableNativeMemory: true;
+  sandboxMode: 'workspace-write';
+  boundAt: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -230,6 +410,9 @@ export interface Agent {
   authToken?: string;
   remoteLatencyMs?: number;
   readOnlyGuard?: boolean;
+
+  // Portable Expert Pack (.scpack v1.0) Binding
+  expertPack?: AgentExpertPackBinding;
 
   // Three Core Pillars
   workspace: AgentWorkspaceConfig;
@@ -857,6 +1040,14 @@ export interface AcpTrace {
     cartridgeName: string;
     recalledKeys: string[];
     tokenCost: number;
+  };
+
+  scpackRetrieval?: {
+    packageId: string;
+    packageName: string;
+    matchedPlaybooks: PreRetrievalMatchedPlaybook[];
+    sanitizationWarnings: string[];
+    nativeMemoryLockedDisabled: boolean;
   };
 }
 
