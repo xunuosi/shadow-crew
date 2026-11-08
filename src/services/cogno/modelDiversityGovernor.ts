@@ -12,32 +12,46 @@ import { Agent, GameRolesConfig, ModelDiversityEvaluation, GroundingEvidence, Ar
 
 export type { ModelFamily };
 
-const FAMILY_DISPLAY_NAMES: Record<ModelFamily, string> = {
+export const FAMILY_DISPLAY_NAMES: Record<ModelFamily, string> = {
   anthropic: 'Claude 家族',
   openai: 'OpenAI 家族',
   deepseek: 'DeepSeek 家族',
   google: 'Gemini 家族',
   meta: 'Llama 家族',
   qwen: 'Qwen 家族',
+  zhipu: '智谱 GLM 家族',
   local_other: 'Local/Custom',
 };
 
 /**
- * 识别/解析模型家族（优先读取配置显式 family，缺失时由元数据推断并归一化）
+ * 识别/解析模型家族（优先读取配置显式 family，缺失时由元数据、环境变量与模型标识推断并归一化）
  */
 export function inferModelFamilyFromMetadata(meta: {
   modelId?: string;
   modelName?: string;
   provider?: string;
   modelBadge?: string;
+  envVars?: Array<{ key: string; value: string }>;
+  agentName?: string;
+  commandOrProfile?: string;
 }): ModelFamily {
-  const identifier = `${meta.modelBadge || ''} ${meta.modelId || ''} ${meta.modelName || ''} ${meta.provider || ''}`.toLowerCase();
-  if (identifier.includes('claude') || identifier.includes('anthropic')) return 'anthropic';
-  if (identifier.includes('gpt') || identifier.includes('openai') || identifier.includes('o1') || identifier.includes('o3') || identifier.includes('o4')) return 'openai';
+  const envHints = (meta.envVars || [])
+    .map((e) => `${e.key}=${e.value}`)
+    .join(' ')
+    .toLowerCase();
+  const identifier = `${meta.modelBadge || ''} ${meta.modelId || ''} ${meta.modelName || ''} ${meta.provider || ''} ${meta.commandOrProfile || ''} ${meta.agentName || ''} ${envHints}`.toLowerCase();
+
+  // 1. 优先匹配特异性强的国产模型（智谱 GLM、DeepSeek 等），避免被下层通用名或兼容代理名覆盖
+  if (identifier.includes('zhipu') || identifier.includes('bigmodel') || identifier.includes('glm') || identifier.includes('chatglm') || identifier.includes('智谱')) return 'zhipu';
   if (identifier.includes('deepseek')) return 'deepseek';
+  if (identifier.includes('qwen') || identifier.includes('通义')) return 'qwen';
+
+  // 2. 国际主流家族匹配
+  if (identifier.includes('claude') || identifier.includes('anthropic')) return 'anthropic';
+  if (identifier.includes('gpt') || identifier.includes('openai') || identifier.includes('o1') || identifier.includes('o3') || identifier.includes('o4') || identifier.includes('codex')) return 'openai';
   if (identifier.includes('gemini') || identifier.includes('google')) return 'google';
   if (identifier.includes('llama') || identifier.includes('meta')) return 'meta';
-  if (identifier.includes('qwen') || identifier.includes('通义')) return 'qwen';
+
   return 'local_other';
 }
 
@@ -55,6 +69,9 @@ export function detectModelFamily(agent: Agent): { family: ModelFamily; displayN
     modelName: agent.modelConfig?.modelName,
     provider: agent.modelConfig?.provider,
     modelBadge: agent.modelBadge,
+    envVars: agent.envVars,
+    agentName: `${agent.name} ${agent.handle} ${agent.role || ''}`,
+    commandOrProfile: `${agent.localAcpProfile || ''} ${agent.acpCommandOrUrl || ''}`,
   });
 
   return { family, displayName: FAMILY_DISPLAY_NAMES[family] || agent.modelBadge || 'Local/Custom' };

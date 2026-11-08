@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Agent, LocalAcpRuntime, AcpTransport } from '../types';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { Agent, LocalAcpRuntime, AcpTransport, ModelFamily } from '../types';
 import {
   X,
   ChevronDown,
@@ -19,10 +19,15 @@ import {
   ShieldCheck,
   Loader2,
   Copy,
+  Cpu,
 } from 'lucide-react';
 import { AgentAvatarArtwork } from './AgentAvatarArtwork';
 import { discoverLocalAcpRuntimes, FALLBACK_PRESET_RUNTIMES } from '../services/acpDiscovery';
 import { probeRemoteAcpConnection } from '../services/acpClient';
+import {
+  FAMILY_DISPLAY_NAMES,
+  inferModelFamilyFromMetadata,
+} from '../services/cogno/modelDiversityGovernor';
 import {
   createAgentMemoryBank,
   createUnknownNativeMemoryCapability,
@@ -147,6 +152,9 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
 
   // Dynamic Environment Variables (ENV)
   const [envVars, setEnvVars] = useState<EnvVarItem[]>([]);
+  // Underlying LLM Model Profile (用于异构博弈多样性校验与模型标识)
+  const [modelFamily, setModelFamily] = useState<ModelFamily | 'auto'>('auto');
+  const [modelIdInput, setModelIdInput] = useState<string>('');
   const [nativeMemoryEnabled, setNativeMemoryEnabled] = useState(() =>
     initialTarget ? initialTarget.memory.mode === 'native' : true
   );
@@ -299,6 +307,15 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         setNativeMemoryEnabled(target.memory.mode === 'native');
         setNativeMemoryAutoGenerate(target.memory.autoGenerate);
 
+        // Map Model Profile
+        setModelFamily(target.modelConfig?.family || 'auto');
+        const existingBadgeOrId =
+          target.modelConfig?.modelId ||
+          (target.modelBadge && !['ACP Stdio', 'Remote ACP'].includes(target.modelBadge)
+            ? target.modelBadge
+            : '');
+        setModelIdInput(existingBadgeOrId);
+
         // Map ACP runtime
         const matched = runtimes.find(
           (r) =>
@@ -322,6 +339,8 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         setReadOnlyGuard(true);
         setRemoteTestResult(null);
         setEnvVars([]);
+        setModelFamily('auto');
+        setModelIdInput('');
         setNativeMemoryEnabled(true);
         setNativeMemoryAutoGenerate(false);
       }
@@ -446,6 +465,18 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
     );
   };
 
+  const currentInferredFamily = useMemo(() => {
+    return inferModelFamilyFromMetadata({
+      modelId: modelIdInput.trim() || undefined,
+      modelBadge: modelIdInput.trim() || undefined,
+      envVars: envVars
+        .filter((v) => v.key.trim().length > 0)
+        .map((v) => ({ key: v.key.trim(), value: v.value })),
+      agentName: name.trim(),
+      commandOrProfile: `${selectedAcp.name} ${customCommand}`,
+    });
+  }, [modelIdInput, envVars, name, selectedAcp.name, customCommand]);
+
   const isReady = selectedAcp.availability === 'available';
   const isRemoteMode = connectTab === 'remote';
   const handleSubmit = async (e: React.FormEvent) => {
@@ -515,9 +546,31 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       // 本地 stdio 外部 ACP：连通性由进程重启握手自证，无需网关探测
     }
 
+    const effectiveModelId = modelIdInput.trim() || undefined;
+    const inferredFamily = inferModelFamilyFromMetadata({
+      modelId: effectiveModelId,
+      modelBadge: effectiveModelId,
+      envVars: finalEnvVars,
+      commandOrProfile: `${selectedAcp.name} ${resolvedCommand}`,
+      agentName: name.trim(),
+    });
+    const finalFamily: ModelFamily = modelFamily === 'auto' ? inferredFamily : modelFamily;
+    const finalBadge =
+      effectiveModelId ||
+      (finalFamily !== 'local_other'
+        ? FAMILY_DISPLAY_NAMES[finalFamily]
+        : isRemoteMode
+        ? 'Remote ACP'
+        : selectedAcp.name || 'ACP Stdio');
+
     const modelPayload = {
-      modelBadge: isRemoteMode ? 'Remote ACP' : 'ACP Stdio',
-      modelConfig: undefined,
+      modelBadge: finalBadge,
+      modelConfig: {
+        provider: (finalFamily === 'zhipu' ? 'openai_compatible' : finalFamily) as any,
+        family: finalFamily,
+        modelId: effectiveModelId || finalFamily,
+        modelName: finalBadge,
+      },
     };
 
     const savedMemoryState = resolveSavedAgentNativeMemoryState({
@@ -1444,6 +1497,99 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
               </div>
             </>
           )}
+
+          {/* Wave 2 P0-5: 底层大模型声明 (Underlying LLM Profile - 用于博弈异构多样性评估与身份展示) */}
+          <div
+            className={`p-3.5 rounded-2xl border space-y-3 ${
+              isLightMode
+                ? 'bg-purple-50/70 border-purple-200'
+                : 'bg-purple-950/20 border-purple-800/40'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 font-semibold text-xs text-purple-700 dark:text-purple-300">
+                <Cpu className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+                <span>底层大模型参数与家族声明 (Model Profile)</span>
+              </div>
+              <span className="text-[10px] text-purple-600/80 dark:text-purple-400/80">
+                异构博弈调控 (ReConcile)
+              </span>
+            </div>
+
+            <p className="text-[11px] leading-relaxed text-gray-600 dark:text-gray-400">
+              声明该 Agent 实际运作依托的模型家族与型号。用于议题博弈推演的多样性校验防同质化共识幻觉。进程实际调用由启动命令或环境变量决定。
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <div>
+                <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                  模型家族 (Model Family)
+                </label>
+                <select
+                  value={modelFamily}
+                  onChange={(e) => setModelFamily(e.target.value as ModelFamily | 'auto')}
+                  className={`w-full rounded-xl px-3 py-1.5 text-xs focus:outline-none transition-all cursor-pointer ${inputBg}`}
+                >
+                  <option value="auto">
+                    🤖 智能自动推断 ({FAMILY_DISPLAY_NAMES[currentInferredFamily] || 'Local/Custom'})
+                  </option>
+                  <option value="deepseek">🐳 DeepSeek 家族 (R1 / V3 / V4)</option>
+                  <option value="zhipu">✨ 智谱 GLM 家族 (GLM-4 / GLM-5)</option>
+                  <option value="anthropic">⚡ Claude 家族 (Sonnet / Opus / Haiku)</option>
+                  <option value="openai">🤖 OpenAI 家族 (GPT-4o / o1 / o3 / Codex)</option>
+                  <option value="google">🧭 Gemini 家族 (Flash / Pro)</option>
+                  <option value="qwen">🌌 Qwen 家族 (千问 / 通义)</option>
+                  <option value="meta">🦙 Llama 家族</option>
+                  <option value="local_other">💻 Local / 自定义其他</option>
+                </select>
+              </div>
+
+              <div>
+                <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                  模型型号标识 (Model ID / Badge)
+                </label>
+                <input
+                  type="text"
+                  placeholder={
+                    modelFamily !== 'auto'
+                      ? FAMILY_DISPLAY_NAMES[modelFamily]
+                      : modelIdInput || (currentInferredFamily !== 'local_other' ? FAMILY_DISPLAY_NAMES[currentInferredFamily] : '例如: glm-5.3-flash, deepseek-v4')
+                  }
+                  value={modelIdInput}
+                  onChange={(e) => setModelIdInput(e.target.value)}
+                  className={`w-full rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none transition-all ${inputBg}`}
+                />
+              </div>
+            </div>
+
+            {/* Quick Fill Preset Pills */}
+            <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+              <span className="text-[10px] text-gray-400">快捷填充:</span>
+              {[
+                { label: 'glm-5.3-flash', fam: 'zhipu' as const },
+                { label: 'deepseek-v4', fam: 'deepseek' as const },
+                { label: 'deepseek-reasoner', fam: 'deepseek' as const },
+                { label: 'claude-3-7-sonnet', fam: 'anthropic' as const },
+                { label: 'gpt-4o', fam: 'openai' as const },
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => {
+                    setModelIdInput(p.label);
+                    setModelFamily(p.fam);
+                  }}
+                  className={`px-2 py-0.5 text-[10px] rounded-lg border font-mono transition-colors cursor-pointer ${
+                    isLightMode
+                      ? 'bg-white hover:bg-purple-100 border-purple-200 text-purple-700'
+                      : 'bg-purple-900/30 hover:bg-purple-800/40 border-purple-700/50 text-purple-300'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
 
           {/* Native Memory Policy */}
           <div

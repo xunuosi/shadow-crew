@@ -195,6 +195,64 @@ assert.strictEqual(heteroEval.score, 1.0, '4 distinct model families must score 
 assert.strictEqual(Object.keys(heteroEval.familyDistribution).length, 4, 'Must register 4 distinct families');
 console.log(`   ✓ Heterogeneous Verified: score=${heteroEval.score}, families=${Object.keys(heteroEval.familyDistribution).join(', ')}`);
 
+// 回归验证：用户场景 MyCodex (DeepSeek) + GlmClaude-01 (智谱 GLM)
+const userCodexAgent = {
+  id: 'agent-mycodex',
+  name: 'MyCodex',
+  handle: '@mycodex',
+  role: '逃逸红队分析师',
+  modelBadge: 'deepseek-v4',
+  modelConfig: { family: 'deepseek', modelId: 'deepseek-v4', provider: 'deepseek' },
+  envVars: [{ key: 'OPENAI_MODEL', value: 'deepseek-v4' }],
+} as unknown as Agent;
+
+const userGlmAgent = {
+  id: 'agent-glmclaude',
+  name: 'GlmClaude-01',
+  handle: '@glmclaude-01',
+  role: '沙箱内核架构师',
+  modelBadge: 'glm-5.3-flash',
+  modelConfig: { family: 'zhipu', modelId: 'glm-5.3-flash', provider: 'openai_compatible' },
+  envVars: [
+    { key: 'ANTHROPIC_BASE_URL', value: 'https://open.bigmodel.cn/api/anthropic' },
+    { key: 'ANTHROPIC_MODEL', value: 'glm-5.3-flash' },
+  ],
+} as unknown as Agent;
+
+const userPairRoles: GameRolesConfig = {
+  proposers: ['agent-mycodex'],
+  challengers: ['agent-glmclaude'],
+  arbiters: [],
+  humanIsArbiter: false,
+};
+
+const userPairEval = calculateModelDiversity([userCodexAgent, userGlmAgent], userPairRoles);
+assert.strictEqual(userPairEval.isHomogeneous, false, 'DeepSeek + GLM must be recognized as heterogeneous');
+assert.strictEqual(userPairEval.score, 0.7, 'Two distinct families score 0.70');
+assert.deepStrictEqual(userPairEval.familyDistribution['DeepSeek 家族'], ['MyCodex']);
+assert.deepStrictEqual(userPairEval.familyDistribution['智谱 GLM 家族'], ['GlmClaude-01']);
+console.log(`   ✓ User Regression Verified: DeepSeek + GLM recognized as heterogeneous (70%), families=${Object.keys(userPairEval.familyDistribution).join(', ')}`);
+
+// 回归验证：未显式指定 family 时，从元数据与环境变量启发式智能推断
+const codexInferred = detectModelFamily({
+  id: 'codex-raw',
+  name: 'MyCodex',
+  handle: '@mycodex',
+  role: '红队',
+  envVars: [{ key: 'OPENAI_MODEL', value: 'deepseek-v4' }],
+} as unknown as Agent);
+assert.strictEqual(codexInferred.family, 'deepseek');
+
+const glmInferred = detectModelFamily({
+  id: 'claude-raw',
+  name: 'GlmClaude-01',
+  handle: '@glmclaude-01',
+  role: '架构师',
+  envVars: [{ key: 'ANTHROPIC_MODEL', value: 'glm-5.3-flash' }],
+} as unknown as Agent);
+assert.strictEqual(glmInferred.family, 'zhipu');
+console.log(`   ✓ Heuristic Inference Verified: codex->${codexInferred.displayName}, claude-glm->${glmInferred.displayName}`);
+
 // ==========================================
 // Test 6: ReConcile Confidence-Weighted MCDA
 // ==========================================

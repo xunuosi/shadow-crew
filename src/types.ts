@@ -131,7 +131,7 @@ export interface AgentMemoryBank {
 }
 
 export type ModelProviderType = 'openai_compatible' | 'deepseek' | 'anthropic' | 'ollama' | 'custom';
-export type ModelFamily = 'anthropic' | 'openai' | 'deepseek' | 'google' | 'meta' | 'qwen' | 'local_other';
+export type ModelFamily = 'anthropic' | 'openai' | 'deepseek' | 'google' | 'meta' | 'qwen' | 'zhipu' | 'local_other';
 
 export interface ReasoningLevelItem {
   level: string; // 如 'off' | 'low' | 'medium' | 'high' 或自定义

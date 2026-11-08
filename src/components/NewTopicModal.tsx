@@ -743,11 +743,14 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
               </div>
               <div className="flex items-center gap-2 text-[10px] opacity-90 flex-wrap">
                 <span className="font-mono">参与模型家族:</span>
-                {Object.entries(modelDiversity.familyDistribution).map(([fam, count]) => (
-                  <span key={fam} className="px-1.5 py-0.5 rounded bg-surface/50 border border-current/15 font-mono">
-                    {fam}: {count}位
-                  </span>
-                ))}
+                {Object.entries(modelDiversity.familyDistribution).map(([fam, members]) => {
+                  const list = Array.isArray(members) ? members : [members];
+                  return (
+                    <span key={fam} className="px-1.5 py-0.5 rounded bg-surface/50 border border-current/15 font-mono">
+                      {fam}: {list.length}位 ({list.join(', ')})
+                    </span>
+                  );
+                })}
               </div>
               {modelDiversity.isHomogeneous && modelDiversity.warnings.length > 0 && (
                 <div className="flex items-start gap-1.5 text-[11px] font-medium pt-1 border-t border-rose-500/20 text-rose-600 dark:text-rose-300 leading-relaxed">
