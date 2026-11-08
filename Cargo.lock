@@ -3283,10 +3283,17 @@ name = "shadow-crew-protocol"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "flate2",
+ "regex",
+ "rusqlite",
  "secp256k1",
  "serde",
  "serde_json",
  "sha2",
+ "uuid",
+ "walkdir",
 ]
 
 [[package]]

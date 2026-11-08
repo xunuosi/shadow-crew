@@ -34,7 +34,12 @@ nostr-sdk = "0.38"
 sha2 = "0.10"
 
 # 数据库与持久化
-rusqlite = { version = "0.33", features = ["bundled"] }
+rusqlite = { version = "0.33", features = ["bundled", "backup"] }
+flate2 = "1.1"
+regex = "1.13"
+chrono = "0.4"
+uuid = "1.26"
+walkdir = "2.5"
 
 # 日志 & 追踪
 tracing = "0.1"
