@@ -153,8 +153,18 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
   // Dynamic Environment Variables (ENV)
   const [envVars, setEnvVars] = useState<EnvVarItem[]>([]);
   // Underlying LLM Model Profile (用于异构博弈多样性校验与模型标识)
-  const [modelFamily, setModelFamily] = useState<ModelFamily | 'auto'>('auto');
-  const [modelIdInput, setModelIdInput] = useState<string>('');
+  const [modelFamily, setModelFamily] = useState<ModelFamily | 'auto'>(() =>
+    initialTarget?.modelConfig?.family || 'auto'
+  );
+  const [modelIdInput, setModelIdInput] = useState<string>(() => {
+    if (!initialTarget) return '';
+    return (
+      initialTarget.modelConfig?.modelId ||
+      (initialTarget.modelBadge && !['ACP Stdio', 'Remote ACP'].includes(initialTarget.modelBadge)
+        ? initialTarget.modelBadge
+        : '')
+    );
+  });
   const [nativeMemoryEnabled, setNativeMemoryEnabled] = useState(() =>
     initialTarget ? initialTarget.memory.mode === 'native' : true
   );
