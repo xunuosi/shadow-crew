@@ -21,44 +21,64 @@ console.log('===================================================================
 console.log('🧪 CognoNexus: 综合裁定官最终敲定、@角色保证回复无异议与活体看板生成自动化测试');
 console.log('================================================================================\n');
 
+function createMockAgent(partial: Partial<Agent> & { id: string; name: string }): Agent {
+  return {
+    handle: `@${partial.name.toLowerCase()}`,
+    role: 'Expert',
+    avatar: '🤖',
+    status: 'idle',
+    color: '#3b82f6',
+    acpTransport: 'stdio',
+    acpCommandOrUrl: 'mock',
+    protocolVersion: '1.0',
+    capabilities: {
+      canUseInternalMemory: true,
+      canAccessWorkspaceFiles: true,
+      canExecuteSkills: true,
+      canDelegateToSubAgents: false,
+      supportsStreaming: true,
+    },
+    workspace: { cwd: '/mock' },
+    skills: [],
+    memory: { historyLimit: 100 },
+    ...partial,
+  } as Agent;
+}
+
 // 构造测试 Agent 数据
 const mockAgents: Agent[] = [
-  {
+  createMockAgent({
     id: 'agent-proposer',
     name: 'Architect_Linus',
     handle: '@arch-linus',
     role: '架构师提案方',
     avatar: '🏛️',
     description: '核心系统架构设计',
-    status: 'idle',
-  },
-  {
+  }),
+  createMockAgent({
     id: 'agent-challenger',
     name: 'RedTeam_Sentinel',
     handle: '@red-sentinel',
     role: '红队对抗专家',
     avatar: '⚔️',
     description: '极限并发与网络抖动边界证伪',
-    status: 'idle',
-  },
-  {
+  }),
+  createMockAgent({
     id: 'agent-verifier',
     name: 'QA_Grounding',
     handle: '@qa-verifier',
     role: '接地实证检验员',
     avatar: '🔍',
     description: '物理代码与沙箱运行真值检验',
-    status: 'idle',
-  },
-  {
+  }),
+  createMockAgent({
     id: 'agent-arbiter',
     name: 'Chief_Arbiter_Sophia',
     handle: '@arbiter-sophia',
     role: '终局综合裁定官',
     avatar: '⚖️',
     description: '客观权衡与终局决策敲定',
-    status: 'idle',
-  },
+  }),
 ];
 
 const mockTopic: TopicMessageData = {
@@ -67,7 +87,7 @@ const mockTopic: TopicMessageData = {
   workspaceBindingId: 'ws-1',
   title: '分布式订单防重与幂等状态机选型',
   description: '高并发秒杀场景下，选择 Redis 分布式锁还是数据库排他行锁与版本号。',
-  status: 'active',
+  status: 'open',
   discussionMode: 'game_theoretic',
   gameStage: 'arbitration',
   gameRoles: {
@@ -220,6 +240,22 @@ assert.equal(concurrenceState.items[2].status, 'concurred');
 assert.equal(concurrenceState.allConcurred, true, '全员 3/3 已保证无异议！');
 assert.equal(checkAllRolesConcurred(concurrenceState), true);
 assert.ok(concurrenceState.concludedAt, '记录敲定时间戳');
+
+// 4.5 故障注入测试：角色坚持阻断异议（Objection），系统严格拒绝通过并挂起敲定
+const objectedState = advanceRoleConcurrenceItem(
+  prepareConcurrenceState({
+    topic: mockTopic,
+    candidateAgents: mockAgents,
+    arbiterDraft: draft,
+    arbiterReplyText: draft.summary,
+  }),
+  'agent-challenger',
+  '【存在阻断性异议】网络分区时主从切换依然存在 50ms 锁租约漂移空窗，坚决反对直接上线！'
+);
+assert.equal(objectedState.items.find((i) => i.agentId === 'agent-challenger')?.status, 'objected');
+assert.equal(objectedState.allConcurred, false, '有角色存在异议时 allConcurred 必须为 false');
+assert.equal(checkAllRolesConcurred(objectedState), false, '严格阻止综合裁定官越级敲定');
+console.log('✓ [通过] 异议挂起与防越级敲定故障注入断言通过');
 console.log('✓ [通过] 全员无异议状态机推进逻辑严密，无缺漏');
 
 // -----------------------------------------------------------------------------

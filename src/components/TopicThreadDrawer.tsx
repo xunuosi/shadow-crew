@@ -3048,25 +3048,53 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               )}
             </div>
           ) : (
-            <div className="p-2.5 rounded-xl bg-surface-subtle border border-border text-[11px] text-fg-secondary flex items-start gap-2">
-              <Scale className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-              <div className="space-y-1 flex-1">
-                <p className="font-semibold text-fg">当前为博弈讨论模式 (AI 仲裁机制)</p>
+            <div className="p-2.5 rounded-xl bg-purple-50/70 dark:bg-purple-500/10 border border-purple-200 dark:border-purple-500/30 text-[11px] text-fg-secondary flex items-start gap-2 shadow-xs">
+              <Scale className="w-4 h-4 text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
+              <div className="space-y-1.5 flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-1 flex-wrap">
+                  <p className="font-bold text-fg text-[11px]">
+                    {topic.status === 'resolved'
+                      ? '🏛️ 综合裁定官已敲定终局方案'
+                      : topic.gameTheoreticState?.concurrenceState?.isConcurrencePhaseActive
+                      ? '🤝 全员无异议共识审视征询中'
+                      : '⚖️ 博弈讨论模式 (综合裁定官负责最终敲定)'}
+                  </p>
+                  {topic.gameTheoreticState?.concurrenceState?.isConcurrencePhaseActive && (
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30">
+                      {topic.gameTheoreticState.concurrenceState.items.filter((i) => i.status === 'concurred').length}/
+                      {topic.gameTheoreticState.concurrenceState.items.length} 保证无异议
+                    </span>
+                  )}
+                </div>
+
                 <p className="text-[10px] text-fg-muted leading-relaxed">
-                  最终定案法槌由 AI 仲裁专家组 (
-                  {(topic.gameRoles?.arbiters || []).map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}
-                  ) 主导。你可作为架构观察员发言，或随时在编辑中接管仲裁权。
+                  {topic.status === 'resolved'
+                    ? '经各参研关键角色独立复核并一致保证无异议，终局方案已正式敲定并生成活体决策看板。'
+                    : '综合裁定官全面权衡攻防推演起草方案，并在 @ 各角色保证回复无异议后，正式敲定方案并生成活体决策看板。'}
                 </p>
-                {onEditTopic && (
+
+                <div className="flex items-center gap-2 pt-1 flex-wrap">
                   <button
                     type="button"
-                    onClick={onEditTopic}
-                    className="text-[10px] text-accent hover:underline font-medium inline-flex items-center gap-1 cursor-pointer mt-0.5"
+                    onClick={() => setActiveDrawerView('adr')}
+                    className="px-2 py-1 rounded-md bg-purple-600 hover:bg-purple-500 text-white text-[10px] font-semibold flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
+                    title="查看最新实时生成的 ADR 决策活体看板"
                   >
-                    <Edit3 className="w-2.5 h-2.5" />
-                    <span>编辑议题并接管仲裁法槌</span>
+                    <FileText className="w-3 h-3" />
+                    <span>查看活体看板</span>
                   </button>
-                )}
+
+                  {onEditTopic && (
+                    <button
+                      type="button"
+                      onClick={onEditTopic}
+                      className="text-[10px] text-fg-secondary hover:text-fg font-medium inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <Edit3 className="w-2.5 h-2.5" />
+                      <span>配置仲裁角色</span>
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           )

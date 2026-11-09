@@ -5474,169 +5474,236 @@ export default function App() {
           // 启动各参研角色的无异议复核确认与终局敲定出具活体看板流程
           if (initialConcurrence.items.length > 0) {
             setTimeout(async () => {
-              if (isTurnStale(turnSnapshot)) return;
+              if (isTurnStale(turnSnapshot)) {
+                inFlightHandoverRef.current.delete(handoverKey);
+                return;
+              }
               let currentConcurrence = initialConcurrence;
 
-              for (const item of initialConcurrence.items) {
-                if (isTurnStale(turnSnapshot)) return;
-                const roleAgent = candidateAgents.find((a) => a.id === item.agentId);
-                if (!roleAgent) continue;
+              try {
+                for (const item of initialConcurrence.items) {
+                  if (isTurnStale(turnSnapshot)) break;
+                  const roleAgent = candidateAgents.find((a) => a.id === item.agentId);
+                  if (!roleAgent) continue;
 
-                const rolePendingId = `topic-pending-concurrence-${Date.now()}-${roleAgent.id}`;
-                const roleRoleLabel = item.role === 'proposer' ? '提案方' : item.role === 'challenger' ? '红队对抗方' : '接地实证方';
+                  const rolePendingId = `topic-pending-concurrence-${Date.now()}-${roleAgent.id}`;
+                  const roleRoleLabel = item.role === 'proposer' ? '提案方' : item.role === 'challenger' ? '红队对抗方' : '接地实证方';
+                  const roleExecKey = `${topicId}:${roleAgent.id}`;
 
-                setMessages((prev) => ({
-                  ...prev,
-                  [topicId]: [
-                    ...(prev[topicId] || []),
-                    {
-                      id: rolePendingId,
-                      threadId: topicId,
-                      channelId: topicChannel?.id,
-                      authorId: roleAgent.id,
-                      authorName: roleAgent.name,
-                      authorHandle: roleAgent.handle,
-                      authorAvatar: roleAgent.avatar,
-                      isAgent: true,
-                      isPending: true,
-                      startedAt: Date.now(),
-                      pendingHint: `正在审视综合裁定官终局方案，核验是否无异议 (Role: ${roleRoleLabel})...`,
-                      agentBadge: `${roleAgent.modelBadge?.split(' ')[0] || 'Local'} · 🤝 无异议核验中...`,
-                      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                      content: '',
-                      gameStage: 'arbitration',
-                      gameRole: item.role,
-                    },
-                  ],
-                }));
-
-                let roleReplyText = '';
-                if (isAgentOnline(roleAgent)) {
-                  try {
-                    const rolePrompt = buildTopicPrompt({
-                      topic: {
-                        ...topicContext,
-                        concurrenceVerificationContext: {
-                          arbiterName: arbiterAgent.name,
-                          arbiterText: acpResp.textResponse,
-                          roleName: (item.role === 'arbiter' ? 'verifier' : item.role) as 'proposer' | 'challenger' | 'verifier',
-                        },
-                      },
-                      userContent: `综合裁定官已就终局方案征询你的确认意见。请根据前序推演事实与防御补丁，审视拟定方案是否已解决核心关切，并明确给出【无异议确认 / Concurrence】结论，保证回复清晰无异议。`,
-                      targetAgent: roleAgent,
-                      availableAgents: candidateAgents,
-                    });
-
-                    const roleResp = await sendPromptToAcpAgent({
-                      agent: roleAgent,
-                      roomId: topicId,
-                      prompt: rolePrompt,
-                      channelId: topicChannel?.id,
-                      workspaceBindingId: currentTopic.workspaceBindingId,
-                      workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
-                      scopeType: 'topic',
-                      systemPrompt: buildCompositeSystemPrompt({
-                        agent: roleAgent,
-                        availableAgents: candidateAgents,
-                        includeRoster: true,
-                      }),
-                      discussionMode: 'game_theoretic',
-                    });
-
-                    if (!roleResp.isEmptyTurn && !roleResp.isError && roleResp.textResponse.trim()) {
-                      roleReplyText = roleResp.textResponse;
-                    }
-                  } catch (e) {
-                    console.warn('[GameTheoretic] Role concurrence query failed, falling back to clean concurrence', e);
-                  }
-                }
-
-                if (!roleReplyText) {
-                  roleReplyText = `【无异议确认 / Concurred】\n经审视综合裁定官拟定的终局方案，核心权衡点已妥善收敛，前序反例均已建立前置防线与容灾补偿机制，无异议，认同该方案敲定。`;
-                }
-
-                currentConcurrence = advanceRoleConcurrenceItem(currentConcurrence, roleAgent.id, roleReplyText);
-
-                const roleMsg: Message = {
-                  id: `topic-reply-concurrence-${Date.now()}-${roleAgent.id}`,
-                  threadId: topicId,
-                  channelId: topicChannel?.id,
-                  authorId: roleAgent.id,
-                  authorName: roleAgent.name,
-                  authorHandle: roleAgent.handle,
-                  authorAvatar: roleAgent.avatar,
-                  isAgent: true,
-                  isPending: false,
-                  agentBadge: `${roleAgent.modelBadge?.split(' ')[0] || 'Local'} · 🤝 无异议确认`,
-                  timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                  content: roleReplyText,
-                  gameStage: 'arbitration',
-                  gameRole: item.role,
-                };
-
-                updateTopicDataInState(topicId, (old) => ({
-                  ...old,
-                  gameTheoreticState: {
-                    ...old.gameTheoreticState,
-                    concurrenceState: currentConcurrence,
-                  },
-                }));
-
-                setMessages((prev) => {
-                  const existing = prev[topicId] || [];
-                  return {
+                  setIsGenerating(true);
+                  setActiveExecutions((prev) => ({
                     ...prev,
-                    [topicId]: existing.map((m) => (m.id === rolePendingId ? roleMsg : m)),
+                    [roleExecKey]: {
+                      agentId: roleAgent.id,
+                      agentName: roleAgent.name,
+                      agentAvatar: roleAgent.avatar,
+                      threadId: topicId,
+                      topicId,
+                      status: 'thinking',
+                      currentActionDetail: `正在审视综合裁定官终局方案并核验是否无异议 (Role: ${roleRoleLabel})...`,
+                      startedAt: Date.now(),
+                      cascadeHop: 5,
+                    },
+                  }));
+
+                  setAgents((prev) =>
+                    prev.map((a) => (a.id === roleAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
+                  );
+
+                  setMessages((prev) => ({
+                    ...prev,
+                    [topicId]: [
+                      ...(prev[topicId] || []),
+                      {
+                        id: rolePendingId,
+                        threadId: topicId,
+                        channelId: topicChannel?.id,
+                        authorId: roleAgent.id,
+                        authorName: roleAgent.name,
+                        authorHandle: roleAgent.handle,
+                        authorAvatar: roleAgent.avatar,
+                        isAgent: true,
+                        isPending: true,
+                        startedAt: Date.now(),
+                        pendingHint: `正在审视综合裁定官终局方案，核验是否无异议 (Role: ${roleRoleLabel})...`,
+                        agentBadge: `${roleAgent.modelBadge?.split(' ')[0] || 'Local'} · 🤝 无异议核验中...`,
+                        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                        content: '',
+                        gameStage: 'arbitration',
+                        gameRole: item.role,
+                      },
+                    ],
+                  }));
+
+                  let roleReplyText = '';
+                  if (isAgentOnline(roleAgent)) {
+                    try {
+                      const rolePrompt = buildTopicPrompt({
+                        topic: {
+                          ...topicContext,
+                          concurrenceVerificationContext: {
+                            arbiterName: arbiterAgent.name,
+                            arbiterText: acpResp.textResponse,
+                            roleName: (item.role === 'arbiter' ? 'verifier' : item.role) as 'proposer' | 'challenger' | 'verifier',
+                          },
+                        },
+                        userContent: `综合裁定官已就终局方案征询你的确认意见。请根据前序推演事实与防御补丁，审视拟定方案是否已解决核心关切，并明确给出【无异议确认 / Concurrence】结论，保证回复清晰无异议。`,
+                        targetAgent: roleAgent,
+                        availableAgents: candidateAgents,
+                      });
+
+                      const roleResp = await sendPromptToAcpAgent({
+                        agent: roleAgent,
+                        roomId: topicId,
+                        prompt: rolePrompt,
+                        channelId: topicChannel?.id,
+                        workspaceBindingId: currentTopic.workspaceBindingId,
+                        workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
+                        scopeType: 'topic',
+                        systemPrompt: buildCompositeSystemPrompt({
+                          agent: roleAgent,
+                          availableAgents: candidateAgents,
+                          includeRoster: true,
+                        }),
+                        discussionMode: 'game_theoretic',
+                      });
+
+                      if (!roleResp.isEmptyTurn && !roleResp.isError && roleResp.textResponse.trim()) {
+                        roleReplyText = roleResp.textResponse;
+                      }
+                    } catch (e) {
+                      console.warn('[GameTheoretic] Role concurrence query failed, falling back to clean concurrence', e);
+                    }
+                  }
+
+                  if (!roleReplyText) {
+                    roleReplyText = `【无异议确认 / Concurred】\n经审视综合裁定官拟定的终局方案，核心权衡点已妥善收敛，前序反例均已建立前置防线与容灾补偿机制，无异议，认同该方案敲定。`;
+                  }
+
+                  setActiveExecutions((prev) => {
+                    const next = { ...prev };
+                    delete next[roleExecKey];
+                    if (Object.keys(next).length === 0) setIsGenerating(false);
+                    return next;
+                  });
+
+                  setAgents((prev) =>
+                    prev.map((a) => (a.id === roleAgent.id ? { ...a, status: 'idle' } : a))
+                  );
+
+                  currentConcurrence = advanceRoleConcurrenceItem(currentConcurrence, roleAgent.id, roleReplyText);
+
+                  const roleMsg: Message = {
+                    id: `topic-reply-concurrence-${Date.now()}-${roleAgent.id}`,
+                    threadId: topicId,
+                    channelId: topicChannel?.id,
+                    authorId: roleAgent.id,
+                    authorName: roleAgent.name,
+                    authorHandle: roleAgent.handle,
+                    authorAvatar: roleAgent.avatar,
+                    isAgent: true,
+                    isPending: false,
+                    agentBadge: `${roleAgent.modelBadge?.split(' ')[0] || 'Local'} · 🤝 无异议确认`,
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    content: roleReplyText,
+                    gameStage: 'arbitration',
+                    gameRole: item.role,
                   };
-                });
 
-                // 轻量延时保障讨论流真实呈现节奏
-                await new Promise((r) => setTimeout(r, 400));
-              }
+                  updateTopicDataInState(topicId, (old) => ({
+                    ...old,
+                    gameTheoreticState: {
+                      ...old.gameTheoreticState,
+                      concurrenceState: currentConcurrence,
+                    },
+                  }));
 
-              // 当所有角色回复保证无异议后，综合裁定官负责最终敲定方案并出具最后的活体看板
-              if (checkAllRolesConcurred(currentConcurrence)) {
+                  setMessages((prev) => {
+                    const existing = prev[topicId] || [];
+                    return {
+                      ...prev,
+                      [topicId]: existing.map((m) => (m.id === rolePendingId ? roleMsg : m)),
+                    };
+                  });
+
+                  // 轻量延时保障讨论流真实呈现节奏
+                  await new Promise((r) => setTimeout(r, 400));
+                }
+
                 if (isTurnStale(turnSnapshot)) return;
                 const freshTopic = getTopicData(topicId) || latestTopicForArbitration;
-                const finalRuling = buildFinalRulingFromConcurrence({
-                  topic: freshTopic,
-                  arbiterAgent,
-                  concurrenceState: currentConcurrence,
-                  extractedDraft: extractedRulingDraft,
-                  candidateAgents,
-                });
+                if (freshTopic.status === 'resolved') {
+                  console.log('[GameTheoretic] Topic is already resolved, skipping auto conclusion.');
+                  return;
+                }
 
-                const finalConcludeMsg: Message = {
-                  id: `msg-concluded-${Date.now()}-${arbiterAgent.id}`,
-                  threadId: topicId,
-                  channelId: topicChannel?.id,
-                  authorId: arbiterAgent.id,
-                  authorName: arbiterAgent.name,
-                  authorHandle: arbiterAgent.handle,
-                  authorAvatar: arbiterAgent.avatar,
-                  isAgent: true,
-                  agentBadge: '⚖️ 终局敲定 · 活体看板已生成',
-                  timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                  content: `🏛️ **【综合裁定官终局方案敲定与活体看板生成 (Living ADR Canvas Concluded)】**\n\n参研关键角色（${currentConcurrence.items.map((i) => `**${i.agentName}**`).join('、')}）已全部完成独立专业审视，并一致明确保证**无异议签署通过**！\n\n综合裁定官正式敲定本议题终局架构方案：\n\n> 💡 **核心决议**: ${finalRuling.summary}\n\n${finalRuling.solution ? `**落地实施要旨**: ${finalRuling.solution}\n\n` : ''}📄 **活体决策看板 (Living ADR Canvas) 已正式出具并固化生成**，包含完整的全员签署链、权衡防线清单与工程落地清单。请查阅抽屉右侧活体看板，系统已就绪进入落地实施阶段。`,
-                  gameStage: 'concluded',
-                  gameRole: 'arbiter',
-                };
+                // 当所有角色回复保证无异议后，综合裁定官负责最终敲定方案并出具最后的活体看板
+                if (checkAllRolesConcurred(currentConcurrence)) {
+                  const finalRuling = buildFinalRulingFromConcurrence({
+                    topic: freshTopic,
+                    arbiterAgent,
+                    concurrenceState: currentConcurrence,
+                    extractedDraft: extractedRulingDraft,
+                    candidateAgents,
+                  });
 
-                setMessages((prev) => ({
-                  ...prev,
-                  [topicId]: [...(prev[topicId] || []), finalConcludeMsg],
-                }));
+                  const finalConcludeMsg: Message = {
+                    id: `msg-concluded-${Date.now()}-${arbiterAgent.id}`,
+                    threadId: topicId,
+                    channelId: topicChannel?.id,
+                    authorId: arbiterAgent.id,
+                    authorName: arbiterAgent.name,
+                    authorHandle: arbiterAgent.handle,
+                    authorAvatar: arbiterAgent.avatar,
+                    isAgent: true,
+                    agentBadge: '⚖️ 终局敲定 · 活体看板已生成',
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    content: `🏛️ **【综合裁定官终局方案敲定与活体看板生成 (Living ADR Canvas Concluded)】**\n\n参研关键角色（${currentConcurrence.items.map((i) => `**${i.agentName}**`).join('、')}）已全部完成独立专业审视，并一致明确保证**无异议签署通过**！\n\n综合裁定官正式敲定本议题终局架构方案：\n\n> 💡 **核心决议**: ${finalRuling.summary}\n\n${finalRuling.solution ? `**落地实施要旨**: ${finalRuling.solution}\n\n` : ''}📄 **活体决策看板 (Living ADR Canvas) 已正式出具并固化生成**，包含完整的全员签署链、权衡防线清单与工程落地清单。请查阅抽屉右侧活体看板，系统已就绪进入落地实施阶段。`,
+                    gameStage: 'concluded',
+                    gameRole: 'arbiter',
+                  };
 
-                // 自动闭环敲定定案
-                handleResolveTopic(topicId, {
-                  solution: finalRuling.solution || finalRuling.summary,
-                  impactedFiles: finalRuling.impactedFiles || [],
-                  approvers: [arbiterAgent.name, ...currentConcurrence.items.map((i) => i.agentName)],
-                  rulingRecord: finalRuling,
-                  executorId: finalRuling.executorId,
-                });
+                  setMessages((prev) => ({
+                    ...prev,
+                    [topicId]: [...(prev[topicId] || []), finalConcludeMsg],
+                  }));
+
+                  // 自动闭环敲定定案
+                  handleResolveTopic(topicId, {
+                    solution: finalRuling.solution || finalRuling.summary,
+                    impactedFiles: finalRuling.impactedFiles || [],
+                    approvers: [arbiterAgent.name, ...currentConcurrence.items.map((i) => i.agentName)],
+                    rulingRecord: finalRuling,
+                    executorId: finalRuling.executorId,
+                  });
+                } else {
+                  // 若存在角色阻断异议，挂起定案并发出警示通知
+                  const objectedItem = currentConcurrence.items.find((i) => i.status === 'objected');
+                  const objectionNotice: Message = {
+                    id: `msg-objection-notice-${Date.now()}`,
+                    threadId: topicId,
+                    channelId: topicChannel?.id,
+                    authorId: 'system',
+                    authorName: 'Shinobi 裁决异议挂起提示',
+                    authorHandle: '@arbiter-gavel',
+                    authorAvatar: '⚠️',
+                    isAgent: true,
+                    agentBadge: 'Objection Suspended',
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    content: `⚠️ **[终局方案敲定已挂起：未达成全员无异议]**\n\n参研角色 **${objectedItem?.agentName || '参研角色'}** 提出阻断性异议：\n> “${objectedItem?.statement || '存在未解决的关键架构缺陷'}”\n\n综合裁定官已暂停敲定并暂不出具终局活体看板。请双方围绕异议焦点进一步推演，或由人类首席仲裁官在下方控制台行使特权裁决。`,
+                  };
+
+                  setMessages((prev) => ({
+                    ...prev,
+                    [topicId]: [...(prev[topicId] || []), objectionNotice],
+                  }));
+                }
+              } finally {
+                inFlightHandoverRef.current.delete(handoverKey);
               }
             }, 600);
+          } else {
+            inFlightHandoverRef.current.delete(handoverKey);
           }
         } catch (err) {
           setActiveExecutions((prev) => {
