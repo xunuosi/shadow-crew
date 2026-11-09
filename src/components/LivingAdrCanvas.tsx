@@ -60,14 +60,15 @@ export function generateAdrMarkdown(topic: TopicMessageData, agents: Agent[]): s
   const concurrenceSignOff = ruling?.concurrenceSignOff;
   const concurrenceState = topic.gameTheoreticState?.concurrenceState;
 
+  const isAllConcurred = Boolean(ruling?.concurrenceSignOff?.allConcurred);
   const statusStr = ruling
     ? ruling.decisionType === 'adopt_proposer'
-      ? 'Approved (采纳主导 · 全员无异议签署)'
+      ? (isAllConcurred ? 'Approved (采纳主导 · 全员无异议签署)' : 'Approved (采纳主导 · 仲裁法定定案)')
       : ruling.decisionType === 'reject_rebuild'
-      ? 'Rejected (驳回重构 · 全员无异议签署)'
-      : 'Approved (权衡折中 · 全员无异议签署)'
+      ? (isAllConcurred ? 'Rejected (驳回重构 · 全员无异议签署)' : 'Rejected (驳回重构 · 仲裁法定定案)')
+      : (isAllConcurred ? 'Approved (权衡折中 · 全员无异议签署)' : 'Approved (权衡折中 · 仲裁法定定案)')
     : topic.gameStage === 'arbitration'
-    ? 'Under Arbitration (综合裁定官终局方案核验中)'
+    ? (concurrenceState?.isConcurrencePhaseActive ? 'Under Arbitration (综合裁定官终局方案核验中)' : 'Under Arbitration (仲裁定案审议中)')
     : 'Draft (博弈推演研讨中)';
 
   const getAgentName = (id?: string) => {
@@ -103,25 +104,28 @@ export function generateAdrMarkdown(topic: TopicMessageData, agents: Agent[]): s
   }
 
   // 🤝 全员无异议共识签署链 (Unanimous Concurrence Sign-off)
-  if (concurrenceSignOff?.records && concurrenceSignOff.records.length > 0) {
+  if (isAllConcurred && concurrenceSignOff?.records && concurrenceSignOff.records.length > 0) {
     md += `## 🤝 全员无异议共识签署 (Unanimous Concurrence Sign-off)\n\n`;
-    md += `本决议在终局敲定前，已由综合裁定官向各参研关键角色发起专项审视征询，以下角色均已独立复核并明确保证**无异议**：\n\n`;
+    md += `本决议在终局敲定前，已由综合裁定官向各参研关键角色发起专项审视征询，各角色均已独立复核并明确保证**无异议**：\n\n`;
     md += `| 签署角色 | 负责智能体 | 审查结论 | 无异议陈述立场与依据摘要 |\n`;
     md += `| :--- | :--- | :---: | :--- |\n`;
     concurrenceSignOff.records.forEach((rec) => {
       md += `| **${rec.role}** | \`${rec.agentName}\` | **✅ 无异议 (Concurred)** | ${rec.statement.replace(/[\n\r|]/g, ' ')} |\n`;
     });
     md += `\n---\n\n`;
-  } else if (concurrenceState?.items && concurrenceState.items.length > 0) {
-    md += `## 🤝 全员无异议共识签署 (Unanimous Concurrence Sign-off)\n\n`;
+  } else if (!ruling && concurrenceState?.items && concurrenceState.items.length > 0) {
+    md += `## 🤝 全员无异议共识审视进度 (Concurrence Verification Progress)\n\n`;
     md += `| 签署角色 | 负责智能体 | 审查状态 | 保证陈述 |\n`;
     md += `| :--- | :--- | :---: | :--- |\n`;
     concurrenceState.items.forEach((item) => {
-      const statusText = item.status === 'concurred' ? '✅ 无异议 (Concurred)' : '⏳ 待确认';
+      const statusText = item.status === 'concurred' ? '✅ 无异议 (Concurred)' : item.status === 'objected' ? '❌ 存在异议' : '⏳ 待复核';
       const roleText = item.role === 'proposer' ? '提案主导' : item.role === 'challenger' ? '红队对抗' : item.role === 'verifier' ? '接地实证' : '综合裁定';
       md += `| **${roleText}** | \`${item.agentName}\` | **${statusText}** | ${(item.statement || '方案审视中').replace(/[\n\r|]/g, ' ')} |\n`;
     });
     md += `\n---\n\n`;
+  } else if (ruling && !isAllConcurred) {
+    md += `## ⚖️ 仲裁定案记录 (Arbitration Ruling Record)\n\n`;
+    md += `> 本决议由首席仲裁官行使法定裁决权敲定定案，未附带参研角色前置无异议征询链。\n\n---\n\n`;
   }
 
   // 1. Context & Problem Statement
@@ -290,6 +294,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
   const modularState = topic.gameTheoreticState?.modularState || topic.gameTheoreticState?.cognoNexus?.modularState;
   const concurrenceState = topic.gameTheoreticState?.concurrenceState;
   const concurrenceSignOff = ruling?.concurrenceSignOff;
+  const isAllConcurred = Boolean(concurrenceSignOff?.allConcurred);
 
   const executorId =
     ruling?.executorId ||
@@ -462,10 +467,17 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
                 {isResolved ? (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
-                    <span>全员无异议签署 · 终局敲定</span>
-                  </span>
+                  isAllConcurred ? (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                      <span>全员无异议签署 · 终局敲定</span>
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-purple-50 dark:bg-purple-500/15 text-purple-800 dark:text-purple-300 border border-purple-300 dark:border-purple-500/30 flex items-center gap-1">
+                      <Gavel className="w-3 h-3 text-purple-600 dark:text-purple-400" />
+                      <span>人类首席仲裁官法槌定案</span>
+                    </span>
+                  )
                 ) : (
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 flex items-center gap-1">
                     <Clock className="w-3 h-3 text-amber-600 dark:text-amber-400" />
@@ -500,8 +512,10 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                   <span>🤝 全员无异议共识签署 (Unanimous Concurrence Sign-off)</span>
                 </div>
                 <span className="text-[9px] text-fg-muted font-normal">
-                  {concurrenceSignOff?.allConcurred || isResolved
+                  {isAllConcurred
                     ? '全员均已独立复核并明确保证无异议'
+                    : isResolved
+                    ? '由人类首席仲裁官法定定案（未附角色征询链）'
                     : '正在收集关键参研角色复核答复'}
                 </span>
               </div>

@@ -713,7 +713,7 @@ export interface RoleConcurrenceItem {
   agentName: string;
   agentHandle?: string;
   role: 'proposer' | 'challenger' | 'verifier' | 'arbiter';
-  status: 'pending' | 'concurred' | 'objected';
+  status: 'pending' | 'concurred' | 'objected' | 'unavailable';
   statement?: string; // 角色回复的无异议确认陈词或具体观点
   timestamp?: string;
 }

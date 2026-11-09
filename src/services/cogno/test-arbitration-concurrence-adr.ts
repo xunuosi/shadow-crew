@@ -8,6 +8,9 @@ import {
   advanceRoleConcurrenceItem,
   buildFinalRulingFromConcurrence,
   compileHumanReadableLivingAdr,
+  normalizeMentionHandle,
+  escapeTableCell,
+  formatFullDateTime,
 } from './arbitrationConcurrenceGovernor';
 import { generateAdrMarkdown } from '../../components/LivingAdrCanvas';
 import {
@@ -15,6 +18,7 @@ import {
   TopicMessageData,
   ArbitrationRulingDraft,
   GameRoleConcurrenceState,
+  RulingRecord,
 } from '../../types';
 
 console.log('================================================================================');
@@ -298,12 +302,12 @@ assert.ok(adrMarkdown.includes('QA_Grounding'), '签署表包含检验方姓名'
 assert.ok(adrMarkdown.includes('✅ 无异议 (Concurred)'), '包含清晰无异议印章');
 
 // 6.3 验证架构权衡防线与限定爆炸半径
-assert.ok(adrMarkdown.includes('## ⚖️ 3. 架构权衡矩阵与工程防线 (Trade-off Matrix & Invariants)'), '包含权衡矩阵章节');
-assert.ok(adrMarkdown.includes('## 🛡️ 4. 限定安全爆炸半径 (Bounded Impact Radius)'), '包含爆炸半径白名单章节');
+assert.ok(adrMarkdown.includes('## 6. 架构权衡矩阵与工程防线 (Trade-off Matrix & Invariants)'), '包含权衡矩阵章节');
+assert.ok(adrMarkdown.includes('## 8. 限定安全爆炸半径 (Bounded Impact Radius)'), '包含爆炸半径白名单章节');
 assert.ok(adrMarkdown.includes('src/services/orderLock.ts'), '包含限定白名单文件');
 
 // 6.4 验证落地执行清单
-assert.ok(adrMarkdown.includes('## 📋 5. 落地执行与工程交付清单 (Actionable Checklist)'), '包含落地执行清单');
+assert.ok(adrMarkdown.includes('## 9. 落地执行与工程交付清单 (Actionable Checklist)'), '包含落地执行清单');
 
 // 6.5 验证 generateAdrMarkdown 在传入 topic 时的可读性映射
 const topicWithRuling: TopicMessageData = {
@@ -321,6 +325,173 @@ assert.ok(exportedMarkdown.includes('Unanimous Concurrence') || exportedMarkdown
 
 console.log('✓ [通过] 活体 ADR 看板的人类可读性强，通俗摘要、全员签署、权衡防线与清单一目了然！');
 
+// -----------------------------------------------------------------------------
+// 测试 7: 14 项反向对抗与边界硬门禁严格自证 (Adversarial Regression Test Suite)
+// -----------------------------------------------------------------------------
+console.log('\n--- 测试 7: 14 项反向对抗与边界硬门禁严格自证 ---');
+
+// [A2] “我不认同该终局方案，存在重大风险。” -> 必须拒绝通过
+const resA2 = evaluateRoleConcurrenceStatement('我不认同该终局方案，存在重大风险。');
+assert.equal(resA2.isConcurred, false, '[A2] “我不认同”必须拦截判定为未通过');
+console.log('✓ [A2] 否定句式拦截测试通过: “我不认同该终局方案...” -> isConcurred = false');
+
+// [A3] “我不同意该方案，必须重构。” -> 必须拒绝通过
+const resA3 = evaluateRoleConcurrenceStatement('我不同意该方案，必须重构。');
+assert.equal(resA3.isConcurred, false, '[A3] “我不同意”必须拦截判定为未通过');
+console.log('✓ [A3] 否定句式拦截测试通过: “我不同意该方案...” -> isConcurred = false');
+
+// [A4] “并非无异议，建议补充熔断机制。” -> 必须拒绝通过
+const resA4 = evaluateRoleConcurrenceStatement('并非无异议，建议补充熔断机制。');
+assert.equal(resA4.isConcurred, false, '[A4] “并非无异议”必须拦截判定为未通过');
+console.log('✓ [A4] 否定句式拦截测试通过: “并非无异议...” -> isConcurred = false');
+
+// [A5] “I cannot concur with this plan.” -> 必须拒绝通过
+const resA5 = evaluateRoleConcurrenceStatement('I cannot concur with this plan.');
+assert.equal(resA5.isConcurred, false, '[A5] “cannot concur”必须拦截判定为未通过');
+console.log('✓ [A5] 英文否定拦截测试通过: “I cannot concur...” -> isConcurred = false');
+
+// [A6] “我认同整体方向，但反对直接上线。” -> 必须拒绝通过
+const resA6 = evaluateRoleConcurrenceStatement('我认同整体方向，但反对直接上线。');
+assert.equal(resA6.isConcurred, false, '[A6] “认同...但反对”必须拦截判定为未通过');
+console.log('✓ [A6] 转折反对拦截测试通过: “我认同整体方向，但反对直接上线” -> isConcurred = false');
+
+// [B1] 将含 objected/unavailable 的状态传入 buildFinalRulingFromConcurrence -> 必须抛错阻止产出伪全票
+const dirtyState: GameRoleConcurrenceState = {
+  isConcurrencePhaseActive: true,
+  items: [
+    { role: 'proposer', agentId: 'agent-proposer', agentName: 'Architect_Linus', status: 'concurred', statement: 'ok' },
+    { role: 'challenger', agentId: 'agent-challenger', agentName: 'RedTeam_Sentinel', status: 'objected', statement: '反对' },
+  ],
+  allConcurred: false,
+};
+assert.throws(
+  () => {
+    buildFinalRulingFromConcurrence({
+      topic: mockTopic,
+      arbiterAgent: mockAgents[3],
+      concurrenceState: dirtyState,
+      extractedDraft: draft,
+      candidateAgents: mockAgents,
+    });
+  },
+  /存在未达成真实无异议确认的角色/,
+  '[B1] 存在异议时调用 buildFinalRulingFromConcurrence 必须抛出异常阻止定案'
+);
+console.log('✓ [B1] 防伪全票强断言通过: 有异议/未全票时禁止构造终局裁决');
+
+// [B2] advanceRoleConcurrenceItem 处理异议与离线不可用角色时如实记录状态
+const testAdvanceUnavailable = advanceRoleConcurrenceItem(
+  concurrenceState,
+  'agent-challenger',
+  '智能体离线',
+  true // isUnavailable
+);
+const unavailItem = testAdvanceUnavailable.items.find((i) => i.agentId === 'agent-challenger');
+assert.equal(unavailItem?.status, 'unavailable', '[B2] 离线/异常角色必须如实标记为 unavailable');
+assert.equal(testAdvanceUnavailable.allConcurred, false, '[B2] 存在 unavailable 角色时 allConcurred 必须为 false');
+assert.equal(checkAllRolesConcurred(testAdvanceUnavailable), false, '[B2] checkAllRolesConcurred 必须返回 false');
+console.log('✓ [B2] 离线与不可用状态如实记录，杜绝伪造无异议');
+
+// [C1] 看板头部“敲定日期”必须包含完整年月日
+const fullDateTestStr = formatFullDateTime();
+assert.match(fullDateTestStr, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, '[C1] 日期必须满足 YYYY-MM-DD HH:mm 完整年月日规范');
+assert.ok(adrMarkdown.includes(fullDateTestStr.slice(0, 10)), '[C1] ADR 看板中包含完整年月日');
+console.log(`✓ [C1] 完整年月日日期格式化通过: ${fullDateTestStr}`);
+
+// [C2] 看板完整保留红队对抗与实证章节资产
+const topicWithEvidence: TopicMessageData = {
+  ...mockTopic,
+  gameTheoreticState: {
+    currentStage: 'concluded',
+    targetProposalContent: '提案：使用 Redis 配合租约防重。',
+    targetChallengeContent: '红队证伪反例：网络抖动 500ms 时租约提前过期导致并发重入。',
+    targetVerificationContent: '接地实证：Jepsen 物理测试复现重入，发现脏写入。',
+    mcdaPayload: {
+      criteria: [{ id: 'safety', name: '数据安全性' }, { id: 'perf', name: '响应延迟' }],
+      computedWeights: { safety: 0.7, perf: 0.3 },
+      consistencyIndex: 0.08,
+      consistencyPassed: true,
+    },
+    minorityReport: {
+      topicId: mockTopic.id,
+      dissentingAgentId: 'agent-challenger',
+      dissentingAgentName: 'RedTeam_Sentinel',
+      coreDissentThesis: '对纯缓存防重持有根本疑虑，主张一律前置 DB 行锁。',
+      rationalityBasis: '银行级金融账务零容忍超卖。',
+      reopeningTriggers: ['生产环境出现一次超卖异常报警'],
+      timestamp: fullDateTestStr,
+    },
+  },
+};
+const richAdr = compileHumanReadableLivingAdr({
+  topic: topicWithEvidence,
+  agents: mockAgents,
+  ruling: finalRuling,
+  concurrenceItems: concurrenceState.items,
+});
+assert.ok(richAdr.includes('## 4. 证伪失效清单与红队边界压测 (Falsification & Edge Cases)'), '[C2] 包含红队证伪章节');
+assert.ok(richAdr.includes('网络抖动 500ms 时租约提前过期导致并发重入'), '[C2] 完整保留红队对抗反例');
+assert.ok(richAdr.includes('## 5. 接地实证与验证结论 (Empirical Verification)'), '[C2] 包含接地实证章节');
+assert.ok(richAdr.includes('Jepsen 物理测试复现重入'), '[C2] 完整保留物理实证记录');
+console.log('✓ [C2] 红队证伪与接地物理实证资产完整保留');
+
+// [C3] 看板包含伴生少数派异议报告与黑天鹅重启触发器
+assert.ok(richAdr.includes('## 7. 伴生少数派异议备案 (Minority Dissent & Black Swan Triggers)'), '[C3] 包含少数派异议章节');
+assert.ok(richAdr.includes('生产环境出现一次超卖异常报警'), '[C3] 包含黑天鹅重启触发器');
+console.log('✓ [C3] 少数派异议备案与黑天鹅重启触发器完整保留');
+
+// [C4] 看板包含 MCDA BWM 运筹权衡一致性指标 ξ*
+assert.ok(richAdr.includes('MCDA 运筹最优最劣法 (BWM) 数学权衡参考'), '[C4] 包含 MCDA 章节');
+assert.ok(richAdr.includes('\\xi^* = 0.08'), '[C4] 包含一致性指标 ξ* 数学公式');
+assert.ok(richAdr.includes('通过 (<= 0.12)'), '[C4] 包含一致性达标声明');
+console.log('✓ [C4] MCDA BWM 运筹一致性指标 ξ* 严格呈现');
+
+// [D1] 人工法槌裁决（无全员征询）导出 ADR 时不得谎称“全员无异议”
+const humanGavelRuling: RulingRecord = {
+  decisionType: 'adopt_proposer',
+  arbiterId: 'human-user',
+  arbiterName: 'Chief_Human_Arbiter',
+  summary: '人类裁定官直接法槌裁决方案。',
+  solution: '合入代码补丁。',
+  decidedAt: fullDateTestStr,
+  // concurrenceSignOff is undefined
+};
+const topicWithHumanGavel: TopicMessageData = {
+  ...mockTopic,
+  rulingRecord: humanGavelRuling,
+};
+const humanGavelAdr = generateAdrMarkdown(topicWithHumanGavel, mockAgents);
+assert.equal(humanGavelAdr.includes('全员无异议签署'), false, '[D1] 人工裁决严禁标注全员无异议签署');
+assert.ok(
+  humanGavelAdr.includes('仲裁法定定案') || humanGavelAdr.includes('未附带参研角色前置无异议征询链'),
+  '[D1] 如实标注仲裁法定定案，未附带前置无异议征询链'
+);
+console.log('✓ [D1] 人工法槌裁决看板真实性无谎报保证通过');
+
+// [E1] 表格单元格中包含竖线时，必须安全转义，防止破坏 Markdown 表格列结构
+const escapedCell = escapeTableCell('方案 A | 方案 B | 方案 C\n换行内容');
+assert.equal(/(?<!\\)\|/.test(escapedCell), false, '[E1] 裸竖线已被全部转义为 \\|');
+assert.ok(escapedCell.includes('\\|'), '[E1] 成功转义为 \\|');
+assert.equal(escapedCell.includes('\n'), false, '[E1] 换行符已转为空格');
+console.log('✓ [E1] Markdown 表格单元格转义防错列机制通过');
+
+// [F1] 裁定官阶段 5 Prompt 生成单个 @，严禁生成 @@ 双 @ 句柄
+const singleHandle = normalizeMentionHandle(mockAgents[0]); // mockAgents[0].handle is '@arch-linus'
+assert.equal(singleHandle, '@arch-linus', '[F1] 规范化 handle 为单个 @');
+assert.equal(singleHandle.includes('@@'), false, '[F1] 绝不出现 @@ 语法缺陷');
+const arbiterDirectiveCheck = buildArbiterStage5Directive({
+  topic: {
+    title: mockTopic.title,
+    description: mockTopic.description,
+    gameRoles: mockTopic.gameRoles,
+  },
+  arbiterAgent: mockAgents[3],
+  availableAgents: mockAgents,
+});
+assert.equal(arbiterDirectiveCheck.includes('@@'), false, '[F1] 裁定官提示词正文中无任何 @@ 双句柄');
+assert.ok(arbiterDirectiveCheck.includes('@arch-linus'), '[F1] 包含合法的单个 @ 句柄');
+console.log('✓ [F1] 阶段 5 提示词杜绝 @@ 语法缺陷检验通过');
+
 console.log('\n================================================================================');
-console.log('🎉 全部 6 项核心机制与边界回归测试 100% 通过！');
+console.log('🎉 全部 7 组核心机制 + 14 项反向对抗与边界硬门禁自证 100% 通过！');
 console.log('================================================================================');
