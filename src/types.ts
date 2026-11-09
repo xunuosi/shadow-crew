@@ -710,6 +710,7 @@ export interface TopicExecutionUiMeta {
 
 export interface GameTheoreticState {
   currentStage: GameTheoreticStage;
+  gamePolicy?: GameTheoreticPolicy;
   targetProposalMessageId?: string;
   targetProposalContent?: string;
   targetChallengeMessageId?: string;
@@ -924,6 +925,47 @@ export interface GameRolesConfig {
   verifiers?: string[];     // 接地验证智能体 Agent IDs (Grounding Verifiers)
   arbiters: string[];       // 中立综合协调官 Agent IDs (Synthesizers / Arbiters)
   humanIsArbiter: boolean;  // 人类战略决策者持有最终裁决法槌 (Human Strategic Arbiter)
+}
+
+export type GameIndependenceProfile = 'strict' | 'flexible';
+
+export interface GameTheoreticPolicy {
+  /** 严格模式禁止关键角色跨职能复用；灵活模式允许复用但显式告警。 */
+  independenceProfile: GameIndependenceProfile;
+  /** 议题是否包含代码、日志、运行期等需要工具接地的事实断言。 */
+  groundingRequired: boolean;
+}
+
+export type GameConfigurationEvaluationStatus = 'pass' | 'warning' | 'blocked';
+
+export interface GameRoleReuseBinding {
+  agentId: string;
+  agentName: string;
+  roles: GameRoleType[];
+}
+
+export interface GameConfigurationEvaluation {
+  status: GameConfigurationEvaluationStatus;
+  policy: GameTheoreticPolicy;
+  roleCoverage: {
+    proposer: number;
+    challenger: number;
+    verifier: number;
+    arbiter: number;
+    humanArbiter: boolean;
+    defenderUsesProposer: boolean;
+  };
+  uniqueAgentCount: number;
+  reusedRoleBindings: GameRoleReuseBinding[];
+  criticalCollisions: string[];
+  independenceScore: number;
+  modelDiversity: ModelDiversityEvaluation;
+  groundingRequired: boolean;
+  groundingSatisfied: boolean;
+  arbitrationConfigured: boolean;
+  blockingIssues: string[];
+  warnings: string[];
+  summary: string;
 }
 
 export type RulingDecisionType = 'adopt_proposer' | 'reject_rebuild' | 'trade_off_matrix';

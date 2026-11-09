@@ -21,6 +21,7 @@ import {
   DiscussionMode,
   GameRolesConfig,
   GameRoleType,
+  GameTheoreticPolicy,
   GameTheoreticStage,
   RulingRecord,
   TopicPatchDiffItem,
@@ -206,6 +207,11 @@ import {
   executeAbortAllOrchestration,
   executeUpdateChannelMembersOrchestration,
 } from './services/agentCollaboration';
+import {
+  evaluateGameConfiguration,
+  normalizeGameTheoreticPolicy,
+  RECOMMENDED_GAME_THEORETIC_POLICY,
+} from './services/cogno';
 
 const REMOTE_ACP_PROBE_TIMEOUT_MS = 5_000;
 const REMOTE_ACP_HEALTH_INTERVAL_MS = 5_000;
@@ -2056,6 +2062,7 @@ export default function App() {
       assignedAgentIds: string[];
       discussionMode?: DiscussionMode;
       gameRoles?: GameRolesConfig;
+      gamePolicy?: GameTheoreticPolicy;
       duelRoles?: DuelRolesConfig;
     },
     workspace: { mode: 'default' | 'channel_snapshot' | 'agent_snapshot' | 'custom'; cwd?: string }
@@ -2108,6 +2115,30 @@ export default function App() {
       (isDmScope ? agents : currentChannelAgents).some((a) => a.id === id)
     );
     const isGame = topicData.discussionMode === 'game_theoretic';
+    const newGamePolicy = isGame && !isDmScope
+      ? normalizeGameTheoreticPolicy(
+          topicData.gamePolicy ?? RECOMMENDED_GAME_THEORETIC_POLICY
+        )
+      : undefined;
+    if (isGame && !isDmScope) {
+      const requestedRoles: GameRolesConfig = topicData.gameRoles ?? {
+        proposers: [],
+        challengers: [],
+        verifiers: [],
+        arbiters: [],
+        humanIsArbiter: false,
+      };
+      const evaluation = evaluateGameConfiguration({
+        agents: currentChannelAgents,
+        gameRoles: requestedRoles,
+        policy: newGamePolicy,
+      });
+      if (evaluation.status === 'blocked') {
+        throw new Error(
+          `博弈配置未通过准入：${evaluation.blockingIssues.join('；')}`
+        );
+      }
+    }
     const normalizedDuelRoles = isDmScope && isGame && topicData.duelRoles
       ? normalizeDuelRoles(topicData.duelRoles)
       : undefined;
@@ -2139,6 +2170,7 @@ export default function App() {
       gameTheoreticState: isGame
         ? {
             currentStage: 'proposal',
+            gamePolicy: newGamePolicy,
             isChallengerResponded: false,
             modelDiversity,
             modularState: initialModularState,
@@ -2241,6 +2273,7 @@ export default function App() {
       assignedAgentIds: string[];
       discussionMode?: DiscussionMode;
       gameRoles?: GameRolesConfig;
+      gamePolicy?: GameTheoreticPolicy;
       duelRoles?: DuelRolesConfig;
     }
   ) => {
@@ -2259,6 +2292,33 @@ export default function App() {
     if (isDmTopic && nextDiscussionMode === 'game_theoretic' && !normalizedDuelRoles) {
       throw new Error('私聊双方博弈议题缺少合法的双方角色配置');
     }
+    const nextGamePolicy =
+      !isDmTopic && nextDiscussionMode === 'game_theoretic'
+        ? normalizeGameTheoreticPolicy(
+            updatedData.gamePolicy ??
+              editingTopic?.gameTheoreticState?.gamePolicy ??
+              RECOMMENDED_GAME_THEORETIC_POLICY
+          )
+        : undefined;
+    if (!isDmTopic && nextDiscussionMode === 'game_theoretic') {
+      const nextRoles: GameRolesConfig = updatedData.gameRoles ?? {
+        proposers: [],
+        challengers: [],
+        verifiers: [],
+        arbiters: [],
+        humanIsArbiter: false,
+      };
+      const evaluation = evaluateGameConfiguration({
+        agents: editingTopicAgents,
+        gameRoles: nextRoles,
+        policy: nextGamePolicy,
+      });
+      if (evaluation.status === 'blocked') {
+        throw new Error(
+          `博弈配置未通过准入：${evaluation.blockingIssues.join('；')}`
+        );
+      }
+    }
 
     setMessages((prev) => {
       const next = { ...prev };
@@ -2276,6 +2336,17 @@ export default function App() {
             participatingAgentIds: validAssignedAgentIds,
             discussionMode: nextDiscussionMode,
             gameRoles: isDmTopic ? undefined : updatedData.gameRoles !== undefined ? updatedData.gameRoles : oldTopic.gameRoles,
+            gameTheoreticState:
+              nextDiscussionMode === 'game_theoretic' && !isDmTopic
+                ? {
+                    currentStage:
+                      oldTopic.gameTheoreticState?.currentStage ||
+                      oldTopic.gameStage ||
+                      'proposal',
+                    ...oldTopic.gameTheoreticState,
+                    gamePolicy: nextGamePolicy,
+                  }
+                : oldTopic.gameTheoreticState,
             duelRoles: isDmTopic
               ? nextDiscussionMode === 'game_theoretic'
                 ? normalizedDuelRoles

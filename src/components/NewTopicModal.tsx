@@ -1,9 +1,22 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Agent, Channel, DiscussionMode, DuelRolesConfig, GameRolesConfig, GameRoleType, TopicScopeType } from '../types';
-import { X, Sparkles, Plus, Bot, Shield, Check, GitBranch, Maximize2, Minimize2, Swords, Scale, Crown, AlertTriangle, HardDrive } from 'lucide-react';
+import {
+  Agent,
+  Channel,
+  DiscussionMode,
+  DuelRolesConfig,
+  GameRolesConfig,
+  GameRoleType,
+  GameTheoreticPolicy,
+  TopicScopeType,
+} from '../types';
+import { X, Sparkles, Plus, Bot, Check, GitBranch, Maximize2, Minimize2, Swords, Scale, Crown, HardDrive } from 'lucide-react';
 import { ResizeHandle } from './ResizeHandle';
 import { WorkspaceDirectoryInput } from './WorkspaceDirectoryInput';
-import { calculateModelDiversity } from '../services/cogno';
+import { GameConfigurationEvaluationCard } from './GameConfigurationEvaluationCard';
+import {
+  evaluateGameConfiguration,
+  RECOMMENDED_GAME_THEORETIC_POLICY,
+} from '../services/cogno';
 import { normalizeDuelRoles } from '../services/workspaceBindings';
 
 interface NewTopicModalProps {
@@ -22,6 +35,7 @@ interface NewTopicModalProps {
       assignedAgentIds: string[];
       discussionMode?: DiscussionMode;
       gameRoles?: GameRolesConfig;
+      gamePolicy?: GameTheoreticPolicy;
       duelRoles?: DuelRolesConfig;
     },
     workspace: TopicWorkspaceSelection
@@ -49,7 +63,10 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
   const [description, setDescription] = useState('');
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
   const [discussionMode, setDiscussionMode] = useState<DiscussionMode>('standard');
-  const [agentRoles, setAgentRoles] = useState<Record<string, GameRoleType>>({});
+  const [agentRoles, setAgentRoles] = useState<Record<string, GameRoleType[]>>({});
+  const [gamePolicy, setGamePolicy] = useState<GameTheoreticPolicy>({
+    ...RECOMMENDED_GAME_THEORETIC_POLICY,
+  });
   const [humanIsArbiter, setHumanIsArbiter] = useState<boolean>(true);
   const [duelRoles, setDuelRoles] = useState<DuelRolesConfig>({
     proposer: 'human',
@@ -65,36 +82,48 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
   agentsRef.current = agents;
 
   const currentRolesConfig: GameRolesConfig = useMemo(() => ({
-    proposers: selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'proposer'),
-    challengers: selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'challenger'),
-    verifiers: selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'verifier'),
-    arbiters: selectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'arbiter'),
+    proposers: selectedAgentIds.filter((id) =>
+      (agentRoles[id] || ['proposer']).includes('proposer')
+    ),
+    challengers: selectedAgentIds.filter((id) =>
+      (agentRoles[id] || ['proposer']).includes('challenger')
+    ),
+    verifiers: selectedAgentIds.filter((id) =>
+      (agentRoles[id] || ['proposer']).includes('verifier')
+    ),
+    arbiters: selectedAgentIds.filter((id) =>
+      (agentRoles[id] || ['proposer']).includes('arbiter')
+    ),
     humanIsArbiter,
   }), [selectedAgentIds, agentRoles, humanIsArbiter]);
 
-  const modelDiversity = useMemo(() => {
+  const gameConfigurationEvaluation = useMemo(() => {
     if (discussionMode !== 'game_theoretic' || dmScope) return null;
-    return calculateModelDiversity(agents, currentRolesConfig);
-  }, [discussionMode, dmScope, agents, currentRolesConfig]);
+    return evaluateGameConfiguration({
+      agents,
+      gameRoles: currentRolesConfig,
+      policy: gamePolicy,
+    });
+  }, [discussionMode, dmScope, agents, currentRolesConfig, gamePolicy]);
 
   const autoMapRoles = (agentList: Agent[]) => {
-    const mapping: Record<string, GameRoleType> = {};
+    const mapping: Record<string, GameRoleType[]> = {};
     agentList.forEach((agent, idx) => {
       const text = `${agent.name} ${agent.handle} ${agent.role || ''} ${(agent.tags || []).join(' ')}`.toLowerCase();
       if (text.includes('arbiter') || text.includes('judge') || text.includes('裁判') || text.includes('仲裁') || text.includes('协调') || text.includes('综合')) {
-        mapping[agent.id] = 'arbiter';
+        mapping[agent.id] = ['arbiter'];
       } else if (text.includes('verify') || text.includes('ground') || text.includes('tool') || text.includes('sandbox') || text.includes('沙箱') || text.includes('验证') || text.includes('接地') || text.includes('事实') || text.includes('基准')) {
-        mapping[agent.id] = 'verifier';
+        mapping[agent.id] = ['verifier'];
       } else if (text.includes('sec') || text.includes('audit') || text.includes('review') || text.includes('challenger') || text.includes('qa') || text.includes('test') || text.includes('安全') || text.includes('测试') || text.includes('审查') || text.includes('红队') || text.includes('对抗')) {
-        mapping[agent.id] = 'challenger';
+        mapping[agent.id] = ['challenger'];
       } else if (idx === 0) {
-        mapping[agent.id] = 'proposer';
-      } else if (idx === 1 && !Object.values(mapping).includes('challenger')) {
-        mapping[agent.id] = 'challenger';
-      } else if (idx === 2 && !Object.values(mapping).includes('verifier')) {
-        mapping[agent.id] = 'verifier';
+        mapping[agent.id] = ['proposer'];
+      } else if (idx === 1 && !Object.values(mapping).some((roles) => roles.includes('challenger'))) {
+        mapping[agent.id] = ['challenger'];
+      } else if (idx === 2 && !Object.values(mapping).some((roles) => roles.includes('verifier'))) {
+        mapping[agent.id] = ['verifier'];
       } else {
-        mapping[agent.id] = 'proposer';
+        mapping[agent.id] = ['proposer'];
       }
     });
     return mapping;
@@ -113,6 +142,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
       setHumanIsArbiter(true);
       setDuelRoles({ proposer: 'human', challenger: 'agent' });
       setAgentRoles(autoMapRoles(agentsRef.current));
+      setGamePolicy({ ...RECOMMENDED_GAME_THEORETIC_POLICY });
       setWorkspaceMode('default');
       setCustomCwd('');
       setError(null);
@@ -215,6 +245,19 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
     );
   };
 
+  const toggleAgentRole = (agentId: string, role: GameRoleType) => {
+    setAgentRoles((prev) => {
+      const current = prev[agentId] || ['proposer'];
+      const next = current.includes(role)
+        ? current.filter((item) => item !== role)
+        : [...current, role];
+      return {
+        ...prev,
+        [agentId]: next.length > 0 ? next : current,
+      };
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
@@ -224,17 +267,39 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
     }
 
     const isGame = discussionMode === 'game_theoretic';
+    if (
+      isGame &&
+      !dmScope &&
+      gameConfigurationEvaluation?.status === 'blocked'
+    ) {
+      setError(
+        `博弈配置未通过准入：${gameConfigurationEvaluation.blockingIssues.join('；')}`
+      );
+      return;
+    }
     const effectiveSelectedAgentIds = dmAgent ? [dmAgent.id] : selectedAgentIds;
     const dmAgentRole = duelRoles.proposer === 'agent' ? 'proposer' : 'challenger';
     const normalizedDuelRoles = dmScope && isGame ? normalizeDuelRoles(duelRoles) : undefined;
     const proposers = dmScope
       ? (dmAgentRole === 'proposer' ? effectiveSelectedAgentIds : [])
-      : effectiveSelectedAgentIds.filter((id) => (agentRoles[id] || 'proposer') === 'proposer');
+      : effectiveSelectedAgentIds.filter((id) =>
+          (agentRoles[id] || ['proposer']).includes('proposer')
+        );
     const challengers = dmScope
       ? (dmAgentRole === 'challenger' ? effectiveSelectedAgentIds : [])
-      : effectiveSelectedAgentIds.filter((id) => agentRoles[id] === 'challenger');
-    const verifiers = dmScope ? [] : effectiveSelectedAgentIds.filter((id) => agentRoles[id] === 'verifier');
-    const arbiters = dmScope ? [] : effectiveSelectedAgentIds.filter((id) => agentRoles[id] === 'arbiter');
+      : effectiveSelectedAgentIds.filter((id) =>
+          (agentRoles[id] || ['proposer']).includes('challenger')
+        );
+    const verifiers = dmScope
+      ? []
+      : effectiveSelectedAgentIds.filter((id) =>
+          (agentRoles[id] || ['proposer']).includes('verifier')
+        );
+    const arbiters = dmScope
+      ? []
+      : effectiveSelectedAgentIds.filter((id) =>
+          (agentRoles[id] || ['proposer']).includes('arbiter')
+        );
 
     setIsSubmitting(true);
     setError(null);
@@ -253,6 +318,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
               humanIsArbiter: dmScope ? true : humanIsArbiter,
             }
           : undefined,
+        gamePolicy: isGame && !dmScope ? gamePolicy : undefined,
         duelRoles: normalizedDuelRoles,
       }, {
         mode: workspaceMode,
@@ -630,7 +696,8 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
               <div className={`grid ${modalWidth >= 520 ? 'grid-cols-2' : 'grid-cols-1'} gap-2 max-h-56 overflow-y-auto overflow-x-hidden pr-1.5 p-0.5`}>
                 {agents.map((agent) => {
                   const isSelected = selectedAgentIds.includes(agent.id);
-                  const currentRole = agentRoles[agent.id] || 'proposer';
+                  const currentRoles = agentRoles[agent.id] || ['proposer'];
+                  const currentRole = currentRoles[0] || 'proposer';
                   return (
                     <div
                       key={agent.id}
@@ -681,12 +748,12 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
                       {/* Game-Theoretic: Per-Agent Role Switcher */}
                       {discussionMode === 'game_theoretic' && isSelected && (
                         <div
-                          className="flex items-center gap-1 mt-2 pt-1.5 border-t border-border/40 overflow-x-auto"
+                          className="flex flex-wrap items-center gap-1 mt-2 pt-1.5 border-t border-border/40"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <span className="text-[10px] text-fg-muted shrink-0 mr-1 font-mono">博弈角色:</span>
                           {(['proposer', 'challenger', 'verifier', 'arbiter'] as GameRoleType[]).map((r) => {
-                            const isCurrent = currentRole === r;
+                            const isCurrent = currentRoles.includes(r);
                             const label =
                               r === 'proposer'
                                 ? '🏛️ 提案'
@@ -707,7 +774,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
                               <button
                                 key={r}
                                 type="button"
-                                onClick={() => setAgentRoles((prev) => ({ ...prev, [agent.id]: r }))}
+                                onClick={() => toggleAgentRole(agent.id, r)}
                                 className={`text-[10px] px-1.5 py-0.5 rounded-md border transition-all cursor-pointer whitespace-nowrap ${
                                   isCurrent
                                     ? activeStyle
@@ -728,43 +795,20 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
           </div>
           )}
 
-          {/* Wave 2 P0-5: 异构模型多样性指数与同质化偏见预警 (ReConcile) */}
-          {discussionMode === 'game_theoretic' && !dmScope && modelDiversity && (
-            <div className={`p-2.5 rounded-xl border text-xs space-y-1.5 ${
-              modelDiversity.isHomogeneous
-                ? 'bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-300'
-                : modelDiversity.score >= 0.8
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
-                : 'bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-300'
-            }`}>
-              <div className="flex items-center justify-between font-semibold">
-                <div className="flex items-center gap-1.5">
-                  <Shield className="w-3.5 h-3.5" />
-                  <span>异构模型多样性评估 (Model Diversity Index)</span>
-                </div>
-                <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-surface/60 border border-current/20">
-                  多样性指数: {(modelDiversity.score * 100).toFixed(0)}%
-                </span>
-              </div>
-              <div className="flex items-center gap-2 text-[10px] opacity-90 flex-wrap">
-                <span className="font-mono">参与模型家族:</span>
-                {Object.entries(modelDiversity.familyDistribution).map(([fam, members]) => {
-                  const list = Array.isArray(members) ? members : [members];
-                  return (
-                    <span key={fam} className="px-1.5 py-0.5 rounded bg-surface/50 border border-current/15 font-mono">
-                      {fam}: {list.length}位 ({list.join(', ')})
-                    </span>
-                  );
-                })}
-              </div>
-              {modelDiversity.isHomogeneous && modelDiversity.warnings.length > 0 && (
-                <div className="flex items-start gap-1.5 text-[11px] font-medium pt-1 border-t border-rose-500/20 text-rose-600 dark:text-rose-300 leading-relaxed">
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-rose-500" />
-                  <span>{modelDiversity.warnings[0]}</span>
-                </div>
-              )}
-            </div>
-          )}
+          {discussionMode === 'game_theoretic' &&
+            !dmScope &&
+            gameConfigurationEvaluation && (
+              <GameConfigurationEvaluationCard
+                evaluation={gameConfigurationEvaluation}
+                onPolicyChange={setGamePolicy}
+                onGroundingRequiredChange={(groundingRequired) =>
+                  setGamePolicy((prev) => ({
+                    ...prev,
+                    groundingRequired,
+                  }))
+                }
+              />
+            )}
 
           {/* Buttons */}
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-border mt-2 shrink-0">
@@ -777,7 +821,15 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={!title.trim() || isSubmitting}
+              disabled={
+                !title.trim() ||
+                isSubmitting ||
+                Boolean(
+                  discussionMode === 'game_theoretic' &&
+                    !dmScope &&
+                    gameConfigurationEvaluation?.status === 'blocked'
+                )
+              }
               className="px-4 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold text-xs shadow-md transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
             >
               <Sparkles className="w-3.5 h-3.5" />

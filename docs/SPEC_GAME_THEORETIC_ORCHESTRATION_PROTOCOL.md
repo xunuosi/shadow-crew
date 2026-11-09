@@ -31,6 +31,74 @@
   - **定位**：基于混合主动性 (Mixed-Initiative) 的高阶治理者。
   - **机制**：持有单向终审定案权；介入中断死锁熔断；签署制衡方缺席具名豁免；敲响法槌定案并指派落地工程执行 Agent。
 
+### 1.3 博弈配置评估与角色复用策略
+
+产品仍仅保留两个顶层讨论模式：
+
+```text
+standard         普通协作模式
+game_theoretic   博弈论讨论模式
+```
+
+“严格博弈 / 灵活博弈”属于 `game_theoretic` 内部策略，不新增第三套 FSM：
+
+```ts
+interface GameTheoreticPolicy {
+  independenceProfile: 'strict' | 'flexible';
+  groundingRequired: boolean;
+}
+```
+
+策略持久化于 `TopicMessageData.gameTheoreticState.gamePolicy`。历史 Topic 未保存该字段时，显式按 `flexible + groundingRequired=false` 读取；新建 Topic 默认使用 `strict + groundingRequired=true`。
+
+#### 1.3.1 一个 Agent 可承担多个角色
+
+底层 `GameRolesConfig` 继续使用四个 Agent ID 数组，因此同一个 Agent ID 可以同时出现在多个角色数组中：
+
+- `Proposer + Defender`：允许，Defender 本来就是提案阶段角色；
+- `Proposer + Challenger`：严格模式阻断，灵活模式告警；
+- 辩论参与者 + `AI Arbiter`：严格模式阻断；
+- 辩手 + `Verifier`：启用接地要求时，严格模式阻断；
+- 单一 Agent 承担全部角色：降级为 Self Review，不得展示为独立 4+1 博弈。
+
+#### 1.3.2 准入规则
+
+| 规则 | 严格模式 | 灵活模式 |
+| --- | --- | --- |
+| 缺少 Proposer | 阻断 | 阻断 |
+| 缺少 Challenger | 阻断 | 告警 |
+| 缺少 AI/人类 Arbiter | 阻断 | 阻断 |
+| 接地要求开启但缺少 Verifier | 阻断 | 告警 |
+| Proposer = Challenger | 阻断 | 告警 |
+| 辩手 = AI Arbiter | 阻断 | 告警 |
+| 接地模式下辩手 = Verifier | 阻断 | 告警 |
+| 角色引用不可用 Agent | 阻断 | 阻断 |
+
+创建和编辑 Topic 时，UI 与 App 宿主层复用同一个纯函数 `evaluateGameConfiguration()`；阻断配置不得提交。
+
+#### 1.3.3 统一评估 UI
+
+不新增单独页面或抽屉。现有新建议题底部评估区域升级为“博弈配置评估”，集中展示：
+
+- 四个角色的覆盖数量；
+- 去重后的独立 Agent 数量；
+- 角色复用与关键角色冲突；
+- 独立性评分；
+- 模型多样性评分与模型家族；
+- 接地要求、接地满足状态和仲裁配置；
+- 阻断原因、警告和人话摘要；
+- 严格/灵活策略与“需要工具接地实证”开关。
+
+评估状态分为：
+
+```text
+pass     配置合格
+warning  可启动，但存在独立性/接地/多样性风险
+blocked  禁止启动
+```
+
+创建和保存按钮必须与 `blocked` 状态联动。
+
 ---
 
 ## 2. 有限状态机 (FSM) 状态定义与迁移表

@@ -7,6 +7,7 @@ export * from './stageContractGate';
 export * from './tieredGroundingGovernor';
 export * from './sycophancyGovernor';
 export * from './modelDiversityGovernor';
+export * from './gameConfigurationEvaluator';
 export * from './colmadGovernor';
 export * from './bayesianModuleGovernor';
 
