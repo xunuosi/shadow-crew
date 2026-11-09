@@ -26,6 +26,7 @@
   "dependencies": {
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
+    "@tauri-apps/plugin-dialog": "2.7.3",
     "@types/prismjs": "^1.26.6",
     "@vitejs/plugin-react": "^5.0.4",
     "dotenv": "^17.2.3",

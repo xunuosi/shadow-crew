@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Agent, Channel, DiscussionMode, DuelRolesConfig, GameRolesConfig, GameRoleType, TopicScopeType } from '../types';
 import { X, Sparkles, Plus, Bot, Shield, Check, GitBranch, Maximize2, Minimize2, Swords, Scale, Crown, AlertTriangle, HardDrive } from 'lucide-react';
 import { ResizeHandle } from './ResizeHandle';
+import { WorkspaceDirectoryInput } from './WorkspaceDirectoryInput';
 import { calculateModelDiversity } from '../services/cogno';
 import { normalizeDuelRoles } from '../services/workspaceBindings';
 
@@ -490,16 +491,20 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
               </div>
             )}
             {(workspaceMode === 'channel_snapshot' || workspaceMode === 'agent_snapshot') && channelWorkspaceCwd && (
-              <div className="text-[10px] font-mono text-fg-muted break-all">{channelWorkspaceCwd}</div>
+              <div className="space-y-1">
+                <div className="text-[10px] font-mono text-fg-muted break-all">{channelWorkspaceCwd}</div>
+                <p className="text-[10px] text-fg-muted leading-relaxed">
+                  仅复用该目录的路径快照，不复制文件；新议题仍使用独立 Session 与产物目录。
+                </p>
+              </div>
             )}
             {workspaceMode === 'custom' && (
-              <input
-                type="text"
+              <WorkspaceDirectoryInput
                 value={customCwd}
-                onChange={(e) => setCustomCwd(e.target.value)}
-                placeholder="/Users/you/projects/example 或 ~/projects/example"
-                spellCheck={false}
-                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-xs font-mono text-fg placeholder-fg-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
+                onChange={setCustomCwd}
+                onError={setError}
+                dialogTitle={dmScope ? '选择私聊议题工作目录' : '选择议题工作目录'}
+                disabled={isSubmitting}
               />
             )}
           </div>

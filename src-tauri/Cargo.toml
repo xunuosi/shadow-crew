@@ -11,6 +11,7 @@ tauri-build = { version = "2.0", features = [] }
 [dependencies]
 shadow-crew-protocol = { path = "../crates/shadow-crew-protocol" }
 tauri = { version = "2.0", features = [] }
+tauri-plugin-dialog = "2.0"
 tauri-plugin-shell = "2.0"
 tauri-plugin-fs = "2.0"
 tokio.workspace = true

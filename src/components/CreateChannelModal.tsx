@@ -7,6 +7,7 @@ import {
   Check,
   HardDrive
 } from 'lucide-react';
+import { WorkspaceDirectoryInput } from './WorkspaceDirectoryInput';
 
 export interface ChannelWorkspaceSelection {
   mode: 'default' | 'custom';
@@ -246,13 +247,12 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
               </button>
             </div>
             {workspaceMode === 'custom' && (
-              <input
-                type="text"
+              <WorkspaceDirectoryInput
                 value={customCwd}
-                onChange={(e) => setCustomCwd(e.target.value)}
-                placeholder="/Users/you/projects/example 或 ~/projects/example"
-                spellCheck={false}
-                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-xs font-mono text-fg placeholder-fg-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
+                onChange={setCustomCwd}
+                onError={setError}
+                dialogTitle="选择频道工作目录"
+                disabled={isSubmitting}
               />
             )}
             <p className="text-[10px] text-fg-muted leading-relaxed">

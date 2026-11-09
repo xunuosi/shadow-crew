@@ -1843,6 +1843,7 @@ async fn main() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             discover_local_acp_runtimes,
