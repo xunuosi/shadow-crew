@@ -11,6 +11,7 @@ import {
   normalizeMentionHandle,
   escapeTableCell,
   formatFullDateTime,
+  evaluateRulingGates,
 } from './arbitrationConcurrenceGovernor';
 import { generateAdrMarkdown } from '../../components/LivingAdrCanvas';
 import {
@@ -279,6 +280,7 @@ assert.equal(finalRuling.arbiterName, 'Chief_Arbiter_Sophia', '裁决由综合�
 assert.equal(finalRuling.decisionType, 'trade_off_matrix', '裁定类型为权衡折中');
 assert.ok(finalRuling.concurrenceSignOff?.allConcurred, '全员无异议签署标记为 true');
 assert.equal(finalRuling.concurrenceSignOff?.records.length, 3, '包含 3 项角色签署记录');
+assert.equal(finalRuling.executorId, undefined, '自动敲定裁决不预设执行者 (H1)，严防未授权自动代码派发');
 assert.ok(finalRuling.livingAdrMarkdown, '生成了完整的活体 ADR 看板 Markdown');
 console.log('✓ [通过] 综合裁定官敲定记录结构完整，签署链完备');
 
@@ -355,6 +357,35 @@ const resA6 = evaluateRoleConcurrenceStatement('我认同整体方向，但反�
 assert.equal(resA6.isConcurred, false, '[A6] “认同...但反对”必须拦截判定为未通过');
 console.log('✓ [A6] 转折反对拦截测试通过: “我认同整体方向，但反对直接上线” -> isConcurred = false');
 
+// [G1–G6, G11] 良性/免责/吸收反转语义放行测试 (避免合法无异议被误杀)
+const resG1 = evaluateRoleConcurrenceStatement('未发现致命漏洞，确认无异议。');
+assert.equal(resG1.isConcurred, true, '[G1] “未发现致命漏洞，确认无异议”必须正确判定为通过');
+console.log('✓ [G1] 放行测试通过: “未发现致命漏洞，确认无异议” -> isConcurred = true');
+
+const resG2 = evaluateRoleConcurrenceStatement('不存在阻断性异议，确认无异议。');
+assert.equal(resG2.isConcurred, true, '[G2] “不存在阻断性异议，确认无异议”必须正确判定为通过');
+console.log('✓ [G2] 放行测试通过: “不存在阻断性异议，确认无异议” -> isConcurred = true');
+
+const resG3 = evaluateRoleConcurrenceStatement('方案已消除重大风险，确认无异议。');
+assert.equal(resG3.isConcurred, true, '[G3] “方案已消除重大风险，确认无异议”必须正确判定为通过');
+console.log('✓ [G3] 放行测试通过: “方案已消除重大风险，确认无异议” -> isConcurred = true');
+
+const resG4 = evaluateRoleConcurrenceStatement('反对意见已被充分吸收，确认无异议。');
+assert.equal(resG4.isConcurred, true, '[G4] “反对意见已被充分吸收，确认无异议”必须正确判定为通过');
+console.log('✓ [G4] 放行测试通过: “反对意见已被充分吸收，确认无异议” -> isConcurred = true');
+
+const resG5 = evaluateRoleConcurrenceStatement('方案可行，我不持异议。');
+assert.equal(resG5.isConcurred, true, '[G5] “方案可行，我不持异议”必须正确判定为通过');
+console.log('✓ [G5] 放行测试通过: “方案可行，我不持异议” -> isConcurred = true');
+
+const resG6 = evaluateRoleConcurrenceStatement('该方案没有重大风险，确认无异议。');
+assert.equal(resG6.isConcurred, true, '[G6] “该方案没有重大风险，确认无异议”必须正确判定为通过');
+console.log('✓ [G6] 放行测试通过: “该方案没有重大风险，确认无异议” -> isConcurred = true');
+
+const resG11 = evaluateRoleConcurrenceStatement('我不反对该方案，确认无异议。');
+assert.equal(resG11.isConcurred, true, '[G11] “我不反对该方案，确认无异议”必须正确判定为通过');
+console.log('✓ [G11] 放行测试通过: “我不反对该方案，确认无异议” -> isConcurred = true');
+
 // [B1] 将含 objected/unavailable 的状态传入 buildFinalRulingFromConcurrence -> 必须抛错阻止产出伪全票
 const dirtyState: GameRoleConcurrenceState = {
   isConcurrencePhaseActive: true,
@@ -407,19 +438,30 @@ const topicWithEvidence: TopicMessageData = {
     targetChallengeContent: '红队证伪反例：网络抖动 500ms 时租约提前过期导致并发重入。',
     targetVerificationContent: '接地实证：Jepsen 物理测试复现重入，发现脏写入。',
     mcdaPayload: {
-      criteria: [{ id: 'safety', name: '数据安全性' }, { id: 'perf', name: '响应延迟' }],
+      solverType: 'BWM',
+      criteria: [
+        { id: 'safety', name: '数据安全性', direction: 'maximize' },
+        { id: 'perf', name: '响应延迟', direction: 'minimize' },
+      ],
+      alternatives: ['Redis分布式锁', 'DB行锁版本号'],
+      scoreMatrix: {},
+      bestCriterionId: 'safety',
+      worstCriterionId: 'perf',
+      bestToOthers: [1, 3],
+      othersToWorst: [3, 1],
       computedWeights: { safety: 0.7, perf: 0.3 },
       consistencyIndex: 0.08,
       consistencyPassed: true,
+      ranking: [],
     },
     minorityReport: {
-      topicId: mockTopic.id,
+      id: 'mr-test-1',
       dissentingAgentId: 'agent-challenger',
       dissentingAgentName: 'RedTeam_Sentinel',
       coreDissentThesis: '对纯缓存防重持有根本疑虑，主张一律前置 DB 行锁。',
       rationalityBasis: '银行级金融账务零容忍超卖。',
       reopeningTriggers: ['生产环境出现一次超卖异常报警'],
-      timestamp: fullDateTestStr,
+      recordedAt: fullDateTestStr,
     },
   },
 };
@@ -492,6 +534,40 @@ assert.equal(arbiterDirectiveCheck.includes('@@'), false, '[F1] 裁定官提示�
 assert.ok(arbiterDirectiveCheck.includes('@arch-linus'), '[F1] 包含合法的单个 @ 句柄');
 console.log('✓ [F1] 阶段 5 提示词杜绝 @@ 语法缺陷检验通过');
 
+// [J5] 零参研角色时不得进行自征询，征询阶段必须为 false
+const topicNoPeers: TopicMessageData = {
+  ...mockTopic,
+  gameRoles: {
+    proposers: [],
+    challengers: [],
+    verifiers: [],
+    arbiters: ['agent-arbiter'],
+    humanIsArbiter: false,
+  },
+};
+const zeroPeerState = prepareConcurrenceState({
+  topic: topicNoPeers,
+  candidateAgents: [mockAgents[3]],
+});
+assert.equal(zeroPeerState.isConcurrencePhaseActive, false, '[J5] 零参研角色时不得自征询，征询阶段必须为 false');
+assert.equal(zeroPeerState.items.length, 0, '[J5] 零参研角色时征询项必须为空');
+console.log('✓ [J5] 零参研角色边界处理自证通过: isConcurrencePhaseActive = false');
+
+// [L6] 门禁一致性集中评定函数 (evaluateRulingGates)
+const normalGates = evaluateRulingGates(mockTopic, { consistencyPassed: true, consistencyIndex: 0.05 } as any);
+assert.equal(normalGates.allGatesPassed, true, '[L6] 正常通过门禁');
+const bypassedTopic: TopicMessageData = {
+  ...mockTopic,
+  gameTheoreticState: {
+    currentStage: 'arbitration',
+    isChallengerBypassed: true,
+    isChallengerResponded: false,
+  },
+};
+const bypassedGates = evaluateRulingGates(bypassedTopic, { consistencyPassed: true, consistencyIndex: 0.05 } as any);
+assert.equal(bypassedGates.isChallengerQuorumMet, true, '[L6] 快速通道旁路红队时法定人数必须满足');
+console.log('✓ [L6] 集中门禁评定 (evaluateRulingGates) 一致性通过');
+
 console.log('\n================================================================================');
-console.log('🎉 全部 7 组核心机制 + 14 项反向对抗与边界硬门禁自证 100% 通过！');
+console.log('🎉 全部 7 组核心机制 + 原 14 项反向对抗 + 新增 G1~G6/G11/H1/J5/L6 自证 100% 通过！');
 console.log('================================================================================');

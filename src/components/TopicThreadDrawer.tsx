@@ -64,6 +64,7 @@ import { ResizeHandle } from './ResizeHandle';
 import { getDraft, saveDraft, clearDraft } from '../services/draftService';
 import { logGameTheoreticTelemetry } from '../services/agentCollaboration';
 import { LivingAdrCanvas } from './LivingAdrCanvas';
+import { evaluateRulingGates } from '../services/cogno';
 import { isAgentOffline } from '../utils/agentRuntime';
 import {
   MAX_FILE_ATTACHMENT_BYTES,
@@ -294,10 +295,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   // 底部首席仲裁官法槌控制台折叠状态
   const [isGavelCollapsed, setIsGavelCollapsed] = useState(false);
 
-  const isChallengerQuorumMet =
-    topic?.discussionMode !== 'game_theoretic' ||
-    topic?.gameTheoreticState?.isChallengerBypassed === true ||
-    topic?.gameTheoreticState?.isChallengerResponded !== false;
+  const isChallengerQuorumMet = topic
+    ? evaluateRulingGates(topic).isChallengerQuorumMet
+    : true;
 
   const resolveRulingDraftForModal = (
     type: RulingDecisionType

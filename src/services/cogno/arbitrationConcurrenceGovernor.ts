@@ -12,6 +12,7 @@ import {
   Agent,
   ArbitrationRulingDraft,
   GameRoleConcurrenceState,
+  McdaDecisionPayload,
   RoleConcurrenceItem,
   RulingRecord,
   TopicMessageData,
@@ -178,7 +179,39 @@ export function evaluateRoleConcurrenceStatement(replyText: string): {
     };
   }
 
-  // 1. 否定模式与异议表达库（全面防御否定句式穿透）
+  // 1. 识别并提取良性/免责/吸收反转句式（Benign Affirmative Mitigations）
+  // 覆盖场景：
+  // G1: “未发现致命漏洞，确认无异议。” -> 未发现/不存在/无致命漏洞
+  // G2: “不存在阻断性异议，确认无异议。” -> 不存在/没有/不持阻断性异议
+  // G3: “方案已消除重大风险，确认无异议。” -> 已消除/已化解重大风险
+  // G4: “反对意见已被充分吸收，确认无异议。” -> 反对意见已被吸收/解决
+  // G5: “方案可行，我不持异议。” -> 我不持异议 / 不持异议
+  // G6: “该方案没有重大风险，确认无异议。” -> 没有重大风险
+  // G11: “我不反对该方案，确认无异议。” -> 我不反对该方案
+  const benignMitigationPatterns = [
+    // 异议消除或不持异议 (双重否定为肯定)
+    /(?:我不?|并?不|没有)(?:持|存在?)(?:任何|阻断性?|严重|重大)?异议/g,
+    // 不反对方案 (双重否定为肯定，注意避开“但反对直接上线”)
+    /(?:我不?|并?不)反对(?:该方案|此方案|当前方案|此提议|该裁定|方案)?(?=[，,。\s]|$)/g,
+    // 反对意见已吸收/已采纳
+    /反对(?:意见|声音|点)?已(?:经)?被?(?:充分)?(?:吸收|采纳|解决|化解|消除)/g,
+    // 风险/漏洞已消除/已化解
+    /(?:已(?:经)?(?:充分)?(?:消除|化解|解决|修复)|消除)(?:了)?(?:所有|各项|潜在|相关|指出的一致性|致命|重大)?(?:风险|隐患|漏洞|缺陷|并发问题)/g,
+    /(?:风险|隐患|漏洞|缺陷)(?:已经?|均已|已被?)(?:充分)?(?:消除|化解|解决|修复)/g,
+    // 未发现/没有/无风险或漏洞
+    /(?:未发现|没有发现|没有|不存在|未见)(?:任何)?(?:明显|严重|致命|重大)?(?:风险|隐患|漏洞|缺陷|阻塞)/g,
+  ];
+
+  let hasBenignConcurrence = false;
+  let sanitizedText = trimmed;
+  for (const pattern of benignMitigationPatterns) {
+    if (pattern.test(sanitizedText)) {
+      hasBenignConcurrence = true;
+      sanitizedText = sanitizedText.replace(pattern, ' __BENIGN_CONCURRENCE__ ');
+    }
+  }
+
+  // 2. 否定模式与异议表达库（在脱敏良性表达后的文本上进行全面防御）
   const negationPatterns = [
     // 否定认同/同意/支持
     /不(?:认同|赞同|同意|接受|支持)/,
@@ -193,7 +226,7 @@ export function evaluateRoleConcurrenceStatement(replyText: string): {
     /严重异议/,
     /重大风险/,
     /致命(?:隐患|漏洞|缺陷)/,
-    // 反对表达
+    // 反对表达 (注意：但反对、坚决反对等)
     /(?:坚决|强烈|明确)?反对/,
     /但反对/,
     /必须重构/,
@@ -208,10 +241,10 @@ export function evaluateRoleConcurrenceStatement(replyText: string): {
     /not\s*without\s*objection/i,
   ];
 
-  // 2. 检查否定模式
-  const hasNegation = negationPatterns.some((regex) => regex.test(trimmed));
+  // 3. 检查脱敏后文本的否定模式
+  const hasNegation = negationPatterns.some((regex) => regex.test(sanitizedText));
 
-  // 3. 肯定模式库（必须包含积极且明确的确认意向）
+  // 4. 肯定模式库（必须包含积极且明确的确认意向）
   const explicitTags = [
     /【\s*(?:无异议(?:确认)?|concur(?:red)?)\s*(?:\/|\s*)?(?:concur(?:red)?)?\s*】/i,
     /\[\s*(?:无异议(?:确认)?|concur(?:red)?)\s*\]/i,
@@ -221,15 +254,17 @@ export function evaluateRoleConcurrenceStatement(replyText: string): {
   const affirmativePhrases = [
     /(?:经全面审视|经审视|核验确认|对此方案|架构方案|本人)?(?:明确)?(?:无异议|零异议)/,
     /(?:完全|表示|予以)?(?:认同该方案|认同此方案|赞同该方案|同意该方案|一致通过|达成共识|方案通过)/,
+    /(?:不持|不存在?)(?:任何|阻断性)?异议/,
+    /不反对(?:该方案|此方案|方案)?/,
     /\b(?:i\s+)?concur\s+(?:with|in)\b/i,
     /\b(?:i\s+)?concurred\b/i,
   ];
   const hasAffirmativePhrase = affirmativePhrases.some((re) => re.test(trimmed));
 
-  // 4. 判定：必须有肯定模式且绝对不能含有任何否定/反对倾向
-  const isConcurred = (hasExplicitTag || hasAffirmativePhrase) && !hasNegation;
+  // 5. 判定：必须有肯定模式或良性无异议短语，且脱敏后绝对无残留真实否定倾向
+  const isConcurred = (hasExplicitTag || hasAffirmativePhrase || hasBenignConcurrence) && !hasNegation;
 
-  // 5. 提取实质陈词：剥离纯标签行，寻找有实质内容的说明
+  // 6. 提取实质陈词：剥离纯标签行，寻找有实质内容的说明
   const lines = trimmed.split('\n').map((l) => l.trim()).filter(Boolean);
   const cleanLines = lines
     .map((l) => l.replace(/【[^】]+】/g, '').replace(/\[[^\]]+\]/g, '').trim())
@@ -287,23 +322,6 @@ export function prepareConcurrenceState(options: {
   proposerIds.forEach((id) => addRoleItem(id, 'proposer'));
   challengerIds.forEach((id) => addRoleItem(id, 'challenger'));
   verifierIds.forEach((id) => addRoleItem(id, 'verifier'));
-
-  // 兜底保障：若未显式指定角色分组，挑选非仲裁官候选智能体
-  if (items.length === 0) {
-    const arbiterIds = gameRoles?.arbiters || [];
-    const nonArbiters = candidateAgents.filter((a) => !arbiterIds.includes(a.id));
-    if (nonArbiters.length > 0) {
-      nonArbiters.slice(0, 2).forEach((a, idx) => {
-        items.push({
-          agentId: a.id,
-          agentName: a.name,
-          agentHandle: normalizeMentionHandle(a),
-          role: idx === 0 ? 'proposer' : 'challenger',
-          status: 'pending',
-        });
-      });
-    }
-  }
 
   const proposalSummary = arbiterDraft?.summary || arbiterReplyText.slice(0, 200).trim() || topic.title;
 
@@ -378,9 +396,6 @@ export function buildFinalRulingFromConcurrence(options: {
   }
 
   const nowStr = formatFullDateTime();
-  const defaultExecutor = extractedDraft?.submittedBy
-    ? candidateAgents.find((a) => a.name === extractedDraft.submittedBy)?.id
-    : topic.gameRoles?.proposers?.[0] || candidateAgents[0]?.id;
 
   const decisionType = extractedDraft?.decisionType || 'trade_off_matrix';
   const summary = extractedDraft?.summary || `综合裁定官已统筹各方攻防意见敲定终局方案，全员无异议签署通过。围绕“${topic.title}”准予落地交付。`;
@@ -410,7 +425,7 @@ export function buildFinalRulingFromConcurrence(options: {
     tradeOffPoints,
     impactedFiles,
     decidedAt: nowStr,
-    executorId: defaultExecutor,
+    executorId: undefined, // 自动全员无异议定案不预设自动执行者，严禁自动派发，交由人类在活体看板审阅后显式点击批准指派
     mcdaPayload: topic.gameTheoreticState?.mcdaPayload,
     minorityReport: topic.gameTheoreticState?.minorityReport,
     sprtState: topic.gameTheoreticState?.sprtState,
@@ -430,6 +445,42 @@ export function buildFinalRulingFromConcurrence(options: {
   return {
     ...partialRuling,
     livingAdrMarkdown: finalLivingAdrMarkdown,
+  };
+}
+
+/**
+ * 集中评估仲裁裁决门禁（一致性硬门禁与挑战方法定人数）
+ * 供 UI (TopicThreadDrawer) 与自动流程 (App) 共同调用，杜绝逻辑分化
+ */
+export function evaluateRulingGates(
+  topic: TopicMessageData,
+  mcdaPayload?: McdaDecisionPayload
+): {
+  isConsistencyPassed: boolean;
+  isChallengerQuorumMet: boolean;
+  allGatesPassed: boolean;
+  reason?: string;
+} {
+  const isConsistencyPassed = mcdaPayload?.consistencyPassed ?? (topic.gameTheoreticState?.mcdaPayload?.consistencyPassed ?? true);
+  const isChallengerQuorumMet =
+    topic.discussionMode !== 'game_theoretic' ||
+    !topic.gameRoles?.challengers?.length ||
+    topic.gameTheoreticState?.isChallengerBypassed === true ||
+    topic.gameTheoreticState?.isChallengerResponded !== false;
+
+  const allGatesPassed = isConsistencyPassed && isChallengerQuorumMet;
+  let reason: string | undefined;
+  if (!isConsistencyPassed) {
+    reason = `MCDA 运筹一致性指标未达标 (ξ* > 0.12)`;
+  } else if (!isChallengerQuorumMet) {
+    reason = `挑战方法定人数门禁未达成 (红队未响应且未被旁路)`;
+  }
+
+  return {
+    isConsistencyPassed,
+    isChallengerQuorumMet,
+    allGatesPassed,
+    reason,
   };
 }
 
