@@ -542,7 +542,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       <div className="max-w-3xl mx-auto space-y-2">
         {/* 1. Top Quick-Mention Agent Pills + New Topic Trigger (Scenario-Adaptive & Collapsible - Only in Channel) */}
         {(activeAgents.length > 0 || onOpenNewTopicModal) && (
-          <div className="flex items-center gap-1.5 pb-0.5 text-[11px] relative">
+          <div className="flex flex-wrap items-center gap-1.5 pb-0.5 text-[11px] relative min-w-0">
             {onOpenNewTopicModal && (
               <button
                 onClick={onOpenNewTopicModal}

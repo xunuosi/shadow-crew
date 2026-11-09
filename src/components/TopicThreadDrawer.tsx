@@ -56,6 +56,10 @@ import { MentionSuggestions } from './MentionSuggestions';
 import { renderFormattedContent } from '../utils/formatMentions';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { useResizablePanel } from '../hooks/useResizablePanel';
+import {
+  getTopicDrawerMaxWidth,
+  MIN_TOPIC_DRAWER_WIDTH,
+} from '../config/layout';
 import { ResizeHandle } from './ResizeHandle';
 import { getDraft, saveDraft, clearDraft } from '../services/draftService';
 import { logGameTheoreticTelemetry } from '../services/agentCollaboration';
@@ -103,6 +107,15 @@ interface TopicThreadDrawerProps {
   onEditTopic?: () => void;
   workspaceCwd?: string;
   overlappingFiles?: string[];
+}
+
+function resolveTopicDrawerMaxWidth(): number {
+  if (typeof window === 'undefined') return 800;
+  const workspaceLeftOffset =
+    typeof document !== 'undefined'
+      ? document.querySelector('main')?.getBoundingClientRect().left ?? 0
+      : 0;
+  return getTopicDrawerMaxWidth(window.innerWidth, workspaceLeftOffset);
 }
 
 export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
@@ -582,13 +595,40 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   }, [shouldTick]);
 
   // Resizable drawer width (persisted in localStorage)
-  const { width: drawerWidth, isDragging, handlePointerDown, resetWidth, panelRef } = useResizablePanel({
+  const { width: drawerWidth, isDragging, handlePointerDown, resetWidth, setWidth, panelRef } = useResizablePanel({
     direction: 'left',
     defaultWidth: 480,
-    minWidth: 320,
-    maxWidth: () => (typeof window !== 'undefined' ? Math.max(320, Math.min(900, window.innerWidth - 260)) : 800),
+    minWidth: MIN_TOPIC_DRAWER_WIDTH,
+    maxWidth: resolveTopicDrawerMaxWidth,
     storageKey: 'shinobi_topic_drawer_width',
   });
+
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return;
+    const main = document.querySelector('main');
+    if (!main) return;
+
+    const syncDrawerWidthToLayout = () => {
+      const currentWidth = panelRef.current?.getBoundingClientRect().width;
+      if (currentWidth == null) return;
+
+      const maxWidth = resolveTopicDrawerMaxWidth();
+      if (currentWidth > maxWidth + 0.5) {
+        setWidth(maxWidth);
+      }
+    };
+
+    syncDrawerWidthToLayout();
+    const observer = new ResizeObserver(syncDrawerWidthToLayout);
+    observer.observe(main);
+
+    const sidebar = document.querySelector('#shinobi-primary-sidebar');
+    if (sidebar) {
+      observer.observe(sidebar);
+    }
+
+    return () => observer.disconnect();
+  }, [panelRef, setWidth]);
 
   // Scroll management: ensure entering a topic always positions to the latest message
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -998,10 +1038,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       id="shinobi-topic-thread-drawer"
       style={{ 
         width: `${drawerWidth}px`, 
-        maxWidth: 'calc(100vw - 260px)',
-        minWidth: '320px'
+        maxWidth: '100vw',
+        minWidth: `${MIN_TOPIC_DRAWER_WIDTH}px`
       }}
-      className="relative bg-surface border-l border-border flex flex-col shrink-0 min-w-[320px] h-full overflow-hidden max-sm:!fixed max-sm:!inset-0 max-sm:!w-full max-sm:!max-w-full max-sm:!z-50 text-xs text-fg-secondary shadow-2xl z-40"
+      className="relative bg-surface border-l border-border flex flex-col shrink-0 h-full overflow-hidden max-sm:!fixed max-sm:!inset-0 max-sm:!w-full max-sm:!max-w-full max-sm:!z-50 text-xs text-fg-secondary shadow-2xl z-40"
     >
       {/* Draggable Left Resize Handle */}
       <ResizeHandle

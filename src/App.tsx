@@ -212,6 +212,7 @@ import {
   normalizeGameTheoreticPolicy,
   RECOMMENDED_GAME_THEORETIC_POLICY,
 } from './services/cogno';
+import { MIN_MAIN_TIMELINE_WIDTH } from './config/layout';
 
 const REMOTE_ACP_PROBE_TIMEOUT_MS = 5_000;
 const REMOTE_ACP_HEALTH_INTERVAL_MS = 5_000;
@@ -8325,7 +8326,10 @@ export default function App() {
       ) : (
         <>
           {/* 2. Middle Column: Channel Main Timeline & Composer (PRD Column 2) */}
-          <main className="flex-1 flex flex-col min-w-[260px] bg-canvas relative overflow-hidden transition-colors duration-150">
+          <main
+            className="flex-1 flex flex-col min-w-0 bg-canvas relative overflow-hidden transition-colors duration-150"
+            style={{ minWidth: MIN_MAIN_TIMELINE_WIDTH }}
+          >
             {activeThread && (activeThread.type === 'dm' || activeChannel) ? (
               <>
                 <ChatTimeline
