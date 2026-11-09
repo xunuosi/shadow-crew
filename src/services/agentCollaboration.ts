@@ -63,6 +63,8 @@ import {
   stepModularStageTransition,
   computeEntropyReductionRatio,
   buildDefaultDecompositionFromTopic,
+  buildArbiterStage5Directive,
+  buildRoleConcurrencePrompt,
 } from './cogno';
 
 export interface CollaborationCascade {
@@ -429,6 +431,11 @@ export interface TopicPromptContext {
   modularState?: ModularOrchestrationState;
   participatingAgents?: Agent[];
   recentHistory?: Array<{ author: string; content: string; isAgent?: boolean }>;
+  concurrenceVerificationContext?: {
+    arbiterName: string;
+    arbiterText: string;
+    roleName: 'proposer' | 'challenger' | 'verifier';
+  };
 }
 
 /**
@@ -514,6 +521,18 @@ export function buildTopicPrompt(options: {
   availableAgents: Agent[];
 }): string {
   const { topic, userContent, targetAgent, availableAgents } = options;
+
+  // 若处于终局全员无异议核验阶段，生成专用的角色无异议复核提示词
+  if (topic.concurrenceVerificationContext) {
+    return buildRoleConcurrencePrompt({
+      roleAgent: targetAgent,
+      roleName: topic.concurrenceVerificationContext.roleName,
+      arbiterName: topic.concurrenceVerificationContext.arbiterName,
+      arbiterText: topic.concurrenceVerificationContext.arbiterText,
+      topicTitle: topic.title,
+      topicDescription: topic.description,
+    });
+  }
 
   const peers = availableAgents.filter((a) => a.id !== targetAgent.id);
   const peerList = peers.length > 0
@@ -659,39 +678,13 @@ ${topic.targetChallengeText || '详见前序脉络'}
         ? `\n\n【提案方防御答辩与架构补丁 (Defense v2)】:\n<<<PROPOSER_DEFENSE_START>>>\n${topic.targetDefenseText}\n<<<PROPOSER_DEFENSE_END>>>`
         : '';
 
-      gameModeDirective = `\n\n【博弈编排 - ⚖️ 阶段 5: 中立综合协调与权衡决策 (Synthesizer / Arbiter)】:
-你是本议题的中立流程综合官与决策协调者 (Synthesizer / Arbiter)。提案方案、红队反例、接地实证及答辩补丁已进入终局仲裁。
-【仲裁守则与交付契约】:
-保持客观中立，依据可行性、健壮性与 ROI：
-1. 【💡 通俗定案置顶 (Executive Summary)】：回复首段必须先用 2~3 句话以大白话给出《终局裁决核心摘要》（明确“采纳哪套方案、核心依据是什么、承受了何种折中代价”），确保非技术决策者一眼看懂；
-2. 梳理双方分歧焦点与核心论据，拒绝空泛套话与过度抽象的伪理论，紧扣具体代码/配置工程实际；
-3. 全面审视红队的反例质疑、接地验证智能体的物理实证报告以及提案官的防御修正/补丁方案；
-4. 提炼客观的《架构决策权衡矩阵 (Trade-off Matrix)》；
-5. 【结构化裁决书交付 (直通宿主 ADR 画布与仲裁法槌)】：
-   优先调用宿主 \`submit_arbitration_ruling\` 工具；或在回复末尾附带标准裁决草案块：
-<<<RULING_DRAFT>>>
-{
-  "decision_type": "adopt_proposer", // "adopt_proposer" | "reject_rebuild" | "trade_off_matrix"
-  "summary": "简明定案陈词与核心决策动因",
-  "trade_off_points": [
-    "优先保障... (权重 ...)，适度折中...",
-    "建立...机制防范红队提出的边界缺陷"
-  ],
-  "impacted_files": ["src/..."],
-  "solution": "落地工程实施或架构补丁要求"
-}
-<<<RULING_DRAFT_END>>>
-无需在正文 @ 任何人。
-
-【立论方案 (Proposal v1)】:
-<<<PROPOSER_PROPOSAL_START>>>
-${topic.targetProposalText || '详见前序脉络'}
-<<<PROPOSER_PROPOSAL_END>>>
-
-【红队反例质询 (Red Team Challenge)】:
-<<<CHALLENGER_CRITIQUE_START>>>
-${topic.targetChallengeText || '详见前序脉络'}
-<<<CHALLENGER_CRITIQUE_END>>>${verificationSection}${defenseSection}`;
+      gameModeDirective = buildArbiterStage5Directive({
+        topic,
+        arbiterAgent: targetAgent,
+        availableAgents,
+        verificationSection,
+        defenseSection,
+      });
     }
   }
 

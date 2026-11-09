@@ -19,6 +19,7 @@ import {
   Zap,
   Loader2,
   Clock,
+  Handshake,
 } from 'lucide-react';
 import {
   TopicMessageData,
@@ -45,22 +46,28 @@ interface LivingAdrCanvasProps {
  * 将博弈推演数据格式化为符合业界规范的 Architecture Decision Record (ADR) Markdown
  */
 export function generateAdrMarkdown(topic: TopicMessageData, agents: Agent[]): string {
-  const dateStr = new Date().toISOString().split('T')[0];
   const ruling = topic.rulingRecord;
+  if (ruling?.livingAdrMarkdown) {
+    return ruling.livingAdrMarkdown;
+  }
+
+  const dateStr = new Date().toISOString().split('T')[0];
   const draft = topic.gameTheoreticState?.rulingDraft;
   const mcda = topic.gameTheoreticState?.mcdaPayload;
   const committedStates = topic.gameTheoreticState?.cognoNexus?.committedStates || [];
   const dispute = topic.gameTheoreticState?.cognoNexus?.currentDispute;
   const evidences = topic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain || [];
+  const concurrenceSignOff = ruling?.concurrenceSignOff;
+  const concurrenceState = topic.gameTheoreticState?.concurrenceState;
 
   const statusStr = ruling
     ? ruling.decisionType === 'adopt_proposer'
-      ? 'Approved (采纳主导)'
+      ? 'Approved (采纳主导 · 全员无异议签署)'
       : ruling.decisionType === 'reject_rebuild'
-      ? 'Rejected (驳回重构)'
-      : 'Approved (权衡折中)'
+      ? 'Rejected (驳回重构 · 全员无异议签署)'
+      : 'Approved (权衡折中 · 全员无异议签署)'
     : topic.gameStage === 'arbitration'
-    ? 'Under Arbitration (仲裁定案审议中)'
+    ? 'Under Arbitration (综合裁定官终局方案核验中)'
     : 'Draft (博弈推演研讨中)';
 
   const getAgentName = (id?: string) => {
@@ -78,9 +85,44 @@ export function generateAdrMarkdown(topic: TopicMessageData, agents: Agent[]): s
 
   let md = `# ADR-${topic.id.slice(-6).toUpperCase()}: ${topic.title}\n\n`;
   md += `> **创建日期**: ${dateStr}  \n`;
-  md += `> **状态**: \`${statusStr}\`  \n`;
+  md += `> **决议状态**: \`${statusStr}\`  \n`;
+  md += `> **终局裁定官**: **${ruling?.arbiterName || arbiters}**  \n`;
   md += `> **参与角色**: 提案 [${proposers}] | 红队 [${challengers}] | 接地实证 [${verifiers}] | 终局仲裁 [${arbiters}]  \n\n`;
   md += `---\n\n`;
+
+  // 🌟 通俗大白话定案总览 (Executive Summary)
+  const activeSummary = ruling?.summary || draft?.summary;
+  const activeSolution = ruling?.solution || draft?.solution;
+  if (activeSummary) {
+    md += `## 🌟 大白话终局方案总览 (Executive Summary)\n\n`;
+    md += `> 💡 **核心决议**: **${activeSummary}**\n\n`;
+    if (activeSolution) {
+      md += `**落地实施要旨**: ${activeSolution}\n\n`;
+    }
+    md += `---\n\n`;
+  }
+
+  // 🤝 全员无异议共识签署链 (Unanimous Concurrence Sign-off)
+  if (concurrenceSignOff?.records && concurrenceSignOff.records.length > 0) {
+    md += `## 🤝 全员无异议共识签署 (Unanimous Concurrence Sign-off)\n\n`;
+    md += `本决议在终局敲定前，已由综合裁定官向各参研关键角色发起专项审视征询，以下角色均已独立复核并明确保证**无异议**：\n\n`;
+    md += `| 签署角色 | 负责智能体 | 审查结论 | 无异议陈述立场与依据摘要 |\n`;
+    md += `| :--- | :--- | :---: | :--- |\n`;
+    concurrenceSignOff.records.forEach((rec) => {
+      md += `| **${rec.role}** | \`${rec.agentName}\` | **✅ 无异议 (Concurred)** | ${rec.statement.replace(/[\n\r|]/g, ' ')} |\n`;
+    });
+    md += `\n---\n\n`;
+  } else if (concurrenceState?.items && concurrenceState.items.length > 0) {
+    md += `## 🤝 全员无异议共识签署 (Unanimous Concurrence Sign-off)\n\n`;
+    md += `| 签署角色 | 负责智能体 | 审查状态 | 保证陈述 |\n`;
+    md += `| :--- | :--- | :---: | :--- |\n`;
+    concurrenceState.items.forEach((item) => {
+      const statusText = item.status === 'concurred' ? '✅ 无异议 (Concurred)' : '⏳ 待确认';
+      const roleText = item.role === 'proposer' ? '提案主导' : item.role === 'challenger' ? '红队对抗' : item.role === 'verifier' ? '接地实证' : '综合裁定';
+      md += `| **${roleText}** | \`${item.agentName}\` | **${statusText}** | ${(item.statement || '方案审视中').replace(/[\n\r|]/g, ' ')} |\n`;
+    });
+    md += `\n---\n\n`;
+  }
 
   // 1. Context & Problem Statement
   md += `## 1. 业务背景与架构假定 (Context & Assumptions)\n\n`;
@@ -162,8 +204,6 @@ export function generateAdrMarkdown(topic: TopicMessageData, agents: Agent[]): s
 
   // 4. Decision & Trade-offs
   md += `## 4. 架构权衡矩阵与终局决议 (Decision & Trade-offs)\n\n`;
-  const activeSummary = ruling?.summary || draft?.summary;
-  const activeSolution = ruling?.solution || draft?.solution;
   const activeTradeOffs = ruling?.tradeOffPoints || draft?.tradeOffPoints || [];
   const activeFiles = ruling?.impactedFiles || draft?.impactedFiles || [];
 
@@ -248,6 +288,8 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
   const dispute = topic.gameTheoreticState?.cognoNexus?.currentDispute;
   const evidences = topic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain || [];
   const modularState = topic.gameTheoreticState?.modularState || topic.gameTheoreticState?.cognoNexus?.modularState;
+  const concurrenceState = topic.gameTheoreticState?.concurrenceState;
+  const concurrenceSignOff = ruling?.concurrenceSignOff;
 
   const executorId =
     ruling?.executorId ||
@@ -406,6 +448,136 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
               <p className="text-[10px] text-purple-600/90 dark:text-purple-300/80 leading-relaxed">
                 无需任何正则提取，仲裁官通过 <code className="px-1 py-0.5 rounded bg-purple-500/20 font-mono">submit_arbitration_ruling</code> 原生工具回传了高保真权衡矩阵，已直接装载至第四节及法槌控制台。
               </p>
+            </div>
+          </div>
+        )}
+
+        {/* Top Highlight: 🌟 终局架构方案总览与全员无异议签署 (Final Concluded Architecture & Sign-off) */}
+        {(ruling || draft || concurrenceState || concurrenceSignOff) && (
+          <div className="p-3.5 rounded-xl bg-purple-50/70 dark:bg-purple-500/10 border border-purple-200 dark:border-purple-500/30 space-y-3">
+            <div className="flex items-center justify-between border-b border-purple-200 dark:border-purple-500/25 pb-2 flex-wrap gap-2">
+              <div className="flex items-center gap-1.5 font-bold text-fg text-xs">
+                <span className="w-1.5 h-3.5 rounded-full bg-purple-600 dark:bg-purple-400 shrink-0" />
+                <span className="text-purple-900 dark:text-purple-200">🌟 终局架构方案总览 (Executive Summary)</span>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {isResolved ? (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                    <span>全员无异议签署 · 终局敲定</span>
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                    <span>综合裁定官方案审视征询中</span>
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* 大白话核心决策 */}
+            <div className="p-3 rounded-lg bg-surface border border-border space-y-1.5">
+              <div className="text-[10px] font-semibold text-purple-800 dark:text-purple-300 flex items-center gap-1">
+                <Scale className="w-3 h-3 text-purple-600 dark:text-purple-400" />
+                <span>核心决策结论与依据</span>
+              </div>
+              <p className="text-[11px] text-fg font-medium leading-relaxed">
+                {ruling?.summary || draft?.summary || concurrenceState?.arbiterProposalSummary || '综合裁定官正在拟定终局架构权衡方案...'}
+              </p>
+              {(ruling?.solution || draft?.solution) && (
+                <div className="pt-1.5 border-t border-border/60 text-[10px] text-fg-secondary">
+                  <span className="font-semibold text-fg">落地实施要旨: </span>
+                  {ruling?.solution || draft?.solution}
+                </div>
+              )}
+            </div>
+
+            {/* 全员无异议签署链展板 */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[10px] font-semibold text-purple-800 dark:text-purple-300">
+                <div className="flex items-center gap-1">
+                  <Handshake className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+                  <span>🤝 全员无异议共识签署 (Unanimous Concurrence Sign-off)</span>
+                </div>
+                <span className="text-[9px] text-fg-muted font-normal">
+                  {concurrenceSignOff?.allConcurred || isResolved
+                    ? '全员均已独立复核并明确保证无异议'
+                    : '正在收集关键参研角色复核答复'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 gap-1.5">
+                {(concurrenceSignOff?.records && concurrenceSignOff.records.length > 0) ? (
+                  concurrenceSignOff.records.map((rec, idx) => (
+                    <div key={idx} className="p-2 rounded-lg bg-surface border border-emerald-300 dark:border-emerald-500/30 flex items-start justify-between gap-2 text-[10px]">
+                      <div className="flex items-start gap-1.5 min-w-0">
+                        <span className="px-1.5 py-0.5 rounded font-mono font-medium text-[9px] bg-emerald-50 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 shrink-0">
+                          {rec.role}
+                        </span>
+                        <div className="min-w-0 space-y-0.5">
+                          <span className="font-semibold text-fg block truncate">{rec.agentName}</span>
+                          <p className="text-[10px] text-fg-secondary leading-snug">{rec.statement}</p>
+                        </div>
+                      </div>
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 shrink-0">
+                        ✓ 无异议
+                      </span>
+                    </div>
+                  ))
+                ) : (concurrenceState?.items && concurrenceState.items.length > 0) ? (
+                  concurrenceState.items.map((item, idx) => {
+                    const isConcurred = item.status === 'concurred';
+                    const roleLabel = item.role === 'proposer'
+                      ? '提案主导'
+                      : item.role === 'challenger'
+                      ? '红队对抗'
+                      : item.role === 'verifier'
+                      ? '接地实证'
+                      : '综合裁定';
+                    return (
+                      <div
+                        key={idx}
+                        className={`p-2 rounded-lg bg-surface border ${
+                          isConcurred
+                            ? 'border-emerald-300 dark:border-emerald-500/30'
+                            : 'border-amber-300 dark:border-amber-500/30'
+                        } flex items-start justify-between gap-2 text-[10px]`}
+                      >
+                        <div className="flex items-start gap-1.5 min-w-0">
+                          <span
+                            className={`px-1.5 py-0.5 rounded font-mono font-medium text-[9px] shrink-0 border ${
+                              isConcurred
+                                ? 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-500/30'
+                                : 'bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-500/30'
+                            }`}
+                          >
+                            {roleLabel}
+                          </span>
+                          <div className="min-w-0 space-y-0.5">
+                            <span className="font-semibold text-fg block truncate">{item.agentName}</span>
+                            <p className="text-[10px] text-fg-secondary leading-snug">
+                              {item.statement || (isConcurred ? '确认无异议' : '正在审视方案中...')}
+                            </p>
+                          </div>
+                        </div>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 border ${
+                            isConcurred
+                              ? 'text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-500/15 border-emerald-300 dark:border-emerald-500/30'
+                              : 'text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-500/15 border-amber-300 dark:border-amber-500/30'
+                          }`}
+                        >
+                          {isConcurred ? '✓ 无异议' : '⏳ 待确认'}
+                        </span>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="p-2 rounded-lg bg-surface border border-border text-[10px] text-fg-muted italic text-center">
+                    裁定官发布拟定方案后，将自动调度参研角色进行无异议审视签署
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -620,29 +792,29 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
         </div>
 
         {/* Section 4: Decision & Trade-offs */}
-        <div className="p-3.5 rounded-xl bg-purple-500/10 border border-purple-500/30 space-y-2.5">
-          <div className="flex items-center justify-between border-b border-purple-500/25 pb-1.5">
+        <div className="p-3.5 rounded-xl bg-purple-50/70 dark:bg-purple-500/10 border border-purple-200 dark:border-purple-500/30 space-y-2.5">
+          <div className="flex items-center justify-between border-b border-purple-200 dark:border-purple-500/25 pb-1.5">
             <div className="flex items-center gap-1.5 font-bold text-fg text-xs">
-              <span className="w-1.5 h-3.5 rounded-full bg-purple-500 shrink-0" />
-              <span>4. 架构权衡矩阵与终局决议 (Decision & Trade-offs)</span>
+              <span className="w-1.5 h-3.5 rounded-full bg-purple-600 dark:bg-purple-400 shrink-0" />
+              <span className="text-purple-900 dark:text-purple-200">4. 架构权衡矩阵与终局决议 (Decision & Trade-offs)</span>
             </div>
-            <span className="text-[10px] text-purple-600 dark:text-purple-400 font-mono font-medium">⚖️ Arbiter</span>
+            <span className="text-[10px] text-purple-700 dark:text-purple-300 font-mono font-medium">⚖️ Arbiter</span>
           </div>
 
           {(ruling || draft) ? (
             <div className="space-y-2">
-              <div className="text-[11px] text-fg font-medium leading-relaxed bg-surface/70 p-2.5 rounded-lg border border-purple-500/20">
-                <span className="text-purple-600 dark:text-purple-400 font-bold">【裁决总览】: </span>
+              <div className="text-[11px] text-fg font-medium leading-relaxed bg-surface p-2.5 rounded-lg border border-border">
+                <span className="text-purple-700 dark:text-purple-300 font-bold">【裁决总览】: </span>
                 {ruling?.summary || draft?.summary}
               </div>
 
               {(ruling?.tradeOffPoints || draft?.tradeOffPoints || []).length > 0 && (
                 <div className="space-y-1">
-                  <div className="text-[10px] font-semibold text-purple-700 dark:text-purple-300">关键权衡折中要点 (Trade-off Matrix):</div>
+                  <div className="text-[10px] font-semibold text-purple-800 dark:text-purple-300">关键权衡折中要点 (Trade-off Matrix):</div>
                   <div className="space-y-1">
                     {(ruling?.tradeOffPoints || draft?.tradeOffPoints || []).map((pt, idx) => (
-                      <div key={idx} className="p-1.5 rounded-md bg-surface/80 border border-purple-500/20 text-[11px] text-fg flex items-start gap-1.5">
-                        <Scale className="w-3 h-3 text-purple-500 shrink-0 mt-0.5" />
+                      <div key={idx} className="p-2 rounded-md bg-surface border border-border text-[11px] text-fg flex items-start gap-1.5">
+                        <Scale className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
                         <span className="leading-snug">{pt}</span>
                       </div>
                     ))}
@@ -651,27 +823,27 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
               )}
 
               {(ruling?.impactedFiles || draft?.impactedFiles || []).length > 0 && (
-                <div className="p-2 rounded-lg bg-surface/80 border border-border flex items-center justify-between text-[11px]">
+                <div className="p-2 rounded-lg bg-surface border border-border flex items-center justify-between text-[11px] flex-wrap gap-1">
                   <div className="flex items-center gap-1.5">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                     <span className="font-semibold text-fg">限定安全爆炸半径文件:</span>
                   </div>
-                  <span className="font-mono text-[10px] text-purple-600 dark:text-purple-400 font-medium">
+                  <span className="font-mono text-[10px] text-purple-700 dark:text-purple-300 font-medium">
                     {(ruling?.impactedFiles || draft?.impactedFiles || []).join(', ')}
                   </span>
                 </div>
               )}
 
               {(ruling?.solution || draft?.solution) && (
-                <div className="text-[11px] text-fg-secondary leading-relaxed bg-surface/50 p-2 rounded-lg border border-border/60">
+                <div className="text-[11px] text-fg-secondary leading-relaxed bg-surface p-2.5 rounded-lg border border-border">
                   <span className="font-semibold text-fg">落地实施要求: </span>
                   {ruling?.solution || draft?.solution}
                 </div>
               )}
             </div>
           ) : (
-            <div className="text-[11px] text-fg-muted italic p-2 rounded-lg bg-surface/50">
-              等待阶段 5 综合官调用 <code className="font-mono text-purple-500">submit_arbitration_ruling</code> 或人类首席仲裁官法槌定案...
+            <div className="text-[11px] text-fg-muted italic p-2 rounded-lg bg-surface border border-border">
+              等待阶段 5 综合裁定官起草方案、@各角色保证回复无异议后正式敲定...
             </div>
           )}
 

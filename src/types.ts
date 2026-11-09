@@ -708,6 +708,25 @@ export interface TopicExecutionUiMeta {
   applyActionLabel?: string;
 }
 
+export interface RoleConcurrenceItem {
+  agentId: string;
+  agentName: string;
+  agentHandle?: string;
+  role: 'proposer' | 'challenger' | 'verifier' | 'arbiter';
+  status: 'pending' | 'concurred' | 'objected';
+  statement?: string; // 角色回复的无异议确认陈词或具体观点
+  timestamp?: string;
+}
+
+export interface GameRoleConcurrenceState {
+  isConcurrencePhaseActive: boolean; // 是否处于无异议征询确认阶段
+  arbiterProposalSummary?: string;   // 综合裁定官拟定敲定的方案摘要
+  items: RoleConcurrenceItem[];      // 各关键参研角色的无异议保证状态
+  allConcurred: boolean;             // 是否所有参与角色均已明确回复并保证无异议
+  finalLivingAdrMarkdown?: string;   // 终局敲定出具的高可读性活体 ADR 画布 Markdown
+  concludedAt?: string;              // 敲定时间戳
+}
+
 export interface GameTheoreticState {
   currentStage: GameTheoreticStage;
   gamePolicy?: GameTheoreticPolicy;
@@ -748,6 +767,7 @@ export interface GameTheoreticState {
   isSafetyCharterSigned?: boolean;       // 人类是否已签署 T2 高危工具执行安全宪章
   rulingDraft?: ArbitrationRulingDraft;  // 由综合仲裁官通过 submit_arbitration_ruling MCP 工具提交的结构化裁决书草案
   modularState?: ModularOrchestrationState; // G-Frame 贝叶斯与团队博弈模块化分治状态
+  concurrenceState?: GameRoleConcurrenceState; // 全员无异议征询保证与活体看板生成状态
   telemetryLogIds?: string[];
 }
 
@@ -998,6 +1018,11 @@ export interface RulingRecord {
   mcdaPayload?: McdaDecisionPayload;
   minorityReport?: MinorityReport;
   sprtState?: SprtGovernorState;
+  concurrenceSignOff?: {
+    allConcurred: boolean;
+    records: { role: string; agentId?: string; agentName: string; statement: string; timestamp: string }[];
+  };
+  livingAdrMarkdown?: string; // 人类可读性强的最终 ADR 画布 Markdown
 }
 
 export interface DecisionRecord {
