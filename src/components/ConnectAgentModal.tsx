@@ -672,7 +672,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         isManagedByYou: true,
         acpTransport: transport,
         acpCommandOrUrl: resolvedCommand,
-        protocolVersion: '2025-01-01 (ACP v1.0.4)',
+        protocolVersion: '2 (ACP v2.0.0)',
         capabilities: {
           canUseInternalMemory: savedMemoryState.canUseInternalMemory,
           canAccessWorkspaceFiles: !isRemoteMode || !readOnlyGuard,

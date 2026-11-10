@@ -404,26 +404,35 @@ rl.on('line', async (line) => {
       );
       return;
     }
+    const nativeMem = codexNativeMemoryCapability(params);
     sendResult(id, {
-      protocolVersion: 1,
+      protocolVersion: 2,
       agentInfo: {
         name: 'OpenAI Codex',
         version: codexVersion(),
         description: 'OpenAI Codex CLI ACP Agent',
       },
+      capabilities: {
+        loadSession: false,
+        tools: { listChanged: true },
+        streaming: true,
+        nativeMemory: nativeMem,
+        sessionCapabilities: {
+          resume: {},
+        },
+        promptCapabilities: {
+          image: true,
+          embeddedContext: true,
+        },
+      },
       agentCapabilities: {
         loadSession: false,
         tools: { listChanged: true },
         streaming: true,
-        nativeMemory: codexNativeMemoryCapability(params),
+        nativeMemory: nativeMem,
         sessionCapabilities: {
           resume: {},
         },
-      },
-      capabilities: {
-        prompts: { listChanged: true },
-        tools: { listChanged: true },
-        streaming: true,
       },
       sessionCapabilities: {
         resume: {},
@@ -498,15 +507,28 @@ rl.on('line', async (line) => {
 
   // 5. session/prompt
   if (method === 'session/prompt') {
+    const targetSessionId = params?.sessionId || activeSessionId;
+    const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
     if (!CODEX_BIN) {
       sendResult(id, {
+        messageId,
+        status: 'accepted',
         text_response: `⚠️ Codex 不可用：${codexUnavailableReason()}。`,
         stopReason: 'error',
+      });
+      sendNotification('session/update', {
+        sessionId: targetSessionId,
+        update: {
+          sessionUpdate: 'turn_complete',
+          messageId,
+          stopReason: 'error',
+          error: `⚠️ Codex 不可用：${codexUnavailableReason()}。`,
+        },
       });
       return;
     }
 
-    const targetSessionId = params?.sessionId || activeSessionId;
     let session = targetSessionId ? loadSession(targetSessionId) : null;
     if (!session) {
       const newSid = targetSessionId || `codex-sess-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -667,11 +689,13 @@ rl.on('line', async (line) => {
             const text = event.item.text;
             fullOutput += (fullOutput ? '\n\n' : '') + text;
             hasSentChunk = true;
-            // Emit ACP session/update chunk
+            // Emit ACP v2 session/update chunk
             sendNotification('session/update', {
               sessionId: session.sessionId,
               update: {
                 sessionUpdate: 'agent_message_chunk',
+                messageId,
+                delta: text,
                 content: { text },
               },
             });
@@ -685,6 +709,8 @@ rl.on('line', async (line) => {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
+              messageId,
+              delta: outTrimmed,
               content: { text: outTrimmed },
             },
           });
@@ -700,28 +726,56 @@ rl.on('line', async (line) => {
     child.on('close', (code) => {
       session.updatedAt = Date.now();
       saveSession(session);
-      if (code !== 0 && !fullOutput) {
-        sendResult(id, {
-          text_response: `⚠️ Codex 执行退出 (exit code: ${code})\n${stderrBuffer.trim()}`,
-          stopReason: 'error',
-          agentCapabilities: {
-            nativeMemory: promptNativeMemoryCapability,
-          },
-        });
-      } else {
-        sendResult(id, {
-          text_response: fullOutput || '（Codex 执行完成，无输出文本）',
-          stopReason: 'completed',
-          agentCapabilities: {
-            nativeMemory: promptNativeMemoryCapability,
-          },
-        });
-      }
+      const isError = code !== 0 && !fullOutput;
+      const stopReason = isError ? 'error' : 'completed';
+      const textResponse = isError
+        ? `⚠️ Codex 执行退出 (exit code: ${code})\n${stderrBuffer.trim()}`
+        : fullOutput || '（Codex 执行完成，无输出文本）';
+
+      // 1. 发送 ACP v2 异步 turn_complete 通知
+      sendNotification('session/update', {
+        sessionId: session.sessionId,
+        update: {
+          sessionUpdate: 'turn_complete',
+          messageId,
+          stopReason: isError ? 'error' : 'end_turn',
+          nativeMemory: promptNativeMemoryCapability,
+          ...(isError
+            ? { error: `⚠️ Codex 执行退出 (exit code: ${code})\n${stderrBuffer.trim()}` }
+            : {}),
+        },
+      });
+
+      // 2. 发送 JSON-RPC 结果回包 (附带 messageId、v2 capabilities 与文本结果)
+      sendResult(id, {
+        messageId,
+        status: 'accepted',
+        text_response: textResponse,
+        stopReason,
+        capabilities: {
+          nativeMemory: promptNativeMemoryCapability,
+        },
+        agentCapabilities: {
+          nativeMemory: promptNativeMemoryCapability,
+        },
+      });
     });
 
     child.on('error', (err) => {
+      const errMsg = `⚠️ 无法启动 Codex 进程 (${CODEX_BIN}): ${err.message}\n${codexUnavailableReason()}。`;
+      sendNotification('session/update', {
+        sessionId: session.sessionId,
+        update: {
+          sessionUpdate: 'turn_complete',
+          messageId,
+          stopReason: 'error',
+          error: errMsg,
+        },
+      });
       sendResult(id, {
-        text_response: `⚠️ 无法启动 Codex 进程 (${CODEX_BIN}): ${err.message}\n${codexUnavailableReason()}。`,
+        messageId,
+        status: 'accepted',
+        text_response: errMsg,
         stopReason: 'error',
       });
     });

@@ -9234,7 +9234,7 @@ export default function App() {
             readOnlyGuard: agentData.readOnlyGuard,
             acpTransport: agentData.acpTransport || (agentData.isRemote ? 'websocket' : 'stdio'),
             acpCommandOrUrl: agentData.acpCommandOrUrl || (agentData.isRemote ? (agentData.remoteUrl || 'ws://127.0.0.1:9090/acp') : 'cargo run --bin custom-agent -- --acp'),
-            protocolVersion: '2025-01-01 (ACP v1.0.4)',
+            protocolVersion: '2 (ACP v2.0.0)',
             capabilities: {
               canAccessWorkspaceFiles: true,
               canExecuteSkills: true,

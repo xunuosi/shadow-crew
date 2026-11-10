@@ -312,11 +312,18 @@ pub fn check_supports_resume_session(result: &serde_json::Value) -> bool {
 /// }
 /// ```
 pub fn check_native_memory_capability(result: &serde_json::Value) -> AcpNativeMemoryCapability {
-    let Some(raw) = result
-        .get("agentCapabilities")
+    let raw_opt = result
+        .get("capabilities")
         .and_then(|capabilities| capabilities.get("nativeMemory"))
         .and_then(|value| value.as_object())
-    else {
+        .or_else(|| {
+            result
+                .get("agentCapabilities")
+                .and_then(|capabilities| capabilities.get("nativeMemory"))
+                .and_then(|value| value.as_object())
+        });
+
+    let Some(raw) = raw_opt else {
         return AcpNativeMemoryCapability {
             status: "unknown".to_string(),
             persistent: None,
@@ -398,6 +405,14 @@ pub fn extract_update_text(update: &serde_json::Value) -> Option<String> {
     {
         Some(text.to_string())
     } else if let Some(s) = update.get("content").and_then(|c| c.as_str()) {
+        Some(s.to_string())
+    } else if let Some(text) = update
+        .get("delta")
+        .and_then(|d| d.get("text"))
+        .and_then(|t| t.as_str())
+    {
+        Some(text.to_string())
+    } else if let Some(s) = update.get("delta").and_then(|d| d.as_str()) {
         Some(s.to_string())
     } else if let Some(arr) = update.get("content").and_then(|c| c.as_array()) {
         let mut combined = String::new();
@@ -620,12 +635,25 @@ fn acp_client_capabilities() -> serde_json::Value {
     })
 }
 
+fn acp_client_capabilities_v2() -> serde_json::Value {
+    serde_json::json!({
+        "tools": false
+    })
+}
+
 fn check_supports_prompt_image(result: &serde_json::Value) -> bool {
     result
-        .get("agentCapabilities")
+        .get("capabilities")
         .and_then(|value| value.get("promptCapabilities"))
         .and_then(|value| value.get("image"))
         .and_then(|value| value.as_bool())
+        .or_else(|| {
+            result
+                .get("agentCapabilities")
+                .and_then(|value| value.get("promptCapabilities"))
+                .and_then(|value| value.get("image"))
+                .and_then(|value| value.as_bool())
+        })
         .or_else(|| {
             result
                 .get("promptCapabilities")
@@ -637,10 +665,17 @@ fn check_supports_prompt_image(result: &serde_json::Value) -> bool {
 
 fn check_supports_embedded_context(result: &serde_json::Value) -> bool {
     result
-        .get("agentCapabilities")
+        .get("capabilities")
         .and_then(|value| value.get("promptCapabilities"))
         .and_then(|value| value.get("embeddedContext"))
         .and_then(|value| value.as_bool())
+        .or_else(|| {
+            result
+                .get("agentCapabilities")
+                .and_then(|value| value.get("promptCapabilities"))
+                .and_then(|value| value.get("embeddedContext"))
+                .and_then(|value| value.as_bool())
+        })
         .or_else(|| {
             result
                 .get("promptCapabilities")
@@ -1162,6 +1197,7 @@ pub struct RunningAgent {
     pub app_handle: AppHandle,
     pub last_activity: Arc<AtomicU64>,
     pub expert_pack_id: Option<String>,
+    pub session_turn_completions: Arc<TokioMutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
     /// 单 Agent 内部指令互斥锁：确保向同一 Agent 连续下发指令时不发生 stdio 管道竞态，
     /// 而不同 Agent 之间拥有独立的 RunningAgent 实例与子进程，完全并发、互不阻塞！
     pub prompt_lock: Arc<TokioMutex<()>>,
@@ -1642,6 +1678,9 @@ impl AcpProcessManager {
             Arc::new(TokioMutex::new(HashMap::new()));
         let loading_sessions: Arc<TokioMutex<HashSet<String>>> =
             Arc::new(TokioMutex::new(HashSet::new()));
+        let session_turn_completions: Arc<
+            TokioMutex<HashMap<String, oneshot::Sender<serde_json::Value>>>,
+        > = Arc::new(TokioMutex::new(HashMap::new()));
         let is_alive = Arc::new(AtomicBool::new(true));
         let initialized = Arc::new(AtomicBool::new(false));
         let init_error = Arc::new(TokioMutex::new(None::<String>));
@@ -1716,6 +1755,7 @@ impl AcpProcessManager {
         let pending_permissions_clone = pending_permissions.clone();
         let session_permission_grants_clone = session_permission_grants.clone();
         let pending_permission_count_clone = pending_permission_count.clone();
+        let session_turn_completions_clone = session_turn_completions.clone();
         let permission_db_manager = self.db_manager.clone();
 
         tokio::spawn(async move {
@@ -1855,7 +1895,10 @@ impl AcpProcessManager {
                                         .get("sessionUpdate")
                                         .and_then(|u| u.as_str())
                                         .unwrap_or_default();
-                                    if update_type == "agent_message_chunk" {
+                                    let is_chunk = update_type == "agent_message_chunk"
+                                        || update_type == "state_update"
+                                        || update_type == "message_patch";
+                                    if is_chunk {
                                         // 仅当当前会话有明确正在执行中的 session/prompt 请求时才路由 chunk
                                         if let Some(req_id) = active_req_id {
                                             // 智能提取文本内容，兼容 string / object / array 多种结构
@@ -1878,6 +1921,16 @@ impl AcpProcessManager {
                                                 let _ =
                                                     app_handle_clone.emit("acp:chunk", &payload);
                                             }
+                                        }
+                                    }
+
+                                    let is_terminal = update_type == "turn_complete"
+                                        || update_type == "completed"
+                                        || update.get("stopReason").is_some();
+                                    if is_terminal {
+                                        let mut completions = session_turn_completions_clone.lock().await;
+                                        if let Some(tx) = completions.remove(sess_id) {
+                                            let _ = tx.send(update.clone());
                                         }
                                     }
                                 }
@@ -2182,6 +2235,14 @@ impl AcpProcessManager {
                     "error": "Agent process exited and closed stdout pipe"
                 }));
             }
+            let mut completions = session_turn_completions_clone.lock().await;
+            for (_, tx) in completions.drain() {
+                let _ = tx.send(serde_json::json!({
+                    "status": "closed",
+                    "stopReason": "error",
+                    "error": "Agent process exited and closed stdout pipe"
+                }));
+            }
         });
 
         self.agents.insert(
@@ -2216,6 +2277,7 @@ impl AcpProcessManager {
                 app_handle: app_handle.clone(),
                 last_activity: last_activity.clone(),
                 expert_pack_id: detected_expert_pack_id,
+                session_turn_completions: session_turn_completions.clone(),
                 prompt_lock: Arc::new(TokioMutex::new(())),
             },
         );
@@ -2232,11 +2294,12 @@ impl AcpProcessManager {
             "id": init_id,
             "method": "initialize",
             "params": {
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "clientInfo": {
                     "name": "shadow-crew",
                     "version": "0.1.0"
                 },
+                "capabilities": acp_client_capabilities_v2(),
                 "clientCapabilities": acp_client_capabilities()
             }
         });
@@ -2943,11 +3006,12 @@ where
         "id": init_id,
         "method": "initialize",
         "params": {
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "clientInfo": {
                 "name": "shadow-crew",
                 "version": "0.1.0"
             },
+            "capabilities": acp_client_capabilities_v2(),
             "clientCapabilities": acp_client_capabilities()
         }
     });
@@ -3749,11 +3813,14 @@ impl RunningAgent {
             .as_millis() as u64;
 
         let (resp_tx, resp_rx) = oneshot::channel();
+        let (turn_tx, mut turn_rx) = oneshot::channel();
         {
             let mut map = self.pending_requests.lock().await;
             map.insert(req_id, resp_tx);
             let mut active_reqs = self.session_active_req.lock().await;
             active_reqs.insert(current_session_id.clone(), req_id);
+            let mut completions = self.session_turn_completions.lock().await;
+            completions.insert(current_session_id.clone(), turn_tx);
         }
 
         let mut meta_val = build_native_memory_prompt_meta(
@@ -3923,6 +3990,152 @@ impl RunningAgent {
                     // 心跳轮询，继续检查空闲倒计时与总时长
                 }
             }
+        };
+
+        // 判断初次收到的 RPC 响应是否为 ACP v2 插入回执 (Insertion-Receipt)
+        let is_v2_receipt = if let Ok(ref val) = wait_result {
+            if let Some(res) = val.get("result") {
+                let has_receipt = res.get("messageId").is_some()
+                    || res.get("status").and_then(|s| s.as_str()) == Some("accepted");
+                let has_terminal = res.get("stopReason").is_some()
+                    || res.get("text_response").is_some()
+                    || res.get("response").is_some();
+                has_receipt && !has_terminal
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        let wait_result = if is_v2_receipt {
+            let receipt_resp = wait_result.unwrap();
+            let turn_wait_res: Result<serde_json::Value, String> = loop {
+                let now = std::time::Instant::now();
+                let total_elapsed = now.duration_since(start_time);
+                if total_elapsed >= max_duration {
+                    tracing::warn!(
+                        "[Agent {}] v2 turn reached hard maximum duration limit of {}s",
+                        agent_id,
+                        max_duration_secs
+                    );
+                    break Err(format!(
+                        "Agent response exceeded maximum turn duration ({}s)",
+                        max_duration_secs
+                    ));
+                }
+
+                let last_act_ms = self.last_activity.load(Ordering::Relaxed);
+                let current_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let idle_elapsed_ms = current_ms.saturating_sub(last_act_ms);
+                let pending_permission_count = self.pending_permission_count.load(Ordering::SeqCst);
+                if pending_permission_count > 0 {
+                    self.cancel_expired_permissions(permission_timeout).await;
+                }
+                let pending_permission_count = self.pending_permission_count.load(Ordering::SeqCst);
+                if pending_permission_count == 0
+                    && idle_elapsed_ms >= idle_timeout.as_millis() as u64
+                {
+                    tracing::warn!(
+                        "[Agent {}] v2 turn reached idle timeout (no output for {}s)",
+                        agent_id,
+                        idle_timeout_secs
+                    );
+                    break Err(format!(
+                        "Agent response idle timeout (no stdout output for {}s)",
+                        idle_timeout_secs
+                    ));
+                }
+
+                let total_sec = total_elapsed.as_secs();
+                if total_sec > last_heartbeat_sec + 3 {
+                    last_heartbeat_sec = total_sec;
+                    let _ = self.app_handle.emit(
+                        "acp:thinking_heartbeat",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "sessionId": current_session_id,
+                            "elapsed_seconds": total_sec,
+                            "idle_elapsed_seconds": idle_elapsed_ms / 1000,
+                            "pending_permission_count": pending_permission_count,
+                        }),
+                    );
+                }
+
+                if !self.is_alive.load(Ordering::SeqCst) {
+                    match turn_rx.try_recv() {
+                        Ok(val) => break Ok(val),
+                        Err(_) => {
+                            break Ok(serde_json::json!({
+                                "status": "closed",
+                                "stopReason": "error",
+                                "error": "Agent process exited while waiting for v2 turn completion"
+                            }));
+                        }
+                    }
+                }
+
+                let remaining_idle_ms =
+                    (idle_timeout.as_millis() as u64).saturating_sub(idle_elapsed_ms);
+                let remaining_total_ms =
+                    (max_duration.as_millis() as u64).saturating_sub(total_elapsed.as_millis() as u64);
+                let step_wait_ms = remaining_idle_ms.min(remaining_total_ms).min(1000).max(50);
+
+                tokio::select! {
+                    res = &mut turn_rx => {
+                        match res {
+                            Ok(val) => break Ok(val),
+                            Err(_) => break Ok(serde_json::json!({
+                                "status": "closed",
+                                "stopReason": "error",
+                                "error": "Agent closed turn channel without completion notification"
+                            })),
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(step_wait_ms)) => {}
+                }
+            };
+
+            match turn_wait_res {
+                Ok(term_val) => {
+                    let stop_reason = term_val
+                        .get("stopReason")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("end_turn");
+                    let accumulated_text = {
+                        let chunks = self.active_chunks.lock().await;
+                        chunks.get(&req_id).cloned().unwrap_or_default()
+                    };
+                    let msg_id = receipt_resp
+                        .get("result")
+                        .and_then(|r| r.get("messageId"))
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("");
+                    let mut res_obj = serde_json::json!({
+                        "messageId": msg_id,
+                        "stopReason": stop_reason,
+                        "text_response": accumulated_text
+                    });
+                    if let Some(nm) = term_val.get("nativeMemory") {
+                        if let Some(obj) = res_obj.as_object_mut() {
+                            obj.insert("nativeMemory".to_string(), nm.clone());
+                        }
+                    }
+                    Ok(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": res_obj
+                    }))
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            let mut completions = self.session_turn_completions.lock().await;
+            completions.remove(&current_session_id);
+            wait_result
         };
 
         let response = match wait_result {
@@ -4806,6 +5019,23 @@ mod runtime_status_tests {
         assert_eq!(capability.provider.as_deref(), Some("codex-memories"));
         assert_eq!(capability.scope.as_deref(), Some("runtime"));
 
+        // ACP v2 统一 capabilities 契约验证
+        let v2_enabled = serde_json::json!({
+            "capabilities": {
+                "nativeMemory": {
+                    "supported": true,
+                    "enabled": true,
+                    "persistent": true,
+                    "crossThread": true,
+                    "scope": "workspace",
+                    "provider": "codex-memories"
+                }
+            }
+        });
+        let cap_v2 = check_native_memory_capability(&v2_enabled);
+        assert_eq!(cap_v2.status, "enabled");
+        assert_eq!(cap_v2.scope.as_deref(), Some("workspace"));
+
         let disabled = serde_json::json!({
             "agentCapabilities": {
                 "nativeMemory": {
@@ -5223,5 +5453,50 @@ mod runtime_status_tests {
             maybe_refresh_native_memory_capability(&recovered_prompt_result).unwrap();
         assert_eq!(refreshed.status, "enabled");
         assert_eq!(refreshed.provider.as_deref(), Some("codex-memories"));
+    }
+
+    #[test]
+    fn test_acp_v2_capabilities_and_receipt_detection() {
+        use super::{check_supports_prompt_image, check_supports_embedded_context};
+
+        // 1. 测试 ACP v2 单一 capabilities 结构声明
+        let v2_resp = serde_json::json!({
+            "protocolVersion": 2,
+            "capabilities": {
+                "promptCapabilities": {
+                    "image": true,
+                    "embeddedContext": true
+                }
+            }
+        });
+        assert!(check_supports_prompt_image(&v2_resp));
+        assert!(check_supports_embedded_context(&v2_resp));
+
+        // 2. 测试 ACP v2 Insertion-Receipt 判别逻辑
+        let receipt_result = serde_json::json!({
+            "messageId": "msg-v2-001",
+            "status": "accepted"
+        });
+        let has_receipt = receipt_result.get("messageId").is_some()
+            || receipt_result.get("status").and_then(|s| s.as_str()) == Some("accepted");
+        let has_terminal = receipt_result.get("stopReason").is_some()
+            || receipt_result.get("text_response").is_some()
+            || receipt_result.get("response").is_some();
+        let is_v2_receipt = has_receipt && !has_terminal;
+        assert!(is_v2_receipt, "纯 messageId + status 回执必须被正确判定为 v2 receipt");
+
+        // 3. 测试带有 stopReason 的终结结果不能误判为 receipt
+        let terminal_result = serde_json::json!({
+            "messageId": "msg-v2-001",
+            "status": "accepted",
+            "stopReason": "end_turn"
+        });
+        let has_receipt = terminal_result.get("messageId").is_some()
+            || terminal_result.get("status").and_then(|s| s.as_str()) == Some("accepted");
+        let has_terminal = terminal_result.get("stopReason").is_some()
+            || terminal_result.get("text_response").is_some()
+            || terminal_result.get("response").is_some();
+        let is_v2_receipt = has_receipt && !has_terminal;
+        assert!(!is_v2_receipt, "含有 stopReason 的终态响应绝不可误判为 pending receipt");
     }
 }

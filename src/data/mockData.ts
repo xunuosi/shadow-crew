@@ -32,7 +32,7 @@ export const INITIAL_AGENTS: Agent[] = [
     isManagedByYou: false,
     acpTransport: 'stdio',
     acpCommandOrUrl: 'openclaw acp',
-    protocolVersion: '2025-01-01 (ACP v1.0.4)',
+    protocolVersion: '2 (ACP v2.0.0)',
     capabilities: {
       canUseInternalMemory: false,
       canAccessWorkspaceFiles: true,

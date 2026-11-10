@@ -284,8 +284,8 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                         jsonrpc: '2.0',
                         id: 101,
                         result: {
-                          protocolVersion: 1,
-                          agentCapabilities: {
+                          protocolVersion: 2,
+                          capabilities: {
                             loadSession: isLoadSupported,
                             streaming: selectedAgent.capabilities?.supportsStreaming ?? true,
                             ...(nativeMemoryStatus !== 'unknown'
@@ -302,19 +302,15 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
                                   },
                                 }
                               : {}),
-                            mcpCapabilities: {
-                              http: true,
-                              sse: true,
-                            },
+                            sessionCapabilities: isResumeSupported
+                              ? {
+                                  resume: {},
+                                }
+                              : {},
                           },
-                          sessionCapabilities: isResumeSupported
-                            ? {
-                                resume: {},
-                              }
-                            : {},
                           agentInfo: {
                             name: selectedAgent.name,
-                            version: selectedAgent.protocolVersion || '1.0.4',
+                            version: selectedAgent.protocolVersion || '2.0.0',
                           },
                         },
                       },
