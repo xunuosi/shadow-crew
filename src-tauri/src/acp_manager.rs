@@ -2328,6 +2328,10 @@ impl AcpProcessManager {
                     "name": "shadow-crew",
                     "version": "0.1.0"
                 },
+                "info": {
+                    "name": "shadow-crew",
+                    "version": "0.1.0"
+                },
                 "capabilities": acp_client_capabilities_v2(),
                 "clientCapabilities": acp_client_capabilities()
             }
@@ -3088,6 +3092,10 @@ where
         "params": {
             "protocolVersion": 2,
             "clientInfo": {
+                "name": "shadow-crew",
+                "version": "0.1.0"
+            },
+            "info": {
                 "name": "shadow-crew",
                 "version": "0.1.0"
             },

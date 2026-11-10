@@ -375,13 +375,98 @@ function sendError(id, code, message) {
   });
 }
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-  terminal: false,
-});
+const OFFICIAL_ACP_ENTRY = path.join(
+  path.dirname(fs.realpathSync(process.argv[1] || __filename)),
+  '../node_modules/@agentclientprotocol/codex-acp/dist/index.js'
+);
 
-rl.on('line', async (line) => {
+function startOfficialAdapterBridge(codexBin) {
+  const childEnv = codexChildEnv();
+  if (codexBin) {
+    childEnv.CODEX_PATH = codexBin;
+    const binDir = path.dirname(codexBin);
+    childEnv.PATH = [binDir, childEnv.PATH || ''].filter(Boolean).join(path.delimiter);
+  }
+  childEnv.INITIAL_AGENT_MODE = 'workspace-write';
+  if (process.env.SHADOW_CREW_EXPERT_PACK_ID) {
+    childEnv.CODEX_CONFIG = JSON.stringify({
+      features: { memories: false },
+      memories: { use_memories: false, generate_memories: false },
+    });
+  }
+
+  const officialChild = spawn(process.execPath, [OFFICIAL_ACP_ENTRY], {
+    env: childEnv,
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+
+  const inRl = readline.createInterface({
+    input: process.stdin,
+    terminal: false,
+  });
+
+  inRl.on('line', (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      const msg = JSON.parse(trimmed);
+      if (msg && msg.method === 'initialize' && msg.params) {
+        if (!msg.params.info && msg.params.clientInfo) {
+          msg.params.info = msg.params.clientInfo;
+        }
+        officialChild.stdin.write(JSON.stringify(msg) + '\n');
+        return;
+      }
+    } catch {
+      // ignore
+    }
+    officialChild.stdin.write(line + '\n');
+  });
+
+  officialChild.stdout.pipe(process.stdout);
+
+  officialChild.on('close', (code) => {
+    process.exit(code ?? 0);
+  });
+
+  officialChild.on('error', (err) => {
+    process.stderr.write(`[Official Adapter Wrapper] Error: ${err.message}\n`);
+    process.exit(1);
+  });
+}
+
+function isMockCodexBinary(binPath) {
+  if (!binPath) return false;
+  const lower = binPath.toLowerCase();
+  return (
+    lower.includes('fake') ||
+    lower.includes('mock') ||
+    lower.includes('scpack-codex-acp-e2e') ||
+    binPath.startsWith(os.tmpdir())
+  );
+}
+
+const shouldUseOfficialEngine =
+  Boolean(CODEX_BIN) &&
+  fs.existsSync(OFFICIAL_ACP_ENTRY) &&
+  !process.env.FAKE_CODEX_ACTIONS &&
+  !isMockCodexBinary(CODEX_BIN) &&
+  process.env.SHADOW_CREW_USE_BUILTIN_CODEX_ADAPTER !== '1';
+
+if (shouldUseOfficialEngine) {
+  startOfficialAdapterBridge(CODEX_BIN);
+} else {
+  startBuiltinAdapter();
+}
+
+function startBuiltinAdapter() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: false,
+  });
+
+  rl.on('line', async (line) => {
   const trimmed = line.trim();
   if (!trimmed) return;
 
@@ -797,4 +882,5 @@ rl.on('line', async (line) => {
   if (id !== undefined) {
     sendResult(id, {});
   }
-});
+  });
+}
