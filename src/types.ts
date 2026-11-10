@@ -57,6 +57,8 @@ export interface AgentRuntimeStatus {
   supportsResumeSession?: boolean | null;
   native_memory?: AcpNativeMemoryCapability | null;
   nativeMemory?: AcpNativeMemoryCapability | null;
+  negotiated_protocol_version?: string | null;
+  negotiatedProtocolVersion?: string | null;
 }
 
 export interface AgentSkill {

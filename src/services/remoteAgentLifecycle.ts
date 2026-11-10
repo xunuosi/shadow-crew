@@ -407,17 +407,29 @@ export function reconcileLocalAgentsRuntimeStatus(
       );
       const hasCanUseMemoryChanged =
         Boolean(a.capabilities?.canUseInternalMemory) !== targetCanUseMemory;
+      const negotiatedVer =
+        match.negotiatedProtocolVersion ?? match.negotiated_protocol_version;
+      const displayVer =
+        negotiatedVer === 'v2'
+          ? 'ACP v2.0 (Negotiated)'
+          : negotiatedVer === 'v1'
+          ? 'ACP v1.0.4 (Negotiated)'
+          : a.protocolVersion;
+      const hasVersionChanged = Boolean(negotiatedVer) && a.protocolVersion !== displayVer;
+
       if (
         a.status !== targetStatus ||
         a.statusDetail !== targetDetail ||
         hasLoadChanged ||
         hasResumeChanged ||
         hasMemoryChanged ||
-        hasCanUseMemoryChanged
+        hasCanUseMemoryChanged ||
+        hasVersionChanged
       ) {
         hasChange = true;
         return {
           ...a,
+          protocolVersion: displayVer,
           status: targetStatus,
           statusDetail: targetDetail,
           memory: nativeMemory

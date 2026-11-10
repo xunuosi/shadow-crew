@@ -131,6 +131,7 @@ function codexUnavailableReason() {
   return `未找到可执行的 codex 二进制（已探测：${codexResolution.probed.join('、')}）`;
 }
 
+let negotiatedProtocolVersion = 2;
 let cachedCodexVersion = null;
 const CODEX_VERSION_PROBE_TIMEOUT_MS = 1500;
 function codexVersion() {
@@ -404,9 +405,17 @@ rl.on('line', async (line) => {
       );
       return;
     }
+    const clientProtocolVer = params?.protocolVersion;
+    const isV1Client =
+      clientProtocolVer === 1 ||
+      clientProtocolVer === '1' ||
+      (typeof clientProtocolVer === 'string' &&
+        (clientProtocolVer.startsWith('1.') || clientProtocolVer.startsWith('202')));
+    negotiatedProtocolVersion = isV1Client ? 1 : 2;
+
     const nativeMem = codexNativeMemoryCapability(params);
     sendResult(id, {
-      protocolVersion: 2,
+      protocolVersion: negotiatedProtocolVersion,
       agentInfo: {
         name: 'OpenAI Codex',
         version: codexVersion(),
@@ -439,6 +448,7 @@ rl.on('line', async (line) => {
       },
       _meta: {
         codexBinary: CODEX_BIN,
+        negotiatedProtocolVersion,
       },
     });
     return;

@@ -119,6 +119,7 @@ pub struct AgentRuntimeStatus {
     pub supports_load_session: Option<bool>,
     pub supports_resume_session: Option<bool>,
     pub native_memory: Option<AcpNativeMemoryCapability>,
+    pub negotiated_protocol_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,6 +232,26 @@ impl SessionRegistry {
 
         removed_sessions
     }
+}
+
+/// 从 ACP initialize 响应中提取协商确定的协议版本 ("v2" 或 "v1")
+pub fn parse_negotiated_protocol_version(result: &serde_json::Value) -> String {
+    let ver_val = result.get("protocolVersion");
+    if let Some(n) = ver_val.and_then(|v| v.as_i64()) {
+        if n >= 2 {
+            return "v2".to_string();
+        } else {
+            return "v1".to_string();
+        }
+    }
+    if let Some(s) = ver_val.and_then(|v| v.as_str()) {
+        let s_trimmed = s.trim();
+        if s_trimmed.starts_with('2') && !s_trimmed.starts_with("202") {
+            return "v2".to_string();
+        }
+        return "v1".to_string();
+    }
+    "v1".to_string()
 }
 
 /// 检查 ACP initialize 响应中是否声明了 loadSession 能力 (支持 capabilities.loadSession 或 agentCapabilities.loadSession)
@@ -1198,6 +1219,7 @@ pub struct RunningAgent {
     pub last_activity: Arc<AtomicU64>,
     pub expert_pack_id: Option<String>,
     pub session_turn_completions: Arc<TokioMutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
+    pub negotiated_protocol_version: Arc<TokioMutex<String>>,
     /// 单 Agent 内部指令互斥锁：确保向同一 Agent 连续下发指令时不发生 stdio 管道竞态，
     /// 而不同 Agent 之间拥有独立的 RunningAgent 实例与子进程，完全并发、互不阻塞！
     pub prompt_lock: Arc<TokioMutex<()>>,
@@ -1368,6 +1390,11 @@ impl AcpProcessManager {
                 supports_load_session: supports_load,
                 supports_resume_session: supports_resume,
                 native_memory,
+                negotiated_protocol_version: if is_alive && is_initialized {
+                    Some(agent.negotiated_protocol_version.lock().await.clone())
+                } else {
+                    None
+                },
             });
         }
         statuses
@@ -1703,6 +1730,7 @@ impl AcpProcessManager {
         let supports_embedded_context = Arc::new(AtomicBool::new(false));
         let native_memory_capability =
             Arc::new(TokioMutex::new(AcpNativeMemoryCapability::default()));
+        let negotiated_protocol_version = Arc::new(TokioMutex::new("unknown".to_string()));
         let replay_sinks = Arc::new(TokioMutex::new(HashMap::<
             String,
             Arc<TokioMutex<ReplaySinkState>>,
@@ -2278,6 +2306,7 @@ impl AcpProcessManager {
                 last_activity: last_activity.clone(),
                 expert_pack_id: detected_expert_pack_id,
                 session_turn_completions: session_turn_completions.clone(),
+                negotiated_protocol_version: negotiated_protocol_version.clone(),
                 prompt_lock: Arc::new(TokioMutex::new(())),
             },
         );
@@ -2312,19 +2341,66 @@ impl AcpProcessManager {
         match tokio::time::timeout(Duration::from_millis(10000), init_rx).await {
             Ok(Ok(resp)) => {
                 if let Some(err) = resp.get("error") {
-                    // ACP initialize 返回 JSON-RPC error = Agent 明确拒绝握手，绝不可视为可用
                     let err_code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
                     let err_msg = err
                         .get("message")
                         .and_then(|m| m.as_str())
                         .unwrap_or("unknown error");
-                    let detail =
-                        format!("ACP initialize 握手被拒绝 (code {}): {}", err_code, err_msg);
-                    tracing::error!("[Agent {}] {}", agent_id, detail);
-                    log_acp_event(agent_id, "INIT_REJECTED", &detail);
-                    initial_status = "error".to_string();
-                    detail_msg = Some(detail.clone());
-                    *init_error.lock().await = Some(detail);
+
+                    // 协议自适应协商：若首选 v2 握手被拒，自动尝试以 v1 降级握手 (兼容只认 v1 的严格 Agent)
+                    let retry_id = next_init_request_id();
+                    let (retry_tx, retry_rx) = oneshot::channel();
+                    {
+                        let mut map = pending_requests.lock().await;
+                        map.insert(retry_id, retry_tx);
+                    }
+                    let fallback_req = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": retry_id,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": 1,
+                            "clientInfo": {
+                                "name": "shadow-crew",
+                                "version": "0.1.0"
+                            },
+                            "clientCapabilities": acp_client_capabilities()
+                        }
+                    });
+                    let _ = stdin_tx.send(fallback_req.to_string()).await;
+                    let fallback_res = tokio::time::timeout(Duration::from_millis(3000), retry_rx).await;
+
+                    if let Ok(Ok(fallback_resp)) = fallback_res {
+                        if fallback_resp.get("error").is_none() {
+                            if let Some(res) = fallback_resp.get("result") {
+                                initialized.store(true, Ordering::SeqCst);
+                                *negotiated_protocol_version.lock().await = "v1".to_string();
+                                let supported = check_supports_load_session(res);
+                                supports_load_session.store(supported, Ordering::SeqCst);
+                                let supported_resume = check_supports_resume_session(res);
+                                supports_resume_session.store(supported_resume, Ordering::SeqCst);
+                                supports_prompt_image.store(check_supports_prompt_image(res), Ordering::SeqCst);
+                                supports_embedded_context.store(check_supports_embedded_context(res), Ordering::SeqCst);
+                                *native_memory_capability.lock().await = check_native_memory_capability(res);
+                                tracing::info!("[Agent {}] Fallback to ACP v1 initialize succeeded (negotiated: v1)", agent_id);
+                                log_acp_event(agent_id, "INIT_FALLBACK_OK", "Successfully negotiated ACP v1 protocol");
+                            }
+                        } else {
+                            let detail = format!("ACP initialize 握手被拒绝 (code {}): {}", err_code, err_msg);
+                            tracing::error!("[Agent {}] {}", agent_id, detail);
+                            log_acp_event(agent_id, "INIT_REJECTED", &detail);
+                            initial_status = "error".to_string();
+                            detail_msg = Some(detail.clone());
+                            *init_error.lock().await = Some(detail);
+                        }
+                    } else {
+                        let detail = format!("ACP initialize 握手被拒绝 (code {}): {}", err_code, err_msg);
+                        tracing::error!("[Agent {}] {}", agent_id, detail);
+                        log_acp_event(agent_id, "INIT_REJECTED", &detail);
+                        initial_status = "error".to_string();
+                        detail_msg = Some(detail.clone());
+                        *init_error.lock().await = Some(detail);
+                    }
                 } else {
                     tracing::info!(
                         "[Agent {}] Immediate initialize succeeded: {:?}",
@@ -2341,6 +2417,9 @@ impl AcpProcessManager {
                     );
                     initialized.store(true, Ordering::SeqCst);
                     if let Some(res) = resp.get("result") {
+                        let neg_ver = parse_negotiated_protocol_version(res);
+                        *negotiated_protocol_version.lock().await = neg_ver.clone();
+                        tracing::info!("[Agent {}] ACP protocol negotiated version: {}", agent_id, neg_ver);
                         let supported = check_supports_load_session(res);
                         supports_load_session.store(supported, Ordering::SeqCst);
                         let supported_resume = check_supports_resume_session(res);
@@ -2986,6 +3065,7 @@ pub(crate) async fn execute_lazy_initialize_handshake<F>(
     supports_prompt_image: &AtomicBool,
     supports_embedded_context: &AtomicBool,
     native_memory_capability: &TokioMutex<AcpNativeMemoryCapability>,
+    negotiated_protocol_version: Option<&TokioMutex<String>>,
     mut on_status_change: F,
 ) -> Result<()>
 where
@@ -3034,6 +3114,11 @@ where
                 tracing::info!("[Agent {}] initialize succeeded: {:?}", agent_id, resp);
                 initialized.store(true, Ordering::SeqCst);
                 if let Some(res) = resp.get("result") {
+                    let neg_ver = parse_negotiated_protocol_version(res);
+                    if let Some(neg_lock) = negotiated_protocol_version {
+                        *neg_lock.lock().await = neg_ver.clone();
+                    }
+                    tracing::info!("[Agent {}] Lazy init: ACP protocol negotiated version: {}", agent_id, neg_ver);
                     let supported = check_supports_load_session(res);
                     supports_load_session.store(supported, Ordering::SeqCst);
                     let supported_resume = check_supports_resume_session(res);
@@ -3144,6 +3229,7 @@ impl RunningAgent {
                 &self.supports_prompt_image,
                 &self.supports_embedded_context,
                 &self.native_memory_capability,
+                Some(&self.negotiated_protocol_version),
                 |status, detail| {
                     let _ = app_handle.emit(
                         "acp:status_change",
@@ -3992,7 +4078,8 @@ impl RunningAgent {
             }
         };
 
-        // 判断初次收到的 RPC 响应是否为 ACP v2 插入回执 (Insertion-Receipt)
+        // 根据当前 Agent 连接时协商出的协议版本 (v1 / v2) 执行不同调度流
+        let negotiated_ver = self.negotiated_protocol_version.lock().await.clone();
         let is_v2_receipt = if let Ok(ref val) = wait_result {
             if let Some(res) = val.get("result") {
                 let has_receipt = res.get("messageId").is_some()
@@ -4008,7 +4095,10 @@ impl RunningAgent {
             false
         };
 
-        let wait_result = if is_v2_receipt {
+        // 仅当协商为 v2 且收到未完结回执时进入异步轮次等待；v1 协议连接或已完结响应直接交付
+        let should_wait_v2_turn = (negotiated_ver == "v2" || negotiated_ver == "unknown") && is_v2_receipt;
+
+        let wait_result = if should_wait_v2_turn {
             let receipt_resp = wait_result.unwrap();
             let turn_wait_res: Result<serde_json::Value, String> = loop {
                 let now = std::time::Instant::now();
@@ -5167,6 +5257,7 @@ mod runtime_status_tests {
             &supports_prompt_image,
             &supports_embedded_context,
             &native_memory_capability,
+            None,
             |_, _| {},
         )
         .await;
@@ -5192,6 +5283,7 @@ mod runtime_status_tests {
             &supports_prompt_image,
             &supports_embedded_context,
             &native_memory_capability,
+            None,
             |_, _| {},
         )
         .await;
@@ -5221,6 +5313,7 @@ mod runtime_status_tests {
             &supports_prompt_image,
             &supports_embedded_context,
             &native_memory_capability,
+            None,
             |_, _| {},
         );
         let responder_fut = async {
@@ -5498,5 +5591,22 @@ mod runtime_status_tests {
             || terminal_result.get("response").is_some();
         let is_v2_receipt = has_receipt && !has_terminal;
         assert!(!is_v2_receipt, "含有 stopReason 的终态响应绝不可误判为 pending receipt");
+    }
+
+    #[test]
+    fn test_parse_negotiated_protocol_version() {
+        use super::parse_negotiated_protocol_version;
+
+        // 数值测试
+        assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({ "protocolVersion": 2 })), "v2");
+        assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({ "protocolVersion": 1 })), "v1");
+
+        // 字符串测试
+        assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({ "protocolVersion": "2" })), "v2");
+        assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({ "protocolVersion": "2.0.0" })), "v2");
+        assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({ "protocolVersion": "1.0.4" })), "v1");
+        assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({ "protocolVersion": "2025-01-01 (ACP v1.0.4)" })), "v1");
+        assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({ "protocolVersion": "2024-11-05" })), "v1");
+        assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({})), "v1");
     }
 }

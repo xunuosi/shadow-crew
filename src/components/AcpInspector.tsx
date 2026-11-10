@@ -277,42 +277,78 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
               const isRecoverySupported = isResumeSupported || isLoadSupported;
               const isRecoveryUnsupported = isRunning && !isRecoverySupported;
 
+              const isV1Agent =
+                selectedAgent.protocolVersion?.toLowerCase().includes('v1') ||
+                selectedAgent.protocolVersion?.startsWith('1.');
               const jsonRpcSample =
                 isRunning || isRecoverySupported || isRecoveryUnsupported
                   ? JSON.stringify(
                       {
                         jsonrpc: '2.0',
                         id: 101,
-                        result: {
-                          protocolVersion: 2,
-                          capabilities: {
-                            loadSession: isLoadSupported,
-                            streaming: selectedAgent.capabilities?.supportsStreaming ?? true,
-                            ...(nativeMemoryStatus !== 'unknown'
-                              ? {
-                                  nativeMemory: {
-                                    supported:
-                                      nativeMemoryStatus === 'enabled' ||
-                                      nativeMemoryStatus === 'disabled',
-                                    enabled: nativeMemoryStatus === 'enabled',
-                                    persistent: nativeMemoryCapability.persistent,
-                                    crossThread: nativeMemoryCapability.crossThread,
-                                    provider: nativeMemoryCapability.provider,
-                                    scope: nativeMemoryCapability.scope,
-                                  },
-                                }
-                              : {}),
-                            sessionCapabilities: isResumeSupported
-                              ? {
-                                  resume: {},
-                                }
-                              : {},
-                          },
-                          agentInfo: {
-                            name: selectedAgent.name,
-                            version: selectedAgent.protocolVersion || '2.0.0',
-                          },
-                        },
+                        result: isV1Agent
+                          ? {
+                              protocolVersion: 1,
+                              agentCapabilities: {
+                                loadSession: isLoadSupported,
+                                streaming:
+                                  selectedAgent.capabilities?.supportsStreaming ?? true,
+                                ...(nativeMemoryStatus !== 'unknown'
+                                  ? {
+                                      nativeMemory: {
+                                        supported:
+                                          nativeMemoryStatus === 'enabled' ||
+                                          nativeMemoryStatus === 'disabled',
+                                        enabled: nativeMemoryStatus === 'enabled',
+                                        persistent: nativeMemoryCapability.persistent,
+                                        crossThread: nativeMemoryCapability.crossThread,
+                                        provider: nativeMemoryCapability.provider,
+                                        scope: nativeMemoryCapability.scope,
+                                      },
+                                    }
+                                  : {}),
+                              },
+                              sessionCapabilities: isResumeSupported
+                                ? {
+                                    resume: {},
+                                  }
+                                : {},
+                              agentInfo: {
+                                name: selectedAgent.name,
+                                version: selectedAgent.protocolVersion || '1.0.4',
+                              },
+                            }
+                          : {
+                              protocolVersion: 2,
+                              capabilities: {
+                                loadSession: isLoadSupported,
+                                streaming:
+                                  selectedAgent.capabilities?.supportsStreaming ?? true,
+                                ...(nativeMemoryStatus !== 'unknown'
+                                  ? {
+                                      nativeMemory: {
+                                        supported:
+                                          nativeMemoryStatus === 'enabled' ||
+                                          nativeMemoryStatus === 'disabled',
+                                        enabled: nativeMemoryStatus === 'enabled',
+                                        persistent: nativeMemoryCapability.persistent,
+                                        crossThread: nativeMemoryCapability.crossThread,
+                                        provider: nativeMemoryCapability.provider,
+                                        scope: nativeMemoryCapability.scope,
+                                      },
+                                    }
+                                  : {}),
+                                sessionCapabilities: isResumeSupported
+                                  ? {
+                                      resume: {},
+                                    }
+                                  : {},
+                              },
+                              agentInfo: {
+                                name: selectedAgent.name,
+                                version: selectedAgent.protocolVersion || '2.0.0',
+                              },
+                            },
                       },
                       null,
                       2
