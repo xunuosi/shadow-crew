@@ -434,6 +434,8 @@ export interface TopicPromptContext {
   concurrenceVerificationContext?: {
     arbiterName: string;
     arbiterText: string;
+    solutionDigest: string;
+    validationError?: string;
     roleName: 'proposer' | 'challenger' | 'verifier';
   };
 }
@@ -529,6 +531,8 @@ export function buildTopicPrompt(options: {
       roleName: topic.concurrenceVerificationContext.roleName,
       arbiterName: topic.concurrenceVerificationContext.arbiterName,
       arbiterText: topic.concurrenceVerificationContext.arbiterText,
+      solutionDigest: topic.concurrenceVerificationContext.solutionDigest,
+      validationError: topic.concurrenceVerificationContext.validationError,
       topicTitle: topic.title,
       topicDescription: topic.description,
     });

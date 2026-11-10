@@ -1,4 +1,18 @@
-import { Agent, CartridgeCitation, ArbitrationRulingDraft, RulingDecisionType, TopicPatchDiffItem, TopicExecutionUiMeta, ModuleDecompositionDraft, ModuleComplexityLevel, MessageAttachment, PreRetrievalResult } from '../types';
+import {
+  Agent,
+  CartridgeCitation,
+  ArbitrationRulingDraft,
+  RulingDecisionType,
+  TopicPatchDiffItem,
+  TopicExecutionUiMeta,
+  ModuleDecompositionDraft,
+  ModuleComplexityLevel,
+  MessageAttachment,
+  PreRetrievalResult,
+  RoleConcurrenceDecisionStatus,
+  RoleConcurrenceSource,
+  RoleConcurrenceSubmission,
+} from '../types';
 import { isAgentOffline } from '../utils/agentRuntime';
 import { buildAgentPersonaPrompt } from './agentCollaboration';
 import {
@@ -475,6 +489,267 @@ export function extractArbitrationRulingFromAcpResponse(
   }
 
   return undefined;
+}
+
+export interface RoleConcurrenceExtractionResult {
+  submission?: RoleConcurrenceSubmission;
+  cleanedText: string;
+  error?: string;
+}
+
+function collectAcpMcpToolCalls(acpResp: Partial<AcpAgentResponse>): any[] {
+  const candidates = [
+    acpResp.raw?.mcp_tool_calls,
+    acpResp.raw?.result?.mcp_tool_calls,
+    acpResp.mcpToolCalls,
+  ];
+  return candidates.flatMap((value) => Array.isArray(value) ? value : []);
+}
+
+function isSuccessfulMcpCallStatus(status: unknown): boolean {
+  const normalized = typeof status === 'string' ? status.trim().toLowerCase() : '';
+  return !normalized || ['completed', 'success', 'succeeded', 'ok'].includes(normalized);
+}
+
+function readStrictStringArray(
+  raw: Record<string, any>,
+  snakeKey: string,
+  camelKey: string,
+  fieldName: string
+): string[] | string {
+  const value = raw[snakeKey] ?? raw[camelKey];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    return `${fieldName} 必须是字符串数组`;
+  }
+  return value.map((item) => item.trim()).filter(Boolean);
+}
+
+function normalizeRoleConcurrencePayload(
+  payload: unknown,
+  source: RoleConcurrenceSource
+): { submission?: RoleConcurrenceSubmission; error?: string } {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { error: '结构化无异议票必须是 JSON 对象' };
+  }
+
+  const raw = payload as Record<string, any>;
+  const protocolVersion = raw.protocol_version ?? raw.protocolVersion;
+  if (protocolVersion !== 1 && protocolVersion !== '1') {
+    return { error: 'protocol_version 必须为 1' };
+  }
+
+  const agentId = typeof raw.agent_id === 'string'
+    ? raw.agent_id.trim()
+    : typeof raw.agentId === 'string'
+    ? raw.agentId.trim()
+    : '';
+  if (!agentId) {
+    return { error: 'agent_id 不能为空' };
+  }
+
+  const role = raw.role;
+  if (role !== 'proposer' && role !== 'challenger' && role !== 'verifier') {
+    return { error: 'role 必须为 proposer、challenger 或 verifier' };
+  }
+
+  const solutionDigest = typeof raw.solution_digest === 'string'
+    ? raw.solution_digest.trim()
+    : typeof raw.solutionDigest === 'string'
+    ? raw.solutionDigest.trim()
+    : '';
+  if (!/^sha256:[a-f0-9]{64}$/i.test(solutionDigest)) {
+    return { error: 'solution_digest 必须是 sha256: 加 64 位十六进制摘要' };
+  }
+
+  const status = raw.status;
+  const validStatuses: RoleConcurrenceDecisionStatus[] = [
+    'concurred',
+    'conditional',
+    'objected',
+    'unavailable',
+  ];
+  if (!validStatuses.includes(status)) {
+    return { error: `status 必须为 ${validStatuses.join(' | ')}` };
+  }
+
+  const blockingIssueIds = readStrictStringArray(
+    raw,
+    'blocking_issue_ids',
+    'blockingIssueIds',
+    'blocking_issue_ids'
+  );
+  if (typeof blockingIssueIds === 'string') {
+    return { error: blockingIssueIds };
+  }
+
+  const conditions = readStrictStringArray(raw, 'conditions', 'conditions', 'conditions');
+  if (typeof conditions === 'string') {
+    return { error: conditions };
+  }
+
+  const evidenceRefs = readStrictStringArray(
+    raw,
+    'evidence_refs',
+    'evidenceRefs',
+    'evidence_refs'
+  );
+  if (typeof evidenceRefs === 'string') {
+    return { error: evidenceRefs };
+  }
+
+  const rationale = typeof raw.rationale === 'string' ? raw.rationale.trim() : '';
+  if (!rationale) {
+    return { error: 'rationale 不能为空' };
+  }
+
+  if (status === 'concurred' && blockingIssueIds.length > 0) {
+    return { error: 'status=concurred 时 blocking_issue_ids 必须为空' };
+  }
+  if (status === 'concurred' && conditions.length > 0) {
+    return { error: 'status=concurred 时 conditions 必须为空；存在条件应提交 status=conditional' };
+  }
+  if (status === 'conditional' && conditions.length === 0) {
+    return { error: 'status=conditional 时必须至少提供一项 conditions' };
+  }
+  if (status === 'objected' && blockingIssueIds.length === 0) {
+    return { error: 'status=objected 时必须至少提供一个 blocking_issue_id' };
+  }
+
+  return {
+    submission: {
+      protocolVersion: 1,
+      agentId,
+      role,
+      solutionDigest,
+      status,
+      blockingIssueIds,
+      conditions,
+      rationale,
+      evidenceRefs,
+      source,
+      submittedAt: new Date().toISOString(),
+    },
+  };
+}
+
+function roleConcurrenceSignature(value: RoleConcurrenceSubmission): string {
+  return JSON.stringify({
+    protocolVersion: value.protocolVersion,
+    agentId: value.agentId,
+    role: value.role,
+    solutionDigest: value.solutionDigest,
+    status: value.status,
+    blockingIssueIds: value.blockingIssueIds,
+    conditions: value.conditions,
+    rationale: value.rationale,
+    evidenceRefs: value.evidenceRefs,
+  });
+}
+
+/**
+ * 严格提取角色终局无异议票。
+ *
+ * 授权来源仅有：
+ * 1. submit_role_concurrence MCP 工具调用载荷；
+ * 2. <<<ROLE_CONCURRENCE>>>...<<<ROLE_CONCURRENCE_END>>> 结构化契约块。
+ *
+ * 自然语言正文绝不参与 concurred/objected 判定。
+ */
+export function extractRoleConcurrenceFromAcpResponse(
+  acpResp: Partial<AcpAgentResponse>
+): RoleConcurrenceExtractionResult {
+  const rawText = acpResp.textResponse || '';
+  const blockRegex = /<<<ROLE_CONCURRENCE>>>([\s\S]*?)<<<ROLE_CONCURRENCE_END>>>/gi;
+  const blockMatches = Array.from(rawText.matchAll(blockRegex));
+  const cleanedText = rawText.replace(blockRegex, '').trim();
+
+  if (blockMatches.length > 1) {
+    return {
+      cleanedText,
+      error: '检测到多个 ROLE_CONCURRENCE 契约块；每轮必须且只能提交一张票',
+    };
+  }
+
+  const toolCalls = collectAcpMcpToolCalls(acpResp);
+  const roleCalls = toolCalls.filter((call: any) =>
+    call?.tool_name === 'submit_role_concurrence' ||
+    call?.tool === 'submit_role_concurrence' ||
+    call?.name === 'submit_role_concurrence'
+  );
+
+  const toolCandidates: RoleConcurrenceSubmission[] = [];
+  const toolErrors: string[] = [];
+  for (const roleCall of roleCalls) {
+    if (!isSuccessfulMcpCallStatus(roleCall?.status)) {
+      toolErrors.push(`submit_role_concurrence 工具调用状态异常: ${roleCall?.status}`);
+      continue;
+    }
+    const rawToolArguments = roleCall?.arguments ?? roleCall?.args;
+    if (rawToolArguments === undefined || rawToolArguments === null) {
+      continue;
+    }
+    let parsedArguments: unknown = rawToolArguments;
+    if (typeof rawToolArguments === 'string') {
+      try {
+        parsedArguments = JSON.parse(rawToolArguments);
+      } catch {
+        toolErrors.push('submit_role_concurrence 工具参数不是合法 JSON');
+        continue;
+      }
+    }
+    const normalized = normalizeRoleConcurrencePayload(parsedArguments, 'mcp_tool');
+    if (normalized.submission) {
+      toolCandidates.push(normalized.submission);
+    } else if (normalized.error) {
+      toolErrors.push(normalized.error);
+    }
+  }
+  const uniqueToolCandidates = Array.from(
+    new Map(toolCandidates.map((candidate) => [roleConcurrenceSignature(candidate), candidate])).values()
+  );
+  if (uniqueToolCandidates.length > 1) {
+    toolErrors.push('检测到多张内容不一致的 submit_role_concurrence 工具票');
+  }
+  const toolCandidate = uniqueToolCandidates.length === 1 ? uniqueToolCandidates[0] : undefined;
+  const toolError = toolErrors[0];
+
+  let blockCandidate: RoleConcurrenceSubmission | undefined;
+  let blockError: string | undefined;
+  if (blockMatches.length === 1) {
+    try {
+      const parsed = JSON.parse(blockMatches[0][1].trim());
+      const normalized = normalizeRoleConcurrencePayload(parsed, 'contract_block');
+      blockCandidate = normalized.submission;
+      blockError = normalized.error;
+    } catch {
+      blockError = 'ROLE_CONCURRENCE 契约块不是合法 JSON';
+    }
+  }
+
+  if (toolError) {
+    return { cleanedText, error: toolError };
+  }
+  if (blockError) {
+    return { cleanedText, error: blockError };
+  }
+  if (toolCandidate && blockCandidate) {
+    if (roleConcurrenceSignature(toolCandidate) !== roleConcurrenceSignature(blockCandidate)) {
+      return {
+        cleanedText,
+        error: 'submit_role_concurrence 工具载荷与 ROLE_CONCURRENCE 契约块不一致',
+      };
+    }
+  }
+
+  const submission = toolCandidate || blockCandidate;
+  if (!submission) {
+    return {
+      cleanedText,
+      error: '未提交有效的 submit_role_concurrence 工具载荷或 ROLE_CONCURRENCE 契约块',
+    };
+  }
+
+  return { submission, cleanedText };
 }
 
 /**
@@ -1226,7 +1501,8 @@ export async function sendPromptToAcpAgent(
       if (response && response.result) {
         const res = response.result;
         const rawText = res.text_response || '';
-        const isEmpty = !rawText.trim();
+        const hasMcpToolCalls = Array.isArray(res.mcp_tool_calls) && res.mcp_tool_calls.length > 0;
+        const isEmpty = !rawText.trim() && !hasMcpToolCalls;
         const fullText = rawText || (res.stopReason ? `【${agent.name}】ACP 任务已完成 (stopReason: ${res.stopReason})` : JSON.stringify(res));
         const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(fullText);
         const nativeDiffs: TopicPatchDiffItem[] = Array.isArray(res.workspace_diffs) && res.workspace_diffs.length > 0
@@ -1250,8 +1526,10 @@ export async function sendPromptToAcpAgent(
         const nativeDiffs: TopicPatchDiffItem[] = Array.isArray(response.workspace_diffs) && response.workspace_diffs.length > 0
           ? response.workspace_diffs
           : extractWorkspaceDiffsFromText(cleanedText);
+        const hasMcpToolCalls = Array.isArray(response.mcp_tool_calls) && response.mcp_tool_calls.length > 0;
         return {
           textResponse: cleanedText,
+          isEmptyTurn: !cleanedText.trim() && !hasMcpToolCalls,
           memoryActions: response.memory_actions || [],
           mcpToolCalls: response.mcp_tool_calls || [],
           workspaceDiffs: nativeDiffs,

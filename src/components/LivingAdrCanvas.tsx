@@ -118,7 +118,17 @@ export function generateAdrMarkdown(topic: TopicMessageData, agents: Agent[]): s
     md += `| 签署角色 | 负责智能体 | 审查状态 | 保证陈述 |\n`;
     md += `| :--- | :--- | :---: | :--- |\n`;
     concurrenceState.items.forEach((item) => {
-      const statusText = item.status === 'concurred' ? '✅ 无异议 (Concurred)' : item.status === 'objected' ? '❌ 存在异议' : '⏳ 待复核';
+      const statusText = item.status === 'concurred'
+        ? '✅ 无异议 (Concurred)'
+        : item.status === 'conditional'
+        ? '⏸️ 条件保留 (Conditional)'
+        : item.status === 'objected'
+        ? '❌ 存在异议 (Objected)'
+        : item.status === 'unavailable'
+        ? '⚠️ 角色不可用 (Unavailable)'
+        : item.status === 'invalid'
+        ? '⛔ 结构化票无效 (Invalid)'
+        : '⏳ 待复核 (Pending)';
       const roleText = item.role === 'proposer' ? '提案主导' : item.role === 'challenger' ? '红队对抗' : item.role === 'verifier' ? '接地实证' : '综合裁定';
       md += `| **${roleText}** | \`${item.agentName}\` | **${statusText}** | ${(item.statement || '方案审视中').replace(/[\n\r|]/g, ' ')} |\n`;
     });
@@ -541,6 +551,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                 ) : (concurrenceState?.items && concurrenceState.items.length > 0) ? (
                   concurrenceState.items.map((item, idx) => {
                     const isConcurred = item.status === 'concurred';
+                    const isBlocked = item.status === 'objected' || item.status === 'invalid';
                     const roleLabel = item.role === 'proposer'
                       ? '提案主导'
                       : item.role === 'challenger'
@@ -554,6 +565,8 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                         className={`p-2 rounded-lg bg-surface border ${
                           isConcurred
                             ? 'border-emerald-300 dark:border-emerald-500/30'
+                            : isBlocked
+                            ? 'border-rose-300 dark:border-rose-500/30'
                             : 'border-amber-300 dark:border-amber-500/30'
                         } flex items-start justify-between gap-2 text-[10px]`}
                       >
@@ -562,6 +575,8 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                             className={`px-1.5 py-0.5 rounded font-mono font-medium text-[9px] shrink-0 border ${
                               isConcurred
                                 ? 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-500/30'
+                                : isBlocked
+                                ? 'bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border-rose-300 dark:border-rose-500/30'
                                 : 'bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-500/30'
                             }`}
                           >
@@ -578,10 +593,22 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                           className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 border ${
                             isConcurred
                               ? 'text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-500/15 border-emerald-300 dark:border-emerald-500/30'
-                              : 'text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-500/15 border-amber-300 dark:border-amber-500/30'
+                                : isBlocked
+                                ? 'text-rose-800 dark:text-rose-300 bg-rose-50 dark:bg-rose-500/15 border-rose-300 dark:border-rose-500/30'
+                                : 'text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-500/15 border-amber-300 dark:border-amber-500/30'
                           }`}
                         >
-                          {isConcurred ? '✓ 无异议' : '⏳ 待确认'}
+                          {isConcurred
+                            ? '✓ 无异议'
+                            : item.status === 'conditional'
+                            ? '⏸️ 条件保留'
+                            : item.status === 'unavailable'
+                            ? '⚠️ 不可用'
+                            : item.status === 'invalid'
+                            ? '⛔ 票据无效'
+                            : item.status === 'objected'
+                            ? '❌ 存在异议'
+                            : '⏳ 待确认'}
                         </span>
                       </div>
                     );

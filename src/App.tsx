@@ -34,6 +34,7 @@ import {
   AcpPermissionRequest,
   MessageAttachment,
   MessageAttachmentInput,
+  RoleConcurrenceSubmission,
 } from './types';
 import { 
   INITIAL_AGENTS, 
@@ -82,6 +83,7 @@ import {
   buildAgentLaunchEnv,
   buildThinkingProcessFromAcp,
   extractArbitrationRulingFromAcpResponse,
+  extractRoleConcurrenceFromAcpResponse,
   extractModuleDecompositionFromAcpResponse,
   extractWorkspaceDiffsFromText,
   applyTopicPatchToWorkspace,
@@ -212,6 +214,7 @@ import {
   normalizeGameTheoreticPolicy,
   RECOMMENDED_GAME_THEORETIC_POLICY,
   prepareConcurrenceState,
+  computeRoleConcurrenceSolutionDigest,
   advanceRoleConcurrenceItem,
   buildFinalRulingFromConcurrence,
   checkAllRolesConcurred,
@@ -5393,6 +5396,11 @@ export default function App() {
 
           // 提取由 Arbiter Agent 通过 submit_arbitration_ruling 工具或结构化契约提交的裁决书草案
           const extractedRulingDraft = acpResp.rulingDraft || extractArbitrationRulingFromAcpResponse(acpResp, arbiterAgent.name);
+          const concurrenceSolutionDigest = await computeRoleConcurrenceSolutionDigest({
+            topic: latestTopicForArbitration,
+            arbiterDraft: extractedRulingDraft,
+            arbiterReplyText: acpResp.textResponse,
+          });
 
           // 初始化参研角色的全员无异议审视征询状态
           const initialConcurrence = prepareConcurrenceState({
@@ -5400,6 +5408,7 @@ export default function App() {
             candidateAgents,
             arbiterDraft: extractedRulingDraft,
             arbiterReplyText: acpResp.textResponse,
+            solutionDigest: concurrenceSolutionDigest,
           });
 
           // 将求解出的 MCDA 矩阵、ColMAD 报表、裁决草案与全员无异议征询状态持久化至议题博弈状态中
@@ -5534,52 +5543,75 @@ export default function App() {
               }));
 
               let roleReplyText = '';
-              let isRoleUnavailable = false;
+              let roleSubmission: RoleConcurrenceSubmission | undefined;
+              let roleValidationError = '';
+              let roleUnavailableReason = '';
+              const roleNameForVote = (item.role === 'arbiter' ? 'verifier' : item.role) as
+                'proposer' | 'challenger' | 'verifier';
 
               if (!isAgentOnline(roleAgent)) {
-                isRoleUnavailable = true;
-                roleReplyText = `⚠️ 【角色不可用 / Agent 离线】智能体 ${roleAgent.name} 当前处于离线状态，无法进行独立复核。`;
+                roleUnavailableReason = `智能体 ${roleAgent.name} 当前处于离线状态，无法完成独立结构化投票。`;
+                roleReplyText = `⚠️ 【角色不可用 / Agent 离线】${roleUnavailableReason}`;
               } else {
-                try {
-                  const rolePrompt = buildTopicPrompt({
-                    topic: {
-                      ...topicContext,
-                      concurrenceVerificationContext: {
-                        arbiterName: arbiterAgent.name,
-                        arbiterText: acpResp.textResponse,
-                        roleName: (item.role === 'arbiter' ? 'verifier' : item.role) as 'proposer' | 'challenger' | 'verifier',
+                for (let attempt = 0; attempt < 2; attempt++) {
+                  try {
+                    const rolePrompt = buildTopicPrompt({
+                      topic: {
+                        ...topicContext,
+                        concurrenceVerificationContext: {
+                          arbiterName: arbiterAgent.name,
+                          arbiterText: acpResp.textResponse,
+                          solutionDigest: concurrenceSolutionDigest,
+                          validationError: roleValidationError || undefined,
+                          roleName: roleNameForVote,
+                        },
                       },
-                    },
-                    userContent: `综合裁定官已就终局方案征询你的确认意见。请根据前序推演事实与防御补丁，审视拟定方案是否已解决核心关切，并明确给出【无异议确认 / Concurrence】结论，保证回复清晰无异议。若仍存阻断性架构隐患，请明确陈述异议。`,
-                    targetAgent: roleAgent,
-                    availableAgents: candidateAgents,
-                  });
-
-                  const roleResp = await sendPromptToAcpAgent({
-                    agent: roleAgent,
-                    roomId: topicId,
-                    prompt: rolePrompt,
-                    channelId: topicChannel?.id,
-                    workspaceBindingId: currentTopic.workspaceBindingId,
-                    workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
-                    scopeType: 'topic',
-                    systemPrompt: buildCompositeSystemPrompt({
-                      agent: roleAgent,
+                      userContent: '请严格按本轮 ROLE_CONCURRENCE 契约提交结构化票据；自然语言不能替代结构化结果。',
+                      targetAgent: roleAgent,
                       availableAgents: candidateAgents,
-                      includeRoster: true,
-                    }),
-                    discussionMode: 'game_theoretic',
-                  });
+                    });
 
-                  if (roleResp.isEmptyTurn || roleResp.isError || !roleResp.textResponse.trim()) {
-                    isRoleUnavailable = true;
-                    roleReplyText = `⚠️ 【审视异常 / ACP 响应失败】智能体未能返回有效复核意见（${roleResp.textResponse || '空响应'}），无法确认无异议。`;
-                  } else {
-                    roleReplyText = roleResp.textResponse;
+                    const roleResp = await sendPromptToAcpAgent({
+                      agent: roleAgent,
+                      roomId: topicId,
+                      prompt: rolePrompt,
+                      channelId: topicChannel?.id,
+                      workspaceBindingId: currentTopic.workspaceBindingId,
+                      workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
+                      scopeType: 'topic',
+                      systemPrompt: buildCompositeSystemPrompt({
+                        agent: roleAgent,
+                        availableAgents: candidateAgents,
+                        includeRoster: true,
+                      }),
+                      discussionMode: 'game_theoretic',
+                    });
+
+                    const extraction = extractRoleConcurrenceFromAcpResponse(roleResp);
+                    roleReplyText = extraction.cleanedText;
+
+                    if (roleResp.isError) {
+                      roleUnavailableReason = `ACP 返回错误：${roleResp.textResponse || '未知错误'}`;
+                      break;
+                    }
+                    if (roleResp.isEmptyTurn) {
+                      roleUnavailableReason = 'ACP 返回空回合，未提供结构化无异议票。';
+                      break;
+                    }
+                    if (extraction.submission) {
+                      roleSubmission = extraction.submission;
+                      roleValidationError = '';
+                      break;
+                    }
+
+                    roleValidationError = extraction.error || '未提交合法结构化无异议票';
+                    if (attempt === 0) {
+                      await new Promise((r) => setTimeout(r, 300));
+                    }
+                  } catch (e) {
+                    roleUnavailableReason = `智能体调用异常：${e instanceof Error ? e.message : String(e)}`;
+                    break;
                   }
-                } catch (e) {
-                  isRoleUnavailable = true;
-                  roleReplyText = `⚠️ 【网络异常 / 调用失败】智能体调用发生异常，无法确认无异议。`;
                 }
               }
 
@@ -5594,13 +5626,27 @@ export default function App() {
                 prev.map((a) => (a.id === roleAgent.id ? { ...a, status: 'idle' } : a))
               );
 
-              currentConcurrence = advanceRoleConcurrenceItem(currentConcurrence, roleAgent.id, roleReplyText, isRoleUnavailable);
-
-              const roleMsgBadge = isRoleUnavailable
-                ? `${roleAgent.modelBadge?.split(' ')[0] || 'Local'} · ⚠️ 角色不可用`
-                : currentConcurrence.items.find((i) => i.agentId === roleAgent.id)?.status === 'concurred'
-                ? `${roleAgent.modelBadge?.split(' ')[0] || 'Local'} · 🤝 无异议确认`
-                : `${roleAgent.modelBadge?.split(' ')[0] || 'Local'} · ❌ 提出异议`;
+              currentConcurrence = advanceRoleConcurrenceItem(currentConcurrence, roleAgent.id, {
+                submission: roleSubmission,
+                validationError: roleValidationError || undefined,
+                unavailableReason: roleUnavailableReason || undefined,
+              });
+              const roleStatus = currentConcurrence.items.find((i) => i.agentId === roleAgent.id)?.status;
+              const roleStatusBadge = roleStatus === 'concurred'
+                ? '🤝 无异议确认'
+                : roleStatus === 'conditional'
+                ? '⏸️ 条件保留'
+                : roleStatus === 'objected'
+                ? '❌ 提出异议'
+                : roleStatus === 'unavailable'
+                ? '⚠️ 角色不可用'
+                : '⛔ 结构化票无效';
+              const roleMsgBadge = `${roleAgent.modelBadge?.split(' ')[0] || 'Local'} · ${roleStatusBadge}`;
+              const roleDisplayContent = [
+                roleReplyText || roleSubmission?.rationale || '未收到角色有效回复。',
+                roleValidationError ? `\n\n> ⛔ **结构化票无效**：${roleValidationError}` : '',
+                roleUnavailableReason ? `\n\n> ⚠️ **角色不可用**：${roleUnavailableReason}` : '',
+              ].join('');
 
               const roleMsg: Message = {
                 id: `topic-reply-concurrence-${Date.now()}-${roleAgent.id}`,
@@ -5614,7 +5660,7 @@ export default function App() {
                 isPending: false,
                 agentBadge: roleMsgBadge,
                 timestamp: formatFullDateTime(),
-                content: roleReplyText,
+                content: roleDisplayContent,
                 gameStage: 'arbitration',
                 gameRole: item.role,
               };
@@ -5711,7 +5757,24 @@ export default function App() {
             } else {
               // 若存在角色阻断异议或角色不可用，挂起定案并发出警示通知
               const pendingOrObjected = currentConcurrence.items.find((i) => i.status !== 'concurred');
-              const isUnavail = pendingOrObjected?.status === 'unavailable';
+              const blockedStatus = pendingOrObjected?.status;
+              const isUnavail = blockedStatus === 'unavailable';
+              const isConditional = blockedStatus === 'conditional';
+              const isInvalid = blockedStatus === 'invalid';
+              const blockedBadge = isUnavail
+                ? 'Agent Unavailable'
+                : isConditional
+                ? 'Concurrence Conditional'
+                : isInvalid
+                ? 'Concurrence Invalid'
+                : 'Objection Suspended';
+              const blockedContent = isUnavail
+                ? `⚠️ **[终局方案敲定已挂起：存在参研角色离线或不可用]**\n\n参研角色 **${pendingOrObjected?.agentName || '参研角色'}** 未能完成实质审视。根据治理契约，严格禁止伪造无异议签署，终局敲定已安全挂起。请恢复 Agent 在线状态后重新复核，或由人类首席仲裁官介入接管。`
+                : isConditional
+                ? `⏸️ **[终局方案敲定已挂起：存在条件保留票]**\n\n参研角色 **${pendingOrObjected?.agentName || '参研角色'}** 已提交 \`conditional\` 票，前置条件：\n${(pendingOrObjected?.conditions || []).map((condition) => `> • ${condition}`).join('\n') || '> • 未列明条件'}\n\n条件票不计入无异议，系统暂不出具终局活体看板。`
+                : isInvalid
+                ? `⛔ **[终局方案敲定已挂起：结构化票无效]**\n\n参研角色 **${pendingOrObjected?.agentName || '参研角色'}** 未提交合法结构化票据：\n> ${pendingOrObjected?.validationError || '未提供有效工具载荷或 ROLE_CONCURRENCE 契约块'}\n\n自然语言正文不能替代结构化授权，终局敲定已失败关闭。`
+                : `❌ **[终局方案敲定已挂起：未达成全员无异议]**\n\n参研角色 **${pendingOrObjected?.agentName || '参研角色'}** 提出阻断性异议：\n> “${pendingOrObjected?.statement || '存在未解决的关键架构缺陷'}”\n\n综合裁定官已暂停敲定并暂不出具终局活体看板。请围绕异议焦点进一步推演，或由人类首席仲裁官在下方控制台行使特权裁决。`;
               const objectionNotice: Message = {
                 id: `msg-objection-notice-${Date.now()}`,
                 threadId: topicId,
@@ -5721,11 +5784,9 @@ export default function App() {
                 authorHandle: '@arbiter-gavel',
                 authorAvatar: isUnavail ? '⚠️' : '❌',
                 isAgent: true,
-                agentBadge: isUnavail ? 'Agent Unavailable' : 'Objection Suspended',
+                agentBadge: blockedBadge,
                 timestamp: formatFullDateTime(),
-                content: isUnavail
-                  ? `⚠️ **[终局方案敲定已挂起：存在参研角色离线或不可用]**\n\n参研角色 **${pendingOrObjected?.agentName || '参研角色'}** 处于离线或调用异常状态，未能完成实质审视。根据治理契约，严格禁止伪造无异议签署，终局敲定已安全挂起。请恢复 Agent 在线状态后重新复核，或由人类首席仲裁官介入接管。`
-                  : `❌ **[终局方案敲定已挂起：未达成全员无异议]**\n\n参研角色 **${pendingOrObjected?.agentName || '参研角色'}** 提出阻断性异议：\n> “${pendingOrObjected?.statement || '存在未解决的关键架构缺陷'}”\n\n综合裁定官已暂停敲定并暂不出具终局活体看板。请围绕异议焦点进一步推演，或由人类首席仲裁官在下方控制台行使特权裁决。`,
+                content: blockedContent,
               };
 
               setMessages((prev) => ({

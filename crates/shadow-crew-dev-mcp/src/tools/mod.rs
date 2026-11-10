@@ -208,6 +208,68 @@ pub fn get_tools_list() -> Value {
             }
         },
         {
+            "name": "submit_role_concurrence",
+            "description": "提交参研角色针对当前终局方案的正式结构化无异议票。自然语言回复不能替代该工具契约；宿主仅接受摘要匹配且字段一致的有效票。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "protocol_version": {
+                        "type": "integer",
+                        "enum": [1],
+                        "description": "角色无异议票协议版本，固定为 1"
+                    },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "当前投票 Agent 的真实 ID，禁止代投"
+                    },
+                    "role": {
+                        "type": "string",
+                        "enum": ["proposer", "challenger", "verifier"],
+                        "description": "当前 Agent 在本议题中的参研角色"
+                    },
+                    "solution_digest": {
+                        "type": "string",
+                        "description": "宿主下发的 sha256:... 终局方案摘要，必须逐字一致"
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["concurred", "conditional", "objected", "unavailable"],
+                        "description": "无异议、条件保留、阻断异议或无法判断"
+                    },
+                    "blocking_issue_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "阻断性问题 ID；concurred 时必须为空数组"
+                    },
+                    "conditions": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "暂缓、补测或上线前置条件；concurred 时必须为空数组"
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "结构化判断依据摘要，供人类审计"
+                    },
+                    "evidence_refs": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "支撑本次判断的实证或证据编号"
+                    }
+                },
+                "required": [
+                    "protocol_version",
+                    "agent_id",
+                    "role",
+                    "solution_digest",
+                    "status",
+                    "blocking_issue_ids",
+                    "conditions",
+                    "rationale",
+                    "evidence_refs"
+                ]
+            }
+        },
+        {
             "name": "submit_module_decomposition",
             "description": "在 G-Frame 博弈阶段 0 (decomposition) 提交任务模块化拆解清单与跨模块公共契约。将复杂任务（支持通用业务战略、产品规划或软件研发任务）拆解为 2~4 个职责正交、上下文物理隔离的原子模块。",
             "inputSchema": {
@@ -378,6 +440,107 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
                 if solution.is_empty() { String::new() } else { format!("• 实施路径概要: {}", solution) }
             ))
         }
+        "submit_role_concurrence" => {
+            let protocol_version = arguments["protocol_version"]
+                .as_u64()
+                .ok_or_else(|| anyhow!("缺少必填参数 protocol_version"))?;
+            if protocol_version != 1 {
+                return Err(anyhow!("protocol_version 必须为 1"));
+            }
+            let agent_id = arguments["agent_id"]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow!("缺少必填参数 agent_id"))?;
+            let role = arguments["role"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 role"))?;
+            if !matches!(role, "proposer" | "challenger" | "verifier") {
+                return Err(anyhow!("role 必须为 proposer、challenger 或 verifier"));
+            }
+            let solution_digest = arguments["solution_digest"]
+                .as_str()
+                .map(str::trim)
+                .ok_or_else(|| anyhow!("缺少必填参数 solution_digest"))?;
+            let valid_digest = solution_digest
+                .strip_prefix("sha256:")
+                .map(|hex| hex.len() == 64 && hex.chars().all(|ch| ch.is_ascii_hexdigit()))
+                .unwrap_or(false);
+            if !valid_digest {
+                return Err(anyhow!(
+                    "solution_digest 必须是 sha256: 加 64 位十六进制摘要"
+                ));
+            }
+            let status = arguments["status"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 status"))?;
+            if !matches!(
+                status,
+                "concurred" | "conditional" | "objected" | "unavailable"
+            ) {
+                return Err(anyhow!(
+                    "status 必须为 concurred | conditional | objected | unavailable"
+                ));
+            }
+            let blocking_issue_ids = arguments["blocking_issue_ids"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 blocking_issue_ids 数组"))?;
+            let conditions = arguments["conditions"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 conditions 数组"))?;
+            let evidence_refs = arguments["evidence_refs"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 evidence_refs 数组"))?;
+            let rationale = arguments["rationale"]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow!("缺少非空必填参数 rationale"))?;
+            if status == "concurred" && (!blocking_issue_ids.is_empty() || !conditions.is_empty()) {
+                return Err(anyhow!(
+                    "status=concurred 时 blocking_issue_ids 与 conditions 必须为空；存在条件时应提交 conditional"
+                ));
+            }
+            if status == "conditional" && conditions.is_empty() {
+                return Err(anyhow!("status=conditional 时必须至少提供一项 conditions"));
+            }
+            if status == "objected" && blocking_issue_ids.is_empty() {
+                return Err(anyhow!(
+                    "status=objected 时必须至少提供一个 blocking_issue_id"
+                ));
+            }
+            if blocking_issue_ids.iter().any(|item| {
+                item.as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+            }) || conditions.iter().any(|item| {
+                item.as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+            }) || evidence_refs.iter().any(|item| {
+                item.as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+            }) {
+                return Err(anyhow!(
+                    "blocking_issue_ids、conditions、evidence_refs 必须全部为非空字符串"
+                ));
+            }
+
+            Ok(format!(
+                "✓ 【角色终局无异议票】已成功提交：\n• Agent: {} ({})\n• 方案摘要: {}\n• 状态: {}\n• 阻断项: {}\n• 前置条件: {}\n• 判断依据: {}",
+                agent_id,
+                role,
+                solution_digest,
+                status,
+                if blocking_issue_ids.is_empty() { "无".to_string() } else { format!("{:?}", blocking_issue_ids) },
+                if conditions.is_empty() { "无".to_string() } else { format!("{:?}", conditions) },
+                rationale
+            ))
+        }
         "submit_module_decomposition" => {
             let shared = arguments
                 .get("shared_contract")
@@ -436,6 +599,7 @@ mod tests {
         assert!(names.contains(&"write_channel_artifact"));
         assert!(names.contains(&"write_agent_artifact"));
         assert!(names.contains(&"submit_arbitration_ruling"));
+        assert!(names.contains(&"submit_role_concurrence"));
         assert!(names.contains(&"submit_module_decomposition"));
     }
 
@@ -491,6 +655,63 @@ mod tests {
         assert!(res.contains("✓ 【仲裁定案裁决书】已成功提交"));
         assert!(res.contains("src/services/cache.ts"));
         assert!(res.contains("优先保障强一致性"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_submit_role_concurrence() {
+        let args = json!({
+            "protocol_version": 1,
+            "agent_id": "agent-challenger",
+            "role": "challenger",
+            "solution_digest": format!("sha256:{}", "a".repeat(64)),
+            "status": "concurred",
+            "blocking_issue_ids": [],
+            "conditions": [],
+            "rationale": "关键反例已被数据库唯一键兜底。",
+            "evidence_refs": ["EV-01"]
+        });
+        let res = dispatch_tool_call("submit_role_concurrence", &args)
+            .await
+            .unwrap();
+        assert!(res.contains("角色终局无异议票"));
+        assert!(res.contains("agent-challenger"));
+        assert!(res.contains("status") || res.contains("状态: concurred"));
+
+        let invalid_conditional = json!({
+            "protocol_version": 1,
+            "agent_id": "agent-challenger",
+            "role": "challenger",
+            "solution_digest": format!("sha256:{}", "b".repeat(64)),
+            "status": "concurred",
+            "blocking_issue_ids": [],
+            "conditions": ["完成跨机房 Chaos 压测"],
+            "rationale": "仍需补测。",
+            "evidence_refs": []
+        });
+        assert!(
+            dispatch_tool_call("submit_role_concurrence", &invalid_conditional)
+                .await
+                .is_err(),
+            "concurred 携带条件必须被工具层拒绝"
+        );
+
+        let empty_conditional_status = json!({
+            "protocol_version": 1,
+            "agent_id": "agent-challenger",
+            "role": "challenger",
+            "solution_digest": format!("sha256:{}", "c".repeat(64)),
+            "status": "conditional",
+            "blocking_issue_ids": [],
+            "conditions": [],
+            "rationale": "需要补测但没有列明条件。",
+            "evidence_refs": []
+        });
+        assert!(
+            dispatch_tool_call("submit_role_concurrence", &empty_conditional_status)
+                .await
+                .is_err(),
+            "conditional 无前置条件必须被工具层拒绝"
+        );
     }
 
     #[tokio::test]

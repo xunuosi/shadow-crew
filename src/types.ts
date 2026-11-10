@@ -708,17 +708,56 @@ export interface TopicExecutionUiMeta {
   applyActionLabel?: string;
 }
 
+export type RoleConcurrenceDecisionStatus =
+  | 'concurred'
+  | 'conditional'
+  | 'objected'
+  | 'unavailable';
+
+export type RoleConcurrenceItemStatus =
+  | 'pending'
+  | RoleConcurrenceDecisionStatus
+  | 'invalid';
+
+export type RoleConcurrenceSource = 'mcp_tool' | 'contract_block';
+
+/**
+ * 参研角色通过 submit_role_concurrence 工具或 ROLE_CONCURRENCE 契约块提交的终局票。
+ * 自然语言正文仅用于解释，不得作为无异议授权依据。
+ */
+export interface RoleConcurrenceSubmission {
+  protocolVersion: 1;
+  agentId: string;
+  role: 'proposer' | 'challenger' | 'verifier';
+  solutionDigest: string;
+  status: RoleConcurrenceDecisionStatus;
+  blockingIssueIds: string[];
+  conditions: string[];
+  rationale: string;
+  evidenceRefs: string[];
+  source: RoleConcurrenceSource;
+  submittedAt?: string;
+}
+
 export interface RoleConcurrenceItem {
   agentId: string;
   agentName: string;
   agentHandle?: string;
   role: 'proposer' | 'challenger' | 'verifier' | 'arbiter';
-  status: 'pending' | 'concurred' | 'objected' | 'unavailable';
+  status: RoleConcurrenceItemStatus;
   statement?: string; // 角色回复的无异议确认陈词或具体观点
   timestamp?: string;
+  solutionDigest?: string;
+  blockingIssueIds?: string[];
+  conditions?: string[];
+  evidenceRefs?: string[];
+  decisionSource?: RoleConcurrenceSource;
+  validationError?: string;
 }
 
 export interface GameRoleConcurrenceState {
+  protocolVersion: 1;
+  solutionDigest: string;              // 所有有效选票必须绑定的终局方案摘要
   isConcurrencePhaseActive: boolean; // 是否处于无异议征询确认阶段
   arbiterProposalSummary?: string;   // 综合裁定官拟定敲定的方案摘要
   items: RoleConcurrenceItem[];      // 各关键参研角色的无异议保证状态
@@ -1020,7 +1059,18 @@ export interface RulingRecord {
   sprtState?: SprtGovernorState;
   concurrenceSignOff?: {
     allConcurred: boolean;
-    records: { role: string; agentId?: string; agentName: string; statement: string; timestamp: string }[];
+    solutionDigest?: string;
+    records: {
+      role: string;
+      agentId?: string;
+      agentName: string;
+      statement: string;
+      timestamp: string;
+      status?: RoleConcurrenceDecisionStatus;
+      conditions?: string[];
+      blockingIssueIds?: string[];
+      decisionSource?: RoleConcurrenceSource;
+    }[];
   };
   livingAdrMarkdown?: string; // 人类可读性强的最终 ADR 画布 Markdown
 }

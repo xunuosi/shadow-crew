@@ -245,7 +245,36 @@ export type GameTheoreticStage =
 * **Prompt 结构化载荷**：
   包含 `<<<PROPOSER_SOLUTION_START>>>`、`<<<CHALLENGER_CRITIQUE_START>>>`、`<<<GROUNDING_VERIFICATION_START>>>`、`<<<PROPOSER_DEFENSE_START>>>` 完整链条。
   综合仲裁官运行 BWM 线性优化评估各准则效用，生成《决策权衡矩阵》并等待人类法槌落定。
-  ```
+
+#### 3.5.1 全员无异议结构化投票协议
+
+综合裁定官正文必须逐一显式 `@` 提案方、红队方与接地实证方；宿主会校验真实 `@handle`，Prompt 中出现角色清单不等于履行输出契约。
+
+参研角色不得通过自然语言让宿主猜测“同意/不同意”。每张票必须优先调用 MCP 工具 `submit_role_concurrence`，并在正文末尾附带且仅附带一个 `ROLE_CONCURRENCE` 契约块：
+
+```text
+<<<ROLE_CONCURRENCE>>>
+{
+  "protocol_version": 1,
+  "agent_id": "agent-id",
+  "role": "proposer | challenger | verifier",
+  "solution_digest": "sha256:...",
+  "status": "concurred | conditional | objected | unavailable",
+  "blocking_issue_ids": [],
+  "conditions": [],
+  "rationale": "判断依据",
+  "evidence_refs": []
+}
+<<<ROLE_CONCURRENCE_END>>>
+```
+
+宿主门禁规则：
+
+1. `solution_digest` 由宿主根据终局方案内容计算，所有角色票必须与同一摘要完全一致；
+2. `concurred` 必须满足 `blocking_issue_ids=[]` 且 `conditions=[]`；
+3. `conditional` 至少包含一项前置条件，`objected` 至少包含一个阻塞项 ID，二者均不得计入无异议；
+4. 自然语言正文、缺失契约、非法字段、工具与契约块不一致、重复票或摘要错绑一律失败关闭；
+5. 只有全部参研角色均提交同一摘要下的合法 `concurred` 票，综合裁定官才可生成终局 `RulingRecord` 与活体 ADR 看板。
 
 ---
 

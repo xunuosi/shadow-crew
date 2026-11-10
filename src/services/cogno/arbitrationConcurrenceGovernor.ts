@@ -14,6 +14,7 @@ import {
   GameRoleConcurrenceState,
   McdaDecisionPayload,
   RoleConcurrenceItem,
+  RoleConcurrenceSubmission,
   RulingRecord,
   TopicMessageData,
 } from '../../types';
@@ -53,6 +54,84 @@ export function formatFullDateTime(d: Date = new Date()): string {
   const hh = String(d.getHours()).padStart(2, '0');
   const min = String(d.getMinutes()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+}
+
+function buildConcurrenceSolutionCanonicalPayload(options: {
+  topic: TopicMessageData;
+  arbiterDraft?: ArbitrationRulingDraft;
+  arbiterReplyText: string;
+}): string {
+  const { topic, arbiterDraft, arbiterReplyText } = options;
+  return JSON.stringify({
+    protocolVersion: 1,
+    topicId: topic.id,
+    title: topic.title,
+    description: topic.description || '',
+    decisionType: arbiterDraft?.decisionType || 'trade_off_matrix',
+    summary: arbiterDraft?.summary || arbiterReplyText.slice(0, 200).trim(),
+    solution: arbiterDraft?.solution || '采纳裁决方案中明确的架构权衡防线与补丁，由落地责任人按代码爆炸半径约束合入工作区。',
+    tradeOffPoints: arbiterDraft?.tradeOffPoints || [],
+    impactedFiles: arbiterDraft?.impactedFiles || [],
+    proposal: topic.gameTheoreticState?.targetProposalContent || '',
+    challenge: topic.gameTheoreticState?.targetChallengeContent || '',
+    verification: topic.gameTheoreticState?.targetVerificationContent || '',
+    defense: topic.gameTheoreticState?.targetDefenseContent || '',
+  });
+}
+
+/**
+ * 对终局方案生成不可变内容摘要。所有角色票必须绑定同一摘要，避免旧方案同意票被复用于新方案。
+ */
+export async function computeRoleConcurrenceSolutionDigest(options: {
+  topic: TopicMessageData;
+  arbiterDraft?: ArbitrationRulingDraft;
+  arbiterReplyText: string;
+}): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new Error('当前运行环境不支持 WebCrypto SHA-256，无法建立角色票与终局方案的绑定');
+  }
+  const canonical = buildConcurrenceSolutionCanonicalPayload(options);
+  const bytes = new TextEncoder().encode(canonical);
+  const digest = await subtle.digest('SHA-256', bytes);
+  const hex = Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+  return `sha256:${hex}`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function textContainsExactMention(text: string, handle: string): boolean {
+  const escaped = escapeRegExp(handle);
+  return new RegExp(
+    `(^|[^a-zA-Z0-9_@-])${escaped}(?=$|[^a-zA-Z0-9_-])`,
+    'i'
+  ).test(text);
+}
+
+/**
+ * 宿主校验综合裁定官实际正文是否逐一 @ 了全部应参研角色。
+ * Prompt 要求并不足以形成输出契约：缺失任一真实 mention 必须阻断征询。
+ */
+export function validateArbiterConcurrenceMentions(options: {
+  arbiterReplyText: string;
+  expectedAgents: Agent[];
+}): { isValid: boolean; missingHandles: string[] } {
+  const uniqueAgents = Array.from(
+    new Map(options.expectedAgents.map((agent) => [agent.id, agent])).values()
+  );
+  const missingHandles = uniqueAgents
+    .map((agent) => ({ agent, handle: normalizeMentionHandle(agent) }))
+    .filter(({ handle }) => !textContainsExactMention(options.arbiterReplyText, handle))
+    .map(({ handle }) => handle);
+
+  return {
+    isValid: uniqueAgents.length > 0 && missingHandles.length === 0,
+    missingHandles,
+  };
 }
 
 /**
@@ -132,10 +211,21 @@ export function buildRoleConcurrencePrompt(options: {
   roleName: 'proposer' | 'challenger' | 'verifier';
   arbiterName: string;
   arbiterText: string;
+  solutionDigest: string;
   topicTitle: string;
   topicDescription?: string;
+  validationError?: string;
 }): string {
-  const { roleAgent, roleName, arbiterName, arbiterText, topicTitle, topicDescription } = options;
+  const {
+    roleAgent,
+    roleName,
+    arbiterName,
+    arbiterText,
+    solutionDigest,
+    topicTitle,
+    topicDescription,
+    validationError,
+  } = options;
 
   const roleTitle = roleName === 'proposer'
     ? '提案主导方 (Proposer)'
@@ -148,144 +238,69 @@ export function buildRoleConcurrencePrompt(options: {
 【议题背景】: ${topicDescription || topicTitle}
 【你的角色】: ${roleAgent.name} (${normalizeMentionHandle(roleAgent)}) · ${roleTitle}
 【综合裁定官】: ${arbiterName}
+【终局方案摘要 solution_digest】: ${solutionDigest}
 
 综合裁定官已对本议题提出终局架构裁定方案并正式 @ 征询你的无异议意见。
 【裁定官提议摘要】:
 ${arbiterText.slice(0, 800)}
 
-【核验与回复契约】:
-1. 综合裁定官正在准备做最后的方案敲定与出具活体决策看板；
-2. 请基于前序推演事实、反例攻击与防御补丁，对上述方案进行专业核验；
-3. 【保证回复无异议】：如方案已充分吸纳关键争议或确立了合理的防线边界，请在回复首行明确输出：
-   【无异议确认 / Concurred】
-   随后用 2~3 句话精炼陈述你认同该方案的核心理由、对系统健壮性的判断，以及对落地执行的期望；
-4. 【存在异议时如实陈述】：若方案仍存在不可接受的重大架构隐患、致命并发死锁或未经实证的假设，请明确输出【存在阻断性异议】并陈述异议焦点；
-5. 保持表达严谨、专业、高效，无需冗长套话。`;
+【强制结构化投票契约】:
+1. 你必须基于前序推演事实、反例攻击与防御补丁独立判断，不得仅复述裁定官结论；
+2. 你必须优先调用 MCP 工具 \`submit_role_concurrence\`；
+3. 无论是否成功调用工具，都必须在回复末尾追加且只追加一个如下 ROLE_CONCURRENCE 契约块；
+4. 自然语言正文只解释判断，绝不能替代结构化票；
+5. status 语义：
+   - \`concurred\`：当前方案无任何阻塞项与前置条件，允许立即敲定；
+   - \`conditional\`：方向可接受，但仍需补测、暂缓上线、补充边界条件或等待验证；
+   - \`objected\`：存在必须修改的阻断性异议；
+   - \`unavailable\`：你因能力、信息或运行环境限制无法完成判断；
+6. status=concurred 时，blocking_issue_ids 与 conditions 必须都为空数组；
+7. solution_digest 必须逐字使用上方摘要，禁止自行修改或重新生成；
+8. agent_id、role 必须使用当前角色的真实值，禁止代投其他角色；
+9. 下方示例中的 status 占位符必须替换为你的真实判断，直接复制占位符会被宿主判为无效票。
+
+<<<ROLE_CONCURRENCE>>>
+{
+  "protocol_version": 1,
+  "agent_id": "${roleAgent.id}",
+  "role": "${roleName}",
+  "solution_digest": "${solutionDigest}",
+  "status": "__REPLACE_WITH_YOUR_JUDGMENT__",
+  "blocking_issue_ids": [],
+  "conditions": [],
+  "rationale": "说明你的核验依据与最终判断",
+  "evidence_refs": []
 }
-
-/**
- * 从智能体文本中严格评估是否已表达“无异议确认”
- * 严格防范否定词击穿（如“我不认同”、“我不同意该方案”、“并非无异议”、“I cannot concur”、“认同整体，但反对直接上线”）
- */
-export function evaluateRoleConcurrenceStatement(replyText: string): {
-  isConcurred: boolean;
-  statement: string;
-} {
-  const trimmed = replyText.trim();
-  if (!trimmed) {
-    return {
-      isConcurred: false,
-      statement: '未收到角色有效回复，无法确认无异议。',
-    };
-  }
-
-  // 1. 识别并提取良性/免责/吸收反转句式（Benign Affirmative Mitigations）
-  // 覆盖场景：
-  // G1: “未发现致命漏洞，确认无异议。” -> 未发现/不存在/无致命漏洞
-  // G2: “不存在阻断性异议，确认无异议。” -> 不存在/没有/不持阻断性异议
-  // G3: “方案已消除重大风险，确认无异议。” -> 已消除/已化解重大风险
-  // G4: “反对意见已被充分吸收，确认无异议。” -> 反对意见已被吸收/解决
-  // G5: “方案可行，我不持异议。” -> 我不持异议 / 不持异议
-  // G6: “该方案没有重大风险，确认无异议。” -> 没有重大风险
-  // G11: “我不反对该方案，确认无异议。” -> 我不反对该方案
-  const benignMitigationPatterns = [
-    // 异议消除或不持异议 (双重否定为肯定)
-    /(?:我不?|并?不|没有)(?:持|存在?)(?:任何|阻断性?|严重|重大)?异议/g,
-    // 不反对方案 (双重否定为肯定，注意避开“但反对直接上线”)
-    /(?:我不?|并?不)反对(?:该方案|此方案|当前方案|此提议|该裁定|方案)?(?=[，,。\s]|$)/g,
-    // 反对意见已吸收/已采纳
-    /反对(?:意见|声音|点)?已(?:经)?被?(?:充分)?(?:吸收|采纳|解决|化解|消除)/g,
-    // 风险/漏洞已消除/已化解
-    /(?:已(?:经)?(?:充分)?(?:消除|化解|解决|修复)|消除)(?:了)?(?:所有|各项|潜在|相关|指出的一致性|致命|重大)?(?:风险|隐患|漏洞|缺陷|并发问题)/g,
-    /(?:风险|隐患|漏洞|缺陷)(?:已经?|均已|已被?)(?:充分)?(?:消除|化解|解决|修复)/g,
-    // 未发现/没有/无风险或漏洞
-    /(?:未发现|没有发现|没有|不存在|未见)(?:任何)?(?:明显|严重|致命|重大)?(?:风险|隐患|漏洞|缺陷|阻塞)/g,
-  ];
-
-  let hasBenignConcurrence = false;
-  let sanitizedText = trimmed;
-  for (const pattern of benignMitigationPatterns) {
-    if (pattern.test(sanitizedText)) {
-      hasBenignConcurrence = true;
-      sanitizedText = sanitizedText.replace(pattern, ' __BENIGN_CONCURRENCE__ ');
-    }
-  }
-
-  // 2. 否定模式与异议表达库（在脱敏良性表达后的文本上进行全面防御）
-  const negationPatterns = [
-    // 否定认同/同意/支持
-    /不(?:认同|赞同|同意|接受|支持)/,
-    /无法(?:认同|赞同|同意|接受)/,
-    /不能(?:认同|赞同|同意)/,
-    /不予(?:认同|通过|支持)/,
-    // 否定无异议
-    /(?:并非|并不是|绝非|不代表|不能算|不可视作|并不算)无异议/,
-    // 异议表达
-    /(?:存在|持有|保留|提出)(?:阻断性?|严重|重大)?(?:异议|分歧|质疑)/,
-    /阻断性异议/,
-    /严重异议/,
-    /重大风险/,
-    /致命(?:隐患|漏洞|缺陷)/,
-    // 反对表达 (注意：但反对、坚决反对等)
-    /(?:坚决|强烈|明确)?反对/,
-    /但反对/,
-    /必须重构/,
-    /拒绝通过/,
-    /驳回原案/,
-    /推倒重来/,
-    // 英文否定
-    /(?:can\s*not|cannot|can't|do\s*not|don't|does\s*not|doesn't)\s*concur/i,
-    /(?:can\s*not|cannot|can't|do\s*not|don't|does\s*not|doesn't)\s*agree/i,
-    /\b(?:object|objected|objection|veto|reject|dissent|disagree)\b/i,
-    /not\s*(?:concur|agree|acceptable)/i,
-    /not\s*without\s*objection/i,
-  ];
-
-  // 3. 检查脱敏后文本的否定模式
-  const hasNegation = negationPatterns.some((regex) => regex.test(sanitizedText));
-
-  // 4. 肯定模式库（必须包含积极且明确的确认意向）
-  const explicitTags = [
-    /【\s*(?:无异议(?:确认)?|concur(?:red)?)\s*(?:\/|\s*)?(?:concur(?:red)?)?\s*】/i,
-    /\[\s*(?:无异议(?:确认)?|concur(?:red)?)\s*\]/i,
-  ];
-  const hasExplicitTag = explicitTags.some((re) => re.test(trimmed));
-
-  const affirmativePhrases = [
-    /(?:经全面审视|经审视|核验确认|对此方案|架构方案|本人)?(?:明确)?(?:无异议|零异议)/,
-    /(?:完全|表示|予以)?(?:认同该方案|认同此方案|赞同该方案|同意该方案|一致通过|达成共识|方案通过)/,
-    /(?:不持|不存在?)(?:任何|阻断性)?异议/,
-    /不反对(?:该方案|此方案|方案)?/,
-    /\b(?:i\s+)?concur\s+(?:with|in)\b/i,
-    /\b(?:i\s+)?concurred\b/i,
-  ];
-  const hasAffirmativePhrase = affirmativePhrases.some((re) => re.test(trimmed));
-
-  // 5. 判定：必须有肯定模式或良性无异议短语，且脱敏后绝对无残留真实否定倾向
-  const isConcurred = (hasExplicitTag || hasAffirmativePhrase || hasBenignConcurrence) && !hasNegation;
-
-  // 6. 提取实质陈词：剥离纯标签行，寻找有实质内容的说明
-  const lines = trimmed.split('\n').map((l) => l.trim()).filter(Boolean);
-  const cleanLines = lines
-    .map((l) => l.replace(/【[^】]+】/g, '').replace(/\[[^\]]+\]/g, '').trim())
-    .filter((l) => l.length > 0 && !l.startsWith('#'));
-  const rawStatement = cleanLines[0] || lines[0] || (isConcurred ? '确认方案完备自洽，无异议。' : '对方案存在保留意见或异议。');
-  const statement = rawStatement.replace(/【[^】]+】/g, '').replace(/\[[^\]]+\]/g, '').trim().slice(0, 200);
-
-  return {
-    isConcurred,
-    statement: statement || (isConcurred ? '经全面审视，综合裁定方案已有效覆盖边界防线，确认无异议。' : '对方案提出异议或修改要求。'),
-  };
+<<<ROLE_CONCURRENCE_END>>>
+${validationError ? `\n【上一次结构化票无效，必须修正】:\n${validationError}\n只允许通过合法工具载荷与 ROLE_CONCURRENCE 契约块重新提交，禁止仅用自然语言回答。` : ''}`;
 }
 
 /**
  * 检查当前所有参研角色是否均已保证回复无异议
  */
 export function checkAllRolesConcurred(concurrenceState?: GameRoleConcurrenceState): boolean {
-  if (!concurrenceState || !concurrenceState.items || concurrenceState.items.length === 0) {
+  if (
+    !concurrenceState ||
+    concurrenceState.protocolVersion !== 1 ||
+    !concurrenceState.solutionDigest ||
+    !concurrenceState.items ||
+    concurrenceState.items.length === 0
+  ) {
     return false;
   }
-  return concurrenceState.items.every((item) => item.status === 'concurred');
+
+  const uniqueAgentIds = new Set(concurrenceState.items.map((item) => item.agentId));
+  if (uniqueAgentIds.size !== concurrenceState.items.length) {
+    return false;
+  }
+
+  return concurrenceState.items.every((item) =>
+    item.status === 'concurred' &&
+    item.solutionDigest === concurrenceState.solutionDigest &&
+    item.decisionSource !== undefined &&
+    (item.blockingIssueIds || []).length === 0 &&
+    (item.conditions || []).length === 0
+  );
 }
 
 /**
@@ -296,9 +311,19 @@ export function prepareConcurrenceState(options: {
   candidateAgents: Agent[];
   arbiterDraft?: ArbitrationRulingDraft;
   arbiterReplyText?: string;
+  solutionDigest: string;
 }): GameRoleConcurrenceState {
-  const { topic, candidateAgents, arbiterDraft, arbiterReplyText = '' } = options;
+  const {
+    topic,
+    candidateAgents,
+    arbiterDraft,
+    arbiterReplyText = '',
+    solutionDigest,
+  } = options;
   const gameRoles = topic.gameRoles;
+  if (!/^sha256:[a-f0-9]{64}$/i.test(solutionDigest)) {
+    throw new Error('[prepareConcurrenceState] 缺少合法的终局方案摘要 solutionDigest');
+  }
 
   const proposerIds = gameRoles?.proposers || [];
   const challengerIds = gameRoles?.challengers || [];
@@ -308,7 +333,9 @@ export function prepareConcurrenceState(options: {
 
   const addRoleItem = (agentId: string, role: 'proposer' | 'challenger' | 'verifier') => {
     const agent = candidateAgents.find((a) => a.id === agentId);
-    if (!agent) return;
+    if (!agent) {
+      throw new Error(`[prepareConcurrenceState] 找不到已配置参研角色 Agent: ${agentId}`);
+    }
     if (items.some((i) => i.agentId === agent.id)) return;
     items.push({
       agentId: agent.id,
@@ -323,9 +350,25 @@ export function prepareConcurrenceState(options: {
   challengerIds.forEach((id) => addRoleItem(id, 'challenger'));
   verifierIds.forEach((id) => addRoleItem(id, 'verifier'));
 
+  if (items.length > 0) {
+    const mentionValidation = validateArbiterConcurrenceMentions({
+      arbiterReplyText,
+      expectedAgents: items
+        .map((item) => candidateAgents.find((agent) => agent.id === item.agentId))
+        .filter((agent): agent is Agent => Boolean(agent)),
+    });
+    if (!mentionValidation.isValid) {
+      throw new Error(
+        `[prepareConcurrenceState] 综合裁定官正文未逐一 @ 全部参研角色；缺失: ${mentionValidation.missingHandles.join(', ')}`
+      );
+    }
+  }
+
   const proposalSummary = arbiterDraft?.summary || arbiterReplyText.slice(0, 200).trim() || topic.title;
 
   return {
+    protocolVersion: 1,
+    solutionDigest,
     isConcurrencePhaseActive: items.length > 0,
     arbiterProposalSummary: proposalSummary,
     items,
@@ -339,40 +382,102 @@ export function prepareConcurrenceState(options: {
 export function advanceRoleConcurrenceItem(
   currentState: GameRoleConcurrenceState,
   agentId: string,
-  replyText: string,
-  isUnavailable: boolean = false
+  result: {
+    submission?: RoleConcurrenceSubmission;
+    validationError?: string;
+    unavailableReason?: string;
+  }
 ): GameRoleConcurrenceState {
   const nowStr = formatFullDateTime();
+  const targetItem = currentState.items.find((item) => item.agentId === agentId);
+  if (!targetItem) {
+    throw new Error(`[advanceRoleConcurrenceItem] 未找到参研角色: ${agentId}`);
+  }
 
   let status: RoleConcurrenceItem['status'];
   let statement: string;
+  let validationError: string | undefined;
+  const submission = result.submission;
 
-  if (isUnavailable) {
+  if (result.unavailableReason) {
     status = 'unavailable';
-    statement = replyText || '智能体处于离线或异常状态，无法完成独立审视与无异议核验。';
+    statement = result.unavailableReason;
+  } else if (!submission) {
+    status = 'invalid';
+    validationError = result.validationError || '未提交合法的结构化无异议票';
+    statement = validationError;
+  } else if (
+    submission.protocolVersion !== currentState.protocolVersion ||
+    submission.agentId !== targetItem.agentId ||
+    submission.role !== targetItem.role
+  ) {
+    status = 'invalid';
+    validationError = '选票 protocolVersion、agentId 或 role 与当前参研角色不匹配';
+    statement = validationError;
+  } else if (submission.solutionDigest !== currentState.solutionDigest) {
+    status = 'invalid';
+    validationError = '选票 solution_digest 与当前终局方案摘要不匹配';
+    statement = validationError;
+  } else if (
+    submission.status === 'concurred' &&
+    (submission.blockingIssueIds.length > 0 || submission.conditions.length > 0)
+  ) {
+    status = 'invalid';
+    validationError = 'status=concurred 不允许携带阻塞项或前置条件';
+    statement = validationError;
+  } else if (submission.status === 'conditional' && submission.conditions.length === 0) {
+    status = 'invalid';
+    validationError = 'status=conditional 必须至少提供一项前置条件';
+    statement = validationError;
+  } else if (submission.status === 'objected' && submission.blockingIssueIds.length === 0) {
+    status = 'invalid';
+    validationError = 'status=objected 必须至少提供一个阻塞项 ID';
+    statement = validationError;
   } else {
-    const evaluation = evaluateRoleConcurrenceStatement(replyText);
-    status = evaluation.isConcurred ? 'concurred' : 'objected';
-    statement = evaluation.statement;
+    status = submission.status;
+    statement = submission.rationale;
   }
 
   const updatedItems = currentState.items.map((item) => {
     if (item.agentId === agentId) {
+      if (status === 'invalid' || status === 'unavailable') {
+        return {
+          ...item,
+          status,
+          statement,
+          timestamp: nowStr,
+          solutionDigest: undefined,
+          blockingIssueIds: [],
+          conditions: [],
+          evidenceRefs: [],
+          decisionSource: undefined,
+          validationError,
+        };
+      }
       return {
         ...item,
         status,
         statement,
         timestamp: nowStr,
+        solutionDigest: submission!.solutionDigest,
+        blockingIssueIds: [...submission!.blockingIssueIds],
+        conditions: [...submission!.conditions],
+        evidenceRefs: [...submission!.evidenceRefs],
+        decisionSource: submission!.source,
+        validationError: undefined,
       };
     }
     return item;
   });
 
-  const allConcurred = updatedItems.length > 0 && updatedItems.every((item) => item.status === 'concurred');
-
-  return {
+  const updatedState: GameRoleConcurrenceState = {
     ...currentState,
     items: updatedItems,
+  };
+  const allConcurred = checkAllRolesConcurred(updatedState);
+
+  return {
+    ...updatedState,
     allConcurred,
     concludedAt: allConcurred ? nowStr : undefined,
   };
@@ -398,7 +503,7 @@ export function buildFinalRulingFromConcurrence(options: {
   const nowStr = formatFullDateTime();
 
   const decisionType = extractedDraft?.decisionType || 'trade_off_matrix';
-  const summary = extractedDraft?.summary || `综合裁定官已统筹各方攻防意见敲定终局方案，全员无异议签署通过。围绕“${topic.title}”准予落地交付。`;
+  const summary = extractedDraft?.summary || concurrenceState.arbiterProposalSummary || `综合裁定官已统筹各方攻防意见敲定终局方案，全员无异议签署通过。围绕“${topic.title}”准予落地交付。`;
   const solution = extractedDraft?.solution || `采纳裁决方案中明确的架构权衡防线与补丁，由落地责任人按代码爆炸半径约束合入工作区。`;
   const tradeOffPoints = extractedDraft?.tradeOffPoints && extractedDraft.tradeOffPoints.length > 0
     ? extractedDraft.tradeOffPoints
@@ -413,6 +518,10 @@ export function buildFinalRulingFromConcurrence(options: {
       agentName: item.agentName,
       statement: item.statement || '确认方案完备自洽，无异议。',
       timestamp: item.timestamp || nowStr,
+      status: 'concurred' as const,
+      conditions: [],
+      blockingIssueIds: [],
+      decisionSource: item.decisionSource,
     };
   });
 
@@ -431,6 +540,7 @@ export function buildFinalRulingFromConcurrence(options: {
     sprtState: topic.gameTheoreticState?.sprtState,
     concurrenceSignOff: {
       allConcurred: true,
+      solutionDigest: concurrenceState.solutionDigest,
       records: signOffRecords,
     },
   };
@@ -539,10 +649,14 @@ export function compileHumanReadableLivingAdr(options: {
         : '⚖️ 综合裁定';
       const statusBadge = item.status === 'concurred'
         ? '✅ 无异议 (Concurred)'
+        : item.status === 'conditional'
+        ? '⏸️ 条件保留 (Conditional)'
         : item.status === 'objected'
         ? '❌ 存在异议 (Objected)'
         : item.status === 'unavailable'
         ? '⚠️ 角色不可用 (Unavailable)'
+        : item.status === 'invalid'
+        ? '⛔ 结构化票无效 (Invalid)'
         : '⏳ 待复核 (Pending)';
       md += `| **${roleBadge}** | \`${escapeTableCell(item.agentName)}\` | **${statusBadge}** | ${escapeTableCell(item.statement)} |\n`;
     });
