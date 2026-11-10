@@ -236,8 +236,10 @@ impl SessionRegistry {
 
 /// 从 ACP initialize 响应中提取协商确定的协议版本 ("v2" 或 "v1")
 pub fn parse_negotiated_protocol_version(result: &serde_json::Value) -> String {
-    let ver_val = result.get("protocolVersion");
-    if let Some(n) = ver_val.and_then(|v| v.as_i64()) {
+    let ver_val = result
+        .get("protocolVersion")
+        .or_else(|| result.get("_meta").and_then(|m| m.get("negotiatedProtocolVersion")));
+    if let Some(n) = ver_val.and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64))) {
         if n >= 2 {
             return "v2".to_string();
         } else {
@@ -3107,11 +3109,62 @@ where
     match tokio::time::timeout(timeout_duration, init_rx).await {
         Ok(Ok(resp)) => {
             if let Some(err) = resp.get("error") {
+                let err_code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
                 let err_msg = err
                     .get("message")
                     .and_then(|m| m.as_str())
                     .unwrap_or("unknown error");
-                let detail = format!("ACP initialize 握手被拒绝: {}", err_msg);
+
+                // 协议自适应协商：若首选 v2 握手被拒，自动尝试以 v1 降级握手 (兼容只认 v1 的严格 Agent)
+                let retry_id = next_init_request_id();
+                let (retry_tx, retry_rx) = oneshot::channel();
+                {
+                    let mut map = pending_requests.lock().await;
+                    map.insert(retry_id, retry_tx);
+                }
+                let fallback_req = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": retry_id,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": 1,
+                        "clientInfo": {
+                            "name": "shadow-crew",
+                            "version": "0.1.0"
+                        },
+                        "clientCapabilities": acp_client_capabilities()
+                    }
+                });
+                let _ = stdin_tx.send(fallback_req.to_string()).await;
+                let fallback_timeout = timeout_duration.min(Duration::from_millis(3000));
+                let fallback_res = tokio::time::timeout(fallback_timeout, retry_rx).await;
+
+                if let Ok(Ok(fallback_resp)) = fallback_res {
+                    if fallback_resp.get("error").is_none() {
+                        if let Some(res) = fallback_resp.get("result") {
+                            initialized.store(true, Ordering::SeqCst);
+                            if let Some(neg_lock) = negotiated_protocol_version {
+                                *neg_lock.lock().await = "v1".to_string();
+                            }
+                            let supported = check_supports_load_session(res);
+                            supports_load_session.store(supported, Ordering::SeqCst);
+                            let supported_resume = check_supports_resume_session(res);
+                            supports_resume_session.store(supported_resume, Ordering::SeqCst);
+                            supports_prompt_image.store(check_supports_prompt_image(res), Ordering::SeqCst);
+                            supports_embedded_context.store(check_supports_embedded_context(res), Ordering::SeqCst);
+                            *native_memory_capability.lock().await = check_native_memory_capability(res);
+                            tracing::info!("[Agent {}] Lazy init: Fallback to ACP v1 initialize succeeded (negotiated: v1)", agent_id);
+                            log_acp_event(agent_id, "INIT_FALLBACK_OK", "Successfully negotiated ACP v1 protocol on lazy init");
+                            if init_error.lock().await.take().is_some() {
+                                *status_detail.lock().await = None;
+                                on_status_change("running", serde_json::Value::Null);
+                            }
+                            return Ok(());
+                        }
+                    }
+                }
+
+                let detail = format!("ACP initialize 握手被拒绝 (code {}): {}", err_code, err_msg);
                 tracing::error!("[Agent {}] lazy {}", agent_id, detail);
                 log_acp_event(agent_id, "INIT_REJECTED", &detail);
                 *init_error.lock().await = Some(detail.clone());
@@ -5608,6 +5661,7 @@ mod runtime_status_tests {
         // 数值测试
         assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({ "protocolVersion": 2 })), "v2");
         assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({ "protocolVersion": 1 })), "v1");
+        assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({ "protocolVersion": 2.0 })), "v2");
 
         // 字符串测试
         assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({ "protocolVersion": "2" })), "v2");
@@ -5616,5 +5670,110 @@ mod runtime_status_tests {
         assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({ "protocolVersion": "2025-01-01 (ACP v1.0.4)" })), "v1");
         assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({ "protocolVersion": "2024-11-05" })), "v1");
         assert_eq!(parse_negotiated_protocol_version(&serde_json::json!({})), "v1");
+
+        // 元数据 fallback 测试
+        assert_eq!(
+            parse_negotiated_protocol_version(&serde_json::json!({
+                "_meta": { "negotiatedProtocolVersion": 2 }
+            })),
+            "v2"
+        );
+        assert_eq!(
+            parse_negotiated_protocol_version(&serde_json::json!({
+                "_meta": { "negotiatedProtocolVersion": 1 }
+            })),
+            "v1"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_lazy_initialize_dual_track_fallback_to_v1() {
+        use super::{execute_lazy_initialize_handshake, AcpNativeMemoryCapability};
+        use std::collections::HashMap;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        use tokio::sync::{mpsc, Mutex as TokioMutex};
+
+        let initialized = AtomicBool::new(false);
+        let pending_requests = TokioMutex::new(HashMap::new());
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(10);
+        let init_error = TokioMutex::new(None);
+        let status_detail = TokioMutex::new(None);
+        let supports_load_session = AtomicBool::new(false);
+        let supports_resume_session = AtomicBool::new(false);
+        let supports_prompt_image = AtomicBool::new(false);
+        let supports_embedded_context = AtomicBool::new(false);
+        let native_memory_capability = TokioMutex::new(AcpNativeMemoryCapability::default());
+        let negotiated_version = TokioMutex::new("unknown".to_string());
+
+        // 模拟 Agent 行为：拒绝 protocolVersion: 2，但在收到降级 protocolVersion: 1 后返回成功
+        let handshake_fut = execute_lazy_initialize_handshake(
+            "agent-fallback-v1-test",
+            Duration::from_millis(500),
+            &initialized,
+            &pending_requests,
+            &stdin_tx,
+            &init_error,
+            &status_detail,
+            &supports_load_session,
+            &supports_resume_session,
+            &supports_prompt_image,
+            &supports_embedded_context,
+            &native_memory_capability,
+            Some(&negotiated_version),
+            |_, _| {},
+        );
+
+        let responder_fut = async {
+            // 1. 接收第 1 次 initialize (protocolVersion: 2)
+            let raw1 = stdin_rx.recv().await.expect("v2 init request");
+            let req1: serde_json::Value = serde_json::from_str(&raw1).unwrap();
+            assert_eq!(req1["params"]["protocolVersion"], 2);
+            let id1 = req1["id"].as_u64().unwrap();
+
+            // 模拟严格 v1 Agent 返回 JSON-RPC 错误
+            let err_resp = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id1,
+                "error": {
+                    "code": -32602,
+                    "message": "Only ACP v1 protocol is supported by this runtime"
+                }
+            });
+            let sender1 = pending_requests.lock().await.remove(&id1).unwrap();
+            sender1.send(err_resp).unwrap();
+
+            // 2. 接收降级 retry 请求 (protocolVersion: 1)
+            let raw2 = stdin_rx.recv().await.expect("v1 fallback init request");
+            let req2: serde_json::Value = serde_json::from_str(&raw2).unwrap();
+            assert_eq!(req2["params"]["protocolVersion"], 1);
+            let id2 = req2["id"].as_u64().unwrap();
+
+            // 响应 v1 握手成功
+            let ok_resp = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id2,
+                "result": {
+                    "protocolVersion": 1,
+                    "agentInfo": { "name": "Strict V1 Agent", "version": "1.0.0" },
+                    "agentCapabilities": {
+                        "loadSession": true,
+                        "streaming": true
+                    },
+                    "sessionCapabilities": {
+                        "resume": {}
+                    }
+                }
+            });
+            let sender2 = pending_requests.lock().await.remove(&id2).unwrap();
+            sender2.send(ok_resp).unwrap();
+        };
+
+        let (res, _) = tokio::join!(handshake_fut, responder_fut);
+        assert!(res.is_ok(), "双轨降级握手应在 v2 被拒后顺利完成 v1 协商");
+        assert!(initialized.load(Ordering::SeqCst));
+        assert_eq!(*negotiated_version.lock().await, "v1");
+        assert!(supports_load_session.load(Ordering::SeqCst));
+        assert!(supports_resume_session.load(Ordering::SeqCst));
     }
 }

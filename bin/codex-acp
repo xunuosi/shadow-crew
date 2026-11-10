@@ -423,6 +423,26 @@ function startOfficialAdapterBridge(codexBin) {
     officialChild.stdin.write(line + '\n');
   });
 
+  inRl.on('close', () => {
+    try {
+      officialChild.stdin.end();
+    } catch {
+      // ignore
+    }
+  });
+
+  const forwardSignal = (sig) => {
+    try {
+      if (!officialChild.killed) {
+        officialChild.kill(sig);
+      }
+    } catch {
+      // ignore
+    }
+  };
+  process.on('SIGTERM', () => forwardSignal('SIGTERM'));
+  process.on('SIGINT', () => forwardSignal('SIGINT'));
+
   officialChild.stdout.pipe(process.stdout);
 
   officialChild.on('close', (code) => {

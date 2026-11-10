@@ -12,6 +12,7 @@
     "dev:desktop": "tauri dev",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
+    "test:acp-v2": "tsx src/services/test-acp-v2-dual-track.ts",
     "test:workspace": "tsx src/services/test-workspace-bindings.ts",
     "test:acp-only": "tsx src/services/test-acp-only-runtime.ts",
     "test:acp-native-memory": "tsx src/services/test-acp-native-memory.ts",
