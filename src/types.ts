@@ -368,6 +368,25 @@ export interface AgentExpertPackBinding {
   boundAt: string;
 }
 
+/**
+ * 单 Agent 运行时预算与循环收敛策略。
+ * 缺失时由 normalizeAgentRuntimePolicy 统一下发默认值，业务层不得自行猜测。
+ */
+export interface AgentRuntimePolicy {
+  /** 单轮回复软性 Token 预算；0 表示继承模型/端点默认 */
+  maxOutputTokens: number;
+  /** 协同链最大轮次（1~12）；房间内取所有参与者最小值 */
+  cascadeMaxHops: number;
+  /** 阶段契约 Self-Refine 纠错上限（0~2）；0 表示失败后直接升级人工 */
+  maxCorrectionRetries: number;
+  /** 是否允许该 Agent 在回复中 @ 其他 Agent 继续接力 */
+  autoRelay: boolean;
+  /** 简洁模式：简单问答/修复直接给结论与最小改动 */
+  conciseReplies: boolean;
+  /** 流式吐字合并刷新间隔（毫秒，仅影响 UI 显示节奏，不改变计费） */
+  streamFlushIntervalMs: number;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -389,6 +408,7 @@ export interface Agent {
   statusDetail?: string;
   modelBadge?: string; // e.g., 'DeepSeek V3', 'Claude 3.7 Sonnet', 'Gemini 2.5 Pro'
   modelConfig?: AgentModelConfig;
+  runtimePolicy?: AgentRuntimePolicy;
   modelLatencyMs?: number;
   isModelHealthy?: boolean;
   isManagedByYou?: boolean;

@@ -404,6 +404,16 @@ export function setGlobalModelConfig(config: AgentModelConfig): void {
 export function resolveAgentModelConfig(agent: Agent): AgentModelConfig {
   const globalConfig = getGlobalModelConfig();
 
+  const applyRuntimeTokenBudget = (cfg: AgentModelConfig): AgentModelConfig => {
+    const budget = agent.runtimePolicy?.maxOutputTokens ?? 0;
+    if (budget > 0) {
+      cfg.maxTokens = cfg.maxTokens && cfg.maxTokens > 0
+        ? Math.min(cfg.maxTokens, budget)
+        : budget;
+    }
+    return cfg;
+  };
+
   // 1. 如果 Agent 显式配置了独立的私有模型，且没有勾选使用全局默认
   if (agent.modelConfig && !agent.modelConfig.useGlobalDefault && agent.modelConfig.modelId) {
     const cfg = { ...agent.modelConfig };
@@ -411,11 +421,11 @@ export function resolveAgentModelConfig(agent: Agent): AgentModelConfig {
     if (!cfg.apiKey && globalConfig.apiKey) {
       cfg.apiKey = globalConfig.apiKey;
     }
-    return cfg;
+    return applyRuntimeTokenBudget(cfg);
   }
 
   // 2. 否则使用全局默认配置，但模型显示 Badge 遵循 Agent 自身的个性化设定
-  const fallback = { ...globalConfig };
+  const fallback = applyRuntimeTokenBudget({ ...globalConfig });
   if (
     agent.modelBadge &&
     agent.modelBadge !== 'Local ACP' &&

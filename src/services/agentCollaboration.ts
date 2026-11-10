@@ -1,5 +1,10 @@
 import { useState, useRef, useCallback } from 'react';
 import { matchesSessionScope } from './acpClient';
+import {
+  buildRuntimePolicyDirective,
+  DEFAULT_AGENT_RUNTIME_POLICY,
+  resolveEffectiveRuntimePolicy,
+} from './agentRuntimePolicy';
 import { 
   Agent, 
   Channel,
@@ -284,7 +289,8 @@ export interface LoopGuardResult {
  */
 export function checkLoopGuard(
   cascade: CollaborationCascade,
-  targetAgentId: string
+  targetAgentId: string,
+  targetAgent?: Pick<Agent, 'runtimePolicy'>
 ): LoopGuardResult {
   if (cascade.isAborted) {
     return { allowed: false, reason: '用户已手动终止多智能体协同', isSilentEnd: false };
@@ -297,6 +303,18 @@ export function checkLoopGuard(
       reason: `多智能体协同已达安全轮次兜底上限 (${cascade.maxDepth} 轮)，静默收敛`,
       isSilentEnd: true,
     };
+  }
+
+  // 1.1 Agent 级轮次预算：用户在身份配置中为该 Agent 设定的最大参与轮次
+  if (targetAgent) {
+    const agentPolicy = resolveEffectiveRuntimePolicy(targetAgent);
+    if (cascade.depth >= agentPolicy.cascadeMaxHops) {
+      return {
+        allowed: false,
+        reason: `目标 Agent 已达到其配置的协同轮次上限 (${agentPolicy.cascadeMaxHops} 轮)，静默收敛`,
+        isSilentEnd: true,
+      };
+    }
   }
 
   // 2. 异常失控循环兜底 (单链内单 Agent 调用达到 8 次以上的极端异常兜底)
@@ -384,7 +402,8 @@ export function buildAgentPersonaPrompt(agent: Agent): string {
     `2. 【费曼沟通法则与讲人话 (Feynman Principle)】：顶尖架构师的真正水准体现在“把极其复杂的底层逻辑讲得极简清晰”。你的底层知识库是你的思考底色，但在向团队陈述时，严禁生硬堆砌生僻术语。遇到专业机制，必须用“通俗大白话/形象类比 + 直白因果”拆解其作用与代价；\n` +
     `3. 【结论先行，受众友好 (BLUF)】：每次陈词前必须在置顶处给出【💡 核心结论 (通俗版)】（用 2~3 句话说明“做不做、怎么做、最直接的好处/代价是什么”，确保使用者能直接听懂），随后再展开必要的技术推演；\n` +
     `4. 【拒绝伪框架 (Anti-Over-modeling)】：严禁为了证明专业度而凭空发明新理论、新层级机制（如自造 N 层模型、N 步判据）或晦涩缩写。直接谈具体选型、具体边界、具体风险与代码/配置方案；\n` +
-    `5. 【清晰句法硬约束】：多用短句和动宾结构，单句尽量控制在 30 字以内，杜绝嵌套式长难定语从句；禁止整段大面积加粗，加粗仅限核心关键词。`
+    `5. 【清晰句法硬约束】：多用短句和动宾结构，单句尽量控制在 30 字以内，杜绝嵌套式长难定语从句；禁止整段大面积加粗，加粗仅限核心关键词。\n\n` +
+    buildRuntimePolicyDirective(agent)
   );
 }
 
@@ -1073,7 +1092,7 @@ export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOpti
     deltaMessages,
     triggerContent = '',
     hop = 1,
-    maxHops = 12,
+    maxHops = DEFAULT_AGENT_RUNTIME_POLICY.cascadeMaxHops,
     invokingAgents = [],
     topic,
     isDm = false,
@@ -1253,10 +1272,17 @@ export function aggregateTurnBarrierMentions(options: {
 
   const targetMap = new Map<string, AggregatedMentionTarget>();
   const uninvitedMentions: Array<{ invokingAgent: Agent; uninvitedAgents: Agent[] }> = [];
+  let anyAutoRelay = false;
 
   for (const output of turnOutputs) {
     const { agent: invokingAgent, messageId, replyContent } = output;
     if (!replyContent || !replyContent.trim()) continue;
+
+    // 0. Agent 级接力开关：关闭后其 @mention 一律不触发下一跳
+    if (!resolveEffectiveRuntimePolicy(invokingAgent).autoRelay) {
+      continue;
+    }
+    anyAutoRelay = true;
 
     // 1. 检查是否存在越界点名未受邀外部 Agent
     if (!isDm) {
@@ -1307,8 +1333,14 @@ export function aggregateTurnBarrierMentions(options: {
     }
   }
 
-  // 3. 若本轮无任何显式 @，且存在兼容排队协作者，则提取队首
-  if (targetMap.size === 0 && queuedCollaborators.length > 0 && turnOutputs.length > 0) {
+  // 3. 若本轮无任何显式 @，且存在兼容排队协作者，则提取队首。
+  //    若本轮所有发言者都关闭了 autoRelay，则禁止排队队列再拉起下一跳。
+  if (
+    targetMap.size === 0 &&
+    queuedCollaborators.length > 0 &&
+    turnOutputs.length > 0 &&
+    anyAutoRelay
+  ) {
     const nextQueued = queuedCollaborators[0];
     const lastOutput = turnOutputs[turnOutputs.length - 1];
     targetMap.set(nextQueued.id, {
