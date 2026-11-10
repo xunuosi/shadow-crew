@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import {
   getTopicDrawerMaxWidth,
-  MAX_TOPIC_DRAWER_WIDTH,
   MIN_MAIN_TIMELINE_WIDTH,
   MIN_TOPIC_DRAWER_WIDTH,
 } from '../config/layout';
@@ -10,11 +9,18 @@ console.log('=== Topic Drawer Layout Test Suite ===');
 
 assert.equal(MIN_MAIN_TIMELINE_WIDTH, 200);
 assert.equal(MIN_TOPIC_DRAWER_WIDTH, 320);
-assert.equal(MAX_TOPIC_DRAWER_WIDTH, 900);
 console.log('✓ shared layout constants are stable');
 
-assert.equal(getTopicDrawerMaxWidth(1835, 260), 900);
-console.log('✓ wide viewport keeps the 900px drawer cap');
+assert.equal(getTopicDrawerMaxWidth(1835, 260), 1375);
+assert.equal(getTopicDrawerMaxWidth(2200, 0), 2000);
+console.log('✓ wide viewports let the topic drawer consume all available space');
+
+const initialExpandedViewport = getTopicDrawerMaxWidth(1366, 0);
+const furtherExpandedViewport = getTopicDrawerMaxWidth(1910, 0);
+assert.equal(initialExpandedViewport, 1166);
+assert.equal(furtherExpandedViewport, 1710);
+assert.ok(furtherExpandedViewport > initialExpandedViewport);
+console.log('✓ expanding the whole window keeps increasing the topic drawer limit');
 
 assert.equal(getTopicDrawerMaxWidth(1360, 260), 900);
 console.log('✓ 1360px viewport still leaves exactly 200px for messages');

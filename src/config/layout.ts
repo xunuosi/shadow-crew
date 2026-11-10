@@ -7,12 +7,9 @@ export const MIN_MAIN_TIMELINE_WIDTH = 200;
 /** Right-side Topic Drawer minimum usable width. */
 export const MIN_TOPIC_DRAWER_WIDTH = 320;
 
-/** Right-side Topic Drawer default upper width cap. */
-export const MAX_TOPIC_DRAWER_WIDTH = 900;
-
 /**
  * Reserve the actual workspace offset (normally the left sidebar) and the
- * main timeline's minimum width before capping the right drawer.
+ * main timeline's minimum width before sizing the right drawer.
  */
 export function getTopicDrawerMaxWidth(
   viewportWidth: number,
@@ -30,6 +27,6 @@ export function getTopicDrawerMaxWidth(
 
   return Math.max(
     MIN_TOPIC_DRAWER_WIDTH,
-    Math.min(MAX_TOPIC_DRAWER_WIDTH, availableWidth)
+    availableWidth
   );
 }
