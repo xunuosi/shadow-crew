@@ -976,10 +976,16 @@ pub struct HttpResponsePayload {
     pub raw_text: String,
 }
 
-/// Tauri Command: 原生无跨域 HTTP 请求转发 (彻底消除前端 WebView CORS 限制与企业内网证书拦截)
+/// Tauri Command: 原生无跨域 HTTP 请求转发 (彻底消除前端 WebView CORS 限制)
+///
+/// 安全基线：
+/// - 默认校验 TLS 证书；企业内网自签证书需显式设置
+///   `SHADOW_CREW_NATIVE_HTTP_INSECURE_TLS=1` 才关闭校验；
+/// - 代理只使用环境变量 (https_proxy / http_proxy / ALL_PROXY)，不再猜测硬编码端口；
+/// - 成功判定以 HTTP 状态码为准，不再从响应文本里猜字段。
 #[tauri::command]
 async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, String> {
-    let timeout = req.timeout_secs.unwrap_or(20).to_string();
+    let timeout = req.timeout_secs.unwrap_or(20).max(1).to_string();
     let method = req.method.unwrap_or_else(|| "POST".to_string()).to_uppercase();
     let is_post = method == "POST";
     let body_str = if is_post {
@@ -995,72 +1001,61 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
         "curl"
     };
 
-    let mut cmd = tokio::process::Command::new(curl_bin);
-    cmd.arg("-s")
-       .arg("-S")
-       .arg("-X").arg(&method)
-       .arg("--connect-timeout").arg(&timeout)
-       .arg("--max-time").arg(&timeout)
-       .arg("-k"); // 支持企业内网自签/局域网证书
+    let allow_insecure_tls = std::env::var("SHADOW_CREW_NATIVE_HTTP_INSECURE_TLS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
-    for (k, v) in &req.headers {
-        cmd.arg("-H").arg(format!("{}: {}", k, v));
-    }
+    let build_command = |proxy: Option<&str>, connect_timeout: &str| {
+        let mut cmd = tokio::process::Command::new(curl_bin);
+        cmd.arg("-s")
+            .arg("-S")
+            .arg("-X").arg(&method)
+            .arg("--connect-timeout").arg(connect_timeout)
+            .arg("--max-time").arg(&timeout);
+        if allow_insecure_tls {
+            cmd.arg("-k");
+        }
+        if let Some(proxy_addr) = proxy {
+            cmd.arg("-x").arg(proxy_addr);
+        }
+        for (k, v) in &req.headers {
+            cmd.arg("-H").arg(format!("{}: {}", k, v));
+        }
+        if is_post && !body_str.is_empty() && body_str != "null" {
+            cmd.arg("-d").arg(&body_str);
+        }
+        cmd.arg("-w").arg("\n__SHADOW_HTTP_CODE__:%{http_code}");
+        cmd.arg(&req.url);
+        cmd
+    };
 
-    if is_post && !body_str.is_empty() && body_str != "null" {
-        cmd.arg("-d").arg(&body_str);
-    }
-    cmd.arg("-w").arg("\n__SHADOW_HTTP_CODE__:%{http_code}");
-    cmd.arg(&req.url);
-
-    let mut output = cmd.output().await.map_err(|e| format!("执行系统 curl 失败: {}", e))?;
+    let mut output = build_command(None, &timeout)
+        .output()
+        .await
+        .map_err(|e| format!("执行系统 curl 失败: {}", e))?;
     let mut raw_output = String::from_utf8_lossy(&output.stdout).to_string();
     let mut err_output = String::from_utf8_lossy(&output.stderr).to_string();
 
-    // 检查首次直连响应是否已经包含合法的大模型输出数据或模型列表
-    let initial_has_payload = raw_output.contains("\"choices\"")
-        || raw_output.contains("\"id\"")
-        || raw_output.contains("\"content\"")
-        || raw_output.contains("\"data\"")
-        || raw_output.contains("\"models\"");
-
-    // 如果直连失败且未获取到任何有效数据，自动尝试通过代理重试
-    if !initial_has_payload && (!output.status.success() || raw_output.is_empty()) && !req.url.contains("127.0.0.1") {
-        let proxy_addr = std::env::var("https_proxy")
-            .or_else(|_| std::env::var("http_proxy"))
-            .or_else(|_| std::env::var("ALL_PROXY"))
-            .unwrap_or_else(|_| "http://127.0.0.1:7897".to_string());
-
-        let mut retry_cmd = tokio::process::Command::new(curl_bin);
-        retry_cmd.arg("-s")
-            .arg("-S")
-            .arg("-X").arg(&method)
-            .arg("--connect-timeout").arg("5")
-            .arg("--max-time").arg(&timeout)
-            .arg("-k")
-            .arg("-x").arg(&proxy_addr);
-
-        for (k, v) in &req.headers {
-            retry_cmd.arg("-H").arg(format!("{}: {}", k, v));
-        }
-
-        if is_post && !body_str.is_empty() && body_str != "null" {
-            retry_cmd.arg("-d").arg(&body_str);
-        }
-        retry_cmd.arg("-w").arg("\n__SHADOW_HTTP_CODE__:%{http_code}");
-        retry_cmd.arg(&req.url);
-
-        if let Ok(retry_out) = retry_cmd.output().await {
-            let retry_str = String::from_utf8_lossy(&retry_out.stdout).to_string();
-            if !retry_str.is_empty() {
-                output = retry_out;
-                raw_output = retry_str;
-                err_output = String::from_utf8_lossy(&output.stderr).to_string();
+    // 直连失败时，仅使用用户显式配置的环境变量代理重试；不猜测本地代理端口。
+    let proxy_addr = std::env::var("https_proxy")
+        .or_else(|_| std::env::var("http_proxy"))
+        .or_else(|_| std::env::var("ALL_PROXY"))
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    if !output.status.success() && raw_output.trim().is_empty() {
+        if let Some(proxy_addr) = proxy_addr.as_deref() {
+            if let Ok(retry_out) = build_command(Some(proxy_addr), "5").output().await {
+                let retry_str = String::from_utf8_lossy(&retry_out.stdout).to_string();
+                if !retry_str.trim().is_empty() {
+                    output = retry_out;
+                    raw_output = retry_str;
+                    err_output = String::from_utf8_lossy(&output.stderr).to_string();
+                }
             }
         }
     }
 
-    let mut status_code: u16 = 200;
+    let mut status_code: u16 = 0;
     let mut response_text = raw_output;
 
     if let Some(pos) = response_text.rfind("\n__SHADOW_HTTP_CODE__:") {
@@ -1071,24 +1066,19 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
         response_text.truncate(pos);
     }
 
-    let parsed_json: serde_json::Value = serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null);
+    let parsed_json: serde_json::Value =
+        serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null);
 
-    // 容错判定：若响应 JSON 中已包含 choices/id/content/data/models 等标准 LLM 响应体，说明请求已成功被服务端处理完毕，
-    // 即使企业内网网关在传输末尾提前断开 TCP 连接导致系统 curl 产生非 0 退出码，也视为成功响应
-    let has_valid_llm_payload = parsed_json.get("choices").is_some()
-        || parsed_json.get("id").is_some()
-        || parsed_json.get("content").is_some()
-        || parsed_json.get("data").is_some()
-        || parsed_json.get("models").is_some();
-
-    if !output.status.success() && status_code == 200 && !has_valid_llm_payload {
-        status_code = 500;
-        if response_text.is_empty() {
-            response_text = format!("网络请求异常: {}", err_output.trim());
-        }
+    if !output.status.success() && response_text.trim().is_empty() {
+        return Ok(HttpResponsePayload {
+            status: 0,
+            ok: false,
+            body: serde_json::Value::Null,
+            raw_text: format!("网络请求异常: {}", err_output.trim()),
+        });
     }
 
-    let is_ok = (status_code >= 200 && status_code < 300) || has_valid_llm_payload;
+    let is_ok = (200..300).contains(&status_code);
 
     Ok(HttpResponsePayload {
         status: status_code,

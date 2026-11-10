@@ -504,7 +504,8 @@ export interface RequestJsonOptions {
 /**
  * 全环境通用 HTTP 请求转发器 (支持 GET / POST)
  * 优先级：
- * 1. Tauri 原生 Rust 管道转发 (native_http_post) - 彻底击穿浏览器 WebKit CORS 限制，支持公司内网自签证书
+ * 1. Tauri 原生 Rust 管道转发 (native_http_post) - 彻底击穿浏览器 WebKit CORS 限制；默认校验 TLS，
+ *    企业内网自签证书需显式设置 SHADOW_CREW_NATIVE_HTTP_INSECURE_TLS=1
  * 2. Vite 本地开发服务器代理 (/api/llm-proxy) - 浏览器预览模式下无缝避开同源策略
  * 3. 标准 Web 浏览器原生 fetch 回退
  */
@@ -535,16 +536,12 @@ export async function requestJsonUniversal(
         },
       });
       if (res) {
-        const hasPayload = Boolean(
-          (res.body && (res.body.choices || res.body.id || res.body.content || res.body.data || res.body.models)) ||
-          (res.raw_text && (res.raw_text.includes('"choices"') || res.raw_text.includes('"id"') || res.raw_text.includes('"content"') || res.raw_text.includes('"data"') || res.raw_text.includes('"models"')))
-        );
         return {
-          ok: res.ok || hasPayload,
-          status: hasPayload ? 200 : res.status,
+          ok: res.ok,
+          status: res.status,
           data: res.body,
           rawText: res.raw_text,
-          error: (res.ok || hasPayload) ? undefined : res.body?.error?.message || res.raw_text || `HTTP ${res.status}`,
+          error: res.ok ? undefined : res.body?.error?.message || res.raw_text || `HTTP ${res.status}`,
         };
       }
     } catch (tauriErr: any) {
@@ -568,16 +565,12 @@ export async function requestJsonUniversal(
       });
       if (proxyRes.ok) {
         const proxyData = await proxyRes.json();
-        const hasProxyPayload = Boolean(
-          (proxyData.body && (proxyData.body.choices || proxyData.body.id || proxyData.body.content || proxyData.body.data || proxyData.body.models)) ||
-          (proxyData.raw_text && (proxyData.raw_text.includes('"choices"') || proxyData.raw_text.includes('"id"') || proxyData.raw_text.includes('"content"') || proxyData.raw_text.includes('"data"') || proxyData.raw_text.includes('"models"')))
-        );
         return {
-          ok: proxyData.ok || hasProxyPayload,
-          status: hasProxyPayload ? 200 : proxyData.status,
+          ok: proxyData.ok,
+          status: proxyData.status,
           data: proxyData.body,
           rawText: proxyData.raw_text,
-          error: (proxyData.ok || hasProxyPayload) ? undefined : proxyData.body?.error?.message || proxyData.error || `HTTP ${proxyData.status}`,
+          error: proxyData.ok ? undefined : proxyData.body?.error?.message || proxyData.error || `HTTP ${proxyData.status}`,
         };
       }
     } catch (proxyErr) {
@@ -608,17 +601,12 @@ export async function requestJsonUniversal(
       data = JSON.parse(rawText);
     } catch {}
 
-    const hasValid = Boolean(
-      (data && (data.choices || data.id || data.content || data.data || data.models)) ||
-      (rawText && (rawText.includes('"choices"') || rawText.includes('"id"') || rawText.includes('"data"') || rawText.includes('"models"')))
-    );
-
     return {
-      ok: res.ok || hasValid,
+      ok: res.ok,
       status: res.status,
       data,
       rawText,
-      error: (res.ok || hasValid) ? undefined : data?.error?.message || `HTTP ${res.status}: ${res.statusText}`,
+      error: res.ok ? undefined : data?.error?.message || `HTTP ${res.status}: ${res.statusText}`,
     };
   } catch (err: any) {
     clearTimeout(timeoutId);
