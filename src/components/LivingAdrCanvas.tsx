@@ -19,6 +19,7 @@ import {
   Loader2,
   Clock,
   Handshake,
+  RotateCcw,
 } from 'lucide-react';
 import {
   TopicMessageData,
@@ -38,6 +39,7 @@ interface LivingAdrCanvasProps {
   onExecutePatch?: () => void;
   onOpenCodexDiff?: (diff: any) => void;
   onApplyTopicPatch?: (topicId: string) => Promise<void> | void;
+  onRollbackTopicPatch?: (topicId: string) => Promise<void> | void;
   overlappingFiles?: string[];
 }
 
@@ -288,10 +290,12 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
   onExecutePatch,
   onOpenCodexDiff,
   onApplyTopicPatch,
+  onRollbackTopicPatch,
   overlappingFiles = [],
 }) => {
   const [copied, setCopied] = useState(false);
   const [isApplyingPatch, setIsApplyingPatch] = useState(false);
+  const [isRollingBack, setIsRollingBack] = useState(false);
   const [now, setNow] = useState(Date.now());
 
   const ruling = topic.rulingRecord;
@@ -374,6 +378,16 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
       await onApplyTopicPatch(topic.id);
     } finally {
       setIsApplyingPatch(false);
+    }
+  };
+
+  const handleRollbackPatchClick = async () => {
+    if (!onRollbackTopicPatch) return;
+    setIsRollingBack(true);
+    try {
+      await onRollbackTopicPatch(topic.id);
+    } finally {
+      setIsRollingBack(false);
     }
   };
 
@@ -1153,6 +1167,21 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                           </span>
                         </>
                       )}
+                    </button>
+                  )}
+                  {onRollbackTopicPatch && topic.gameTheoreticState?.executionPatchHistoryPath && (
+                    <button
+                      type="button"
+                      disabled={isRollingBack}
+                      onClick={handleRollbackPatchClick}
+                      className="px-2.5 py-1 rounded-lg bg-surface hover:bg-surface-hover border border-rose-300 dark:border-rose-500/35 text-rose-800 dark:text-rose-300 disabled:opacity-50 text-[10px] font-semibold flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
+                    >
+                      {isRollingBack ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <RotateCcw className="w-3 h-3" />
+                      )}
+                      <span>{isRollingBack ? '回退中...' : '回退本次合入'}</span>
                     </button>
                   )}
                 </div>

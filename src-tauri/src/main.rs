@@ -8,6 +8,7 @@ mod db_manager;
 use acp_manager::AcpProcessManager;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use db_manager::{DatabaseManager, StorageStatsDto};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
@@ -16,6 +17,10 @@ use tokio::sync::Mutex;
 struct AppState {
     acp_manager: Arc<Mutex<AcpProcessManager>>,
     db_manager: Arc<DatabaseManager>,
+    /// 按工作区绝对路径串行化补丁落盘，防止并发议题静默覆盖同一文件。
+    patch_locks: std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>,
+    /// 按工作区根目录串行化「合入 / 回退 / 验证」操作，避免验证读到半写入状态。
+    workspace_operation_locks: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
     #[allow(dead_code)]
     nostr_relay_url: String,
 }
@@ -521,17 +526,151 @@ pub struct WorkspacePatchItem {
 #[derive(serde::Serialize, Debug, Clone)]
 pub struct AppliedFileStatus {
     pub filename: String,
-    pub mode: String, // "git_apply" | "block_replace" | "created_file" | "artifact_saved"
+    /// 实际采用的落盘方式：git_apply / block_replace / created_file / artifact_saved
+    pub mode: String,
+    /// 真实结果：applied / conflict / archived_only / failed
+    pub status: String,
     pub target_path: String,
     pub artifact_path: String,
+    pub backup_path: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(serde::Serialize, Debug, Clone)]
 pub struct ApplyWorkspacePatchResult {
+    /// 仅当所有补丁都真实应用成功时为 true；冲突、仅归档、失败一律为 false。
     pub ok: bool,
+    pub applied_count: usize,
+    pub failed_count: usize,
     pub artifacts_dir: String,
     pub applied_files: Vec<AppliedFileStatus>,
     pub summary: String,
+    pub history_id: String,
+    pub history_path: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PatchHistoryFileRecord {
+    pub filename: String,
+    pub target_path: String,
+    pub mode: String,
+    pub status: String,
+    pub existed_before: bool,
+    pub before_hash: Option<String>,
+    pub after_hash: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PatchHistoryManifest {
+    pub schema_version: u32,
+    pub history_id: String,
+    pub created_at: String,
+    pub channel_id: String,
+    pub topic_id: String,
+    pub workspace_root: String,
+    pub files: Vec<PatchHistoryFileRecord>,
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+pub struct RollbackFileStatus {
+    pub filename: String,
+    /// restored / deleted_created_file / skipped_modified / skipped_missing / failed
+    pub status: String,
+    pub target_path: String,
+    pub message: Option<String>,
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+pub struct RollbackWorkspacePatchResult {
+    pub ok: bool,
+    pub restored_count: usize,
+    pub failed_count: usize,
+    pub files: Vec<RollbackFileStatus>,
+    pub summary: String,
+}
+
+struct ResolvedWorkspaceScope {
+    canonical_root: std::path::PathBuf,
+    topic_artifacts_dir: std::path::PathBuf,
+}
+
+/// 统一校验 Workspace Binding 的归属作用域，并解析出规范化的根目录与归档目录。
+/// 所有物理写入 / 命令执行 / 回退入口都必须复用该函数，避免跨房间越权。
+fn resolve_workspace_scope(
+    db: &DatabaseManager,
+    workspace_binding_id: &str,
+    channel_id: &str,
+    topic_id: &str,
+) -> Result<ResolvedWorkspaceScope, String> {
+    let binding = db
+        .get_workspace_binding(workspace_binding_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Workspace Binding '{}' does not exist", workspace_binding_id))?;
+    let binding_owner_type = binding
+        .get("ownerType")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let binding_owner_id = binding
+        .get("ownerId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let expected_owner_type = if topic_id.trim().is_empty() { "channel" } else { "topic" };
+    let expected_owner_id = if topic_id.trim().is_empty() { channel_id } else { topic_id };
+    if binding_owner_type != expected_owner_type || binding_owner_id != expected_owner_id {
+        return Err(format!(
+            "Workspace Binding scope mismatch: expected {}:{}, got {}:{}",
+            expected_owner_type,
+            expected_owner_id,
+            binding_owner_type,
+            binding_owner_id
+        ));
+    }
+    let binding_cwd = binding
+        .get("cwd")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "Workspace Binding is missing cwd".to_string())?;
+    let binding_mode = binding
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("custom");
+    let canonical_root = std::path::PathBuf::from(
+        db_manager::resolve_workspace_cwd_input(binding_cwd, binding_mode == "default")
+            .map_err(|e| e.to_string())?,
+    );
+    let binding_artifact_root = binding
+        .get("artifactRoot")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| canonical_root.join("artifacts").to_string_lossy().to_string());
+    let topic_artifacts_dir = std::path::PathBuf::from(
+        db_manager::resolve_workspace_cwd_input(&binding_artifact_root, true)
+            .map_err(|e| e.to_string())?,
+    );
+    Ok(ResolvedWorkspaceScope {
+        canonical_root,
+        topic_artifacts_dir,
+    })
+}
+
+/// 获取工作区级异步互斥锁：同一工作区的合入、回退、验证严格串行。
+async fn acquire_workspace_operation_lock(
+    state: &AppState,
+    canonical_root: &std::path::Path,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    let key = canonical_root.to_string_lossy().to_string();
+    let lock = {
+        let mut locks = state
+            .workspace_operation_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks
+            .entry(key)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+    lock.lock_owned().await
 }
 
 fn sanitize_relative_path(raw: &str) -> Option<std::path::PathBuf> {
@@ -548,7 +687,13 @@ fn sanitize_relative_path(raw: &str) -> Option<std::path::PathBuf> {
     let mut clean = std::path::PathBuf::new();
     for comp in path.components() {
         match comp {
-            std::path::Component::Normal(os_str) => clean.push(os_str),
+            std::path::Component::Normal(os_str) => {
+                // 禁止把补丁写进 Git 内部目录
+                if os_str.to_string_lossy().eq_ignore_ascii_case(".git") {
+                    return None;
+                }
+                clean.push(os_str);
+            }
             std::path::Component::CurDir => {}
             _ => return None, // Reject ParentDir (..) or RootDir
         }
@@ -557,6 +702,72 @@ fn sanitize_relative_path(raw: &str) -> Option<std::path::PathBuf> {
         None
     } else {
         Some(clean)
+    }
+}
+
+fn content_fingerprint(bytes: &[u8]) -> String {
+    // FNV-1a 64：确定性内容指纹，用于判断回退时文件是否已被用户再次修改。
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in bytes {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("fnv1a64:{:016x}", hash)
+}
+
+/// 解析目标路径的最近存在祖先并拼接缺失尾部，防止通过未创建目录下的符号链接逃逸工作区。
+fn canonicalize_with_missing_tail(path: &std::path::Path) -> std::path::PathBuf {
+    let mut existing = path.to_path_buf();
+    let mut missing_tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(canonical) = std::fs::canonicalize(&existing) {
+            let mut resolved = canonical;
+            for component in missing_tail.iter().rev() {
+                resolved.push(component);
+            }
+            return resolved;
+        }
+        match existing.file_name() {
+            Some(name) => {
+                missing_tail.push(name.to_os_string());
+                match existing.parent() {
+                    Some(parent) => existing = parent.to_path_buf(),
+                    None => return path.to_path_buf(),
+                }
+            }
+            None => return path.to_path_buf(),
+        }
+    }
+}
+
+fn is_target_within_root(root: &std::path::Path, target: &std::path::Path) -> bool {
+    canonicalize_with_missing_tail(target).starts_with(root)
+}
+
+fn run_git_apply(
+    root: &std::path::Path,
+    patch_path: &std::path::Path,
+    rel_path: &str,
+    check_only: bool,
+) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("apply")
+        .arg("--whitespace=nowarn")
+        .arg("--unidiff-zero");
+    if check_only {
+        cmd.arg("--check");
+    }
+    cmd.arg(format!("--include={}", rel_path));
+    cmd.arg(patch_path).current_dir(root);
+    let output = cmd
+        .output()
+        .map_err(|e| format!("git apply 无法执行: {}", e))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(if stderr.is_empty() { stdout } else { stderr })
     }
 }
 
@@ -613,6 +824,12 @@ fn try_block_replace_on_existing_file(existing: &str, diff: &str) -> Option<Stri
 }
 
 /// Tauri Command: 将议题落地 Agent 生成的补丁物理应用到本地工作区与频道归档目录
+///
+/// 关键契约：
+/// 1. 每个文件都返回真实 status，绝不以 "ok: true" 掩盖冲突或写入失败；
+/// 2. 修改已有文件前必须写入历史快照，并生成 manifest 供一键回退；
+/// 3. 同一文件路径在进程内串行落盘，目标文件基线不符时返回 conflict，禁止静默覆盖；
+/// 4. 归档产物写入失败同样降级为 failed，而不是假装成功。
 #[tauri::command]
 async fn apply_workspace_patch(
     workspace_binding_id: String,
@@ -621,128 +838,728 @@ async fn apply_workspace_patch(
     patches: Vec<WorkspacePatchItem>,
     state: State<'_, AppState>,
 ) -> Result<ApplyWorkspacePatchResult, String> {
-    let binding = state
-        .db_manager
-        .get_workspace_binding(&workspace_binding_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Workspace Binding '{}' does not exist", workspace_binding_id))?;
-    let binding_owner_type = binding.get("ownerType").and_then(|value| value.as_str()).unwrap_or("");
-    let binding_owner_id = binding.get("ownerId").and_then(|value| value.as_str()).unwrap_or("");
-    let expected_owner_type = if topic_id.trim().is_empty() { "channel" } else { "topic" };
-    let expected_owner_id = if topic_id.trim().is_empty() { channel_id.as_str() } else { topic_id.as_str() };
-    if binding_owner_type != expected_owner_type || binding_owner_id != expected_owner_id {
-        return Err(format!(
-            "Workspace Binding scope mismatch: expected {}:{}, got {}:{}",
-            expected_owner_type,
-            expected_owner_id,
-            binding_owner_type,
-            binding_owner_id
-        ));
-    }
-    let binding_cwd = binding
-        .get("cwd")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "Workspace Binding is missing cwd".to_string())?;
-    let binding_mode = binding.get("mode").and_then(|value| value.as_str()).unwrap_or("custom");
-    let canonical_root = db_manager::resolve_workspace_cwd_input(binding_cwd, binding_mode == "default")
-        .map_err(|e| e.to_string())?;
-    let canonical_root = std::path::PathBuf::from(canonical_root);
-    let binding_artifact_root = binding
-        .get("artifactRoot")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| canonical_root.join("artifacts").to_string_lossy().to_string());
-    let topic_artifacts_dir = std::path::PathBuf::from(
-        db_manager::resolve_workspace_cwd_input(&binding_artifact_root, true)
-            .map_err(|e| e.to_string())?,
-    );
-    std::fs::create_dir_all(&topic_artifacts_dir)
+    let scope = resolve_workspace_scope(
+        state.db_manager.as_ref(),
+        &workspace_binding_id,
+        &channel_id,
+        &topic_id,
+    )?;
+    std::fs::create_dir_all(&scope.topic_artifacts_dir)
         .map_err(|e| format!("Failed to create topic artifacts dir: {}", e))?;
-    let canonical_root = Some(canonical_root);
-    let mut applied_files = Vec::new();
+    let _workspace_guard = acquire_workspace_operation_lock(&state, &scope.canonical_root).await;
+
+    let history_id = format!(
+        "{}-{}",
+        chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+        std::process::id()
+    );
+    let history_dir = scope.topic_artifacts_dir.join(".patch-history").join(&history_id);
+    std::fs::create_dir_all(&history_dir)
+        .map_err(|e| format!("Failed to create patch history dir: {}", e))?;
+
+    let mut applied_files: Vec<AppliedFileStatus> = Vec::new();
+    let mut history_records: Vec<PatchHistoryFileRecord> = Vec::new();
 
     for (idx, item) in patches.iter().enumerate() {
-        let rel_path = sanitize_relative_path(&item.filename)
-            .unwrap_or_else(|| std::path::PathBuf::from(format!("patch_{}.ts", idx + 1)));
+        let rel_path = match sanitize_relative_path(&item.filename) {
+            Some(path) => path,
+            None => {
+                let error = format!(
+                    "非法文件路径 '{}'（禁止绝对路径、.. 越界与 .git 内部目录）",
+                    item.filename
+                );
+                applied_files.push(AppliedFileStatus {
+                    filename: item.filename.clone(),
+                    mode: "failed".to_string(),
+                    status: "failed".to_string(),
+                    target_path: String::new(),
+                    artifact_path: String::new(),
+                    backup_path: None,
+                    error: Some(error.clone()),
+                });
+                history_records.push(PatchHistoryFileRecord {
+                    filename: item.filename.clone(),
+                    target_path: String::new(),
+                    mode: "failed".to_string(),
+                    status: "failed".to_string(),
+                    existed_before: false,
+                    before_hash: None,
+                    after_hash: None,
+                    error: Some(error),
+                });
+                continue;
+            }
+        };
 
-        // 1. 始终写入归档目录保存物理产物快照 (.patch 与重构源码)
-        let artifact_file_path = topic_artifacts_dir.join(&rel_path);
-        if let Some(parent) = artifact_file_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let patch_artifact_path = topic_artifacts_dir.join(format!(
+        // 跨平台统一使用正斜杠作为补丁标识，避免 Windows 反斜杠导致前端匹配失败。
+        let rel_display = rel_path.to_string_lossy().replace('\\', "/");
+
+        // 1. 归档目录保存物理产物快照 (.patch 与重构源码)。写入失败必须明确报错。
+        let artifact_file_path = scope.topic_artifacts_dir.join(&rel_path);
+        let patch_artifact_path = scope.topic_artifacts_dir.join(format!(
             "{}.patch",
-            rel_path.to_string_lossy().replace(['/', '\\'], "_")
+            rel_display.replace(['/', '\\'], "_")
         ));
-        let _ = std::fs::write(&patch_artifact_path, &item.diff);
-
+        let mut archive_error: Option<String> = None;
+        if let Some(parent) = artifact_file_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                archive_error = Some(format!("归档目录创建失败: {}", e));
+            }
+        }
+        if archive_error.is_none() {
+            if let Err(e) = std::fs::write(&patch_artifact_path, &item.diff) {
+                archive_error = Some(format!("补丁归档写入失败: {}", e));
+            }
+        }
         let reconstructed = reconstruct_content_from_diff(&item.diff, item.code_content.as_deref());
-        let _ = std::fs::write(&artifact_file_path, &reconstructed);
+        if archive_error.is_none() {
+            if let Err(e) = std::fs::write(&artifact_file_path, &reconstructed) {
+                archive_error = Some(format!("源码快照写入失败: {}", e));
+            }
+        }
+
+        let candidate_target = scope.canonical_root.join(&rel_path);
+        let target_key = candidate_target.to_string_lossy().to_string();
+
+        // P0-3：同一目标文件在进程内串行执行，避免两个议题并发覆盖。
+        let file_lock = {
+            let mut locks = state
+                .patch_locks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            locks
+                .entry(target_key)
+                .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
+                .clone()
+        };
+        let _file_guard = file_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let mut mode = "artifact_saved".to_string();
+        let mut status = "archived_only".to_string();
         let mut final_target_path = artifact_file_path.to_string_lossy().to_string();
+        let mut backup_path: Option<std::path::PathBuf> = None;
+        let mut existed_before = false;
+        let mut before_hash: Option<String> = None;
+        let mut after_hash: Option<String> = None;
+        let archive_failed = archive_error.is_some();
+        let mut error: Option<String> = archive_error;
 
-        // 2. 如果工作区根目录存在且路径合法，尝试物理合入工作区
-        if let Some(ref root) = canonical_root {
-            let candidate_target = root.join(&rel_path);
-            // 确保父目录不会逃逸出 canonical_root
-            if candidate_target.starts_with(root) {
-                if candidate_target.exists() {
-                    // 优先尝试 git apply
-                    let git_apply_ok = std::process::Command::new("git")
-                        .arg("apply")
-                        .arg("--whitespace=nowarn")
-                        .arg("--unidiff-zero")
-                        .arg(&patch_artifact_path)
-                        .current_dir(root)
-                        .output()
-                        .map(|o| o.status.success())
-                        .unwrap_or(false);
+        if error.is_none() && !is_target_within_root(&scope.canonical_root, &candidate_target) {
+            error = Some(format!(
+                "安全拒绝：目标路径逃逸出工作区根目录 ({})",
+                candidate_target.display()
+            ));
+            status = "failed".to_string();
+            mode = "failed".to_string();
+        }
 
-                    if git_apply_ok {
-                        mode = "git_apply".to_string();
-                        final_target_path = candidate_target.to_string_lossy().to_string();
-                    } else if let Ok(existing_content) = std::fs::read_to_string(&candidate_target) {
-                        if let Some(updated_content) = try_block_replace_on_existing_file(&existing_content, &item.diff) {
-                            if std::fs::write(&candidate_target, updated_content).is_ok() {
-                                mode = "block_replace".to_string();
-                                final_target_path = candidate_target.to_string_lossy().to_string();
+        if error.is_none() {
+            existed_before = candidate_target.exists();
+            if existed_before {
+                match std::fs::read(&candidate_target) {
+                    Ok(before_bytes) => {
+                        before_hash = Some(content_fingerprint(&before_bytes));
+                        let backup_dir = history_dir.join("backups");
+                        let backup_target = backup_dir.join(&rel_path);
+                        let backup_result = (|| -> Result<std::path::PathBuf, String> {
+                            if let Some(parent) = backup_target.parent() {
+                                std::fs::create_dir_all(parent).map_err(|e| {
+                                    format!("快照目录创建失败: {}", e)
+                                })?;
+                            }
+                            std::fs::copy(&candidate_target, &backup_target).map_err(|e| {
+                                format!("写入回退快照失败: {}", e)
+                            })?;
+                            Ok(backup_target)
+                        })();
+                        match backup_result {
+                            Ok(path) => backup_path = Some(path),
+                            Err(e) => {
+                                error = Some(e);
+                                status = "failed".to_string();
+                                mode = "failed".to_string();
                             }
                         }
                     }
-                } else {
-                    // 目标文件尚不存在：创建父目录并写入新文件
-                    if let Some(parent) = candidate_target.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    if std::fs::write(&candidate_target, &reconstructed).is_ok() {
-                        mode = "created_file".to_string();
-                        final_target_path = candidate_target.to_string_lossy().to_string();
+                    Err(e) => {
+                        error = Some(format!("读取目标文件失败: {}", e));
+                        status = "failed".to_string();
+                        mode = "failed".to_string();
                     }
                 }
             }
         }
 
+        if error.is_none() {
+            if existed_before {
+                // 先做 git apply --check 预检，再真正应用；预检失败时回退到块替换。
+                let preflight = run_git_apply(
+                    &scope.canonical_root,
+                    &patch_artifact_path,
+                    &rel_display,
+                    true,
+                );
+                if preflight.is_ok() {
+                    match run_git_apply(
+                        &scope.canonical_root,
+                        &patch_artifact_path,
+                        &rel_display,
+                        false,
+                    ) {
+                        Ok(()) => {
+                            mode = "git_apply".to_string();
+                            status = "applied".to_string();
+                        }
+                        Err(git_error) => {
+                            let existing_content =
+                                std::fs::read_to_string(&candidate_target).unwrap_or_default();
+                            match try_block_replace_on_existing_file(&existing_content, &item.diff) {
+                                Some(updated_content) => {
+                                    match std::fs::write(&candidate_target, updated_content) {
+                                        Ok(()) => {
+                                            mode = "block_replace".to_string();
+                                            status = "applied".to_string();
+                                        }
+                                        Err(write_error) => {
+                                            error = Some(format!(
+                                                "git apply 失败且块替换写入失败: {} / {}",
+                                                git_error, write_error
+                                            ));
+                                            status = "failed".to_string();
+                                            mode = "failed".to_string();
+                                        }
+                                    }
+                                }
+                                None => {
+                                    error = Some(format!(
+                                        "git apply 执行失败且块替换上下文不匹配: {}",
+                                        git_error
+                                    ));
+                                    status = "failed".to_string();
+                                    mode = "failed".to_string();
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let existing_content = std::fs::read_to_string(&candidate_target).unwrap_or_default();
+                    match try_block_replace_on_existing_file(&existing_content, &item.diff) {
+                        Some(updated_content) => {
+                            match std::fs::write(&candidate_target, updated_content) {
+                                Ok(()) => {
+                                    mode = "block_replace".to_string();
+                                    status = "applied".to_string();
+                                }
+                                Err(write_error) => {
+                                    error = Some(format!("块替换写入失败: {}", write_error));
+                                    status = "failed".to_string();
+                                    mode = "failed".to_string();
+                                }
+                            }
+                        }
+                        None => {
+                            let detail = preflight
+                                .err()
+                                .unwrap_or_else(|| "补丁上下文与现有文件不匹配".to_string());
+                            error = Some(format!(
+                                "基线不一致，已拒绝覆盖现有文件: {}",
+                                detail
+                            ));
+                            status = "conflict".to_string();
+                            mode = "conflict".to_string();
+                        }
+                    }
+                }
+            } else {
+                // 目标文件尚不存在：创建父目录并写入新文件。
+                let create_result = (|| -> Result<(), String> {
+                    if let Some(parent) = candidate_target.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| format!("创建父目录失败: {}", e))?;
+                    }
+                    // P0-3：并发下若文件已被其他补丁创建，必须报冲突而不是覆盖。
+                    if candidate_target.exists() {
+                        return Err("目标文件在落盘前已被其他补丁创建".to_string());
+                    }
+                    std::fs::write(&candidate_target, &reconstructed)
+                        .map_err(|e| format!("写入新文件失败: {}", e))
+                })();
+                match create_result {
+                    Ok(()) => {
+                        mode = "created_file".to_string();
+                        status = "applied".to_string();
+                        final_target_path = candidate_target.to_string_lossy().to_string();
+                    }
+                    Err(e) => {
+                        error = Some(e);
+                        if candidate_target.exists() {
+                            status = "conflict".to_string();
+                            mode = "conflict".to_string();
+                        } else {
+                            status = "failed".to_string();
+                            mode = "failed".to_string();
+                        }
+                    }
+                }
+            }
+
+            if status == "applied" {
+                final_target_path = candidate_target.to_string_lossy().to_string();
+                match std::fs::read(&candidate_target) {
+                    Ok(after_bytes) => after_hash = Some(content_fingerprint(&after_bytes)),
+                    Err(e) => {
+                        error = Some(format!("合入后读取校验失败: {}", e));
+                    }
+                }
+            }
+        }
+
+        // 归档写入失败且未能落盘时，明确是 failed，而不是 archived_only。
+        if archive_failed && status != "applied" {
+            status = "failed".to_string();
+            mode = "failed".to_string();
+        }
+
         applied_files.push(AppliedFileStatus {
-            filename: rel_path.to_string_lossy().to_string(),
-            mode,
+            filename: rel_display.clone(),
+            mode: mode.clone(),
+            status: status.clone(),
             target_path: final_target_path,
             artifact_path: artifact_file_path.to_string_lossy().to_string(),
+            backup_path: backup_path.map(|path| path.to_string_lossy().to_string()),
+            error: error.clone(),
+        });
+        history_records.push(PatchHistoryFileRecord {
+            filename: rel_display.clone(),
+            target_path: candidate_target.to_string_lossy().to_string(),
+            mode,
+            status,
+            existed_before,
+            before_hash,
+            after_hash,
+            error,
         });
     }
 
-    let summary = format!(
-        "已成功合入并归档 {} 个工程文件补丁",
-        applied_files.len()
+    let manifest = PatchHistoryManifest {
+        schema_version: 1,
+        history_id: history_id.clone(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        channel_id: channel_id.clone(),
+        topic_id: topic_id.clone(),
+        workspace_root: scope.canonical_root.to_string_lossy().to_string(),
+        files: history_records,
+    };
+    let manifest_path = history_dir.join("manifest.json");
+    let manifest_write = std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
     );
+    let history_path = if manifest_write.is_ok() {
+        manifest_path.to_string_lossy().to_string()
+    } else {
+        String::new()
+    };
+
+    let applied_count = applied_files
+        .iter()
+        .filter(|file| file.status == "applied")
+        .count();
+    let failed_count = applied_files
+        .iter()
+        .filter(|file| file.status == "conflict" || file.status == "failed")
+        .count();
+    let archived_only_count = applied_files
+        .iter()
+        .filter(|file| file.status == "archived_only")
+        .count();
+    let ok = !patches.is_empty()
+        && applied_count == patches.len()
+        && failed_count == 0
+        && archived_only_count == 0;
+
+    let summary = if ok {
+        format!("已成功合入 {} 个工程文件补丁", applied_count)
+    } else {
+        format!(
+            "合入结果：成功 {} 个，冲突/失败 {} 个，仅归档 {} 个{}",
+            applied_count,
+            failed_count,
+            archived_only_count,
+            if history_path.is_empty() {
+                "（历史快照清单写入失败，无法一键回退）"
+            } else {
+                ""
+            }
+        )
+    };
 
     Ok(ApplyWorkspacePatchResult {
-        ok: true,
-        artifacts_dir: topic_artifacts_dir.to_string_lossy().to_string(),
+        ok,
+        applied_count,
+        failed_count,
+        artifacts_dir: scope.topic_artifacts_dir.to_string_lossy().to_string(),
         applied_files,
         summary,
+        history_id,
+        history_path,
     })
+}
+
+/// Tauri Command: 根据补丁历史 manifest 回退工作区改动。
+///
+/// 回退前会校验当前文件内容仍等于本次合入后的指纹；若用户已再次修改，
+/// 则返回 skipped_modified，绝不覆盖用户的新改动。
+#[tauri::command]
+async fn rollback_workspace_patch(
+    workspace_binding_id: String,
+    channel_id: String,
+    topic_id: String,
+    history_path: String,
+    state: State<'_, AppState>,
+) -> Result<RollbackWorkspacePatchResult, String> {
+    let scope = resolve_workspace_scope(
+        state.db_manager.as_ref(),
+        &workspace_binding_id,
+        &channel_id,
+        &topic_id,
+    )?;
+    let _workspace_guard = acquire_workspace_operation_lock(&state, &scope.canonical_root).await;
+    let canonical_artifacts = std::fs::canonicalize(&scope.topic_artifacts_dir)
+        .map_err(|e| format!("无法定位归档目录: {}", e))?;
+    let canonical_history = std::fs::canonicalize(&history_path)
+        .map_err(|e| format!("补丁历史文件不存在或不可读: {}", e))?;
+    if !canonical_history.starts_with(&canonical_artifacts) {
+        return Err("安全拒绝：补丁历史文件不在当前工作区归档目录内".to_string());
+    }
+    let history_dir = canonical_history
+        .parent()
+        .ok_or_else(|| "补丁历史文件缺少父目录".to_string())?
+        .to_path_buf();
+    let manifest_raw = std::fs::read_to_string(&canonical_history)
+        .map_err(|e| format!("读取补丁历史失败: {}", e))?;
+    let manifest: PatchHistoryManifest = serde_json::from_str(&manifest_raw)
+        .map_err(|e| format!("解析补丁历史失败: {}", e))?;
+
+    let mut files = Vec::new();
+    for record in manifest.files {
+        let rel_path = match sanitize_relative_path(&record.filename) {
+            Some(path) => path,
+            None => {
+                files.push(RollbackFileStatus {
+                    filename: record.filename,
+                    status: "failed".to_string(),
+                    target_path: String::new(),
+                    message: Some("历史记录中的文件路径非法，已跳过".to_string()),
+                });
+                continue;
+            }
+        };
+        let target = scope.canonical_root.join(&rel_path);
+        if !is_target_within_root(&scope.canonical_root, &target) {
+            files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "failed".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: Some("目标路径逃逸出工作区，已拒绝回退".to_string()),
+            });
+            continue;
+        }
+
+        if record.status != "applied" {
+            files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "skipped_missing".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: Some(format!("该文件当时并未真实合入（status={}）", record.status)),
+            });
+            continue;
+        }
+
+        let current_hash = std::fs::read(&target)
+            .ok()
+            .map(|bytes| content_fingerprint(&bytes));
+        let still_same_as_applied = match (&current_hash, &record.after_hash) {
+            (Some(current), Some(after)) => current == after,
+            _ => false,
+        };
+
+        if !record.existed_before {
+            if current_hash.is_none() {
+                files.push(RollbackFileStatus {
+                    filename: record.filename,
+                    status: "skipped_missing".to_string(),
+                    target_path: target.to_string_lossy().to_string(),
+                    message: Some("本补丁创建的文件已不存在，无需回退".to_string()),
+                });
+                continue;
+            }
+            if !still_same_as_applied {
+                files.push(RollbackFileStatus {
+                    filename: record.filename,
+                    status: "skipped_modified".to_string(),
+                    target_path: target.to_string_lossy().to_string(),
+                    message: Some("文件在合入后已被再次修改，已拒绝删除".to_string()),
+                });
+                continue;
+            }
+            match std::fs::remove_file(&target) {
+                Ok(()) => files.push(RollbackFileStatus {
+                    filename: record.filename,
+                    status: "deleted_created_file".to_string(),
+                    target_path: target.to_string_lossy().to_string(),
+                    message: None,
+                }),
+                Err(e) => files.push(RollbackFileStatus {
+                    filename: record.filename,
+                    status: "failed".to_string(),
+                    target_path: target.to_string_lossy().to_string(),
+                    message: Some(format!("删除新建文件失败: {}", e)),
+                }),
+            }
+            continue;
+        }
+
+        if current_hash.is_none() {
+            files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "skipped_missing".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: Some("目标文件已不存在，无法恢复快照".to_string()),
+            });
+            continue;
+        }
+
+        let backup_path = history_dir.join("backups").join(&rel_path);
+        if !backup_path.exists() {
+            files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "failed".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: Some("历史快照缺失，无法回退".to_string()),
+            });
+            continue;
+        }
+        if !still_same_as_applied {
+            files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "skipped_modified".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: Some("文件在合入后已被再次修改，已拒绝覆盖".to_string()),
+            });
+            continue;
+        }
+        let restore_result = std::fs::read(&backup_path)
+            .and_then(|bytes| std::fs::write(&target, bytes));
+        match restore_result {
+            Ok(()) => files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "restored".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: None,
+            }),
+            Err(e) => files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "failed".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: Some(format!("恢复快照失败: {}", e)),
+            }),
+        }
+    }
+
+    let restored_count = files
+        .iter()
+        .filter(|file| file.status == "restored" || file.status == "deleted_created_file")
+        .count();
+    let failed_count = files
+        .iter()
+        .filter(|file| file.status == "failed" || file.status == "skipped_modified")
+        .count();
+    let ok = failed_count == 0;
+    let summary = if ok {
+        format!("已回退 {} 个文件的本地改动", restored_count)
+    } else {
+        format!(
+            "回退结果：成功 {} 个，失败/因后续修改被拒绝 {} 个",
+            restored_count, failed_count
+        )
+    };
+
+    Ok(RollbackWorkspacePatchResult {
+        ok,
+        restored_count,
+        failed_count,
+        files,
+        summary,
+    })
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+pub struct WorkspaceCommandResult {
+    pub program: String,
+    pub args: Vec<String>,
+    pub exit_code: Option<i32>,
+    pub success: bool,
+    pub timed_out: bool,
+    pub duration_ms: u64,
+    pub stdout: String,
+    pub stderr: String,
+    pub error: Option<String>,
+}
+
+/// 仅允许验证闭环所需的构建/检查工具，禁止任意命令执行。
+const ALLOWED_WORKSPACE_COMMAND_PROGRAMS: &[&str] = &[
+    "npm", "npx", "pnpm", "yarn", "node", "cargo", "tsc", "git", "go",
+];
+
+fn tail_chars(value: &str, max_chars: usize) -> String {
+    let count = value.chars().count();
+    if count <= max_chars {
+        return value.to_string();
+    }
+    let truncated: String = value.chars().skip(count - max_chars).collect();
+    format!("…（已截断前 {} 字符）\n{}", count - max_chars, truncated)
+}
+
+#[cfg(windows)]
+fn quote_windows_arg(arg: &str) -> Result<String, String> {
+    if arg.contains('\0') || arg.contains('\r') || arg.contains('\n') {
+        return Err("命令参数包含非法控制字符".to_string());
+    }
+    // cmd.exe 解释字符：验证命令无需使用它们，直接拒绝以避免命令注入。
+    if arg
+        .chars()
+        .any(|ch| matches!(ch, '&' | '|' | '<' | '>' | '^' | '%' | '"'))
+    {
+        return Err(format!("命令参数包含不允许的 shell 解释字符: {}", arg));
+    }
+    if arg.is_empty() {
+        return Ok("\"\"".to_string());
+    }
+    if arg.chars().any(char::is_whitespace) {
+        Ok(format!("\"{}\"", arg))
+    } else {
+        Ok(arg.to_string())
+    }
+}
+
+fn build_workspace_command(
+    program: &str,
+    args: &[String],
+) -> Result<tokio::process::Command, String> {
+    #[cfg(windows)]
+    {
+        // npm / pnpm 等入口在 Windows 上是 .cmd 垫片，必须经 cmd.exe 解析。
+        let mut line = program.to_string();
+        for arg in args {
+            line.push(' ');
+            line.push_str(&quote_windows_arg(arg)?);
+        }
+        let mut cmd = tokio::process::Command::new("cmd");
+        cmd.arg("/C").arg(line);
+        Ok(cmd)
+    }
+    #[cfg(not(windows))]
+    {
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args);
+        Ok(cmd)
+    }
+}
+
+/// Tauri Command: 在 Workspace Binding 根目录内执行白名单验证命令。
+///
+/// 该命令是「补丁应用后真实验证」的唯一宿主入口：
+/// - 只接受白名单程序，绝不启动 shell 任意命令；
+/// - cwd 固定为绑定工作区根目录；
+/// - 支持超时与输出截断，返回真实 exit code / stdout / stderr 作为证据。
+#[tauri::command]
+async fn run_workspace_command(
+    workspace_binding_id: String,
+    channel_id: String,
+    topic_id: String,
+    program: String,
+    args: Vec<String>,
+    timeout_secs: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<WorkspaceCommandResult, String> {
+    let normalized_program = program.trim().to_lowercase();
+    if !ALLOWED_WORKSPACE_COMMAND_PROGRAMS
+        .iter()
+        .any(|allowed| *allowed == normalized_program)
+    {
+        return Err(format!(
+            "命令 '{}' 不在验证白名单内（允许: {}）",
+            program,
+            ALLOWED_WORKSPACE_COMMAND_PROGRAMS.join(", ")
+        ));
+    }
+    if args.iter().any(|arg| arg.contains('\0')) {
+        return Err("命令参数包含 NUL 字符".to_string());
+    }
+
+    let scope = resolve_workspace_scope(
+        state.db_manager.as_ref(),
+        &workspace_binding_id,
+        &channel_id,
+        &topic_id,
+    )?;
+    let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(120).clamp(5, 600));
+    let _workspace_guard = acquire_workspace_operation_lock(&state, &scope.canonical_root).await;
+
+    let mut cmd = build_workspace_command(&normalized_program, &args)?;
+    cmd.current_dir(&scope.canonical_root)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+
+    let started = std::time::Instant::now();
+    let outcome = tokio::time::timeout(timeout, cmd.output()).await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    match outcome {
+        Err(_) => Ok(WorkspaceCommandResult {
+            program: normalized_program,
+            args,
+            exit_code: None,
+            success: false,
+            timed_out: true,
+            duration_ms,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: Some(format!(
+                "验证命令超时（{} 秒）已被终止",
+                timeout.as_secs()
+            )),
+        }),
+        Ok(Err(e)) => Ok(WorkspaceCommandResult {
+            program: normalized_program,
+            args,
+            exit_code: None,
+            success: false,
+            timed_out: false,
+            duration_ms,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: Some(format!("验证命令启动失败: {}", e)),
+        }),
+        Ok(Ok(output)) => {
+            let stdout = tail_chars(&String::from_utf8_lossy(&output.stdout), 16_000);
+            let stderr = tail_chars(&String::from_utf8_lossy(&output.stderr), 16_000);
+            Ok(WorkspaceCommandResult {
+                program: normalized_program,
+                args,
+                exit_code: output.status.code(),
+                success: output.status.success(),
+                timed_out: false,
+                duration_ms,
+                stdout,
+                stderr,
+                error: None,
+            })
+        }
+    }
 }
 
 /// Tauri Command: 获取 ACP 本地持久化日志文件绝对路径
@@ -1829,6 +2646,8 @@ async fn main() {
     let state = AppState {
         acp_manager: Arc::new(Mutex::new(AcpProcessManager::with_db(db_manager.clone()))),
         db_manager,
+        patch_locks: std::sync::Mutex::new(HashMap::new()),
+        workspace_operation_locks: std::sync::Mutex::new(HashMap::new()),
         nostr_relay_url: "ws://127.0.0.1:8080/relay".to_string(),
     };
 
@@ -1855,6 +2674,8 @@ async fn main() {
             clear_agent_sessions,
             read_workspace_file_sandboxed,
             apply_workspace_patch,
+            rollback_workspace_patch,
+            run_workspace_command,
             get_acp_log_path,
             read_recent_acp_logs,
             db_save_message,

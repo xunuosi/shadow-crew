@@ -702,6 +702,16 @@ export interface ModularOrchestrationState {
   whitelistDeduplications?: WhitelistDeduplicationRecord[]; // 白名单拓扑偏序收敛与去重审计记录 (N5)
 }
 
+export type WorkspacePatchApplyStatus = 'applied' | 'conflict' | 'archived_only' | 'failed';
+
+export type WorkspacePatchApplyMode =
+  | 'git_apply'
+  | 'block_replace'
+  | 'created_file'
+  | 'artifact_saved'
+  | 'conflict'
+  | 'failed';
+
 export interface TopicPatchDiffItem {
   filename: string;
   additions: number;
@@ -709,8 +719,36 @@ export interface TopicPatchDiffItem {
   diff: string;
   codeContent?: string;
   applied?: boolean;
-  appliedMode?: 'git_apply' | 'block_replace' | 'created_file' | 'artifact_saved' | 'workspace_memory';
+  appliedMode?: WorkspacePatchApplyMode;
+  applyStatus?: WorkspacePatchApplyStatus;
+  applyError?: string;
+  backupPath?: string;
   targetPath?: string;
+}
+
+/**
+ * 宿主侧真实命令执行证据：退出码、耗时与输出尾部均由 Rust 返回，
+ * 不允许前端凭空推断“验证通过”。
+ */
+export interface WorkspaceVerificationCommandResult {
+  label: string;
+  program: string;
+  args: string[];
+  exitCode: number | null;
+  success: boolean;
+  timedOut: boolean;
+  durationMs: number;
+  stdout: string;
+  stderr: string;
+  error?: string;
+}
+
+export interface WorkspaceVerificationReport {
+  status: 'running' | 'passed' | 'failed' | 'skipped';
+  checkedAt: string;
+  commands: WorkspaceVerificationCommandResult[];
+  summary: string;
+  skippedReason?: string;
 }
 
 export interface TopicExecutionUiMeta {
@@ -813,6 +851,10 @@ export interface GameTheoreticState {
   executionSummary?: string;
   executionDiffs?: TopicPatchDiffItem[];
   executionArtifactsDir?: string;
+  executionPatchHistoryPath?: string;
+  executionVerification?: WorkspaceVerificationReport;
+  executionVerificationRepairAttempts?: number;
+  executionRolledBackAt?: string;
   executionUiMeta?: TopicExecutionUiMeta;
   mcdaPayload?: McdaDecisionPayload;
   sprtState?: SprtGovernorState;

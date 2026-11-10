@@ -87,8 +87,14 @@ import {
   extractModuleDecompositionFromAcpResponse,
   extractWorkspaceDiffsFromText,
   applyTopicPatchToWorkspace,
+  rollbackTopicPatchFromWorkspace,
   parseSessionKey,
 } from './services/acpClient';
+import {
+  extractVerificationFailureDigest,
+  formatVerificationReport,
+  verifyWorkspaceAfterPatch,
+} from './services/workspaceVerification';
 import {
   resolveCascadeMaxHops,
   resolveEffectiveRuntimePolicy,
@@ -7710,6 +7716,13 @@ export default function App() {
   const handleExecuteTopicPatch = (topicId: string, executorId: string) => {
     const currentTopic = getTopicData(topicId);
     if (!currentTopic) return;
+    updateTopicDataInState(topicId, (old) => ({
+      ...old,
+      gameTheoreticState: {
+        ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
+        executionVerificationRepairAttempts: 0,
+      },
+    }));
     dispatchTopicExecution({
       topicId,
       executorId,
@@ -7722,16 +7735,29 @@ export default function App() {
     });
   };
 
+  const appendTopicSystemMessage = (
+    topicId: string,
+    _channelId: string | undefined,
+    message: Message
+  ) => {
+    setMessages((prev) => ({
+      ...prev,
+      [topicId]: [...(prev[topicId] || []), message],
+    }));
+  };
+
   const handleApplyTopicPatch = async (topicId?: string, customDiffs?: TopicPatchDiffItem[]) => {
     const targetTopicId = topicId || activeDiff?.topicId || activeTopicId;
     const currentTopic = targetTopicId ? getTopicData(targetTopicId) : null;
-    const diffsToApply: TopicPatchDiffItem[] =
+    const requestedDiffs: TopicPatchDiffItem[] =
       customDiffs && customDiffs.length > 0
         ? customDiffs
         : currentTopic?.gameTheoreticState?.executionDiffs ||
           (activeDiff?.allDiffs && activeDiff.allDiffs.length > 0 ? activeDiff.allDiffs : activeDiff ? [activeDiff] : []);
 
-    if (!diffsToApply || diffsToApply.length === 0) return;
+    // 已经真实落盘的文件不再重复应用，避免二次合入制造冲突。
+    const diffsToApply = requestedDiffs.filter((diff) => diff.applyStatus !== 'applied');
+    if (diffsToApply.length === 0) return;
 
     const topicChannel =
       (currentTopic?.channelId ? channels.find((c) => c.id === currentTopic.channelId) : null) ||
@@ -7752,30 +7778,72 @@ export default function App() {
     });
 
     const appliedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const updatedDiffs: TopicPatchDiffItem[] = diffsToApply.map((d) => {
-      const match = res.appliedFiles.find((af) => af.filename === d.filename);
+    const updatedDiffs: TopicPatchDiffItem[] = diffsToApply.map((diff, index) => {
+      // Rust 按输入顺序逐项返回状态；索引映射可避免路径前缀归一化造成的匹配失败。
+      const match =
+        res.appliedFiles[index] ||
+        res.appliedFiles.find((file) => file.filename === diff.filename);
       return {
-        ...d,
-        applied: true,
-        appliedMode: match?.mode || 'artifact_saved',
+        ...diff,
+        applied: match?.status === 'applied',
+        appliedMode: match?.mode || 'failed',
+        applyStatus: match?.status || 'failed',
+        applyError: match?.error,
+        backupPath: match?.backupPath,
         targetPath: match?.targetPath,
       };
     });
+    const realAppliedCount = updatedDiffs.filter((diff) => diff.applied).length;
+    const allApplied = realAppliedCount === diffsToApply.length;
+    const execMeta = currentTopic?.gameTheoreticState?.executionUiMeta;
+    const mergedDiffs = [
+      ...(currentTopic?.gameTheoreticState?.executionDiffs || []).map(
+        (existing) => updatedDiffs.find((updated) => updated.filename === existing.filename) || existing
+      ),
+      ...updatedDiffs.filter(
+        (updated) =>
+          !(currentTopic?.gameTheoreticState?.executionDiffs || []).some(
+            (existing) => existing.filename === updated.filename
+          )
+      ),
+    ];
 
     if (targetTopicId) {
       updateTopicDataInState(targetTopicId, (old) => ({
         ...old,
         gameTheoreticState: {
           ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
-          executionStatus: 'applied',
-          executionAppliedAt: appliedAt,
-          executionArtifactsDir: res.artifactsDir,
+          executionStatus: allApplied ? 'applied' : 'failed',
+          executionAppliedAt: realAppliedCount > 0 ? appliedAt : old.gameTheoreticState?.executionAppliedAt,
+          executionArtifactsDir: res.artifactsDir || old.gameTheoreticState?.executionArtifactsDir,
           executionSummary: res.summary,
-          executionDiffs: updatedDiffs,
+          executionDiffs: mergedDiffs,
+          executionPatchHistoryPath: res.historyPath || old.gameTheoreticState?.executionPatchHistoryPath,
+          executionVerification:
+            realAppliedCount > 0
+              ? {
+                  status: 'running',
+                  checkedAt: new Date().toISOString(),
+                  commands: [],
+                  summary: '补丁已落盘，正在执行宿主验证命令...',
+                }
+              : undefined,
         },
       }));
 
-      const execMeta = currentTopic?.gameTheoreticState?.executionUiMeta;
+      const detailLines = res.appliedFiles
+        .map((file) => {
+          const statusLabel =
+            file.status === 'applied'
+              ? `已合入 (${file.mode})`
+              : file.status === 'conflict'
+              ? '冲突，已拒绝覆盖'
+              : file.status === 'archived_only'
+              ? '仅归档，未写入工作区'
+              : '失败';
+          return `  • \`${file.filename}\` → ${statusLabel}${file.error ? `：${file.error}` : ''}`;
+        })
+        .join('\n');
       const applyConfirmMsg: Message = {
         id: `topic-patch-applied-${Date.now()}`,
         threadId: targetTopicId,
@@ -7783,12 +7851,12 @@ export default function App() {
         authorId: 'system',
         authorName: 'Shadow Crew 工作区合入引擎',
         authorHandle: '@workspace-patcher',
-        authorAvatar: '⚖️',
+        authorAvatar: realAppliedCount > 0 ? '⚖️' : '⚠️',
         isAgent: true,
-        agentBadge: 'Workspace Applied',
+        agentBadge: allApplied ? 'Workspace Applied' : 'Workspace Patch Conflict',
         timestamp: appliedAt,
         relatedTopicId: targetTopicId,
-        content: `✅ **${execMeta?.podTitle || '决议交付文件'}已物理合入本地工作区**\n\n- **合入摘要**：${res.summary}\n- **归档目录**：\`${res.artifactsDir}\`\n- **变更文件明细**：\n${res.appliedFiles.map((f) => `  • \`${f.filename}\` → \`${f.targetPath}\` (${f.mode})`).join('\n')}`,
+        content: `${realAppliedCount > 0 ? '✅' : '❌'} **${execMeta?.podTitle || '决议交付文件'}合入结果**\n\n- **合入摘要**：${res.summary}\n- **归档目录**：\`${res.artifactsDir || '未生成'}\`\n- **变更文件明细**：\n${detailLines || '  • 无'}`,
       };
 
       setMessages((prev) => {
@@ -7806,7 +7874,7 @@ export default function App() {
                 const baseContent = m.content.split('\n\n---\n')[0];
                 return {
                   ...m,
-                  content: `${baseContent}\n\n---\n🎉 **${execMeta?.podTitle || '决议交付'}已合入工作区 (${appliedAt})**：${res.summary}（归档于 \`${res.artifactsDir}\`）`,
+                  content: `${baseContent}\n\n---\n${realAppliedCount > 0 ? '🎉' : '⚠️'} **${execMeta?.podTitle || '决议交付'}合入结果 (${appliedAt})**：${res.summary}（归档于 \`${res.artifactsDir || '未生成'}\`）`,
                 };
               }
               return m;
@@ -7825,12 +7893,198 @@ export default function App() {
       prev
         ? {
             ...prev,
-            executionStatus: 'applied',
+            executionStatus: allApplied ? 'applied' : 'failed',
             artifactsDir: res.artifactsDir,
-            allDiffs: updatedDiffs,
+            allDiffs: mergedDiffs,
           }
         : prev
     );
+
+    if (realAppliedCount === 0) return;
+
+    // P0-2：补丁真实落盘后，执行宿主验证并记录证据。
+    const verification = await verifyWorkspaceAfterPatch({
+      workspaceBindingId: topicBinding.id,
+      workspaceRoot: topicBinding.cwd,
+      channelId: effectiveChanId,
+      topicId: targetTopicId || 'adhoc-patch',
+    });
+
+    const executorId =
+      currentTopic?.gameTheoreticState?.assignedExecutorId ||
+      currentTopic?.decisionRecord?.executorId ||
+      currentTopic?.rulingRecord?.executorId;
+    const executorAgent = executorId ? agentsRef.current.find((agent) => agent.id === executorId) : undefined;
+    const previousAttempts = currentTopic?.gameTheoreticState?.executionVerificationRepairAttempts || 0;
+    const repairLimit = resolveCorrectionRetryLimit(executorAgent);
+
+    if (targetTopicId) {
+      updateTopicDataInState(targetTopicId, (old) => ({
+        ...old,
+        gameTheoreticState: {
+          ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
+          executionVerification: verification,
+          executionVerificationRepairAttempts:
+            verification.status === 'passed' ? 0 : old.gameTheoreticState?.executionVerificationRepairAttempts || 0,
+        },
+      }));
+
+      const verificationMsg: Message = {
+        id: `topic-patch-verification-${Date.now()}`,
+        threadId: targetTopicId,
+        channelId: topicChannel?.id,
+        authorId: 'system',
+        authorName: 'Shadow Crew 验证门禁',
+        authorHandle: '@verification-gate',
+        authorAvatar: verification.status === 'passed' ? '🛡️' : verification.status === 'failed' ? '🚫' : '⏭️',
+        isAgent: true,
+        agentBadge: 'Host Verification',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        relatedTopicId: targetTopicId,
+        content: formatVerificationReport(verification),
+      };
+      appendTopicSystemMessage(targetTopicId, topicChannel?.id, verificationMsg);
+
+      if (verification.status === 'failed') {
+        const digest = extractVerificationFailureDigest(verification);
+        if (executorId && executorAgent && previousAttempts < repairLimit) {
+          const nextAttempt = previousAttempts + 1;
+          updateTopicDataInState(targetTopicId, (old) => ({
+            ...old,
+            gameTheoreticState: {
+              ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
+              executionVerificationRepairAttempts: nextAttempt,
+            },
+          }));
+          const repairNotice: Message = {
+            id: `topic-patch-repair-${Date.now()}`,
+            threadId: targetTopicId,
+            channelId: topicChannel?.id,
+            authorId: 'system',
+            authorName: 'Shadow Crew 验证门禁',
+            authorHandle: '@verification-gate',
+            authorAvatar: '🔁',
+            isAgent: true,
+            agentBadge: 'Auto Repair',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            relatedTopicId: targetTopicId,
+            content: `🔁 **验证失败，已自动回派执行 Agent 修复（${nextAttempt}/${repairLimit}）**\n\n\`\`\`\n${digest.slice(0, 1800)}\n\`\`\``,
+          };
+          appendTopicSystemMessage(targetTopicId, topicChannel?.id, repairNotice);
+
+          const baseSolution =
+            currentTopic?.decisionRecord?.solution ||
+            currentTopic?.rulingRecord?.solution ||
+            currentTopic?.description ||
+            currentTopic?.title ||
+            '';
+          setTimeout(() => {
+            dispatchTopicExecution({
+              topicId: targetTopicId,
+              executorId,
+              decision: {
+                solution: `${baseSolution}\n\n【宿主验证失败证据（自动修复第 ${nextAttempt}/${repairLimit} 次）】\n${digest}\n\n请只针对上述真实报错输出最小修正补丁；不要复述方案，不要修改未报错的文件。`,
+                impactedFiles:
+                  currentTopic?.decisionRecord?.impactedFiles ||
+                  currentTopic?.rulingRecord?.impactedFiles ||
+                  updatedDiffs.map((diff) => diff.filename),
+                approvers: currentTopic?.decisionRecord?.approvers || [],
+                rulingRecord: currentTopic?.rulingRecord,
+              },
+            });
+          }, 600);
+        } else {
+          const exhaustedMsg: Message = {
+            id: `topic-patch-repair-exhausted-${Date.now()}`,
+            threadId: targetTopicId,
+            channelId: topicChannel?.id,
+            authorId: 'system',
+            authorName: 'Shadow Crew 验证门禁',
+            authorHandle: '@verification-gate',
+            authorAvatar: '🛑',
+            isAgent: true,
+            agentBadge: 'Manual Required',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            relatedTopicId: targetTopicId,
+            content: `🛑 **验证失败且自动修复次数已用尽**（上限 ${repairLimit} 次）。请人工检查验证输出，或使用「回退本次合入」撤销本地改动。\n\n\`\`\`\n${digest.slice(0, 1800)}\n\`\`\``,
+          };
+          appendTopicSystemMessage(targetTopicId, topicChannel?.id, exhaustedMsg);
+        }
+      }
+    }
+  };
+
+  const handleRollbackTopicPatch = async (topicId?: string) => {
+    const targetTopicId = topicId || activeTopicId;
+    const currentTopic = targetTopicId ? getTopicData(targetTopicId) : null;
+    if (!targetTopicId || !currentTopic) return;
+    const historyPath = currentTopic.gameTheoreticState?.executionPatchHistoryPath;
+    if (!historyPath) {
+      throw new Error('当前议题没有可用的补丁历史快照，无法回退');
+    }
+    const topicBinding = getTopicWorkspaceBinding(targetTopicId);
+    if (!topicBinding) {
+      throw new Error(`议题 ${targetTopicId} 缺少 Workspace Binding`);
+    }
+    const topicChannel =
+      (currentTopic.channelId ? channels.find((c) => c.id === currentTopic.channelId) : null) ||
+      activeChannel;
+
+    const res = await rollbackTopicPatchFromWorkspace({
+      workspaceBindingId: topicBinding.id,
+      channelId: topicChannel?.id || 'general',
+      topicId: targetTopicId,
+      historyPath,
+    });
+
+    const rolledBackAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const rolledBackFiles = new Set(
+      res.files
+        .filter((file) => file.status === 'restored' || file.status === 'deleted_created_file')
+        .map((file) => file.filename)
+    );
+    updateTopicDataInState(targetTopicId, (old) => ({
+      ...old,
+      gameTheoreticState: {
+        ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
+        executionStatus: res.restoredCount > 0 ? 'completed' : old.gameTheoreticState?.executionStatus,
+        executionAppliedAt: res.restoredCount > 0 ? undefined : old.gameTheoreticState?.executionAppliedAt,
+        executionRolledBackAt: res.restoredCount > 0 ? rolledBackAt : old.gameTheoreticState?.executionRolledBackAt,
+        executionPatchHistoryPath: res.ok ? undefined : old.gameTheoreticState?.executionPatchHistoryPath,
+        executionVerification: undefined,
+        executionDiffs: (old.gameTheoreticState?.executionDiffs || []).map((diff) =>
+          rolledBackFiles.has(diff.filename)
+            ? {
+                ...diff,
+                applied: false,
+                applyStatus: undefined,
+                appliedMode: undefined,
+                applyError: undefined,
+                backupPath: undefined,
+                targetPath: undefined,
+              }
+            : diff
+        ),
+      },
+    }));
+
+    const detailLines = res.files
+      .map((file) => `  • \`${file.filename}\` → ${file.status}${file.message ? `：${file.message}` : ''}`)
+      .join('\n');
+    appendTopicSystemMessage(targetTopicId, topicChannel?.id, {
+      id: `topic-patch-rollback-${Date.now()}`,
+      threadId: targetTopicId,
+      channelId: topicChannel?.id,
+      authorId: 'system',
+      authorName: 'Shadow Crew 工作区回退引擎',
+      authorHandle: '@workspace-rollback',
+      authorAvatar: res.ok ? '↩️' : '⚠️',
+      isAgent: true,
+      agentBadge: res.ok ? 'Workspace Rolled Back' : 'Rollback Partial',
+      timestamp: rolledBackAt,
+      relatedTopicId: targetTopicId,
+      content: `${res.ok ? '↩️' : '⚠️'} **补丁回退结果**\n\n- **回退摘要**：${res.summary}\n- **文件明细**：\n${detailLines || '  • 无可回退文件'}`,
+    });
   };
 
   const handleReopenTopic = (topicId: string) => {
@@ -8773,6 +9027,7 @@ export default function App() {
                   agents={agents}
                   activeExecutions={Object.values(activeExecutions)}
                   onApplyTopicPatch={handleApplyTopicPatch}
+                  onRollbackTopicPatch={handleRollbackTopicPatch}
                   onAbortAgent={(agentId) => activeThread && handleAbortAgent(agentId, activeThread.id)}
                   onAddReaction={handleAddReaction}
                   onInspectAgent={(id) => {
@@ -8864,6 +9119,7 @@ export default function App() {
                 onReopenTopic={handleReopenTopic}
                 onExecuteTopicPatch={handleExecuteTopicPatch}
                 onApplyTopicPatch={(tid) => handleApplyTopicPatch(tid)}
+                onRollbackTopicPatch={handleRollbackTopicPatch}
                 workspaceCwd={getTopicWorkspaceBinding(activeTopicId)?.cwd}
                 overlappingFiles={(() => {
                   if (!activeTopicData || activeTopicData.gameTheoreticState?.executionStatus === 'applied') return [];

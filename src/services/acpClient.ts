@@ -1717,77 +1717,203 @@ export interface ApplyTopicPatchOptions {
   patches: TopicPatchDiffItem[];
 }
 
+export interface ApplyTopicPatchFileResult {
+  filename: string;
+  mode: 'git_apply' | 'block_replace' | 'created_file' | 'artifact_saved' | 'conflict' | 'failed';
+  status: 'applied' | 'conflict' | 'archived_only' | 'failed';
+  targetPath: string;
+  artifactPath: string;
+  backupPath?: string;
+  error?: string;
+}
+
 export interface ApplyTopicPatchResponse {
+  /** 仅当全部补丁真实落盘成功时为 true。 */
   ok: boolean;
+  appliedCount: number;
+  failedCount: number;
   artifactsDir: string;
-  appliedFiles: Array<{
-    filename: string;
-    mode: 'git_apply' | 'block_replace' | 'created_file' | 'artifact_saved' | 'workspace_memory';
-    targetPath: string;
-    artifactPath: string;
-  }>;
+  appliedFiles: ApplyTopicPatchFileResult[];
   summary: string;
+  historyId: string;
+  historyPath: string;
+}
+
+export function resolveTauriInvoke(): ((command: string, args?: Record<string, unknown>) => Promise<any>) | null {
+  if (typeof window === 'undefined') return null;
+  return (
+    (window as any).__TAURI_INTERNALS__?.invoke ||
+    (window as any).__TAURI__?.core?.invoke ||
+    null
+  );
+}
+
+function buildUntrustedPatchFailure(
+  patches: TopicPatchDiffItem[],
+  artifactsDir: string,
+  summary: string,
+  error: string
+): ApplyTopicPatchResponse {
+  return {
+    ok: false,
+    appliedCount: 0,
+    failedCount: patches.length,
+    artifactsDir,
+    appliedFiles: patches.map((patch) => ({
+      filename: patch.filename,
+      mode: 'failed' as const,
+      status: 'failed' as const,
+      targetPath: '',
+      artifactPath: '',
+      error,
+    })),
+    summary,
+    historyId: '',
+    historyPath: '',
+  };
 }
 
 /**
- * 将议题落地 Agent 生成的补丁物理应用到本地工作区与频道归档目录
+ * 将议题落地 Agent 生成的补丁物理应用到本地工作区与频道归档目录。
+ *
+ * 该函数不再伪造成功：浏览器预览环境或 IPC 失败时返回 ok=false，
+ * 并把真实失败原因逐文件返回给调用方，由宿主决定提示、重试或回退。
  */
 export async function applyTopicPatchToWorkspace(
   options: ApplyTopicPatchOptions
 ): Promise<ApplyTopicPatchResponse> {
   const { workspaceBindingId, workspaceRoot, artifactRoot, channelId, topicId, patches } = options;
+  const tauriInvoke = resolveTauriInvoke();
+  const artifactsDir = artifactRoot || `${workspaceRoot}/artifacts`;
 
-  const tauriInvoke =
-    typeof window !== 'undefined'
-      ? (window as any).__TAURI_INTERNALS__?.invoke ||
-        (window as any).__TAURI__?.core?.invoke
-      : null;
-
-  if (tauriInvoke) {
-    try {
-      const res = await tauriInvoke('apply_workspace_patch', {
-        workspaceBindingId,
-        channelId: channelId || 'general',
-        topicId,
-        patches: patches.map((p) => ({
-          filename: p.filename,
-          diff: p.diff,
-          code_content: p.codeContent || null,
-        })),
-      });
-      if (res && res.ok) {
-        return {
-          ok: true,
-          artifactsDir: res.artifacts_dir,
-          appliedFiles: (res.applied_files || []).map((f: any) => ({
-            filename: f.filename,
-            mode: f.mode,
-            targetPath: f.target_path,
-            artifactPath: f.artifact_path,
-          })),
-          summary: res.summary || `已物理合入 ${patches.length} 个文件补丁`,
-        };
-      }
-    } catch (err) {
-      console.warn('[ACP Client] apply_workspace_patch IPC failed, using local fallback:', err);
-    }
+  if (!tauriInvoke) {
+    return buildUntrustedPatchFailure(
+      patches,
+      artifactsDir,
+      '未执行：当前为浏览器预览环境，无法写入本地工作区',
+      '当前运行环境没有 Tauri IPC，补丁未落盘。请在桌面端执行合入。'
+    );
   }
 
-  // Web 环境回退：写入虚拟工作区缓存并返回合入明细
-  const virtualArtifactsDir = artifactRoot || `${workspaceRoot}/artifacts`;
-  const appliedFiles = patches.map((p) => ({
-    filename: p.filename,
-    mode: 'workspace_memory' as const,
-    targetPath: `${workspaceRoot || '.'}/${p.filename}`.replace(/\/+/g, '/'),
-    artifactPath: `${virtualArtifactsDir}/${p.filename}`,
-  }));
+  try {
+    const res = await tauriInvoke('apply_workspace_patch', {
+      workspaceBindingId,
+      channelId: channelId || 'general',
+      topicId,
+      patches: patches.map((p) => ({
+        filename: p.filename,
+        diff: p.diff,
+        code_content: p.codeContent || null,
+      })),
+    });
+    if (!res || typeof res !== 'object') {
+      return buildUntrustedPatchFailure(
+        patches,
+        artifactsDir,
+        '合入失败：宿主返回空结果',
+        'apply_workspace_patch 未返回有效结果'
+      );
+    }
+    return {
+      ok: Boolean(res.ok),
+      appliedCount: Number(res.applied_count) || 0,
+      failedCount: Number(res.failed_count) || 0,
+      artifactsDir: res.artifacts_dir || artifactsDir,
+      appliedFiles: (res.applied_files || []).map((f: any) => ({
+        filename: f.filename,
+        mode: f.mode,
+        status: f.status,
+        targetPath: f.target_path,
+        artifactPath: f.artifact_path,
+        backupPath: f.backup_path || undefined,
+        error: f.error || undefined,
+      })),
+      summary: res.summary || '宿主未返回合入摘要',
+      historyId: res.history_id || '',
+      historyPath: res.history_path || '',
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[ACP Client] apply_workspace_patch IPC failed:', err);
+    return buildUntrustedPatchFailure(
+      patches,
+      artifactsDir,
+      `合入失败：宿主 IPC 异常（${message}）`,
+      message
+    );
+  }
+}
 
-  return {
-    ok: true,
-    artifactsDir: virtualArtifactsDir,
-    appliedFiles,
-    summary: `已成功合入并归档 ${appliedFiles.length} 个工程文件补丁`,
-  };
+export interface RollbackTopicPatchOptions {
+  workspaceBindingId: string;
+  channelId: string;
+  topicId: string;
+  historyPath: string;
+}
+
+export interface RollbackTopicPatchFileResult {
+  filename: string;
+  status: 'restored' | 'deleted_created_file' | 'skipped_modified' | 'skipped_missing' | 'failed';
+  targetPath: string;
+  message?: string;
+}
+
+export interface RollbackTopicPatchResponse {
+  ok: boolean;
+  restoredCount: number;
+  failedCount: number;
+  files: RollbackTopicPatchFileResult[];
+  summary: string;
+}
+
+/**
+ * 根据补丁历史 manifest 回退本地工作区改动。
+ * 用户后续修改过的文件会被宿主标记为 skipped_modified，绝不覆盖。
+ */
+export async function rollbackTopicPatchFromWorkspace(
+  options: RollbackTopicPatchOptions
+): Promise<RollbackTopicPatchResponse> {
+  const { workspaceBindingId, channelId, topicId, historyPath } = options;
+  const tauriInvoke = resolveTauriInvoke();
+  if (!tauriInvoke) {
+    return {
+      ok: false,
+      restoredCount: 0,
+      failedCount: 0,
+      files: [],
+      summary: '未执行：当前为浏览器预览环境，无法回退本地工作区',
+    };
+  }
+  try {
+    const res = await tauriInvoke('rollback_workspace_patch', {
+      workspaceBindingId,
+      channelId: channelId || 'general',
+      topicId,
+      historyPath,
+    });
+    return {
+      ok: Boolean(res?.ok),
+      restoredCount: Number(res?.restored_count) || 0,
+      failedCount: Number(res?.failed_count) || 0,
+      files: (res?.files || []).map((f: any) => ({
+        filename: f.filename,
+        status: f.status,
+        targetPath: f.target_path,
+        message: f.message || undefined,
+      })),
+      summary: res?.summary || '宿主未返回回退摘要',
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[ACP Client] rollback_workspace_patch IPC failed:', err);
+    return {
+      ok: false,
+      restoredCount: 0,
+      failedCount: 0,
+      files: [],
+      summary: `回退失败：宿主 IPC 异常（${message}）`,
+    };
+  }
 }
 
 /**

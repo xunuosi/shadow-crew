@@ -104,6 +104,7 @@ interface TopicThreadDrawerProps {
   onReopenTopic?: (topicId: string) => void;
   onExecuteTopicPatch?: (topicId: string, executorId: string) => void;
   onApplyTopicPatch?: (topicId: string) => Promise<void> | void;
+  onRollbackTopicPatch?: (topicId: string) => Promise<void> | void;
   onOpenCodexDiff: (diff: any) => void;
   onEditTopic?: () => void;
   workspaceCwd?: string;
@@ -134,6 +135,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   onReopenTopic,
   onExecuteTopicPatch,
   onApplyTopicPatch,
+  onRollbackTopicPatch,
   onOpenCodexDiff,
   onEditTopic,
   workspaceCwd,
@@ -164,6 +166,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   const [selectedExecutorId, setSelectedExecutorId] = useState('');
   const [showAssignExecutorModal, setShowAssignExecutorModal] = useState(false);
   const [isApplyingPatch, setIsApplyingPatch] = useState(false);
+  const [isRollingBack, setIsRollingBack] = useState(false);
 
   // 仲裁裁决法槌控制台相关状态 (Arbiter's Gavel Ruling State)
   const [showRulingModal, setShowRulingModal] = useState(false);
@@ -807,6 +810,16 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       await onApplyTopicPatch(topic.id);
     } finally {
       setIsApplyingPatch(false);
+    }
+  };
+
+  const handleRollbackPatchClick = async () => {
+    if (!onRollbackTopicPatch || !topic?.id) return;
+    setIsRollingBack(true);
+    try {
+      await onRollbackTopicPatch(topic.id);
+    } finally {
+      setIsRollingBack(false);
     }
   };
 
@@ -1877,6 +1890,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           } : undefined}
           onOpenCodexDiff={onOpenCodexDiff}
           onApplyTopicPatch={onApplyTopicPatch}
+          onRollbackTopicPatch={onRollbackTopicPatch}
           overlappingFiles={overlappingFiles}
         />
       ) : (
@@ -2288,6 +2302,21 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                               <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 text-[9px] font-sans font-semibold">
                                 ✓ 已合入
                               </span>
+                            )}
+                            {onRollbackTopicPatch && topic.gameTheoreticState?.executionPatchHistoryPath && (
+                              <button
+                                type="button"
+                                disabled={isRollingBack}
+                                onClick={handleRollbackPatchClick}
+                                className="px-1.5 py-0.5 rounded bg-rose-50 dark:bg-rose-500/15 hover:bg-rose-100 dark:hover:bg-rose-500/25 border border-rose-300 dark:border-rose-500/40 text-rose-800 dark:text-rose-300 disabled:opacity-50 text-[9px] font-sans font-semibold flex items-center gap-0.5 transition-colors cursor-pointer shrink-0"
+                              >
+                                {isRollingBack ? (
+                                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                                ) : (
+                                  <RotateCcw className="w-2.5 h-2.5" />
+                                )}
+                                <span>{isRollingBack ? '回退中' : '回退合入'}</span>
+                              </button>
                             )}
                           </div>
                         </div>
@@ -2871,6 +2900,21 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-emerald-600 text-white font-sans font-semibold">
                         ✓ 已合入本地工作区
                       </span>
+                    )}
+                    {onRollbackTopicPatch && topic.gameTheoreticState?.executionPatchHistoryPath && (
+                      <button
+                        type="button"
+                        disabled={isRollingBack}
+                        onClick={handleRollbackPatchClick}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30 font-sans font-semibold disabled:opacity-50 cursor-pointer"
+                      >
+                        {isRollingBack ? (
+                          <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                        ) : (
+                          <RotateCcw className="w-2.5 h-2.5" />
+                        )}
+                        <span>{isRollingBack ? '回退中...' : '回退本次合入'}</span>
+                      </button>
                     )}
                   </div>
                 )}

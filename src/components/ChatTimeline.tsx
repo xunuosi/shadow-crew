@@ -51,6 +51,7 @@ interface ChatTimelineProps {
   agents: Agent[];
   activeExecutions?: ActiveAgentExecution[];
   onApplyTopicPatch?: (topicId: string, customDiffs?: TopicPatchDiffItem[]) => Promise<void> | void;
+  onRollbackTopicPatch?: (topicId: string) => Promise<void> | void;
   onAbortAgent?: (agentId: string) => void;
   onAddReaction: (messageId: string, emoji: string) => void;
   onInspectAgent: (agentId: string) => void;
@@ -75,6 +76,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   agents,
   activeExecutions = [],
   onApplyTopicPatch,
+  onRollbackTopicPatch,
   onAbortAgent,
   onAddReaction,
   onInspectAgent,
@@ -858,6 +860,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                   activeExecutions={activeExecutions}
                   onOpenCodexDiff={onOpenCodexDiff}
                   onApplyTopicPatch={onApplyTopicPatch}
+                  onRollbackTopicPatch={onRollbackTopicPatch}
                   overlappingFiles={topicOverlapMap[message.topicData.id] || []}
                 />
               </div>
