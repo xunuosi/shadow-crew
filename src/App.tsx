@@ -87,7 +87,13 @@ import {
   extractModuleDecompositionFromAcpResponse,
   extractWorkspaceDiffsFromText,
   applyTopicPatchToWorkspace,
+  parseSessionKey,
 } from './services/acpClient';
+import {
+  resolveCascadeMaxHops,
+  resolveEffectiveRuntimePolicy,
+  resolveCorrectionRetryLimit,
+} from './services/agentRuntimePolicy';
 import {
   listPendingAcpPermissions,
   removePendingAcpPermission,
@@ -184,7 +190,6 @@ import {
   logGameTheoreticTelemetry,
   validateStageContract,
   validateModuleScopeContract,
-  STAGE_CONTRACT_MAX_RETRIES,
   tieredGroundingGovernor,
   parseVerifierOutput,
   processVerifierEvidenceChain,
@@ -671,20 +676,26 @@ export default function App() {
   }, [sanitizeMessages]);
 
   // 消息持久化 (原生 SQLite 优先，同步防护 LocalStorage)
+  // 1) 启动水合完成前不写库，避免用未加载完的内存快照覆盖已有历史；
+  // 2) 600ms 防抖，避免每个流式 token 都触发一次全量 SQLite 事务。
   useEffect(() => {
-    const allMsgs = Object.values(messages).flat();
-    if (allMsgs.length > 0) {
-      saveMessagesBatchToDb(allMsgs).catch((e) => {
-        console.error('[App] SQLite saveMessagesBatchToDb failed:', e);
-      });
-    }
-    if (!isTauriEnvironment()) {
-      try {
-        localStorage.setItem('shinobi_messages', JSON.stringify(messages));
-      } catch (err) {
-        console.warn('[App] LocalStorage quota exceeded, SQLite persistence safely active.');
+    if (!isWorkspaceHydratedRef.current) return;
+    const timer = window.setTimeout(() => {
+      const allMsgs = Object.values(messages).flat();
+      if (allMsgs.length > 0) {
+        saveMessagesBatchToDb(allMsgs).catch((e) => {
+          console.error('[App] SQLite saveMessagesBatchToDb failed:', e);
+        });
       }
-    }
+      if (!isTauriEnvironment()) {
+        try {
+          localStorage.setItem('shinobi_messages', JSON.stringify(messages));
+        } catch (err) {
+          console.warn('[App] LocalStorage quota exceeded, SQLite persistence safely active.');
+        }
+      }
+    }, 600);
+    return () => window.clearTimeout(timer);
   }, [messages]);
 
   // SubThreads State with Local Storage Persistence
@@ -1489,11 +1500,21 @@ export default function App() {
             ? `正在深入分析上下文与技术边界 (${elapsed}s)...`
             : `正在分析推演中 (${elapsed}s)...`;
 
+        // 心跳仅刷新本次会话所属房间，避免同一 Agent 在其他房间的 pending 卡被误更新。
+        const parsed = typeof payload.session_key === 'string'
+          ? parseSessionKey(payload.session_key)
+          : { type: 'legacy' as const, roomId: undefined };
+        const roomId = parsed.roomId;
+
         setActiveExecutions((prev) => {
           let updated = false;
           const next = { ...prev };
           for (const key in next) {
-            if (next[key].agentId === payload.agent_id && next[key].status === 'thinking') {
+            if (
+              next[key].agentId === payload.agent_id &&
+              next[key].status === 'thinking' &&
+              (!roomId || next[key].threadId === roomId)
+            ) {
               next[key] = {
                 ...next[key],
                 currentActionDetail: hint,
@@ -1508,7 +1529,8 @@ export default function App() {
         setMessages((prev) => {
           let updated = false;
           const next = { ...prev };
-          for (const threadId in next) {
+          const threadIds = roomId && prev[roomId] ? [roomId] : Object.keys(prev);
+          for (const threadId of threadIds) {
             const list = next[threadId];
             if (!list || list.length === 0) continue;
             const pendingIdx = list.findIndex(
@@ -1524,6 +1546,7 @@ export default function App() {
               updated = true;
             }
           }
+          if (updated) messagesRef.current = next;
           return updated ? next : prev;
         });
       }
@@ -1531,42 +1554,91 @@ export default function App() {
       unlistenHeartbeat = fn;
     }).catch(() => {});
 
-    // 实时监听 Agent 流式 chunk 吐字，就地注入 isPending 占位卡
+    // 实时监听 Agent 流式 chunk 吐字：
+    // 1) 通过 Rust 透传的 session_key 精确路由到所属房间，杜绝跨会话串流污染；
+    // 2) 按「房间 + Agent」缓冲后按 Agent 策略的间隔合并刷新，避免逐 token 触发全量 React 更新。
+    type ChunkBuffer = {
+      threadId: string | null;
+      agentId: string;
+      text: string;
+      timer: number | null;
+    };
+    const chunkBuffers = new Map<string, ChunkBuffer>();
+
+    const flushChunkBuffer = (key: string) => {
+      const buf = chunkBuffers.get(key);
+      if (!buf) return;
+      chunkBuffers.delete(key);
+      if (buf.timer !== null) window.clearTimeout(buf.timer);
+      if (!buf.text) return;
+      const text = buf.text;
+
+      setMessages((prev) => {
+        let updated = false;
+        const next = { ...prev };
+        const threadIds = buf.threadId ? [buf.threadId] : Object.keys(prev);
+        for (const threadId of threadIds) {
+          const list = next[threadId];
+          if (!list || list.length === 0) continue;
+          // 同一 Agent 可能因重试留下多个 pending 卡，始终追加到最新一张。
+          let pendingIdx = -1;
+          for (let i = list.length - 1; i >= 0; i--) {
+            if (list[i].authorId === buf.agentId && list[i].isPending) {
+              pendingIdx = i;
+              break;
+            }
+          }
+          if (pendingIdx === -1) continue;
+          const updatedList = [...list];
+          updatedList[pendingIdx] = {
+            ...updatedList[pendingIdx],
+            content: (updatedList[pendingIdx].content || '') + text,
+          };
+          next[threadId] = updatedList;
+          updated = true;
+          if (buf.threadId) break;
+        }
+        if (updated) messagesRef.current = next;
+        return updated ? next : prev;
+      });
+    };
+
     let unlistenChunk: (() => void) | undefined;
     tauriListen('acp:chunk', (event: any) => {
       const payload = event?.payload;
-      if (payload && payload.agent_id && payload.chunk) {
-        const agentId = payload.agent_id;
-        const chunkText = payload.chunk;
+      if (!payload || !payload.agent_id || !payload.chunk) return;
 
-        setMessages((prev) => {
-          let updated = false;
-          const next = { ...prev };
-          for (const threadId in next) {
-            const list = next[threadId];
-            if (!list || list.length === 0) continue;
-            const pendingIdx = list.findIndex(
-              (m) => m.authorId === agentId && m.isPending
-            );
-            if (pendingIdx !== -1) {
-              const target = list[pendingIdx];
-              const updatedList = [...list];
-              updatedList[pendingIdx] = {
-                ...target,
-                content: (target.content || '') + chunkText,
-              };
-              next[threadId] = updatedList;
-              updated = true;
-            }
-          }
-          return updated ? next : prev;
-        });
+      const agentId = payload.agent_id as string;
+      const chunkText = payload.chunk as string;
+      const parsed = typeof payload.session_key === 'string'
+        ? parseSessionKey(payload.session_key)
+        : { type: 'legacy' as const, roomId: undefined };
+      const threadId = parsed.roomId ?? null;
+      const key = `${threadId ?? 'legacy'}::${agentId}`;
+
+      const existing = chunkBuffers.get(key);
+      if (existing) {
+        existing.text += chunkText;
+        return;
+      }
+
+      const agent = agentsRef.current.find((a) => a.id === agentId);
+      const flushInterval = resolveEffectiveRuntimePolicy(agent).streamFlushIntervalMs;
+      const buf: ChunkBuffer = { threadId, agentId, text: chunkText, timer: null };
+      chunkBuffers.set(key, buf);
+
+      if (flushInterval <= 0) {
+        flushChunkBuffer(key);
+      } else {
+        buf.timer = window.setTimeout(() => flushChunkBuffer(key), flushInterval);
       }
     }).then((fn: any) => {
       unlistenChunk = fn;
     }).catch(() => {});
 
     return () => {
+      // 卸载前把尚未刷新的流式片段落地，避免丢字。
+      for (const key of Array.from(chunkBuffers.keys())) flushChunkBuffer(key);
       window.clearInterval(permissionPollTimer);
       if (unlistenPermissionRequest) unlistenPermissionRequest();
       if (unlistenPermissionResolved) unlistenPermissionResolved();
@@ -2585,7 +2657,7 @@ export default function App() {
         continue;
       }
 
-      const loopCheck = checkLoopGuard(cascade, targetAgent.id);
+      const loopCheck = checkLoopGuard(cascade, targetAgent.id, targetAgent);
       if (!loopCheck.allowed) {
         console.log(`[CollaborationCascade] Cascade ${cascadeId} target ${targetAgent.name} terminated:`, loopCheck.reason);
         if (!loopCheck.isSilentEnd) {
@@ -3649,8 +3721,9 @@ export default function App() {
 
         if (!contractValidation.isValid) {
           const refineKey = `${topicId}:challenge`;
+          const retryLimit = resolveCorrectionRetryLimit(challengerAgent);
           const currentRetries = stageRefineRetriesRef.current[refineKey] || 0;
-          if (currentRetries < STAGE_CONTRACT_MAX_RETRIES) {
+          if (currentRetries < retryLimit) {
             stageRefineRetriesRef.current[refineKey] = currentRetries + 1;
             const refineNotice: Message = {
               id: `msg-refine-notice-${Date.now()}`,
@@ -3661,7 +3734,7 @@ export default function App() {
               authorHandle: '@contract-guard',
               authorAvatar: '🛡️',
               isAgent: true,
-              agentBadge: `Self-Refine (${currentRetries + 1}/${STAGE_CONTRACT_MAX_RETRIES})`,
+              agentBadge: `Self-Refine (${currentRetries + 1}/${retryLimit})`,
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               content: contractValidation.refinePrompt || '阶段契约未达标，触发 Self-Refine',
               gameStage: 'challenge',
@@ -3686,7 +3759,7 @@ export default function App() {
               gameTheoreticState: {
                 ...old.gameTheoreticState,
                 currentStage: 'stageFailed',
-                quorumAlert: `红队挑战者 (${challengerAgent.name}) 经 ${STAGE_CONTRACT_MAX_RETRIES} 轮 Self-Refine 仍未满足契约规范，推演阻断转人工`,
+                quorumAlert: `红队挑战者 (${challengerAgent.name}) 经 ${retryLimit} 轮 Self-Refine 仍未满足契约规范，推演阻断转人工`,
               },
             }));
             logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
@@ -3704,7 +3777,7 @@ export default function App() {
               isAgent: true,
               agentBadge: 'Stage Failed',
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：挑战官 ${challengerAgent.name} 经 ${STAGE_CONTRACT_MAX_RETRIES} 次 Self-Refine 仍未满足结构化批判规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
+              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：挑战官 ${challengerAgent.name} 经 ${retryLimit} 次 Self-Refine 仍未满足结构化批判规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
               gameStage: 'stageFailed',
               gameRole: 'challenger',
             };
@@ -4184,8 +4257,9 @@ export default function App() {
 
         if (!contractValidation.isValid) {
           const refineKey = `${topicId}:verification`;
+          const retryLimit = resolveCorrectionRetryLimit(verifierAgent);
           const currentRetries = stageRefineRetriesRef.current[refineKey] || 0;
-          if (currentRetries < STAGE_CONTRACT_MAX_RETRIES) {
+          if (currentRetries < retryLimit) {
             stageRefineRetriesRef.current[refineKey] = currentRetries + 1;
             const refineNotice: Message = {
               id: `msg-refine-notice-${Date.now()}`,
@@ -4196,7 +4270,7 @@ export default function App() {
               authorHandle: '@contract-guard',
               authorAvatar: '🛡️',
               isAgent: true,
-              agentBadge: `Self-Refine (${currentRetries + 1}/${STAGE_CONTRACT_MAX_RETRIES})`,
+              agentBadge: `Self-Refine (${currentRetries + 1}/${retryLimit})`,
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               content: contractValidation.refinePrompt || '验证契约未达标，触发 Self-Refine',
               gameStage: 'verification',
@@ -4222,7 +4296,7 @@ export default function App() {
               gameTheoreticState: {
                 ...old.gameTheoreticState,
                 currentStage: 'stageFailed',
-                quorumAlert: `接地验证官 (${verifierAgent.name}) 经 ${STAGE_CONTRACT_MAX_RETRIES} 轮 Self-Refine 仍未满足实证规范，推演阻断转人工`,
+                quorumAlert: `接地验证官 (${verifierAgent.name}) 经 ${retryLimit} 轮 Self-Refine 仍未满足实证规范，推演阻断转人工`,
               },
             }));
             logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
@@ -4240,7 +4314,7 @@ export default function App() {
               isAgent: true,
               agentBadge: 'Stage Failed',
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：接地验证官 ${verifierAgent.name} 经 ${STAGE_CONTRACT_MAX_RETRIES} 次 Self-Refine 仍未满足实证真值规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
+              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：接地验证官 ${verifierAgent.name} 经 ${retryLimit} 次 Self-Refine 仍未满足实证真值规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
               gameStage: 'stageFailed',
               gameRole: 'verifier',
             };
@@ -4741,8 +4815,9 @@ export default function App() {
 
         if (!contractValidation.isValid) {
           const refineKey = `${topicId}:defense`;
+          const retryLimit = resolveCorrectionRetryLimit(proposerAgent);
           const currentRetries = stageRefineRetriesRef.current[refineKey] || 0;
-          if (currentRetries < STAGE_CONTRACT_MAX_RETRIES) {
+          if (currentRetries < retryLimit) {
             stageRefineRetriesRef.current[refineKey] = currentRetries + 1;
             const refineNotice: Message = {
               id: `msg-refine-notice-${Date.now()}`,
@@ -4753,7 +4828,7 @@ export default function App() {
               authorHandle: '@contract-guard',
               authorAvatar: '🛡️',
               isAgent: true,
-              agentBadge: `Self-Refine (${currentRetries + 1}/${STAGE_CONTRACT_MAX_RETRIES})`,
+              agentBadge: `Self-Refine (${currentRetries + 1}/${retryLimit})`,
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               content: contractValidation.refinePrompt || '答辩补丁契约未达标，触发 Self-Refine',
               gameStage: 'defense',
@@ -4779,7 +4854,7 @@ export default function App() {
               gameTheoreticState: {
                 ...old.gameTheoreticState,
                 currentStage: 'stageFailed',
-                quorumAlert: `提案官 (${proposerAgent.name}) 经 ${STAGE_CONTRACT_MAX_RETRIES} 轮 Self-Refine 仍未满足答辩补丁契约规范，推演阻断转人工`,
+                quorumAlert: `提案官 (${proposerAgent.name}) 经 ${retryLimit} 轮 Self-Refine 仍未满足答辩补丁契约规范，推演阻断转人工`,
               },
             }));
             logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
@@ -4797,7 +4872,7 @@ export default function App() {
               isAgent: true,
               agentBadge: 'Stage Failed',
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：提案官 ${proposerAgent.name} 经 ${STAGE_CONTRACT_MAX_RETRIES} 次 Self-Refine 仍未满足答辩补丁契约规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
+              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：提案官 ${proposerAgent.name} 经 ${retryLimit} 次 Self-Refine 仍未满足答辩补丁契约规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
               gameStage: 'stageFailed',
               gameRole: 'proposer',
             };
@@ -6444,7 +6519,7 @@ export default function App() {
         roomId: topicId,
         originalPrompt: agentTurnContent,
         depth: 1,
-        maxDepth: 12,
+        maxDepth: resolveCascadeMaxHops(onlineAgents),
         visitedAgentIds: onlineAgents.map((a) => a.id),
         agentCallCounts: initialCallCounts,
         isAborted: false,
@@ -6609,7 +6684,7 @@ export default function App() {
           deltaMessages: deltaBatch.deltaMessages,
           triggerContent: agentTurnContent,
           hop: 1,
-          maxHops: 12,
+          maxHops: resolveCascadeMaxHops(onlineAgents),
           topic: topicContext,
           isDm: false,
           isParallelFirstTurn: onlineAgents.length > 1,
@@ -6630,7 +6705,7 @@ export default function App() {
           roomId: topicId,
           originalPrompt: agentTurnContent,
           depth: 1,
-          maxDepth: 12,
+          maxDepth: resolveCascadeMaxHops(onlineAgents),
           visitedAgentIds: [agent.id],
           agentCallCounts: { [agent.id]: 1 },
           isAborted: false,
@@ -6772,7 +6847,7 @@ export default function App() {
             collaborationInfo: {
               cascadeId,
               hop: 1,
-              maxHops: 12,
+              maxHops: resolveCascadeMaxHops(onlineAgents),
               rootMessageId: userMsg.id,
               sourceMessageId: userMsg.id,
               invokedByAgentId: userMsg.authorId,
@@ -8034,7 +8109,7 @@ export default function App() {
       roomId: activeThread.id,
       originalPrompt: agentTurnContent,
       depth: 1,
-      maxDepth: 12, // 对标 Buzz: 提升至 12 轮作为不可见安全兜底
+      maxDepth: resolveCascadeMaxHops(onlineAgents), // 取参与 Agent 配置的最小轮次，防止长循环
       visitedAgentIds: onlineAgents.map((ag) => ag.id),
       agentCallCounts: initialCallCounts,
       isAborted: false,
@@ -8196,7 +8271,7 @@ export default function App() {
         deltaMessages: deltaBatch.deltaMessages,
         triggerContent: agentTurnContent,
         hop: 1,
-        maxHops: 12,
+        maxHops: resolveCascadeMaxHops(onlineAgents),
         isDm: isDmThread,
         isParallelFirstTurn: onlineAgents.length > 1,
       });
@@ -8264,7 +8339,7 @@ export default function App() {
             collaborationInfo: isDmThread ? undefined : {
               cascadeId,
               hop: 1,
-              maxHops: 12,
+              maxHops: resolveCascadeMaxHops(onlineAgents),
               rootMessageId: userMsg.id,
               sourceMessageId: userMsg.id,
               invokedByAgentId: userMsg.authorId,
@@ -9221,6 +9296,9 @@ export default function App() {
             status: initialStatus,
             modelBadge: agentData.modelBadge || (agentData.isRemote ? 'Remote ACP' : 'ACP Stdio'),
             modelConfig: agentData.modelConfig,
+            runtimePolicy: resolveEffectiveRuntimePolicy({
+              runtimePolicy: agentData.runtimePolicy,
+            }),
             isModelHealthy: agentData.isModelHealthy,
             modelLatencyMs: agentData.modelLatencyMs,
             statusDetail: agentData.statusDetail,

@@ -1862,6 +1862,21 @@ impl AcpProcessManager {
                                             let text_opt = extract_update_text(update);
 
                                             if let Some(text) = text_opt {
+                                                // 反查 session_key 供前端精确路由到所属房间，避免同一 Agent
+                                                // 在其他会话的 pending 卡被跨会话来流污染。必须在锁 active_chunks
+                                                // 之前完成，保持既有的锁获取顺序。
+                                                let session_key = {
+                                                    let registry =
+                                                        session_registry_permissions.lock().await;
+                                                    registry
+                                                        .entries
+                                                        .iter()
+                                                        .find_map(|(key, entry)| {
+                                                            (entry.session_id == sess_id)
+                                                                .then(|| key.clone())
+                                                        })
+                                                };
+
                                                 let mut chunks = active_chunks_clone.lock().await;
                                                 chunks.entry(req_id).or_default().push_str(&text);
 
@@ -1871,6 +1886,7 @@ impl AcpProcessManager {
                                                 let payload = serde_json::json!({
                                                     "agent_id": &agent_id_clone,
                                                     "sessionId": sess_id,
+                                                    "session_key": session_key,
                                                     "chunk": text
                                                 });
                                                 let _ =
@@ -3877,6 +3893,7 @@ impl RunningAgent {
                     serde_json::json!({
                         "agent_id": agent_id,
                         "sessionId": current_session_id,
+                        "session_key": &session_key,
                         "elapsed_seconds": total_sec,
                         "idle_elapsed_seconds": idle_elapsed_ms / 1000,
                         "pending_permission_count": pending_permission_count,
