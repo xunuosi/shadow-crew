@@ -9,7 +9,6 @@ import {
   Copy,
   Check,
   Scale,
-  ShieldCheck,
   Code2,
   Swords,
   Layers,
@@ -302,6 +301,8 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
   const dispute = topic.gameTheoreticState?.cognoNexus?.currentDispute;
   const evidences = topic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain || [];
   const modularState = topic.gameTheoreticState?.modularState || topic.gameTheoreticState?.cognoNexus?.modularState;
+  const minority = ruling?.minorityReport || topic.gameTheoreticState?.minorityReport;
+  const impactedFiles = ruling?.impactedFiles || draft?.impactedFiles || [];
   const concurrenceState = topic.gameTheoreticState?.concurrenceState;
   const concurrenceSignOff = ruling?.concurrenceSignOff;
   const isAllConcurred = Boolean(concurrenceSignOff?.allConcurred);
@@ -382,8 +383,8 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
   return (
     <div className="flex flex-col h-full bg-surface text-xs text-fg-secondary overflow-hidden font-sans">
       {/* 1. Top Action Toolbar */}
-      <div className="px-4 py-2.5 bg-surface-subtle/80 border-b border-border flex items-center justify-between gap-2 shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
+      <div className="px-3 py-2.5 bg-surface-subtle/80 border-b border-border flex flex-wrap items-center justify-between gap-2 shrink-0">
+        <div className="flex flex-1 basis-52 items-center gap-2 min-w-0">
           <div className="p-1 rounded-md bg-purple-500/15 text-purple-600 dark:text-purple-400 shrink-0">
             <FileText className="w-3.5 h-3.5" />
           </div>
@@ -405,7 +406,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5 ml-auto">
           <button
             type="button"
             onClick={handleCopy}
@@ -453,7 +454,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
       </div>
 
       {/* 2. Scrollable Living Canvas Body */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden p-3.5 space-y-4">
         {/* Banner: Tool-as-Contract notice */}
         {hasDraft && !isResolved && (
           <div className="p-2.5 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-start gap-2 text-[11px] text-purple-700 dark:text-purple-300">
@@ -461,7 +462,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
             <div className="space-y-0.5 flex-1">
               <span className="font-bold">MCP 宿主工具直通：综合仲裁官已提交结构化裁决书</span>
               <p className="text-[10px] text-purple-600/90 dark:text-purple-300/80 leading-relaxed">
-                无需任何正则提取，仲裁官通过 <code className="px-1 py-0.5 rounded bg-purple-500/20 font-mono">submit_arbitration_ruling</code> 原生工具回传了高保真权衡矩阵，已直接装载至第四节及法槌控制台。
+                无需任何正则提取，仲裁官通过 <code className="px-1 py-0.5 rounded bg-purple-500/20 font-mono">submit_arbitration_ruling</code> 原生工具回传了高保真权衡矩阵，已直接装载至第 6 节及法槌控制台。
               </p>
             </div>
           </div>
@@ -473,7 +474,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
             <div className="flex items-center justify-between border-b border-purple-200 dark:border-purple-500/25 pb-2 flex-wrap gap-2">
               <div className="flex items-center gap-1.5 font-bold text-fg text-xs">
                 <span className="w-1.5 h-3.5 rounded-full bg-purple-600 dark:bg-purple-400 shrink-0" />
-                <span className="text-purple-900 dark:text-purple-200">🌟 终局架构方案总览 (Executive Summary)</span>
+                <span className="text-purple-900 dark:text-purple-200">🌟 1. 终局架构方案总览 (Executive Summary)</span>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
                 {isResolved ? (
@@ -516,12 +517,12 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
 
             {/* 全员无异议签署链展板 */}
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-[10px] font-semibold text-purple-800 dark:text-purple-300">
-                <div className="flex items-center gap-1">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-semibold text-purple-800 dark:text-purple-300">
+                <div className="flex min-w-0 items-center gap-1">
                   <Handshake className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
-                  <span>🤝 全员无异议共识签署 (Unanimous Concurrence Sign-off)</span>
+                  <span>🤝 2. 全员无异议共识签署 (Unanimous Concurrence Sign-off)</span>
                 </div>
-                <span className="text-[9px] text-fg-muted font-normal">
+                <span className="text-left text-[9px] text-fg-muted font-normal">
                   {isAllConcurred
                     ? '全员均已独立复核并明确保证无异议'
                     : isResolved
@@ -533,14 +534,14 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
               <div className="grid grid-cols-1 gap-1.5">
                 {(concurrenceSignOff?.records && concurrenceSignOff.records.length > 0) ? (
                   concurrenceSignOff.records.map((rec, idx) => (
-                    <div key={idx} className="p-2 rounded-lg bg-surface border border-emerald-300 dark:border-emerald-500/30 flex items-start justify-between gap-2 text-[10px]">
+                    <div key={idx} className="p-2 rounded-lg bg-surface border border-emerald-300 dark:border-emerald-500/30 flex items-start justify-between gap-2 text-[10px] min-w-0 overflow-hidden">
                       <div className="flex items-start gap-1.5 min-w-0">
                         <span className="px-1.5 py-0.5 rounded font-mono font-medium text-[9px] bg-emerald-50 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 shrink-0">
                           {rec.role}
                         </span>
                         <div className="min-w-0 space-y-0.5">
                           <span className="font-semibold text-fg block truncate">{rec.agentName}</span>
-                          <p className="text-[10px] text-fg-secondary leading-snug">{rec.statement}</p>
+                          <p className="text-[10px] text-fg-secondary leading-snug break-words whitespace-normal">{rec.statement}</p>
                         </div>
                       </div>
                       <span className="px-1.5 py-0.5 rounded text-[9px] font-bold text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 shrink-0">
@@ -568,7 +569,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                             : isBlocked
                             ? 'border-rose-300 dark:border-rose-500/30'
                             : 'border-amber-300 dark:border-amber-500/30'
-                        } flex items-start justify-between gap-2 text-[10px]`}
+                        } flex items-start justify-between gap-2 text-[10px] min-w-0 overflow-hidden`}
                       >
                         <div className="flex items-start gap-1.5 min-w-0">
                           <span
@@ -584,7 +585,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                           </span>
                           <div className="min-w-0 space-y-0.5">
                             <span className="font-semibold text-fg block truncate">{item.agentName}</span>
-                            <p className="text-[10px] text-fg-secondary leading-snug">
+                            <p className="text-[10px] text-fg-secondary leading-snug break-words whitespace-normal">
                               {item.statement || (isConcurred ? '确认无异议' : '正在审视方案中...')}
                             </p>
                           </div>
@@ -623,12 +624,12 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
           </div>
         )}
 
-        {/* Section 1: Context & Proposed Architecture */}
+        {/* Section 3: Context & Proposed Architecture */}
         <div className="p-3.5 rounded-xl bg-surface-subtle border border-border space-y-2">
-          <div className="flex items-center justify-between border-b border-border/60 pb-1.5">
-            <div className="flex items-center gap-1.5 font-bold text-fg text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-1.5">
+            <div className="flex min-w-0 items-center gap-1.5 font-bold text-fg text-xs">
               <span className="w-1.5 h-3.5 rounded-full bg-blue-500 shrink-0" />
-              <span>1. 拟选方案与架构假定 (Context & Assumptions)</span>
+              <span>3. 拟选方案与架构假定 (Context & Assumptions)</span>
             </div>
             <span className="text-[10px] text-blue-600 dark:text-blue-400 font-mono font-medium">🏛️ Proposer</span>
           </div>
@@ -731,12 +732,12 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
           )}
         </div>
 
-        {/* Section 2: Falsification & Edge Cases */}
+        {/* Section 4: Falsification & Edge Cases */}
         <div className="p-3.5 rounded-xl bg-surface-subtle border border-border space-y-2">
-          <div className="flex items-center justify-between border-b border-border/60 pb-1.5">
-            <div className="flex items-center gap-1.5 font-bold text-fg text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-1.5">
+            <div className="flex min-w-0 items-center gap-1.5 font-bold text-fg text-xs">
               <span className="w-1.5 h-3.5 rounded-full bg-rose-500 shrink-0" />
-              <span>2. 证伪失效清单与红队边界压测 (Falsification & Edge Cases)</span>
+              <span>4. 证伪失效清单与红队边界压测 (Falsification & Edge Cases)</span>
             </div>
             <span className="text-[10px] text-rose-600 dark:text-rose-400 font-mono font-medium">⚔️ Challenger</span>
           </div>
@@ -774,12 +775,12 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
           )}
         </div>
 
-        {/* Section 3: Grounding Verification */}
+        {/* Section 5: Grounding Verification */}
         <div className="p-3.5 rounded-xl bg-surface-subtle border border-border space-y-2">
-          <div className="flex items-center justify-between border-b border-border/60 pb-1.5">
-            <div className="flex items-center gap-1.5 font-bold text-fg text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-1.5">
+            <div className="flex min-w-0 items-center gap-1.5 font-bold text-fg text-xs">
               <span className="w-1.5 h-3.5 rounded-full bg-emerald-500 shrink-0" />
-              <span>3. 接地实证与反事实验证 (Empirical Verification)</span>
+              <span>5. 接地实证与反事实验证 (Empirical Verification)</span>
             </div>
             <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono font-medium">🔬 Verifier</span>
           </div>
@@ -832,12 +833,12 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
           )}
         </div>
 
-        {/* Section 4: Decision & Trade-offs */}
+        {/* Section 6: Decision & Trade-offs */}
         <div className="p-3.5 rounded-xl bg-purple-50/70 dark:bg-purple-500/10 border border-purple-200 dark:border-purple-500/30 space-y-2.5">
-          <div className="flex items-center justify-between border-b border-purple-200 dark:border-purple-500/25 pb-1.5">
-            <div className="flex items-center gap-1.5 font-bold text-fg text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-purple-200 dark:border-purple-500/25 pb-1.5">
+            <div className="flex min-w-0 items-center gap-1.5 font-bold text-fg text-xs">
               <span className="w-1.5 h-3.5 rounded-full bg-purple-600 dark:bg-purple-400 shrink-0" />
-              <span className="text-purple-900 dark:text-purple-200">4. 架构权衡矩阵与终局决议 (Decision & Trade-offs)</span>
+              <span className="text-purple-900 dark:text-purple-200">6. 架构权衡矩阵与终局决议 (Decision & Trade-offs)</span>
             </div>
             <span className="text-[10px] text-purple-700 dark:text-purple-300 font-mono font-medium">⚖️ Arbiter</span>
           </div>
@@ -863,18 +864,6 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                 </div>
               )}
 
-              {(ruling?.impactedFiles || draft?.impactedFiles || []).length > 0 && (
-                <div className="p-2 rounded-lg bg-surface border border-border flex items-center justify-between text-[11px] flex-wrap gap-1">
-                  <div className="flex items-center gap-1.5">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                    <span className="font-semibold text-fg">限定安全爆炸半径文件:</span>
-                  </div>
-                  <span className="font-mono text-[10px] text-purple-700 dark:text-purple-300 font-medium">
-                    {(ruling?.impactedFiles || draft?.impactedFiles || []).join(', ')}
-                  </span>
-                </div>
-              )}
-
               {(ruling?.solution || draft?.solution) && (
                 <div className="text-[11px] text-fg-secondary leading-relaxed bg-surface p-2.5 rounded-lg border border-border">
                   <span className="font-semibold text-fg">落地实施要求: </span>
@@ -890,11 +879,11 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
 
           {mcda?.computedWeights && mcda?.criteria && (
             <div className="pt-2 border-t border-purple-500/20 space-y-1.5">
-              <div className="flex items-center justify-between text-[10px]">
+              <div className="flex flex-wrap items-center justify-between gap-1 text-[10px]">
                 <span className="font-semibold text-purple-700 dark:text-purple-300">BWM 确定性多属性权重求解</span>
                 <span className="font-mono text-fg-muted">ξ* = {mcda.consistencyIndex}</span>
               </div>
-              <div className="grid grid-cols-4 gap-1 text-[10px] font-mono">
+              <div className="grid grid-cols-2 gap-1 text-[10px] font-mono">
                 {mcda.criteria.map((c) => (
                   <div key={c.id} className="p-1 rounded bg-surface/80 border border-purple-500/20 text-center">
                     <div className="text-fg-muted truncate">{c.name.split('与')[0]}</div>
@@ -906,19 +895,128 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
           )}
         </div>
 
-        {/* Section 5: Resolution Execution & Deliverables (Agent-Driven UI Meta) */}
+        {/* Section 7: Minority Dissent & Black Swan Triggers */}
+        <div className="p-3.5 rounded-xl bg-rose-50/70 dark:bg-rose-500/[0.08] border border-rose-200 dark:border-rose-500/30 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rose-200 dark:border-rose-500/25 pb-1.5">
+            <div className="flex min-w-0 items-center gap-1.5 font-bold text-fg text-xs">
+              <span className="w-1.5 h-3.5 rounded-full bg-rose-500 shrink-0" />
+              <span className="text-rose-900 dark:text-rose-200">7. 伴生少数派异议备案 (Minority Dissent & Black Swan Triggers)</span>
+            </div>
+            <span className="text-[10px] text-rose-800 dark:text-rose-300 font-mono font-semibold">⚔️ Preserved Dissent</span>
+          </div>
+
+          {minority ? (
+            <div className="space-y-2">
+              <div className="p-2.5 rounded-lg bg-surface border border-rose-300 dark:border-rose-500/30 space-y-1.5 text-[11px]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="px-1.5 py-0.5 rounded bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30 font-semibold text-[10px]">
+                    异议代表
+                  </span>
+                  <span className="font-semibold text-fg">{minority.dissentingAgentName}</span>
+                </div>
+                <p className="text-fg leading-relaxed break-words">
+                  <span className="font-semibold">核心异议：</span>{minority.coreDissentThesis}
+                </p>
+                <p className="text-fg-secondary leading-relaxed break-words">
+                  <span className="font-semibold text-fg">自洽推演逻辑：</span>{minority.rationalityBasis}
+                </p>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-surface border border-amber-300 dark:border-amber-500/30 space-y-1.5">
+                <div className="flex items-center gap-1.5 text-[10px] font-semibold text-amber-800 dark:text-amber-300">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <span>黑天鹅重启触发器</span>
+                </div>
+                {(minority.reopeningTriggers || []).length > 0 ? (
+                  <ul className="space-y-1 text-[10px] text-fg-secondary">
+                    {minority.reopeningTriggers.map((trigger, idx) => (
+                      <li key={`${trigger}-${idx}`} className="flex items-start gap-1.5 break-words">
+                        <span className="text-amber-600 dark:text-amber-400 shrink-0">•</span>
+                        <span>{trigger}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-[10px] text-fg-muted italic">未记录重启触发条件。</p>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="p-2.5 rounded-lg bg-surface border border-border text-[11px] text-fg-muted italic">
+              本决议未记录独立少数派异议，黑天鹅重启条件为空。
+            </div>
+          )}
+        </div>
+
+        {/* Section 8: Bounded Impact Radius */}
+        <div className="p-3.5 rounded-xl bg-blue-50/70 dark:bg-blue-500/[0.08] border border-blue-200 dark:border-blue-500/30 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-200 dark:border-blue-500/25 pb-1.5">
+            <div className="flex min-w-0 items-center gap-1.5 font-bold text-fg text-xs">
+              <span className="w-1.5 h-3.5 rounded-full bg-blue-600 dark:bg-blue-400 shrink-0" />
+              <span className="text-blue-900 dark:text-blue-200">8. 限定安全爆炸半径 (Bounded Impact Radius)</span>
+            </div>
+            <span className="text-[10px] text-blue-800 dark:text-blue-300 font-mono font-semibold">🛡️ File Boundary</span>
+          </div>
+
+          {impactedFiles.length > 0 ? (
+            <div className="space-y-2">
+              <p className="text-[11px] text-fg-secondary leading-relaxed">
+                本次决议严格约束变更范围，执行 Agent 严禁修改以下白名单之外的文件。
+              </p>
+              <div className="grid grid-cols-1 gap-1.5">
+                {impactedFiles.map((file, idx) => (
+                  <div
+                    key={`${file}-${idx}`}
+                    className="p-2 rounded-lg bg-surface border border-border flex items-start gap-1.5 text-[10px] font-mono text-fg min-w-0"
+                  >
+                    <FileCode2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+                    <code className="break-all whitespace-normal min-w-0">{file}</code>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="p-2.5 rounded-lg bg-surface border border-border text-[11px] text-fg-muted italic">
+              未声明特定白名单文件，遵循模块拓扑接口契约限制。
+            </div>
+          )}
+        </div>
+
+        {/* Section 9: Resolution Execution & Deliverables (Agent-Driven UI Meta) */}
         <div className="p-3.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-500/[0.08] border border-emerald-200 dark:border-emerald-500/30 space-y-2.5">
-          <div className="flex items-center justify-between border-b border-emerald-200 dark:border-emerald-500/25 pb-1.5">
-            <div className="flex items-center gap-1.5 font-bold text-fg text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-200 dark:border-emerald-500/25 pb-1.5">
+            <div className="flex min-w-0 items-center gap-1.5 font-bold text-fg text-xs">
               <span className="w-1.5 h-3.5 rounded-full bg-emerald-600 dark:bg-emerald-500 shrink-0" />
               <span>
-                {topic.gameTheoreticState?.executionUiMeta?.sectionTitle ||
-                  '5. 决议落地与执行交付 (Resolution Execution & Deliverables)'}
+                9. 落地执行与工程交付清单 (Actionable Checklist)
               </span>
             </div>
             <span className="text-[10px] text-emerald-800 dark:text-emerald-400 font-mono font-semibold">
               {topic.gameTheoreticState?.executionUiMeta?.podTitle || '🛠️ Executor'}
             </span>
+          </div>
+
+          {topic.gameTheoreticState?.executionUiMeta?.sectionTitle && (
+            <div className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-[10px] text-fg-secondary break-words">
+              {topic.gameTheoreticState.executionUiMeta.sectionTitle}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 gap-1.5">
+            {[
+              `主导实施负责人：${executorAgent?.name || '待人工批准指派'}`,
+              '核心补丁实现：按照落地实施要旨编写工程代码补丁',
+              '红队边界回归：确保红队指出的失效工况有测试覆盖',
+              '工作区审查与合入：通过基线校验与人工确认后正式落盘',
+            ].map((item, idx) => (
+              <div
+                key={`${item}-${idx}`}
+                className="p-2 rounded-lg bg-surface border border-border flex items-start gap-2 text-[10px] text-fg-secondary min-w-0"
+              >
+                <span className="mt-0.5 h-3.5 w-3.5 shrink-0 rounded border border-emerald-400 dark:border-emerald-500/50" />
+                <span className="break-words leading-relaxed">{item}</span>
+              </div>
+            ))}
           </div>
 
           {/* Multi-Topic Blast-Radius Overlap Alert */}
@@ -1131,7 +1229,7 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
               <span className="text-fg-muted">
                 {isResolved
                   ? '定案后可随时委派或重新委派专职 Agent 推进决议落地交付。'
-                  : '待第四节法槌定案后，自动或手动委派执行 Agent 推进决议落地。'}
+                  : '待第 6 节终局决议敲定后，可手动委派执行 Agent 推进落地。'}
               </span>
               {onExecutePatch && isResolved && (
                 <button

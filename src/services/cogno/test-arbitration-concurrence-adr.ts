@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import {
   advanceRoleConcurrenceItem,
   buildArbiterStage5Directive,
@@ -15,7 +17,7 @@ import {
   validateArbiterConcurrenceMentions,
 } from './arbitrationConcurrenceGovernor';
 import { extractRoleConcurrenceFromAcpResponse } from '../acpClient';
-import { generateAdrMarkdown } from '../../components/LivingAdrCanvas';
+import { generateAdrMarkdown, LivingAdrCanvas } from '../../components/LivingAdrCanvas';
 import {
   Agent,
   ArbitrationRulingDraft,
@@ -591,6 +593,18 @@ assert.equal(
   generateAdrMarkdown({ ...mockTopic, rulingRecord: finalRuling }, mockAgents),
   finalRuling.livingAdrMarkdown
 );
+const renderedLivingAdr = renderToStaticMarkup(
+  React.createElement(LivingAdrCanvas, {
+    topic: richTopic,
+    agents: mockAgents,
+  })
+);
+assert.ok(renderedLivingAdr.includes('7. 伴生少数派异议备案'));
+assert.ok(renderedLivingAdr.includes('黑天鹅重启触发器'));
+assert.ok(renderedLivingAdr.includes('生产环境出现一次超卖异常报警'));
+assert.ok(renderedLivingAdr.includes('8. 限定安全爆炸半径'));
+assert.ok(renderedLivingAdr.includes('9. 落地执行与工程交付清单'));
+assert.ok(renderedLivingAdr.includes('核心补丁实现'));
 console.log(`✓ 9 章人类可读看板完整生成，签署摘要 ${solutionDigest.slice(0, 18)}…`);
 
 console.log('\n--- 测试 8: 零参研角色、表格转义与门禁 ---');

@@ -1,9 +1,9 @@
-# 综合裁定官结构化无异议票 — P0 修复与复测报告
+# 综合裁定官无异议与活体看板 — 输出侧验收报告
 
 > **测试日期**：2026-11-10
-> **测试对象**：`submit_role_concurrence` 结构化投票协议、角色票解析、宿主状态机、活体 ADR 签署链
+> **测试对象**：`submit_role_concurrence` 结构化投票协议、角色票解析、宿主状态机、九章活体 ADR 看板、320px 最小抽屉布局
 > **测试环境**：macOS / Node.js（`tsx`）/ Vite 6 / React 19 / Rust MCP
-> **最终结论**：**P0 已修复并通过复测；自然语言不再具备无异议授权能力。真实外部 ACP 与 Tauri 全链路仍标记为未覆盖层。**
+> **最终结论**：**P0 / P1 / P2 输出侧问题均已修复并通过复测；真实外部 ACP 与完整 Tauri 桌面链路仍标记为未覆盖层。**
 
 ---
 
@@ -103,6 +103,7 @@ error = 未提交有效的 submit_role_concurrence 工具载荷或 ROLE_CONCURRE
 ```text
 npm run lint    -> PASS (0 TypeScript 错误)
 npm run build   -> PASS (Vite production build 成功)
+npm run test:layout -> PASS
 ```
 
 构建仅保留既有主包体积提示，无阻断错误。
@@ -173,6 +174,51 @@ hasPendingBanner: true
 
 结论：条件票和无效票不会被 UI 误报为全员无异议，也不会显示终局签署状态。
 
+### 4.2 九章活体看板
+
+活体 ADR 页面现在与 Markdown 导出一致展示完整 9 章：
+
+1. 终局架构方案总览；
+2. 全员无异议共识签署；
+3. 拟选方案与架构假定；
+4. 证伪失效清单与红队边界压测；
+5. 接地实证与反事实验证；
+6. 架构权衡矩阵与终局决议；
+7. 伴生少数派异议备案与黑天鹅重启触发器；
+8. 限定安全爆炸半径；
+9. 落地执行与工程交付清单。
+
+静态渲染与浏览器运行期均检查到少数派异议、黑天鹅触发器、文件白名单和交互式工程清单。
+
+```text
+hasBlackSwan: true
+hasChecklistItem: true
+hasAllNineSections: true
+```
+
+纯白与暗黑主题均完成视觉走查，新增章节保持双主题语义色、正文对比度和长文本换行。
+
+### 4.3 320px 最小抽屉布局
+
+修复前：
+
+```text
+drawer.clientWidth = 319
+drawer.scrollWidth = 399
+visible horizontal overflow exists
+```
+
+修复后实测：
+
+```text
+drawer.clientWidth = 319
+drawer.scrollWidth = 319
+visibleOverflow = []
+hasHorizontalDrawerOverflow = false
+```
+
+阶段状态条改为容器宽度感知换行，ADR 顶部工具栏、页签切换、签署链、少数派异议和长文件路径均增加 `min-w-0`、`flex-wrap`、`break-words` 或 `break-all` 防护。抽屉不再出现横向滚动条。
+
 ---
 
 ## 5. 分层证据边界
@@ -189,10 +235,12 @@ hasPendingBanner: true
 
 ---
 
-## 6. P0 结论
+## 6. 输出侧验收结论
 
-**P0 修复通过。**
+**输出侧验收通过。**
 
-自然语言不再参与无异议授权。只有与当前终局方案摘要精确绑定、角色身份匹配、条件与阻塞项为空的合法结构化 `concurred` 票，才允许构成全员无异议并进入终局活体看板出具阶段。
+- P0：自然语言不再参与无异议授权；
+- P1：综合裁定官必须实际逐一 `@` 全部参研角色；
+- P2：活体看板补齐完整 9 章，320px 最小抽屉横向溢出清零。
 
-本次报告仅关闭 P0 签署真实性缺陷。此前观察到的活体看板正文章节压缩与 320px 最小宽度溢出属于独立 UI 问题，不在本次 P0 代码变更范围内。
+只有与当前终局方案摘要精确绑定、角色身份匹配、条件与阻塞项为空的合法结构化 `concurred` 票，才允许构成全员无异议并进入终局活体看板出具阶段。

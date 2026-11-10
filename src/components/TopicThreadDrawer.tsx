@@ -1335,10 +1335,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
       {/* Channel 4+1 博弈推演阶段状态机指示器 */}
       {!isDmDuel && topic.discussionMode === 'game_theoretic' && (
-        <div className="px-3.5 py-2 bg-surface-subtle/70 border-b border-border text-[11px]">
-          <div className="flex items-center justify-between gap-1 select-none">
+        <div className="@container px-3.5 py-2 bg-surface-subtle/70 border-b border-border text-[11px]">
+          <div className="flex flex-wrap items-center gap-1.5 select-none">
             {/* Step 1: 方案立论 */}
-            <div className={`flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
+            <div className={`flex-1 basis-28 min-w-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
               (topic.gameStage === 'proposal' || !topic.gameStage)
                 ? 'bg-blue-500/15 border-blue-500/30 text-blue-700 dark:text-blue-300 font-semibold shadow-xs'
                 : 'bg-surface border-border text-fg-muted'
@@ -1355,10 +1355,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               </div>
             </div>
 
-            <ArrowRight className="w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
+            <ArrowRight className="hidden @md:block w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
 
             {/* Step 2: 反例压测 */}
-            <div className={`flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
+            <div className={`flex-1 basis-28 min-w-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
               topic.gameStage === 'challenge'
                 ? 'bg-rose-500/15 border-rose-500/30 text-rose-700 dark:text-rose-300 font-semibold shadow-xs'
                 : topic.gameTheoreticState?.isChallengerBypassed
@@ -1404,9 +1404,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             {/* Step 3: 接地验证 (仅当指派了接地验证官时显示) */}
             {topic.gameRoles?.verifiers && topic.gameRoles.verifiers.length > 0 && (
               <>
-                <ArrowRight className="w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
+                <ArrowRight className="hidden @md:block w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
 
-                <div className={`flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
+                <div className={`flex-1 basis-28 min-w-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
                   topic.gameStage === 'verification'
                     ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-700 dark:text-cyan-300 font-semibold shadow-xs'
                     : topic.gameTheoreticState?.isVerifierResponded === false && (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
@@ -1441,10 +1441,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               </>
             )}
 
-            <ArrowRight className="w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
+            <ArrowRight className="hidden @md:block w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
 
             {/* Step 4: 答辩修正 */}
-            <div className={`flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
+            <div className={`flex-1 basis-28 min-w-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
               topic.gameStage === 'defense'
                 ? 'bg-blue-500/15 border-blue-500/30 text-blue-700 dark:text-blue-300 font-semibold shadow-xs'
                 : topic.gameTheoreticState?.isDefenseResponded === false && (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
@@ -1477,10 +1477,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               </div>
             </div>
 
-            <ArrowRight className="w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
+            <ArrowRight className="hidden @md:block w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
 
             {/* Step 5: 综合仲裁 */}
-            <div className={`flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
+            <div className={`flex-1 basis-28 min-w-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
               topic.gameStage === 'concluded' || topic.status === 'resolved'
                 ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-semibold'
                 : topic.gameStage === 'arbitration'
@@ -1801,12 +1801,12 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   )}
 
       {/* View Switcher: 攻防辩论流 vs 活体 ADR 决策画布 */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-surface shrink-0 gap-2">
-        <div className="flex items-center gap-1.5 p-0.5 rounded-xl bg-surface-subtle border border-border/60 shrink-0">
+      <div className="flex flex-wrap items-center justify-between px-3 py-2 border-b border-border bg-surface shrink-0 gap-2">
+        <div className="flex max-w-full min-w-0 flex-wrap items-center gap-1.5 p-0.5 rounded-xl bg-surface-subtle border border-border/60">
           <button
             type="button"
             onClick={() => setActiveDrawerView('stream')}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
               activeDrawerView === 'stream'
                 ? 'bg-surface text-fg font-semibold shadow-2xs border border-border/80'
                 : 'text-fg-muted hover:text-fg hover:bg-surface-hover/50'
@@ -1820,7 +1820,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           <button
             type="button"
             onClick={() => setActiveDrawerView('adr')}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
               activeDrawerView === 'adr'
                 ? 'bg-surface text-fg font-semibold shadow-2xs border border-border/80 text-purple-600 dark:text-purple-400'
                 : 'text-fg-muted hover:text-fg hover:bg-surface-hover/50'
@@ -1837,9 +1837,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         </div>
 
         {activeDrawerView === 'adr' ? (
-          <div className="text-[10px] text-fg-muted font-mono flex items-center gap-1">
+          <div className="ml-auto text-[10px] text-fg-muted font-mono flex items-center gap-1 min-w-0">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span>Architecture Decision Record</span>
+            <span className="truncate">Architecture Decision Record</span>
           </div>
         ) : isResolved && messages.length > 0 ? (
           <div className="flex items-center gap-1 text-[10px] font-mono shrink-0">
