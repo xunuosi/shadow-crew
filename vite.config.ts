@@ -249,6 +249,28 @@ function llmProxyPlugin(): Plugin {
                 return;
               }
 
+              // 仅允许 http/https，禁止 file://、data: 等协议被当作代理目标。
+              try {
+                const targetUrl = new URL(String(url));
+                if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+                  res.statusCode = 400;
+                  res.setHeader('Content-Type', 'application/json');
+                  res.end(
+                    JSON.stringify({
+                      ok: false,
+                      status: 400,
+                      error: `Unsupported proxy target protocol: ${targetUrl.protocol}`,
+                    })
+                  );
+                  return;
+                }
+              } catch {
+                res.statusCode = 400;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ ok: false, status: 400, error: 'Invalid target url' }));
+                return;
+              }
+
               const controller = new AbortController();
               const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -268,7 +290,11 @@ function llmProxyPlugin(): Plugin {
 
                 const response = await fetch(url, fetchOptions);
                 clearTimeout(timer);
-                if (prevTls !== undefined) {
+                // 必须无条件恢复：原实现只在 prevTls 有值时恢复，
+                // 首次请求前该变量为空会导致后续所有请求永久跳过 TLS 校验。
+                if (prevTls === undefined) {
+                  delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+                } else {
                   process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTls;
                 }
 
@@ -294,7 +320,11 @@ function llmProxyPlugin(): Plugin {
                 );
               } catch (fetchErr: any) {
                 clearTimeout(timer);
-                if (prevTls !== undefined) {
+                // 必须无条件恢复：原实现只在 prevTls 有值时恢复，
+                // 首次请求前该变量为空会导致后续所有请求永久跳过 TLS 校验。
+                if (prevTls === undefined) {
+                  delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+                } else {
                   process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTls;
                 }
 
@@ -304,9 +334,10 @@ function llmProxyPlugin(): Plugin {
                   const { promisify } = await import('util');
                   const execFileAsync = promisify(execFile);
 
-                  const proxyUrl = process.env.https_proxy || process.env.http_proxy || process.env.ALL_PROXY || 'http://127.0.0.1:7897';
+                  const proxyUrl = process.env.https_proxy || process.env.http_proxy || process.env.ALL_PROXY || '';
                   const curlArgs = [
-                    '-k',
+                    // 仅在显式开启时才跳过证书校验；默认保持 TLS 校验。
+                    ...(process.env.SHADOW_CREW_DEV_INSECURE_TLS === '1' ? ['-k'] : []),
                     '-s',
                     '-S',
                     '-X',
