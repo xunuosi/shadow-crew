@@ -2212,11 +2212,12 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
                 status_parsed = true;
             }
             Err(_) => {
-                response_text.truncate(pos);
-                return Err(format!(
+                let message = format!(
                     "无法解析 HTTP 状态码 (curl 输出: {:?})",
                     code_part
-                ));
+                );
+                response_text.truncate(pos);
+                return Err(message);
             }
         }
         response_text.truncate(pos);
