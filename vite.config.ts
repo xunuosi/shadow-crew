@@ -1,6 +1,7 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import {defineConfig, Plugin} from 'vite';
 
@@ -71,26 +72,63 @@ function localAcpDiscoveryPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         if (req.url && req.url.startsWith('/api/discover-runtimes')) {
-          const pathEnv = process.env.PATH || '';
-          const homedir = process.env.HOME || '';
-          const searchDirs = [
-            ...pathEnv.split(path.delimiter),
-            path.join(homedir, '.local', 'bin'),
-            path.join(homedir, '.cargo', 'bin'),
-            '/opt/homebrew/bin',
-            '/usr/local/bin',
-          ].filter(Boolean);
+          const pathEnv = process.env.PATH || process.env.Path || '';
+          const homedir = os.homedir();
+          const platformDirs =
+            process.platform === 'win32'
+              ? [
+                  path.join(homedir, '.local', 'bin'),
+                  path.join(homedir, '.cargo', 'bin'),
+                  path.join(
+                    process.env.APPDATA || path.join(homedir, 'AppData', 'Roaming'),
+                    'npm'
+                  ),
+                  path.join(
+                    process.env.LOCALAPPDATA || path.join(homedir, 'AppData', 'Local'),
+                    'Programs'
+                  ),
+                ]
+              : [
+                  path.join(homedir, '.local', 'bin'),
+                  path.join(homedir, '.cargo', 'bin'),
+                  ...(process.platform === 'darwin'
+                    ? ['/opt/homebrew/bin', '/usr/local/bin']
+                    : ['/usr/local/bin']),
+                ];
+          const searchDirs = Array.from(
+            new Set([...pathEnv.split(path.delimiter), ...platformDirs].filter(Boolean))
+          );
+          // Windows 上的 CLI 多为 .cmd / .exe，必须按 PATHEXT 枚举候选扩展名，
+          // 否则 fs.existsSync 对无扩展名路径永远为 false。
+          const executableExtensions =
+            process.platform === 'win32'
+              ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM')
+                  .split(';')
+                  .filter(Boolean)
+              : [''];
+
+          function isExecutableFile(candidate: string): boolean {
+            try {
+              return fs.existsSync(candidate) && fs.statSync(candidate).isFile();
+            } catch {
+              return false;
+            }
+          }
 
           function resolve(cmds: string[]) {
             for (const cmd of cmds) {
               for (const dir of searchDirs) {
-                const full = path.join(dir, cmd);
-                try {
-                  if (fs.existsSync(full) && fs.statSync(full).isFile()) {
+                const base = path.join(dir, cmd);
+                const candidates = path.extname(base)
+                  ? [base]
+                  : executableExtensions.flatMap((ext) => [
+                      `${base}${ext}`,
+                      `${base}${ext.toLowerCase()}`,
+                    ]);
+                for (const full of candidates) {
+                  if (isExecutableFile(full)) {
                     return { cmd, full };
                   }
-                } catch {
-                  // ignore
                 }
               }
             }
