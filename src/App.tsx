@@ -6224,55 +6224,141 @@ export default function App() {
       }
     }
 
-    const isGameTheoretic = activeTopicData?.discussionMode === 'game_theoretic';
-    const currentTopicStage: GameTheoreticStage = activeTopicData?.gameStage || activeTopicData?.gameTheoreticState?.currentStage || 'proposal';
+    const existingTopicMsgs = messagesRef.current[topicId] || [];
+    const currentTopicObj = getTopicData(topicId) || activeTopicData;
+    const isGameTheoretic = currentTopicObj?.discussionMode === 'game_theoretic';
+    const currentTopicStage: GameTheoreticStage = currentTopicObj?.gameStage || currentTopicObj?.gameTheoreticState?.currentStage || 'proposal';
     let executionStage: GameTheoreticStage = currentTopicStage;
     let targetRoleType: GameRoleType = 'proposer';
+
+    const fallbackProposalText = (
+      currentTopicObj?.gameTheoreticState?.targetProposalContent ||
+      existingTopicMsgs
+        .slice()
+        .reverse()
+        .find((m) => !m.isPending && (m.gameStage === 'proposal' || m.gameRole === 'proposer') && m.content?.trim())?.content
+    );
+    const fallbackChallengeText = (
+      currentTopicObj?.gameTheoreticState?.targetChallengeContent ||
+      existingTopicMsgs
+        .slice()
+        .reverse()
+        .find((m) => !m.isPending && (m.gameStage === 'challenge' || m.gameRole === 'challenger') && m.content?.trim())?.content
+    );
+    const fallbackVerificationText = (
+      currentTopicObj?.gameTheoreticState?.targetVerificationContent ||
+      existingTopicMsgs
+        .slice()
+        .reverse()
+        .find((m) => !m.isPending && (m.gameStage === 'verification' || m.gameRole === 'verifier') && m.content?.trim())?.content
+    );
+    const fallbackDefenseText = (
+      currentTopicObj?.gameTheoreticState?.targetDefenseContent ||
+      existingTopicMsgs
+        .slice()
+        .reverse()
+        .find((m) => !m.isPending && (m.gameStage === 'defense') && m.content?.trim())?.content
+    );
 
     const candidateAgents = topicAssigned.length > 0 ? topicAssigned : channelAssigned;
     let respondingAgents: Agent[] = [];
 
     if (isGameTheoretic) {
-      if (userMentionedAgents.length > 0 && !isAllMention) {
+      if (userMentionedAgents.length > 0 && !isTopicAll) {
         respondingAgents = userMentionedAgents;
-        const id = userMentionedAgents[0].id;
-        if (activeTopicData?.gameRoles?.proposers?.includes(id)) {
-          targetRoleType = 'proposer';
-          executionStage = currentTopicStage === 'defense' ? 'defense' : 'proposal';
-        } else if (activeTopicData?.gameRoles?.challengers?.includes(id)) {
-          targetRoleType = 'challenger';
-          executionStage = 'challenge';
-        } else if (activeTopicData?.gameRoles?.verifiers?.includes(id)) {
-          targetRoleType = 'verifier';
-          executionStage = 'verification';
-        } else if (activeTopicData?.gameRoles?.arbiters?.includes(id)) {
+        const targetAgent = userMentionedAgents[0];
+        const id = targetAgent.id;
+        const gameRoles = currentTopicObj?.gameRoles;
+        const isProposer = Boolean(gameRoles?.proposers?.includes(id));
+        const isChallenger = Boolean(gameRoles?.challengers?.includes(id));
+        const isVerifier = Boolean(gameRoles?.verifiers?.includes(id));
+        const isArbiter = Boolean(gameRoles?.arbiters?.includes(id));
+        const gState = currentTopicObj?.gameTheoreticState;
+        const hasProposal = Boolean(fallbackProposalText?.trim());
+        const isChallengerDone = Boolean(gState?.isChallengerResponded);
+        const isVerifierDone = Boolean(gState?.isVerifierResponded);
+        const isDefenseDone = Boolean(gState?.isDefenseResponded);
+
+        // 1. 优先匹配当前所处阶段（若被点名角色正好能承接当前阶段）
+        if (currentTopicStage === 'arbitration' && isArbiter) {
           targetRoleType = 'arbiter';
           executionStage = 'arbitration';
+        } else if (currentTopicStage === 'defense' && isProposer) {
+          targetRoleType = 'proposer';
+          executionStage = 'defense';
+        } else if (currentTopicStage === 'verification' && isVerifier) {
+          targetRoleType = 'verifier';
+          executionStage = 'verification';
+        } else if (currentTopicStage === 'challenge' && isChallenger) {
+          targetRoleType = 'challenger';
+          executionStage = 'challenge';
+        } else if (currentTopicStage === 'proposal' && isProposer && !hasProposal) {
+          targetRoleType = 'proposer';
+          executionStage = 'proposal';
+        // 2. 否则按协同状态机未竟进度断点续推（如因通信中断挂起跳过，用户重新点名恢复该角色继续接力）
+        } else if (isChallenger && (!isChallengerDone || currentTopicStage === 'proposal')) {
+          targetRoleType = 'challenger';
+          executionStage = 'challenge';
+        } else if (isVerifier && (!isVerifierDone || currentTopicStage === 'challenge')) {
+          targetRoleType = 'verifier';
+          executionStage = 'verification';
+        } else if (isProposer && hasProposal && (!isDefenseDone || currentTopicStage === 'challenge' || currentTopicStage === 'verification')) {
+          targetRoleType = 'proposer';
+          executionStage = 'defense';
+        } else if (isArbiter && (isDefenseDone || currentTopicStage === 'defense' || currentTopicStage === 'arbitration')) {
+          targetRoleType = 'arbiter';
+          executionStage = 'arbitration';
+        // 3. 兜底角色映射
+        } else if (isChallenger) {
+          targetRoleType = 'challenger';
+          executionStage = 'challenge';
+        } else if (isVerifier) {
+          targetRoleType = 'verifier';
+          executionStage = 'verification';
+        } else if (isArbiter) {
+          targetRoleType = 'arbiter';
+          executionStage = 'arbitration';
+        } else if (isProposer) {
+          targetRoleType = 'proposer';
+          executionStage = hasProposal ? 'defense' : 'proposal';
+        }
+
+        // 同步更新议题阶段至最新执行阶段，并清理此前因 Agent 离线产生的法定人数警告
+        if (executionStage !== currentTopicStage || gState?.quorumAlert) {
+          updateTopicDataInState(topicId, (old) => ({
+            ...old,
+            gameStage: executionStage,
+            gameTheoreticState: {
+              ...old.gameTheoreticState,
+              currentStage: executionStage,
+              quorumAlert: undefined,
+            },
+          }));
         }
       } else {
         // 根据三元/4+1博弈当前所处阶段分配角色，绝不并发广播给全员
         if (currentTopicStage === 'proposal') {
-          const proposerIds = activeTopicData?.gameRoles?.proposers || [];
+          const proposerIds = currentTopicObj?.gameRoles?.proposers || [];
           respondingAgents = candidateAgents.filter((a) => proposerIds.includes(a.id));
           targetRoleType = 'proposer';
           executionStage = 'proposal';
         } else if (currentTopicStage === 'challenge') {
-          const challengerIds = activeTopicData?.gameRoles?.challengers || [];
+          const challengerIds = currentTopicObj?.gameRoles?.challengers || [];
           respondingAgents = candidateAgents.filter((a) => challengerIds.includes(a.id));
           targetRoleType = 'challenger';
           executionStage = 'challenge';
         } else if (currentTopicStage === 'verification') {
-          const verifierIds = activeTopicData?.gameRoles?.verifiers || [];
+          const verifierIds = currentTopicObj?.gameRoles?.verifiers || [];
           respondingAgents = candidateAgents.filter((a) => verifierIds.includes(a.id));
           targetRoleType = 'verifier';
           executionStage = 'verification';
         } else if (currentTopicStage === 'defense') {
-          const proposerIds = activeTopicData?.gameRoles?.proposers || [];
+          const proposerIds = currentTopicObj?.gameRoles?.proposers || [];
           respondingAgents = candidateAgents.filter((a) => proposerIds.includes(a.id));
           targetRoleType = 'proposer';
           executionStage = 'defense';
         } else if (currentTopicStage === 'arbitration') {
-          const arbiterIds = activeTopicData?.gameRoles?.arbiters || [];
+          const arbiterIds = currentTopicObj?.gameRoles?.arbiters || [];
           respondingAgents = candidateAgents.filter((a) => arbiterIds.includes(a.id));
           targetRoleType = 'arbiter';
           executionStage = 'arbitration';
@@ -6378,8 +6464,7 @@ export default function App() {
     );
 
     // 提取议题前序研讨记录（若启用 G-Frame 模块化隔离且当前模块已有专属消息，则仅注入本模块沙箱内的历史）
-    const existingTopicMsgs = messagesRef.current[topicId] || [];
-    const activeModState = activeTopicData?.gameTheoreticState?.modularState;
+    const activeModState = currentTopicObj?.gameTheoreticState?.modularState;
     const activeModSlice =
       activeModState?.enabled && activeModState.activeModuleId
         ? activeModState.modules.find((m) => m.moduleId === activeModState.activeModuleId)
@@ -6408,24 +6493,24 @@ export default function App() {
 
     const topicContext: TopicPromptContext = {
       topicId,
-      title: activeTopicData?.title || '议题方案推演',
-      description: activeTopicData?.description,
+      title: currentTopicObj?.title || '议题方案推演',
+      description: currentTopicObj?.description,
       channelName: topicChannel?.name || 'chat',
-      status: activeTopicData?.status || 'open',
-      discussionMode: activeTopicData?.discussionMode,
-      gameRoles: activeTopicData?.gameRoles,
+      status: currentTopicObj?.status || 'open',
+      discussionMode: currentTopicObj?.discussionMode,
+      gameRoles: currentTopicObj?.gameRoles,
       gameStage: isGameTheoretic ? executionStage : undefined,
       targetProposalText: isGameTheoretic && (executionStage === 'challenge' || executionStage === 'verification' || executionStage === 'defense' || executionStage === 'arbitration')
-        ? activeTopicData?.gameTheoreticState?.targetProposalContent
+        ? fallbackProposalText
         : undefined,
       targetChallengeText: isGameTheoretic && (executionStage === 'verification' || executionStage === 'defense' || executionStage === 'arbitration')
-        ? activeTopicData?.gameTheoreticState?.targetChallengeContent
+        ? fallbackChallengeText
         : undefined,
       targetVerificationText: isGameTheoretic && (executionStage === 'defense' || executionStage === 'arbitration')
-        ? activeTopicData?.gameTheoreticState?.targetVerificationContent
+        ? fallbackVerificationText
         : undefined,
       targetDefenseText: isGameTheoretic && executionStage === 'arbitration'
-        ? activeTopicData?.gameTheoreticState?.targetDefenseContent
+        ? fallbackDefenseText
         : undefined,
       modularState: activeModState,
       participatingAgents: candidateAgents,
@@ -6965,7 +7050,8 @@ export default function App() {
               if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
                 console.warn('Challenger returned empty/error turn, pausing handover.');
               } else {
-                const hasVerifiers = (activeTopicData?.gameRoles?.verifiers || []).length > 0;
+                const freshTopic = getTopicData(topicId) || activeTopicData;
+                const hasVerifiers = (freshTopic?.gameRoles?.verifiers || []).length > 0;
                 const nextStageTarget = hasVerifiers ? 'verification' : 'defense';
                 updateTopicDataInState(topicId, (old) => ({
                   ...old,
@@ -6975,12 +7061,13 @@ export default function App() {
                     currentStage: nextStageTarget,
                     targetChallengeContent: acpResp.textResponse,
                     isChallengerResponded: true,
+                    quorumAlert: undefined,
                   },
                 }));
                 triggerGameTheoreticStageHandover({
                   topicId,
                   nextStage: nextStageTarget,
-                  targetProposalText: activeTopicData?.gameTheoreticState?.targetProposalContent,
+                  targetProposalText: fallbackProposalText || freshTopic?.gameTheoreticState?.targetProposalContent,
                   targetChallengeText: acpResp.textResponse,
                 });
               }
@@ -6988,6 +7075,7 @@ export default function App() {
               if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
                 console.warn('Verifier returned empty/error turn, pausing handover.');
               } else {
+                const freshTopic = getTopicData(topicId) || activeTopicData;
                 updateTopicDataInState(topicId, (old) => ({
                   ...old,
                   gameStage: 'defense',
@@ -6996,13 +7084,14 @@ export default function App() {
                     currentStage: 'defense',
                     targetVerificationContent: acpResp.textResponse,
                     isVerifierResponded: true,
+                    quorumAlert: undefined,
                   },
                 }));
                 triggerGameTheoreticStageHandover({
                   topicId,
                   nextStage: 'defense',
-                  targetProposalText: activeTopicData?.gameTheoreticState?.targetProposalContent,
-                  targetChallengeText: activeTopicData?.gameTheoreticState?.targetChallengeContent,
+                  targetProposalText: fallbackProposalText || freshTopic?.gameTheoreticState?.targetProposalContent,
+                  targetChallengeText: fallbackChallengeText || freshTopic?.gameTheoreticState?.targetChallengeContent,
                   targetVerificationText: acpResp.textResponse,
                 });
               }
@@ -7010,6 +7099,7 @@ export default function App() {
               if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
                 console.warn('Proposer defense returned empty/error turn, pausing handover.');
               } else {
+                const freshTopic = getTopicData(topicId) || activeTopicData;
                 updateTopicDataInState(topicId, (old) => ({
                   ...old,
                   gameStage: 'arbitration',
@@ -7018,14 +7108,15 @@ export default function App() {
                     currentStage: 'arbitration',
                     targetDefenseContent: acpResp.textResponse,
                     isDefenseResponded: true,
+                    quorumAlert: undefined,
                   },
                 }));
                 triggerGameTheoreticStageHandover({
                   topicId,
                   nextStage: 'arbitration',
-                  targetProposalText: activeTopicData?.gameTheoreticState?.targetProposalContent,
-                  targetChallengeText: activeTopicData?.gameTheoreticState?.targetChallengeContent,
-                  targetVerificationText: activeTopicData?.gameTheoreticState?.targetVerificationContent,
+                  targetProposalText: fallbackProposalText || freshTopic?.gameTheoreticState?.targetProposalContent,
+                  targetChallengeText: fallbackChallengeText || freshTopic?.gameTheoreticState?.targetChallengeContent,
+                  targetVerificationText: fallbackVerificationText || freshTopic?.gameTheoreticState?.targetVerificationContent,
                   targetDefenseText: acpResp.textResponse,
                 });
               }
