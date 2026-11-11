@@ -15,8 +15,37 @@ export function getDefaultDmTopicCwd(agentId: string, topicId: string): string {
   return `${WORKSPACE_HOME}/agents/${agentId}/topics/${topicId}`;
 }
 
+function isWindowsDriveRoot(value: string): boolean {
+  return /^[A-Za-z]:[\\/]+$/.test(value);
+}
+
+/**
+ * 去掉路径末尾分隔符，同时保留根路径语义：
+ * - `/` → `/`
+ * - `C:\` / `C:/` → `C:\`（不能变成相对路径 `C:`）
+ * - `D:\repo\` → `D:\repo`
+ */
+export function stripTrailingSeparators(raw: string): string {
+  if (raw === '/') return '/';
+  if (isWindowsDriveRoot(raw)) {
+    return `${raw[0]}:${raw.includes('\\') ? '\\' : '/'}`;
+  }
+  const stripped = raw.replace(/[\\/]+$/, '');
+  return stripped === '' ? raw : stripped;
+}
+
+/** 按已有路径风格拼接子路径，避免 Windows 上产出 `D:\repo\/artifacts`。 */
+export function joinFsPath(base: string, child: string): string {
+  const separator = base.includes('\\') && !base.includes('/') ? '\\' : '/';
+  const normalized = stripTrailingSeparators(base);
+  if (normalized === '/' || isWindowsDriveRoot(normalized)) {
+    return `${normalized}${child}`;
+  }
+  return `${normalized}${separator}${child}`;
+}
+
 export function getDefaultArtifactRoot(cwd: string): string {
-  return `${cwd.replace(/\/+$/, '')}/artifacts`;
+  return joinFsPath(cwd, 'artifacts');
 }
 
 export function normalizeWorkspaceCwd(raw: string): string {
@@ -24,7 +53,7 @@ export function normalizeWorkspaceCwd(raw: string): string {
   if (!trimmed) {
     throw new Error('工作目录不能为空');
   }
-  return trimmed.replace(/\/+$/, '') || '/';
+  return stripTrailingSeparators(trimmed);
 }
 
 export function normalizeDuelRoles(roles: DuelRolesConfig): DuelRolesConfig {
@@ -242,19 +271,24 @@ export function migrateWorkspaceGraph(
         if (!topicBinding) {
           const channelBinding = channelBindingMap.get(message.topicData.channelId || '');
           if (!channelBinding) {
-            throw new Error(
-              `Cannot migrate Topic ${topicId}: Channel ${message.topicData.channelId || '(none)'} has no Workspace Binding`
+            // 单个 Topic 的频道绑定缺失不应中止整张图的迁移：
+            // 用显式默认绑定兜底，保证其余数据仍可正常升级。
+            console.warn(
+              `[workspaceBindings] Topic ${topicId} 的 Channel ${message.topicData.channelId || '(none)'} 缺少 Workspace Binding，使用默认绑定`
             );
           }
+          const fallbackCwd = channelBinding?.cwd ?? `${WORKSPACE_HOME}/topics/${topicId}`;
           topicBinding = {
             id: message.topicData.workspaceBindingId || `ws-topic-${topicId}`,
             ownerType: 'topic',
             ownerId: topicId,
-            mode: 'custom',
-            origin: 'legacy_channel_cwd_snapshot',
-            cwd: channelBinding.cwd,
-            artifactRoot: `${channelBinding.artifactRoot.replace(/\/+$/, '')}/${topicId}`,
-            createdAt: channelBinding.createdAt,
+            mode: channelBinding ? 'custom' : 'default',
+            origin: channelBinding ? 'legacy_channel_cwd_snapshot' : 'created_default',
+            cwd: fallbackCwd,
+            artifactRoot: channelBinding
+              ? joinFsPath(channelBinding.artifactRoot, topicId)
+              : getDefaultArtifactRoot(fallbackCwd),
+            createdAt: channelBinding?.createdAt ?? Date.now(),
           };
           bindings.push(topicBinding);
           bindingMap.set(topicOwnerKey, topicBinding);

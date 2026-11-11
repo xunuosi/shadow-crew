@@ -704,6 +704,28 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [messages]);
 
+  // 离开页面 / 切到后台时立即冲刷最后一次防抖窗口内的消息，
+  // 否则窗口关闭前 600ms 内的编辑会丢失。
+  useEffect(() => {
+    const flushMessages = () => {
+      if (!isWorkspaceHydratedRef.current) return;
+      const allMsgs = Object.values(messagesRef.current).flat();
+      if (allMsgs.length === 0) return;
+      void saveMessagesBatchToDb(allMsgs).catch((e) => {
+        console.error('[App] SQLite flush on page hide failed:', e);
+      });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushMessages();
+    };
+    window.addEventListener('beforeunload', flushMessages);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('beforeunload', flushMessages);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, []);
+
   // SubThreads State with Local Storage Persistence
   const [subThreads, setSubThreads] = useState<Record<string, SubThread>>(() => {
     try {
