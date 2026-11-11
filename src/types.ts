@@ -721,7 +721,7 @@ export type RoleConcurrenceItemStatus =
   | RoleConcurrenceDecisionStatus
   | 'invalid';
 
-export type RoleConcurrenceSource = 'mcp_tool' | 'contract_block';
+export type RoleConcurrenceSource = 'mcp_tool' | 'contract_block' | 'arbiter_intrinsic';
 
 /**
  * 参研角色通过 submit_role_concurrence 工具或 ROLE_CONCURRENCE 契约块提交的终局票。

@@ -112,6 +112,16 @@ function textContainsExactMention(text: string, handle: string): boolean {
   ).test(text);
 }
 
+function textContainsAgentMention(text: string, agent: Agent, handle: string): boolean {
+  if (textContainsExactMention(text, handle)) return true;
+  // 兼容量产场景中，模型可能使用 @AgentName 进行点名
+  if (agent.name && agent.name.trim()) {
+    const nameHandle = normalizeMentionHandle({ ...agent, handle: agent.name.trim() });
+    if (textContainsExactMention(text, nameHandle)) return true;
+  }
+  return false;
+}
+
 /**
  * 宿主校验综合裁定官实际正文是否逐一 @ 了全部应参研角色。
  * Prompt 要求并不足以形成输出契约：缺失任一真实 mention 必须阻断征询。
@@ -119,17 +129,23 @@ function textContainsExactMention(text: string, handle: string): boolean {
 export function validateArbiterConcurrenceMentions(options: {
   arbiterReplyText: string;
   expectedAgents: Agent[];
+  arbiterAgentId?: string;
 }): { isValid: boolean; missingHandles: string[] } {
+  const { arbiterReplyText, expectedAgents, arbiterAgentId } = options;
+  const targetAgents = arbiterAgentId
+    ? expectedAgents.filter((agent) => agent.id !== arbiterAgentId)
+    : expectedAgents;
+
   const uniqueAgents = Array.from(
-    new Map(options.expectedAgents.map((agent) => [agent.id, agent])).values()
+    new Map(targetAgents.map((agent) => [agent.id, agent])).values()
   );
   const missingHandles = uniqueAgents
     .map((agent) => ({ agent, handle: normalizeMentionHandle(agent) }))
-    .filter(({ handle }) => !textContainsExactMention(options.arbiterReplyText, handle))
+    .filter(({ agent, handle }) => !textContainsAgentMention(arbiterReplyText, agent, handle))
     .map(({ handle }) => handle);
 
   return {
-    isValid: uniqueAgents.length > 0 && missingHandles.length === 0,
+    isValid: uniqueAgents.length === 0 || missingHandles.length === 0,
     missingHandles,
   };
 }
@@ -145,16 +161,16 @@ export function buildArbiterStage5Directive(options: {
   verificationSection?: string;
   defenseSection?: string;
 }): string {
-  const { topic, availableAgents, verificationSection = '', defenseSection = '' } = options;
+  const { topic, availableAgents, arbiterAgent, verificationSection = '', defenseSection = '' } = options;
 
-  // 提取需要被 @ 征求意见的角色智能体
+  // 提取需要被 @ 征求意见的角色智能体（排除裁定官自身，裁定官起草终局方案无需在正文中 @ 自身）
   const proposerIds = topic.gameRoles?.proposers || [];
   const challengerIds = topic.gameRoles?.challengers || [];
   const verifierIds = topic.gameRoles?.verifiers || [];
 
-  const proposers = availableAgents.filter((a) => proposerIds.includes(a.id));
-  const challengers = availableAgents.filter((a) => challengerIds.includes(a.id));
-  const verifiers = availableAgents.filter((a) => verifierIds.includes(a.id));
+  const proposers = availableAgents.filter((a) => proposerIds.includes(a.id) && a.id !== arbiterAgent.id);
+  const challengers = availableAgents.filter((a) => challengerIds.includes(a.id) && a.id !== arbiterAgent.id);
+  const verifiers = availableAgents.filter((a) => verifierIds.includes(a.id) && a.id !== arbiterAgent.id);
 
   const mentionHandles = [
     ...proposers.map(normalizeMentionHandle),
@@ -164,7 +180,7 @@ export function buildArbiterStage5Directive(options: {
 
   const mentionDirectives = mentionHandles.length > 0
     ? mentionHandles.join(' ')
-    : '@提案方 @红队对抗方 @实证检验方';
+    : '@红队对抗方 @实证检验方';
 
   return `\n\n【博弈编排 - ⚖️ 阶段 5: 综合裁定官方案敲定与全员无异议征询 (Arbitration & Concurrence)】:
 你是本议题唯一的终局综合裁定官 (Chief Arbitrator)，负责本议题架构方案的最终敲定！
@@ -312,6 +328,7 @@ export function prepareConcurrenceState(options: {
   arbiterDraft?: ArbitrationRulingDraft;
   arbiterReplyText?: string;
   solutionDigest: string;
+  arbiterAgentId?: string;
 }): GameRoleConcurrenceState {
   const {
     topic,
@@ -319,11 +336,14 @@ export function prepareConcurrenceState(options: {
     arbiterDraft,
     arbiterReplyText = '',
     solutionDigest,
+    arbiterAgentId,
   } = options;
   const gameRoles = topic.gameRoles;
   if (!/^sha256:[a-f0-9]{64}$/i.test(solutionDigest)) {
     throw new Error('[prepareConcurrenceState] 缺少合法的终局方案摘要 solutionDigest');
   }
+
+  const effectiveArbiterId = arbiterAgentId || gameRoles?.arbiters?.[0];
 
   const proposerIds = gameRoles?.proposers || [];
   const challengerIds = gameRoles?.challengers || [];
@@ -337,12 +357,22 @@ export function prepareConcurrenceState(options: {
       throw new Error(`[prepareConcurrenceState] 找不到已配置参研角色 Agent: ${agentId}`);
     }
     if (items.some((i) => i.agentId === agent.id)) return;
+
+    // 如果该参研角色恰好是综合裁定官自身（兼任），裁决书即为其立场的法定表达，内在默认达成无异议
+    const isArbiterSelf = Boolean(effectiveArbiterId && agent.id === effectiveArbiterId);
     items.push({
       agentId: agent.id,
       agentName: agent.name,
       agentHandle: normalizeMentionHandle(agent),
       role,
-      status: 'pending',
+      status: isArbiterSelf ? 'concurred' : 'pending',
+      solutionDigest: isArbiterSelf ? solutionDigest : undefined,
+      decisionSource: isArbiterSelf ? 'arbiter_intrinsic' : undefined,
+      statement: isArbiterSelf
+        ? '综合裁定官兼任本角色并已起草发布终局裁决书，内在默认达成无异议'
+        : undefined,
+      blockingIssueIds: isArbiterSelf ? [] : undefined,
+      conditions: isArbiterSelf ? [] : undefined,
     });
   };
 
@@ -350,12 +380,17 @@ export function prepareConcurrenceState(options: {
   challengerIds.forEach((id) => addRoleItem(id, 'challenger'));
   verifierIds.forEach((id) => addRoleItem(id, 'verifier'));
 
-  if (items.length > 0) {
+  // 待校验的 @mention 角色仅包含除裁定官自身外的其他参研角色
+  const peerAgents = items
+    .filter((item) => !effectiveArbiterId || item.agentId !== effectiveArbiterId)
+    .map((item) => candidateAgents.find((agent) => agent.id === item.agentId))
+    .filter((agent): agent is Agent => Boolean(agent));
+
+  if (peerAgents.length > 0) {
     const mentionValidation = validateArbiterConcurrenceMentions({
       arbiterReplyText,
-      expectedAgents: items
-        .map((item) => candidateAgents.find((agent) => agent.id === item.agentId))
-        .filter((agent): agent is Agent => Boolean(agent)),
+      expectedAgents: peerAgents,
+      arbiterAgentId: effectiveArbiterId,
     });
     if (!mentionValidation.isValid) {
       throw new Error(
@@ -372,7 +407,14 @@ export function prepareConcurrenceState(options: {
     isConcurrencePhaseActive: items.length > 0,
     arbiterProposalSummary: proposalSummary,
     items,
-    allConcurred: false,
+    allConcurred: checkAllRolesConcurred({
+      protocolVersion: 1,
+      solutionDigest,
+      isConcurrencePhaseActive: items.length > 0,
+      arbiterProposalSummary: proposalSummary,
+      items,
+      allConcurred: false,
+    }),
   };
 }
 

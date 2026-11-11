@@ -5410,6 +5410,7 @@ export default function App() {
             arbiterDraft: extractedRulingDraft,
             arbiterReplyText: acpResp.textResponse,
             solutionDigest: concurrenceSolutionDigest,
+            arbiterAgentId: arbiterAgent.id,
           });
 
           // 将求解出的 MCDA 矩阵、ColMAD 报表、裁决草案与全员无异议征询状态持久化至议题博弈状态中
@@ -5491,6 +5492,10 @@ export default function App() {
 
             for (const item of initialConcurrence.items) {
               if (isTurnStale(turnSnapshot)) break;
+              // 裁定官兼任的角色在裁决书中已内在达成无异议，无需发起自审循环
+              if (item.status === 'concurred' || item.agentId === arbiterAgent.id) {
+                continue;
+              }
               const roleAgent = candidateAgents.find((a) => a.id === item.agentId);
               if (!roleAgent) continue;
 

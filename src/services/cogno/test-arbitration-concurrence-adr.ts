@@ -638,6 +638,66 @@ assert.equal(evaluateRulingGates({
 }, { consistencyPassed: true } as any).isChallengerQuorumMet, true);
 console.log('✓ 零角色、mention 规范化、表格转义、日期与门禁边界通过');
 
+console.log('\n--- 测试 9: 综合裁定官兼任角色豁免正文自 @ 与内在默认无异议 ---');
+// 1. 验证裁定官提示词：排除裁定官自身 @ 句柄
+const dualRoleDirective = buildArbiterStage5Directive({
+  topic: {
+    title: mockTopic.title,
+    description: mockTopic.description,
+    gameRoles: {
+      proposers: ['agent-proposer'],
+      challengers: ['agent-challenger'],
+      verifiers: ['agent-verifier'],
+      arbiters: ['agent-proposer'],
+      humanIsArbiter: false,
+    },
+  },
+  arbiterAgent: mockAgents[0], // agent-proposer 既是提案官又是裁定官
+  availableAgents: mockAgents,
+});
+assert.ok(!dualRoleDirective.includes('@arch-linus'));
+assert.ok(dualRoleDirective.includes('@red-sentinel'));
+assert.ok(dualRoleDirective.includes('@qa-verifier'));
+
+// 2. 验证 prepareConcurrenceState：正文仅 @ 其他参研成员时不报错，且兼任角色内在达成无异议
+const dualRoleTopic: TopicMessageData = {
+  ...mockTopic,
+  gameRoles: {
+    proposers: ['agent-proposer'],
+    challengers: ['agent-challenger'],
+    verifiers: ['agent-verifier'],
+    arbiters: ['agent-proposer'],
+    humanIsArbiter: false,
+  },
+};
+const dualRoleState = prepareConcurrenceState({
+  topic: dualRoleTopic,
+  candidateAgents: mockAgents,
+  arbiterDraft: draft,
+  arbiterReplyText: '终局裁决：优先采用方案C架构补丁。请 @red-sentinel @qa-verifier 进行最终审视。',
+  solutionDigest,
+  arbiterAgentId: 'agent-proposer',
+});
+assert.equal(dualRoleState.isConcurrencePhaseActive, true);
+assert.equal(dualRoleState.items.length, 3);
+const linusItem = dualRoleState.items.find((i) => i.agentId === 'agent-proposer');
+assert.ok(linusItem);
+assert.equal(linusItem?.status, 'concurred');
+assert.equal(linusItem?.solutionDigest, solutionDigest);
+assert.ok(linusItem?.statement?.includes('综合裁定官兼任'));
+assert.equal(linusItem?.decisionSource, 'arbiter_intrinsic');
+const redItem = dualRoleState.items.find((i) => i.agentId === 'agent-challenger');
+assert.equal(redItem?.status, 'pending');
+
+// 3. 验证 @AgentName 显示名兼容匹配 (RedTeam_Sentinel -> @RedTeam_Sentinel)
+const displayNameValidation = validateArbiterConcurrenceMentions({
+  arbiterReplyText: '请 @RedTeam_Sentinel 和 @QA_Grounding 进行审视。',
+  expectedAgents: [mockAgents[1], mockAgents[2]],
+});
+assert.equal(displayNameValidation.isValid, true);
+assert.deepEqual(displayNameValidation.missingHandles, []);
+console.log('✓ 裁定官兼任时正文自 @ 豁免、内在无异议初始化与 @AgentName 显示名兼容校验全部通过');
+
 console.log('\n================================================================================');
 console.log('🎉 结构化无异议票 P0 回归全部通过：自然语言零授权，条件/异议/错绑/缺 @ 全部阻塞');
 console.log('================================================================================');
