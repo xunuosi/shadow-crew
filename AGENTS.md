@@ -30,6 +30,40 @@ Shadow Crew —— 多 Agent 协同桌面应用（Tauri + React 19 + Vite）。
 
 ---
 
+## 前端架构与 App.tsx 模块化分治体系（App Slimming Architecture）
+
+为避免顶层入口 `src/App.tsx` 代码膨胀与关注点混杂，系统严格推行**「精简调度根 + 领域专用 Hook + 集中式弹窗容器」**的分治架构：
+
+```text
+src/
+├── App.tsx                              # 核心调度中枢：顶层状态树、会话生命周期与 Hook 组装
+├── components/
+│   └── AppModalsContainer.tsx           # 全局弹窗容器：集中管理与 Suspense 按需加载所有业务弹窗
+└── hooks/
+    ├── useResizablePanel.ts             # 布局交互：侧边栏与主分栏拖拽缩放
+    ├── useTopicExecutionPipeline.ts     # 落地执行：G-Frame 模块拓扑流水线与工作区 Diff 物理合入
+    ├── useArbitrationConcurrence.ts     # 仲裁合流：运筹一致性求解、全员无异议征询与 Living ADR
+    └── useGameTheoreticFsm.ts           # 博弈状态机：DIANOIA 4+1 阶段流转控制器 (Proposal->Arbiter)
+```
+
+### 1. 各分治模块职责划分
+
+1. **`AppModalsContainer.tsx`（集中式弹窗容器）**：
+   - **职责**：将 Agent 团队管理（`AgentTeamsModal`、`CreateTeamModal`）、Agent 默认配置（`AgentDefaultsModal`）、ACP 权限仲裁与授权中心（`AcpPermissionModal`、`AcpPermissionCenterModal`）、本地 SQLite 存储缓存清理（`StorageSettingsModal`）、频道创建/成员/删除（`CreateChannelModal`、`ChannelMembersModal`、`DeleteChannelModal`）、ACP Agent 连接与配置（`ConnectAgentModal`）、议题新建与编辑（`NewTopicModal`、`EditTopicModal`）以及 Tauri 架构看板（`RustTauriArchitectureHub`）统一封装，主界面 JSX 彻底瘦身。
+2. **`useTopicExecutionPipeline.ts`（议题落地执行管线 Hook）**：
+   - **职责**：封装 G-Frame 模块化分治流水线串行落地（DAG 拓扑偏序、白名单受限提示词编译、多阶段 Diff 增量合并）、标准单轮落地执行以及基于 `applyTopicPatchToWorkspace` 的物理合入逻辑。对外暴露 `dispatchTopicExecution`、`handleExecuteTopicPatch`、`handleApplyTopicPatch`。
+3. **`useArbitrationConcurrence.ts`（仲裁合流与无异议征询 Hook）**：
+   - **职责**：封装综合裁定官发言完毕后的 MCDA 运筹求解、ColMAD 事实贡献报表、裁决草案持久化、全员无异议征询状态机推进、一致性硬门禁校验以及终局活体 ADR（Living ADR Canvas）生成。对外暴露 `processArbitrationConcurrence`。
+4. **`useGameTheoreticFsm.ts`（博弈状态机控制器 Hook）**：
+   - **职责**：接管 Shinobi DIANOIA 4+1 博弈推演全周期状态流转控制器（Proposal 提案立论 → Challenge Free-MAD 质询 → Verification 原子接地实证 → Defense 答辩修正 → Arbitration 仲裁交接），严格维护 `inFlightHandoverRef` 并发交接锁与 `stageRefineRetriesRef` 有界重试。对外暴露 `triggerGameTheoreticStageHandover`。
+
+### 2. 状态与依赖拓扑设计
+
+- **自下而上的清晰依赖链**：`useTopicExecutionPipeline`（输出执行能力）→ `handleResolveTopic`（敲定并可选触发派发）→ `useArbitrationConcurrence`（合流并触发定案敲定）→ `useGameTheoreticFsm`（博弈流转并在阶段 5 触发仲裁合流）。
+- **严格回归保护**：任何涉及上述编排 Hook 的重构与调整，均受已有 13 套自动化测试套件（`npm run test:cogno`）与 TypeScript 编译（`npm run lint`）的严格无缝校验。
+
+---
+
 ## 变更交付准则：必要性回归测试与原子化 Git 提交（强制规则）
 
 为保证代码改动的高可靠性与历史可回溯性，任何功能新增、逻辑重构或 Bug 修复均必须严格遵循**「完成修改 -> 必要性回归测试 -> 即时 Git 提交」**的标准闭环：
