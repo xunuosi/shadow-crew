@@ -2923,23 +2923,35 @@ impl RunningAgent {
             let _ = db.delete_acp_session(Some(&self.agent_id), key_or_prefix, clear_generation);
         }
 
-        // 异步向底层 ACP 进程发送 session/close，使 Agent 进程释放底层会话资源
-        for sid in &removed_sessions {
+        // 异步向底层 ACP 进程发送 session/close 标准请求，使 Agent 进程释放底层活动会话、turn 与沙箱资源
+        for (idx, sid) in removed_sessions.iter().enumerate() {
             self.cancel_pending_permissions_for_session(
                 sid,
                 "ACP session was cleared before permission was resolved",
             )
             .await;
-            let close_req = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "session/close",
-                "params": {
-                    "sessionId": sid
-                }
-            });
+            let close_id = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64
+                + idx as u64;
+            let close_req = build_session_close_request(sid, close_id);
             let _ = self.stdin_tx.send(close_req.to_string()).await;
         }
     }
+}
+
+/// 构造符合官方 ACP v2 规范的 `session/close` 标准请求对象。
+/// 官方 ACP v2 将 `session/close` 注册为 request，必须包含 JSON-RPC `id`，严禁作为 notification 发送。
+pub(crate) fn build_session_close_request(session_id: &str, req_id: u64) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "session/close",
+        "params": {
+            "sessionId": session_id
+        }
+    })
 }
 
 /// 规范化用于 ACP 会话人设比对的系统提示词：
@@ -3833,14 +3845,7 @@ impl RunningAgent {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
-            let close_req = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": close_id,
-                "method": "session/close",
-                "params": {
-                    "sessionId": old_id
-                }
-            });
+            let close_req = build_session_close_request(&old_id, close_id);
             let _ = self.stdin_tx.send(close_req.to_string()).await;
         }
 
@@ -5840,6 +5845,17 @@ mod runtime_status_tests {
             || terminal_result.get("response").is_some();
         let is_v2_receipt = has_receipt && !has_terminal;
         assert!(!is_v2_receipt, "含有 stopReason 的终态响应绝不可误判为 pending receipt");
+    }
+
+    #[test]
+    fn test_build_session_close_request_contains_jsonrpc_id() {
+        use super::build_session_close_request;
+
+        let req = build_session_close_request("test-session-123", 98765);
+        assert_eq!(req["jsonrpc"], "2.0");
+        assert_eq!(req["method"], "session/close");
+        assert_eq!(req["id"], 98765);
+        assert_eq!(req["params"]["sessionId"], "test-session-123");
     }
 
     #[test]

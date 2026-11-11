@@ -291,6 +291,34 @@ console.log('▶ [Round 2] Verifying V2 Session Prompt Turn Completion & Receipt
     turnCompleteNotif?.params?.update?.messageId === promptResult?.result?.messageId,
     'turn_complete notification messageId must match session/prompt result messageId'
   );
+
+  // Test session/close as a standard JSON-RPC 2.0 request (with id)
+  const closeRun = await runAcpProcessConversation(
+    [
+      {
+        jsonrpc: '2.0',
+        id: 203,
+        method: 'initialize',
+        params: { protocolVersion: 2 },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 204,
+        method: 'session/close',
+        params: {
+          sessionId: 'test-session-to-close',
+        },
+      },
+    ],
+    {
+      PATH: '/nonexistent-bin-dir',
+      CODEX_PATH: '/nonexistent-bin-dir/codex',
+    }
+  );
+
+  const closeResult = closeRun.results.get(204);
+  check(Boolean(closeResult), 'session/close must return a response to request id 204');
+  check(closeResult?.result?.closed === true, 'session/close must confirm closed: true');
 }
 
 console.log('✓ Round 2 passed: V2 turn completion notification & receipt lifecycle verified.\n');
