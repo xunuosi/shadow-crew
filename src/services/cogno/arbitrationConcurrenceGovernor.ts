@@ -194,19 +194,36 @@ export function buildArbiterStage5Directive(options: {
    ${mentionDirectives}
    向他们正式发起终局方案审视与异议排查征询，提问各角色：“针对上述综合裁定方案与权衡折中，请各角色进行最终审视，确认是否存在阻断性异议或未尽风险”。
 4. 【📋 明确最终敲定标准】：指出只有当所有被 @ 角色回复确认【无异议 / Concurred】后，你将正式出具终局架构决议并生成最终的活体决策看板 (Living ADR Canvas)；
-5. 【结构化裁决书交付】：优先调用宿主 \`submit_arbitration_ruling\` 工具；或在回复末尾附带标准裁决草案块：
-<<<RULING_DRAFT>>>
+5. 【结构化裁决书交付与 3 种模式预案预生成】：
+   优先调用宿主 \`submit_arbitration_ruling\` 工具；或在回复末尾附带标准裁决草案块。
+   为满足人类首席仲裁官在法槌控制台中审视或切换定案模式的需求，你必须基于前序真实立论方案、红队反例和答辩补丁，同时为 3 种模式（adopt_proposer 采纳主导 / reject_rebuild 驳回重构 / trade_off_matrix 权衡矩阵）输出高保真裁决草案（严禁死板套话，每项方案均需紧扣前序真实争鸣焦点）：
+<<<RULING_DRAFT_OPTIONS>>>
 {
-  "decision_type": "adopt_proposer", // "adopt_proposer" | "reject_rebuild" | "trade_off_matrix"
-  "summary": "简明定案陈词与核心决策动因",
-  "trade_off_points": [
-    "优先保障... (权重 ...)，适度折中...",
-    "建立...机制防范红队提出的边界缺陷"
-  ],
-  "impacted_files": ["src/..."],
-  "solution": "落地工程实施或架构补丁要求"
+  "adopt_proposer": {
+    "decision_type": "adopt_proposer",
+    "summary": "基于提案立论与答辩修正，准予采纳核心架构设计与依据",
+    "trade_off_points": ["优先保障核心主线功能...", "以答辩补丁吸收反例边界缺陷..."],
+    "impacted_files": ["src/..."],
+    "solution": "采纳方案的具体工程实施要求与监控防线"
+  },
+  "reject_rebuild": {
+    "decision_type": "reject_rebuild",
+    "summary": "基于红队反例揭示的关键架构隐患，予以驳回重构的核心依据",
+    "trade_off_points": ["拒绝以健壮性与数据正确性换取局部效率...", "推倒重构期间冻结高危变更..."],
+    "impacted_files": ["src/..."],
+    "solution": "驳回原案架构指引、重构红线与安全假设重塑要求"
+  },
+  "trade_off_matrix": {
+    "decision_type": "trade_off_matrix",
+    "summary": "基于运筹矩阵权衡两造的折中定案总览",
+    "trade_off_points": ["第一阶段优先交付核心基准业务流...", "第二阶段强化防御补偿与容灾审计..."],
+    "impacted_files": ["src/..."],
+    "solution": "分阶段折中演进实施路径（第一阶段...，第二阶段...）"
+  },
+  "recommended_type": "trade_off_matrix"
 }
-<<<RULING_DRAFT_END>>>
+<<<RULING_DRAFT_OPTIONS_END>>>
+（亦兼容仅输出单项 <<<RULING_DRAFT>>> { ... } <<<RULING_DRAFT_END>>>）
 
 【立论方案 (Proposal v1)】:
 <<<PROPOSER_PROPOSAL_START>>>

@@ -85,6 +85,7 @@ import {
   buildAgentLaunchEnv,
   buildThinkingProcessFromAcp,
   extractArbitrationRulingFromAcpResponse,
+  extractArbitrationRulingOptionsFromAcpResponse,
   extractRoleConcurrenceFromAcpResponse,
   extractModuleDecompositionFromAcpResponse,
   extractWorkspaceDiffsFromText,
@@ -3189,8 +3190,18 @@ export default function App() {
         evidences: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain,
       });
 
-      // 提取由 Arbiter Agent 通过 submit_arbitration_ruling 工具或结构化契约提交的裁决书草案
-      const extractedRulingDraft = acpResp.rulingDraft || extractArbitrationRulingFromAcpResponse(acpResp, arbiterAgent.name);
+      // 提取由 Arbiter Agent 通过 submit_arbitration_ruling 工具或结构化契约提交的裁决书草案与 3 种模式预案
+      const extractedRulingOptions = extractArbitrationRulingOptionsFromAcpResponse(acpResp, {
+        topicTitle: latestTopicForArbitration.title,
+        topicDescription: latestTopicForArbitration.description,
+        proposalText: targetProposalText || latestTopicForArbitration.gameTheoreticState?.targetProposalContent,
+        critiqueText: targetChallengeText || latestTopicForArbitration.gameTheoreticState?.targetChallengeContent,
+        defenseText: targetDefenseText || latestTopicForArbitration.gameTheoreticState?.targetDefenseContent,
+        verificationText: targetVerificationText || latestTopicForArbitration.gameTheoreticState?.targetVerificationContent,
+        mcdaPayload,
+        authorName: arbiterAgent.name,
+      });
+      const extractedRulingDraft = acpResp.rulingDraft || extractedRulingOptions.primaryDraft;
       const concurrenceSolutionDigest = await computeRoleConcurrenceSolutionDigest({
         topic: latestTopicForArbitration,
         arbiterDraft: extractedRulingDraft,
@@ -3207,7 +3218,7 @@ export default function App() {
         arbiterAgentId: arbiterAgent.id,
       });
 
-      // 将求解出的 MCDA 矩阵、ColMAD 报表、裁决草案与全员无异议征询状态持久化至议题博弈状态中
+      // 将求解出的 MCDA 矩阵、ColMAD 报表、裁决草案、3 种模式预案与全员无异议征询状态持久化至议题博弈状态中
       updateTopicDataInState(topicId, (old) => ({
         ...old,
         gameStage: 'arbitration',
@@ -3218,6 +3229,7 @@ export default function App() {
           mcdaPayload,
           colMadReport,
           rulingDraft: extractedRulingDraft || old.gameTheoreticState?.rulingDraft,
+          rulingDraftOptions: extractedRulingOptions.options,
           concurrenceState: initialConcurrence,
           cognoNexus: {
             ...old.gameTheoreticState?.cognoNexus,

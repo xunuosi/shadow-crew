@@ -21,6 +21,10 @@ import {
   parseNativeMemoryCapability,
 } from './agentMemory';
 import { retrieveScpackExpertise } from './scpackService';
+export {
+  extractArbitrationRulingOptionsFromAcpResponse,
+  synthesizeContextGroundedRulingDrafts,
+} from './cogno/rulingDraftSynthesizer';
 
 export interface AcpSendPromptOptions {
   agent: Agent;
@@ -327,6 +331,7 @@ export interface AcpAgentResponse {
   memoryActions?: Array<{ action: string; key: string; detail: string }>;
   mcpToolCalls?: Array<{ server_name: string; tool_name: string; status: string; arguments?: any }>;
   rulingDraft?: ArbitrationRulingDraft;
+  rulingDraftOptions?: Record<RulingDecisionType, ArbitrationRulingDraft>;
   moduleDecompositionDraft?: ModuleDecompositionDraft;
   cartridgeCitation?: CartridgeCitation;
   workspaceDiffs?: TopicPatchDiffItem[];

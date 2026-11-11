@@ -807,6 +807,7 @@ export interface GameTheoreticState {
   roundCount?: number;                   // 当前博弈轮次计数 (P2 回边使用)
   isSafetyCharterSigned?: boolean;       // 人类是否已签署 T2 高危工具执行安全宪章
   rulingDraft?: ArbitrationRulingDraft;  // 由综合仲裁官通过 submit_arbitration_ruling MCP 工具提交的结构化裁决书草案
+  rulingDraftOptions?: Record<RulingDecisionType, ArbitrationRulingDraft>; // 针对三种模式 (采纳方案、驳回重构、权衡矩阵) 动态生成的裁决草案字典
   modularState?: ModularOrchestrationState; // G-Frame 贝叶斯与团队博弈模块化分治状态
   concurrenceState?: GameRoleConcurrenceState; // 全员无异议征询保证与活体看板生成状态
   telemetryLogIds?: string[];
