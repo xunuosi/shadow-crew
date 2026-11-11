@@ -38,7 +38,7 @@ rusqlite = { version = "0.33", features = ["bundled", "backup"] }
 flate2 = "1.1"
 regex = "1.13"
 chrono = "0.4"
-uuid = "1.26"
+uuid = { version = "1.26", features = ["v4"] }
 walkdir = "2.5"
 
 # 日志 & 追踪
