@@ -28,6 +28,18 @@ export function isTauriEnvironment(): boolean {
 }
 
 /**
+ * 统一包装原生持久化错误：记录上下文后向上抛出。
+ * 禁止在原生模式失败后静默回退到 localStorage —— 那会让调用方误以为数据已落库，
+ * 并在下次启动时读到互相矛盾的旧快照。
+ */
+function failClosed(operation: string, cause: unknown): never {
+  console.error(`[dbClient] ${operation} failed:`, cause);
+  throw new Error(
+    `${operation} 失败：${cause instanceof Error ? cause.message : String(cause)}`
+  );
+}
+
+/**
  * 格式化字节大小展示 (e.g. 1.2 MB, 45 KB)
  */
 export function formatBytes(bytes: number, decimals = 1): string {
@@ -70,7 +82,7 @@ export async function saveMessageToDb(message: Message): Promise<void> {
       await invoke('db_save_message', { message });
       return;
     } catch (e) {
-      console.error('[dbClient] db_save_message failed:', e);
+      failClosed('db_save_message', e);
     }
   }
 
@@ -86,7 +98,7 @@ export async function saveMessageToDb(message: Message): Promise<void> {
     }
     localStorage.setItem('shinobi_messages', JSON.stringify(list));
   } catch (err) {
-    console.error('[dbClient] LocalStorage fallback write failed:', err);
+    failClosed('localStorage 消息写入', err);
   }
 }
 
@@ -99,13 +111,28 @@ export async function saveMessagesBatchToDb(messages: Message[]): Promise<number
   if (invoke) {
     try {
       const count = await invoke('db_save_messages_batch', { messages });
-      return Number(count) || messages.length;
+      const persisted = Number(count);
+      if (!Number.isFinite(persisted) || persisted < 0) {
+        throw new Error(`原生返回了非法写入条数：${String(count)}`);
+      }
+      if (persisted < messages.length) {
+        console.warn(
+          `[dbClient] db_save_messages_batch 仅写入 ${persisted}/${messages.length} 条（缺失 id 的消息被跳过）`
+        );
+      }
+      return persisted;
     } catch (e) {
-      console.error('[dbClient] db_save_messages_batch failed:', e);
+      failClosed('db_save_messages_batch', e);
     }
   }
 
-  return messages.length;
+  // Web 降级：真正写入 localStorage，并按批量覆盖语义返回写入条数。
+  try {
+    localStorage.setItem('shinobi_messages', JSON.stringify(messages));
+    return messages.length;
+  } catch (err) {
+    failClosed('localStorage 批量消息写入', err);
+  }
 }
 
 /**
@@ -129,8 +156,9 @@ export async function loadMessagesFromDb(filter?: {
       if (Array.isArray(res)) {
         return res as Message[];
       }
+      throw new Error(`db_get_messages 返回了非数组结果：${typeof res}`);
     } catch (e) {
-      console.error('[dbClient] db_get_messages failed:', e);
+      failClosed('db_get_messages', e);
     }
   }
 
@@ -164,7 +192,7 @@ export async function clearAllMessagesFromDb(): Promise<number> {
       const count = await invoke('db_clear_all_messages');
       return Number(count) || 0;
     } catch (e) {
-      console.error('[dbClient] db_clear_all_messages failed:', e);
+      failClosed('db_clear_all_messages', e);
     }
   }
 
@@ -197,7 +225,7 @@ export async function getStorageStats(): Promise<StorageStats> {
         isNativeTauri: true,
       };
     } catch (e) {
-      console.error('[dbClient] db_get_storage_stats failed:', e);
+      failClosed('db_get_storage_stats', e);
     }
   }
 
@@ -206,9 +234,12 @@ export async function getStorageStats(): Promise<StorageStats> {
   try {
     const raw = localStorage.getItem('shinobi_messages');
     if (raw) {
-      messagesCount = JSON.parse(raw).length;
+      const parsed = JSON.parse(raw);
+      messagesCount = Array.isArray(parsed) ? parsed.length : 0;
     }
-  } catch {}
+  } catch (err) {
+    console.warn('[dbClient] localStorage 消息快照损坏，统计按 0 处理', err);
+  }
 
   return {
     databasePath: 'LocalStorage / In-Memory (Web Fallback)',
@@ -235,7 +266,7 @@ export async function clearSafeCache(): Promise<{ freedBytes: number }> {
       const freed = await invoke('db_clear_safe_cache');
       return { freedBytes: Number(freed) || 0 };
     } catch (e) {
-      console.error('[dbClient] db_clear_safe_cache failed:', e);
+      failClosed('db_clear_safe_cache', e);
     }
   }
 
@@ -291,14 +322,10 @@ export async function openChannelArtifactsFolder(
       const path = await invoke('open_channel_artifacts_dir', { channelId });
       return path;
     } catch (e) {
-      console.error('[dbClient] open_channel_artifacts_dir failed:', e);
-      throw e;
+      failClosed('open_channel_artifacts_dir', e);
     }
   }
-  if (workspaceBindingId) {
-    return `~/.shadow-crew/channels/${channelId}/artifacts/`;
-  }
-  return `~/.shadow-crew/channels/${channelId}/artifacts/`;
+  throw new Error('打开产物目录仅支持桌面端 Tauri 运行环境');
 }
 
 /**
@@ -311,11 +338,10 @@ export async function openAgentArtifactsFolder(agentId: string): Promise<string>
       const path = await invoke('open_agent_artifacts_dir', { agentId });
       return path;
     } catch (e) {
-      console.error('[dbClient] open_agent_artifacts_dir failed:', e);
-      throw e;
+      failClosed('open_agent_artifacts_dir', e);
     }
   }
-  return `~/.shadow-crew/agents/${agentId}/artifacts/`;
+  throw new Error('打开产物目录仅支持桌面端 Tauri 运行环境');
 }
 
 /**
@@ -327,7 +353,7 @@ export async function getChannelDirInfo(channelId: string): Promise<ChannelDirIn
     try {
       return await invoke('get_channel_dir_info', { channelId });
     } catch (e) {
-      console.error('[dbClient] get_channel_dir_info failed:', e);
+      failClosed('get_channel_dir_info', e);
     }
   }
   return null;
@@ -342,7 +368,7 @@ export async function getAgentDirInfo(agentId: string): Promise<ChannelDirInfo |
     try {
       return await invoke('get_agent_dir_info', { agentId });
     } catch (e) {
-      console.error('[dbClient] get_agent_dir_info failed:', e);
+      failClosed('get_agent_dir_info', e);
     }
   }
   return null;
@@ -368,8 +394,9 @@ export async function loadFullWorkspaceDataFromDb(): Promise<FullWorkspaceData |
       if (data && typeof data === 'object') {
         return data as FullWorkspaceData;
       }
+      throw new Error(`db_get_full_workspace_data 返回了非法结构：${typeof data}`);
     } catch (e) {
-      console.error('[dbClient] db_get_full_workspace_data failed:', e);
+      failClosed('db_get_full_workspace_data', e);
     }
   }
   return null;
@@ -384,13 +411,15 @@ export async function saveChannelsToDb(channels: Channel[]): Promise<void> {
     try {
       await invoke('db_save_channels', { channels });
     } catch (e) {
-      console.error('[dbClient] db_save_channels failed:', e);
+      failClosed('db_save_channels', e);
     }
     return;
   }
   try {
     localStorage.setItem('shinobi_channels', JSON.stringify(channels));
-  } catch {}
+  } catch (err) {
+    failClosed('localStorage channels 写入', err);
+  }
 }
 
 /**
@@ -402,15 +431,14 @@ export async function saveWorkspaceBindingsToDb(bindings: WorkspaceBinding[]): P
     try {
       await invoke('db_save_workspace_bindings', { bindings });
     } catch (e) {
-      console.error('[dbClient] db_save_workspace_bindings failed:', e);
-      throw e;
+      failClosed('db_save_workspace_bindings', e);
     }
     return;
   }
   try {
     localStorage.setItem('shinobi_workspace_bindings', JSON.stringify(bindings));
-  } catch (e) {
-    throw e;
+  } catch (err) {
+    failClosed('localStorage workspace bindings 写入', err);
   }
 }
 
@@ -428,7 +456,9 @@ export async function deleteWorkspaceBindingsFromDb(bindingIds: string[]): Promi
       'shinobi_workspace_bindings',
       JSON.stringify(bindings.filter((binding) => !bindingIds.includes(binding.id)))
     );
-  } catch {}
+  } catch (err) {
+    failClosed('localStorage 删除 workspace bindings', err);
+  }
 }
 
 /**
@@ -456,13 +486,15 @@ export async function saveThreadsToDb(threads: Thread[]): Promise<void> {
     try {
       await invoke('db_save_threads', { threads });
     } catch (e) {
-      console.error('[dbClient] db_save_threads failed:', e);
+      failClosed('db_save_threads', e);
     }
     return;
   }
   try {
     localStorage.setItem('shinobi_threads', JSON.stringify(threads));
-  } catch {}
+  } catch (err) {
+    failClosed('localStorage threads 写入', err);
+  }
 }
 
 /**
@@ -474,13 +506,15 @@ export async function saveAgentsToDb(agents: Agent[]): Promise<void> {
     try {
       await invoke('db_save_agents', { agents });
     } catch (e) {
-      console.error('[dbClient] db_save_agents failed:', e);
+      failClosed('db_save_agents', e);
     }
     return;
   }
   try {
     localStorage.setItem('shinobi_agents', JSON.stringify(agents));
-  } catch {}
+  } catch (err) {
+    failClosed('localStorage agents 写入', err);
+  }
 }
 
 /**
@@ -492,13 +526,15 @@ export async function saveTeamsToDb(teams: AgentTeam[]): Promise<void> {
     try {
       await invoke('db_save_teams', { teams });
     } catch (e) {
-      console.error('[dbClient] db_save_teams failed:', e);
+      failClosed('db_save_teams', e);
     }
     return;
   }
   try {
     localStorage.setItem('shinobi_teams', JSON.stringify(teams));
-  } catch {}
+  } catch (err) {
+    failClosed('localStorage teams 写入', err);
+  }
 }
 
 /**
@@ -510,15 +546,15 @@ export async function saveWorkspaceStateToDb(key: string, value: any): Promise<v
     try {
       await invoke('db_save_workspace_state', { key, value });
     } catch (e) {
-      console.error(`[dbClient] db_save_workspace_state (${key}) failed:`, e);
+      failClosed(`db_save_workspace_state (${key})`, e);
     }
     return;
   }
   try {
     localStorage.setItem(`shinobi_${key}`, JSON.stringify(value));
-    if (key === 'activeChannelId') localStorage.setItem('shinobi_active_channel_id', typeof value === 'string' ? value : JSON.stringify(value));
-    if (key === 'activeThreadId') localStorage.setItem('shinobi_active_thread_id', typeof value === 'string' ? value : JSON.stringify(value));
-  } catch {}
+  } catch (err) {
+    failClosed(`localStorage workspace state (${key}) 写入`, err);
+  }
 }
 
 /**
@@ -531,15 +567,14 @@ export async function getWorkspaceStateFromDb<T>(key: string): Promise<T | null>
       const res = await invoke('db_get_workspace_state', { key });
       return (res ?? null) as T | null;
     } catch (e) {
-      console.error(`[dbClient] db_get_workspace_state (${key}) failed:`, e);
-      return null;
+      failClosed(`db_get_workspace_state (${key})`, e);
     }
   }
   try {
     const raw = localStorage.getItem(`shinobi_${key}`);
     return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
+  } catch (err) {
+    failClosed(`localStorage workspace state (${key}) 读取`, err);
   }
 }
 
