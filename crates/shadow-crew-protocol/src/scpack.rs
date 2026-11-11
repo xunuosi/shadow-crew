@@ -2883,14 +2883,31 @@ pub struct RevocationList {
     pub revokedSigners: BTreeSet<String>,
 }
 
-pub fn load_revocation_list(packs_root: &Path) -> RevocationList {
+/// 读取吊销列表。
+///
+/// 安全语义（fail-closed）：
+/// - 文件不存在 = 从未吊销过任何包 → 返回空列表；
+/// - 文件存在但读取/解析失败 = 吊销状态未知 → 返回错误，调用方必须拒绝放行，
+///   绝不能把"无法确认"降级成"未被吊销"。
+pub fn load_revocation_list(packs_root: &Path) -> ScpackResult<RevocationList> {
     let p = packs_root.join("revoked_packs.json");
-    if let Ok(text) = fs::read_to_string(p) {
-        if let Ok(list) = serde_json::from_str::<RevocationList>(&text) {
-            return list;
-        }
+    match fs::read_to_string(&p) {
+        Ok(text) => serde_json::from_str::<RevocationList>(&text).map_err(|e| {
+            ScpackError::new(
+                ScpackErrorCode::ErrIntegrityMismatch,
+                format!(
+                    "吊销列表 {} 损坏，无法确认包的安全状态: {}",
+                    p.display(),
+                    e
+                ),
+            )
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(RevocationList::default()),
+        Err(e) => Err(ScpackError::new(
+            ScpackErrorCode::ErrIntegrityMismatch,
+            format!("无法读取吊销列表 {}: {}", p.display(), e),
+        )),
     }
-    RevocationList::default()
 }
 
 pub fn save_revocation_list(packs_root: &Path, list: &RevocationList) -> ScpackResult<()> {
@@ -2901,7 +2918,14 @@ pub fn save_revocation_list(packs_root: &Path, list: &RevocationList) -> ScpackR
     let json = serde_json::to_string_pretty(list).map_err(|e| {
         ScpackError::new(ScpackErrorCode::ErrIntegrityMismatch, e.to_string())
     })?;
-    fs::write(p, json).map_err(|e| {
+    // 原子写：先写临时文件再 rename，避免中途崩溃留下半个 JSON 文件，
+    // 导致下次启动时吊销列表无法解析。
+    let tmp = packs_root.join("revoked_packs.json.tmp");
+    fs::write(&tmp, json).map_err(|e| {
+        ScpackError::new(ScpackErrorCode::ErrIntegrityMismatch, e.to_string())
+    })?;
+    fs::rename(&tmp, &p).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
         ScpackError::new(ScpackErrorCode::ErrIntegrityMismatch, e.to_string())
     })
 }
@@ -2952,7 +2976,7 @@ pub fn verify_scpack_archive_in_memory(
 
     // Check revocation list
     if let Some(root) = packs_root {
-        let rev = load_revocation_list(root);
+        let rev = load_revocation_list(root)?;
         if rev.revokedPackageIds.contains(&manifest.packageId)
             || rev.revokedSigners.contains(&manifest.security.signerFingerprint)
         {
@@ -3188,7 +3212,7 @@ pub fn uninstall_scpack(packs_root: &Path, package_id: &str, revoke: bool) -> Sc
         })?;
     }
     if revoke {
-        let mut rev = load_revocation_list(packs_root);
+        let mut rev = load_revocation_list(packs_root)?;
         rev.revokedPackageIds.insert(package_id.to_string());
         save_revocation_list(packs_root, &rev)?;
     }
@@ -3370,13 +3394,51 @@ pub struct PreRetrievalResult {
     pub composedPrompt: String,
 }
 
+/// 校验 packageId 不含路径分隔符或 `..`，防止拼接 packs_root 时越界。
+fn validate_package_id(package_id: &str) -> ScpackResult<()> {
+    let unsafe_id = package_id.trim().is_empty()
+        || package_id.contains('/')
+        || package_id.contains('\\')
+        || package_id.contains("..")
+        || package_id == ".";
+    if unsafe_id {
+        return Err(ScpackError::new(
+            ScpackErrorCode::ErrPathTraversal,
+            format!("Unsafe package_id: {:?}", package_id),
+        ));
+    }
+    Ok(())
+}
+
+/// 在 `base` 内安全解析相对路径：解析后必须仍位于 `base` 之下。
+fn safe_join_within(base: &Path, relative: &str) -> ScpackResult<std::path::PathBuf> {
+    let joined = base.join(relative);
+    let canonical_base = fs::canonicalize(base).map_err(|e| {
+        ScpackError::new(ScpackErrorCode::ErrPackMissing, e.to_string())
+    })?;
+    let canonical_target = fs::canonicalize(&joined).map_err(|_| {
+        ScpackError::new(
+            ScpackErrorCode::ErrPackMissing,
+            format!("Playbook `{}` missing on disk", relative),
+        )
+    })?;
+    if !canonical_target.starts_with(&canonical_base) {
+        return Err(ScpackError::new(
+            ScpackErrorCode::ErrPathTraversal,
+            format!("Playbook path escapes pack directory: {}", relative),
+        ));
+    }
+    Ok(canonical_target)
+}
+
 pub fn retrieve_and_build_expertise_prompt(
     packs_root: &Path,
     package_id: &str,
     user_prompt: &str,
     min_bm25_threshold: f64,
 ) -> ScpackResult<PreRetrievalResult> {
-    let rev = load_revocation_list(packs_root);
+    validate_package_id(package_id)?;
+    let rev = load_revocation_list(packs_root)?;
     if rev.revokedPackageIds.contains(package_id) {
         return Err(ScpackError::new(
             ScpackErrorCode::ErrPackRevoked,
@@ -3485,20 +3547,34 @@ pub fn retrieve_and_build_expertise_prompt(
     if let Some((best_score, best_doc)) = scored.first() {
         top_score = *best_score;
         if *best_score >= min_bm25_threshold {
-            let pb_path = pack_dir.join(&best_doc.path);
+            let pb_path = safe_join_within(&pack_dir, &best_doc.path)?;
             let pb_bytes = fs::read(&pb_path).map_err(|_| {
                 ScpackError::new(
                     ScpackErrorCode::ErrPackMissing,
                     format!("Playbook `{}` missing on disk", best_doc.path),
                 )
             })?;
-            if let Some(decl) = manifest.files.playbooks.iter().find(|p| p.path == best_doc.path) {
-                if blake3_prefixed(&pb_bytes) != decl.sha256 {
-                    return Err(ScpackError::new(
+            // 哈希校验强制执行：清单未声明该文件时同样拒绝，
+            // 不能因为"未声明"就跳过完整性验证。
+            let decl = manifest
+                .files
+                .playbooks
+                .iter()
+                .find(|p| p.path == best_doc.path)
+                .ok_or_else(|| {
+                    ScpackError::new(
                         ScpackErrorCode::ErrIntegrityMismatch,
-                        format!("Playbook `{}` failed runtime BLAKE3 check", best_doc.path),
-                    ));
-                }
+                        format!(
+                            "Playbook `{}` is not declared in manifest; refusing to inject unverified content",
+                            best_doc.path
+                        ),
+                    )
+                })?;
+            if blake3_prefixed(&pb_bytes) != decl.sha256 {
+                return Err(ScpackError::new(
+                    ScpackErrorCode::ErrIntegrityMismatch,
+                    format!("Playbook `{}` failed runtime BLAKE3 check", best_doc.path),
+                ));
             }
             let raw_pb = String::from_utf8_lossy(&pb_bytes).to_string();
             let (clean_pb, w) = sanitize_untrusted_expertise_markdown(&raw_pb);
