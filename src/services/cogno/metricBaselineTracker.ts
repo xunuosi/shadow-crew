@@ -123,11 +123,11 @@ class MetricBaselineTracker {
       (e) => e.type === 'decisionState_transition'
     );
 
-    const totalTopics = Math.max(
-      topicConcludedEvents.length,
-      new Set(this.events.map((e) => e.topicId)).size,
-      1 // 防止除以 0
-    );
+    // 分母 = 出现过任何决策事件的去重议题数（包含尚未结论的议题）。
+    // 若只统计"已结论议题"，未完成议题会被从分母中抹掉，导致成功率虚高。
+    const distinctTopicCount = new Set(this.events.map((e) => e.topicId)).size;
+    const totalTopics = Math.max(distinctTopicCount, topicConcludedEvents.length);
+    const rateDenominator = Math.max(totalTopics, 1);
 
     const autoArbitratedCount = topicConcludedEvents.filter(
       (e) => e.payload?.autoArbitrated === true
@@ -137,7 +137,10 @@ class MetricBaselineTracker {
       (e) => e.payload?.autoExecuted === true
     ).length;
 
-    const humanIntervenedCount = humanInterventionEvents.length;
+    // 同一议题可能多次触发人工介入，按议题去重统计，否则介入率会超过 100%。
+    const humanIntervenedCount = new Set(
+      humanInterventionEvents.map((e) => e.topicId)
+    ).size;
 
     const consistencyPassedCount = consistencyEvents.filter(
       (e) => e.payload?.passed === true
@@ -160,13 +163,15 @@ class MetricBaselineTracker {
       autoArbitratedCount,
       autoExecutedCount,
       humanIntervenedCount,
-      autoArbitrationRate: Math.round((autoArbitratedCount / totalTopics) * 1000) / 1000,
-      autoExecutionRate: Math.round((autoExecutedCount / Math.max(topicConcludedEvents.length, 1)) * 1000) / 1000,
-      humanInterventionRate: Math.round((humanIntervenedCount / totalTopics) * 1000) / 1000,
+      autoArbitrationRate: Math.round((autoArbitratedCount / rateDenominator) * 1000) / 1000,
+      // 与报告展示的分母保持同源（都除以 totalTopics），避免"利率"与"展示分母"不一致。
+      autoExecutionRate: Math.round((autoExecutedCount / rateDenominator) * 1000) / 1000,
+      humanInterventionRate: Math.round((humanIntervenedCount / rateDenominator) * 1000) / 1000,
       consistencyEvaluations: consistencyEvents.length,
-      consistencyPassRate: consistencyEvents.length > 0 
-        ? Math.round((consistencyPassedCount / consistencyEvents.length) * 1000) / 1000 
-        : 1.0,
+      // 没有任何评测时不得声称 100% 通过：这是"无证据"，不是"全通过"。
+      consistencyPassRate: consistencyEvents.length > 0
+        ? Math.round((consistencyPassedCount / consistencyEvents.length) * 1000) / 1000
+        : 0,
       earlyExitCount,
       deadlockCount,
       p2LoopbackCount,
@@ -184,7 +189,7 @@ class MetricBaselineTracker {
   2. 🛠️ **自动落地率 (Auto-Execution Rate)**: ${(summary.autoExecutionRate * 100).toFixed(1)}% (${summary.autoExecutedCount}/${summary.totalTopics})
   3. 👤 **人工介入率 (Human Intervention Rate)**: ${(summary.humanInterventionRate * 100).toFixed(1)}% (${summary.humanIntervenedCount}/${summary.totalTopics})
 - **控制流与运筹门禁健康度**：
-  - MCDA 一致性门禁通过率：${(summary.consistencyPassRate * 100).toFixed(1)}% (评测次数: ${summary.consistencyEvaluations})
+  - MCDA 一致性门禁通过率：${summary.consistencyEvaluations > 0 ? `${(summary.consistencyPassRate * 100).toFixed(1)}%` : '暂无评测数据'} (评测次数: ${summary.consistencyEvaluations})
   - SPRT 早停 (Early Exit) 触发频次：${summary.earlyExitCount}
   - SPRT 死锁熔断 (Deadlock Escalation) 频次：${summary.deadlockCount}
   - P2 二次对抗回边触发频次：${summary.p2LoopbackCount}

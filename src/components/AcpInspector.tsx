@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Agent, AcpRpcLog, WorkspaceFile } from '../types';
+import { Agent, AcpRpcLog } from '../types';
 import { 
   Terminal, 
   Database, 
@@ -29,7 +29,6 @@ import { ResizeHandle } from './ResizeHandle';
 interface AcpInspectorProps {
   selectedAgent: Agent;
   rpcLogs: AcpRpcLog[];
-  workspaceFiles: WorkspaceFile[];
   initialTab?: 'architecture' | 'rust_tauri' | 'memory' | 'workspace' | 'skills' | 'rpc_logs';
   onAddAgentMemoryItem?: (agentId: string, category: any, key: string, content: string) => void;
   onRunAgentSkill: (agentId: string, skillId: string) => void;
@@ -45,7 +44,6 @@ interface AcpInspectorProps {
 export const AcpInspector: React.FC<AcpInspectorProps> = ({
   selectedAgent,
   rpcLogs,
-  workspaceFiles,
   initialTab = 'rust_tauri',
   onAddAgentMemoryItem,
   onRunAgentSkill,
@@ -69,11 +67,6 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
   const [newMemCategory, setNewMemCategory] = useState<'codebase_pattern' | 'user_preference' | 'incident_history' | 'skill_rule'>('codebase_pattern');
   const nativeMemoryCapability = selectedAgent.memory.nativeCapability;
   const nativeMemoryStatus = nativeMemoryCapability.status;
-
-  // Selected file preview
-  const [previewFile, setPreviewFile] = useState<WorkspaceFile | null>(
-    workspaceFiles[0]?.children?.[0]?.children?.[1] || null // client.rs
-  );
 
   const fetchDiskLogs = async () => {
     setLoadingDiskLog(true);
@@ -1034,46 +1027,11 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
               </div>
             </div>
 
-            {/* Files List */}
-            <div className="border border-border rounded bg-surface p-2 space-y-1 text-[11px] font-mono">
-              <div className="text-[10px] text-fg-muted uppercase mb-1">代码库目录树 (Block Buzz Repo)</div>
-              {workspaceFiles[0]?.children?.map((crate) => (
-                <div key={crate.path} className="pl-1">
-                  <div className="text-fg-muted font-bold flex items-center gap-1">
-                    📁 {crate.name}
-                  </div>
-                  <div className="pl-3 space-y-0.5 mt-0.5">
-                    {crate.children?.map((file) => (
-                      <button
-                        key={file.path}
-                        onClick={() => setPreviewFile(file)}
-                        className={`w-full text-left px-1.5 py-0.5 rounded flex items-center justify-between cursor-pointer ${
-                          previewFile?.path === file.path
-                            ? 'bg-accent/15 text-accent'
-                            : 'text-fg-muted hover:text-fg hover:bg-surface-hover'
-                        }`}
-                      >
-                        <span className="truncate">📄 {file.name}</span>
-                        <span className="text-[9px] text-fg-muted">{file.size}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
+            {/* 目录树尚未接入真实工作区扫描接口：不再展示伪造的示例文件树。 */}
+            <div className="border border-border rounded bg-surface p-3 text-[11px] text-fg-muted leading-relaxed">
+              工作区目录树需由宿主提供实时扫描结果。当前仅展示 Agent 绑定的根目录、Git 分支与权限模式，
+              不渲染任何占位或示例文件。
             </div>
-
-            {/* File Preview */}
-            {previewFile && (
-              <div className="border border-border rounded bg-surface overflow-hidden">
-                <div className="px-2 py-1 bg-surface-subtle border-b border-border text-[10px] font-mono text-fg flex items-center justify-between">
-                  <span>预览: {previewFile.path}</span>
-                  <span className="text-emerald-500">只读映射</span>
-                </div>
-                <pre className="p-2 text-[10px] font-mono text-fg-secondary overflow-x-auto max-h-48 leading-relaxed">
-                  {previewFile.content || '// 文件内容加载中...'}
-                </pre>
-              </div>
-            )}
           </div>
         )}
 

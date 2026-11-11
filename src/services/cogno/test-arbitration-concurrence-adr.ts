@@ -627,7 +627,28 @@ assert.equal(zeroPeerState.items.length, 0);
 assert.equal(normalizeMentionHandle(mockAgents[0]), '@arch-linus');
 assert.equal(escapeTableCell('A | B\nC'), 'A \\| B C');
 assert.equal(formatFullDateTime(new Date('2026-11-10T03:04:00Z')).length, 16);
-assert.equal(evaluateRulingGates(mockTopic, { consistencyPassed: true } as any).allGatesPassed, true);
+// 存在挑战者且已明确响应 + MCDA 一致性显式通过 -> 全部门禁放行
+assert.equal(evaluateRulingGates({
+  ...mockTopic,
+  gameTheoreticState: {
+    currentStage: 'arbitration',
+    isChallengerResponded: true,
+  },
+}, { consistencyPassed: true } as any).allGatesPassed, true);
+// Fail-closed：配置了挑战者但缺失响应证据 -> 法定人数门禁必须拒绝，不得默认通过
+const missingChallengerEvidence = evaluateRulingGates(mockTopic, { consistencyPassed: true } as any);
+assert.equal(missingChallengerEvidence.isChallengerQuorumMet, false);
+assert.equal(missingChallengerEvidence.allGatesPassed, false);
+assert.ok(missingChallengerEvidence.reason);
+// Fail-closed：博弈模式缺少 MCDA 一致性证据 -> 一致性门禁必须拒绝
+assert.equal(evaluateRulingGates({
+  ...mockTopic,
+  gameTheoreticState: {
+    currentStage: 'arbitration',
+    isChallengerResponded: true,
+  },
+}).isConsistencyPassed, false);
+// 显式旁路仍可放行法定人数门禁
 assert.equal(evaluateRulingGates({
   ...mockTopic,
   gameTheoreticState: {

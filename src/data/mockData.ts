@@ -4,9 +4,8 @@ import {
   Channel, 
   Thread, 
   Message, 
-  SubThread, 
-  AcpRpcLog, 
-  WorkspaceFile 
+  SubThread,
+  AcpRpcLog
 } from '../types';
 
 // 外部 ACP Agent 示例；影子替身必须由用户连接本地或远程 ACP 端点。
@@ -110,29 +109,3 @@ export const INITIAL_SUB_THREADS: Record<string, SubThread> = {};
 
 export const INITIAL_RPC_LOGS: AcpRpcLog[] = [];
 
-export const MOCK_WORKSPACE_FILES: WorkspaceFile[] = [
-  {
-    path: 'src/App.tsx',
-    name: 'App.tsx',
-    type: 'file',
-    size: '37.6 KB',
-  },
-  {
-    path: 'src/types.ts',
-    name: 'types.ts',
-    type: 'file',
-    size: '6.4 KB',
-  },
-  {
-    path: 'Cargo.toml',
-    name: 'Cargo.toml',
-    type: 'file',
-    size: '1.2 KB',
-  },
-  {
-    path: 'README.md',
-    name: 'README.md',
-    type: 'file',
-    size: '8.5 KB',
-  },
-];

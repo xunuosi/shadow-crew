@@ -11,8 +11,7 @@ import {
   Thread, 
   Message, 
   SubThread, 
-  AcpRpcLog, 
-  WorkspaceFile,
+  AcpRpcLog,
   TopicMessageData,
   DecisionRecord,
   TopicStatus,
@@ -43,8 +42,7 @@ import {
   INITIAL_THREADS, 
   INITIAL_MESSAGES, 
   INITIAL_SUB_THREADS, 
-  INITIAL_RPC_LOGS, 
-  MOCK_WORKSPACE_FILES 
+  INITIAL_RPC_LOGS
 } from './data/mockData';
 import { Hash, Plus, PanelLeft } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
@@ -87,7 +85,19 @@ import {
   extractModuleDecompositionFromAcpResponse,
   extractWorkspaceDiffsFromText,
   applyTopicPatchToWorkspace,
+  rollbackTopicPatchFromWorkspace,
+  parseSessionKey,
 } from './services/acpClient';
+import {
+  extractVerificationFailureDigest,
+  formatVerificationReport,
+  verifyWorkspaceAfterPatch,
+} from './services/workspaceVerification';
+import {
+  resolveCascadeMaxHops,
+  resolveEffectiveRuntimePolicy,
+  resolveCorrectionRetryLimit,
+} from './services/agentRuntimePolicy';
 import {
   listPendingAcpPermissions,
   removePendingAcpPermission,
@@ -184,7 +194,6 @@ import {
   logGameTheoreticTelemetry,
   validateStageContract,
   validateModuleScopeContract,
-  STAGE_CONTRACT_MAX_RETRIES,
   tieredGroundingGovernor,
   parseVerifierOutput,
   processVerifierEvidenceChain,
@@ -227,7 +236,41 @@ const REMOTE_ACP_PROBE_TIMEOUT_MS = 5_000;
 const REMOTE_ACP_HEALTH_INTERVAL_MS = 5_000;
 const REMOTE_ACP_HEALTH_REFRESH_MS = 15_000;
 
+const LEGACY_UI_STATE_MIGRATION_KEY = 'shinobi_legacy_ui_keys_migrated_v1';
+let legacyUiStateMigrationChecked = false;
+
+/**
+ * 显式一次性迁移：把历史遗留的蛇形 / 驼峰重复键收敛为唯一规范键。
+ * 迁移完成后删除旧键，业务读取只认规范键，不保留任何回退读取。
+ */
+function migrateLegacyUiStateKeysOnce(): void {
+  if (legacyUiStateMigrationChecked || typeof window === 'undefined') return;
+  legacyUiStateMigrationChecked = true;
+  try {
+    if (localStorage.getItem(LEGACY_UI_STATE_MIGRATION_KEY) === 'true') return;
+    const pairs: Array<[legacy: string, canonical: string]> = [
+      ['shinobi_active_channel_id', 'shinobi_activeChannelId'],
+      ['shinobi_active_thread_id', 'shinobi_activeThreadId'],
+      ['shinobi_sub_threads', 'shinobi_subThreads'],
+    ];
+    for (const [legacy, canonical] of pairs) {
+      const legacyValue = localStorage.getItem(legacy);
+      if (legacyValue === null) continue;
+      if (localStorage.getItem(canonical) === null) {
+        localStorage.setItem(canonical, legacyValue);
+      }
+      localStorage.removeItem(legacy);
+    }
+    localStorage.setItem(LEGACY_UI_STATE_MIGRATION_KEY, 'true');
+  } catch (err) {
+    console.warn('[App] 旧版 UI 状态键迁移失败，保留原数据待下次启动重试', err);
+  }
+}
+
 export default function App() {
+  // 必须在任何 useState 初始化器读取 localStorage 之前完成显式迁移。
+  migrateLegacyUiStateKeysOnce();
+
   // Main View Navigation ('chat' | 'agents') - Default to chat for PRD Messaging Space
   const [mainView, setMainView] = useState<'chat' | 'agents'>('chat');
 
@@ -313,7 +356,9 @@ export default function App() {
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveAgentsToDb(agents);
+    void saveAgentsToDb(agents).catch((err) => {
+      console.error('[App] Failed to persist agents:', err);
+    });
   }, [agents]);
 
   const [teams, setTeams] = useState<AgentTeam[]>(() => {
@@ -336,7 +381,9 @@ export default function App() {
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveTeamsToDb(teams);
+    void saveTeamsToDb(teams).catch((err) => {
+      console.error('[App] Failed to persist teams:', err);
+    });
   }, [teams]);
 
   // Mock data ID blacklist to purge contaminated cache from previous sessions
@@ -379,7 +426,7 @@ export default function App() {
 
   const [activeChannelId, setActiveChannelId] = useState<string>(() => {
     try {
-      const saved = localStorage.getItem('shinobi_active_channel_id') || localStorage.getItem('shinobi_activeChannelId');
+      const saved = localStorage.getItem('shinobi_activeChannelId');
       if (saved && !MOCK_CHANNEL_IDS.has(saved)) return saved;
     } catch {}
     return '';
@@ -387,7 +434,9 @@ export default function App() {
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveChannelsToDb(channels);
+    void saveChannelsToDb(channels).catch((err) => {
+      console.error('[App] Failed to persist channels:', err);
+    });
   }, [channels]);
 
   const [workspaceBindings, setWorkspaceBindings] = useState<WorkspaceBinding[]>(() => {
@@ -422,7 +471,9 @@ export default function App() {
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveWorkspaceStateToDb('activeChannelId', activeChannelId);
+    void saveWorkspaceStateToDb('activeChannelId', activeChannelId).catch((err) => {
+      console.error('[App] Failed to persist activeChannelId:', err);
+    });
   }, [activeChannelId]);
 
   // Threads State with Local Storage Persistence
@@ -444,7 +495,7 @@ export default function App() {
 
   const [activeThreadId, setActiveThreadId] = useState<string>(() => {
     try {
-      const saved = localStorage.getItem('shinobi_active_thread_id') || localStorage.getItem('shinobi_activeThreadId');
+      const saved = localStorage.getItem('shinobi_activeThreadId');
       if (saved && !MOCK_THREAD_IDS.has(saved)) return saved;
     } catch {}
     return '';
@@ -452,12 +503,16 @@ export default function App() {
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveThreadsToDb(threads);
+    void saveThreadsToDb(threads).catch((err) => {
+      console.error('[App] Failed to persist threads:', err);
+    });
   }, [threads]);
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveWorkspaceStateToDb('activeThreadId', activeThreadId);
+    void saveWorkspaceStateToDb('activeThreadId', activeThreadId).catch((err) => {
+      console.error('[App] Failed to persist activeThreadId:', err);
+    });
   }, [activeThreadId]);
 
   // Messages State with Local Storage Persistence
@@ -517,7 +572,9 @@ export default function App() {
         void saveWorkspaceStateToDb(
           'workspaceBindingSchemaVersion',
           WORKSPACE_BINDING_SCHEMA_VERSION
-        );
+        ).catch((err) => {
+          console.error('[App] Failed to persist workspace binding schema version:', err);
+        });
       }
     } catch (err) {
       console.error('[App] Workspace Binding migration failed:', err);
@@ -671,26 +728,54 @@ export default function App() {
   }, [sanitizeMessages]);
 
   // 消息持久化 (原生 SQLite 优先，同步防护 LocalStorage)
+  // 1) 启动水合完成前不写库，避免用未加载完的内存快照覆盖已有历史；
+  // 2) 600ms 防抖，避免每个流式 token 都触发一次全量 SQLite 事务。
   useEffect(() => {
-    const allMsgs = Object.values(messages).flat();
-    if (allMsgs.length > 0) {
-      saveMessagesBatchToDb(allMsgs).catch((e) => {
-        console.error('[App] SQLite saveMessagesBatchToDb failed:', e);
-      });
-    }
-    if (!isTauriEnvironment()) {
-      try {
-        localStorage.setItem('shinobi_messages', JSON.stringify(messages));
-      } catch (err) {
-        console.warn('[App] LocalStorage quota exceeded, SQLite persistence safely active.');
+    if (!isWorkspaceHydratedRef.current) return;
+    const timer = window.setTimeout(() => {
+      const allMsgs = Object.values(messages).flat();
+      if (allMsgs.length > 0) {
+        saveMessagesBatchToDb(allMsgs).catch((e) => {
+          console.error('[App] SQLite saveMessagesBatchToDb failed:', e);
+        });
       }
-    }
+      if (!isTauriEnvironment()) {
+        try {
+          localStorage.setItem('shinobi_messages', JSON.stringify(messages));
+        } catch (err) {
+          console.warn('[App] LocalStorage quota exceeded, SQLite persistence safely active.');
+        }
+      }
+    }, 600);
+    return () => window.clearTimeout(timer);
   }, [messages]);
+
+  // 离开页面 / 切到后台时立即冲刷最后一次防抖窗口内的消息，
+  // 否则窗口关闭前 600ms 内的编辑会丢失。
+  useEffect(() => {
+    const flushMessages = () => {
+      if (!isWorkspaceHydratedRef.current) return;
+      const allMsgs = Object.values(messagesRef.current).flat();
+      if (allMsgs.length === 0) return;
+      void saveMessagesBatchToDb(allMsgs).catch((e) => {
+        console.error('[App] SQLite flush on page hide failed:', e);
+      });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushMessages();
+    };
+    window.addEventListener('beforeunload', flushMessages);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('beforeunload', flushMessages);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, []);
 
   // SubThreads State with Local Storage Persistence
   const [subThreads, setSubThreads] = useState<Record<string, SubThread>>(() => {
     try {
-      const saved = localStorage.getItem('shinobi_sub_threads') || localStorage.getItem('shinobi_subThreads');
+      const saved = localStorage.getItem('shinobi_subThreads');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === 'object') return parsed;
@@ -701,11 +786,12 @@ export default function App() {
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveWorkspaceStateToDb('subThreads', subThreads);
+    void saveWorkspaceStateToDb('subThreads', subThreads).catch((err) => {
+      console.error('[App] Failed to persist subThreads:', err);
+    });
   }, [subThreads]);
 
   const [rpcLogs, setRpcLogs] = useState<AcpRpcLog[]>(INITIAL_RPC_LOGS);
-  const [workspaceFiles] = useState<WorkspaceFile[]>(MOCK_WORKSPACE_FILES);
 
   // Topic States (PRD 三层半扁平拓扑：频道 ➔ Topic 消息卡片 ➔ 独立推演抽屉)
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
@@ -1131,79 +1217,6 @@ export default function App() {
     }
   }, [activeThread?.id, isDirectMessageSelected]);
 
-  // One-time repair for TestChannel: Ensure MyClaudeCode is included, ShinobiCore is excluded, and never override user changes
-  useEffect(() => {
-    try {
-      const MIGRATION_KEY = 'shinobi_testchannel_repaired_v4';
-      if (localStorage.getItem(MIGRATION_KEY)) return;
-      if (agents.length === 0) return;
-
-      // Find Claude Code agent (MyClaudeCode)
-      const claudeAgent = agents.find(
-        (a) =>
-          a.name.toLowerCase().includes('claude') ||
-          a.handle?.toLowerCase().includes('claude') ||
-          a.id.toLowerCase().includes('claude')
-      );
-
-      setChannels((prevChannels) => {
-        let changed = false;
-        const updated = prevChannels.map((channel) => {
-          const isTestChannel =
-            channel.name.toLowerCase().includes('test') ||
-            channel.id.toLowerCase().includes('test');
-
-          if (isTestChannel) {
-            changed = true;
-            const newAssigned = (channel.assignedAgentIds || []).filter(
-              (id) => id !== 'agent-shinobi-core'
-            );
-            const newMembers = (channel.memberIds || [channel.creatorId || currentUserId]).filter(
-              (id) => id !== 'agent-shinobi-core'
-            );
-
-            // Include claudeAgent if found
-            if (claudeAgent) {
-              if (!newAssigned.includes(claudeAgent.id)) newAssigned.push(claudeAgent.id);
-              if (!newMembers.includes(claudeAgent.id)) newMembers.push(claudeAgent.id);
-            }
-
-            return {
-              ...channel,
-              assignedAgentIds: newAssigned,
-              memberIds: newMembers,
-            };
-          }
-          return channel;
-        });
-
-        if (changed) {
-          localStorage.setItem(MIGRATION_KEY, 'true');
-          setThreads((prevThreads) =>
-            prevThreads.map((thread) => {
-              const chan = updated.find((c) => c.id === thread.channelId);
-              if (
-                chan &&
-                (chan.name.toLowerCase().includes('test') ||
-                  chan.id.toLowerCase().includes('test'))
-              ) {
-                return {
-                  ...thread,
-                  activeAgentIds: chan.assignedAgentIds,
-                };
-              }
-              return thread;
-            })
-          );
-          return updated;
-        }
-
-        localStorage.setItem(MIGRATION_KEY, 'true');
-        return prevChannels;
-      });
-    } catch {}
-  }, [agents, currentUserId]);
-
   // Synchronize Agent running status with Tauri backend process manager
   const syncRunningAgentsWithBackend = useCallback(async (
     settleUnmatchedStarting = false
@@ -1489,11 +1502,21 @@ export default function App() {
             ? `正在深入分析上下文与技术边界 (${elapsed}s)...`
             : `正在分析推演中 (${elapsed}s)...`;
 
+        // 心跳仅刷新本次会话所属房间，避免同一 Agent 在其他房间的 pending 卡被误更新。
+        const parsed = typeof payload.session_key === 'string'
+          ? parseSessionKey(payload.session_key)
+          : { type: 'legacy' as const, roomId: undefined };
+        const roomId = parsed.roomId;
+
         setActiveExecutions((prev) => {
           let updated = false;
           const next = { ...prev };
           for (const key in next) {
-            if (next[key].agentId === payload.agent_id && next[key].status === 'thinking') {
+            if (
+              next[key].agentId === payload.agent_id &&
+              next[key].status === 'thinking' &&
+              (!roomId || next[key].threadId === roomId)
+            ) {
               next[key] = {
                 ...next[key],
                 currentActionDetail: hint,
@@ -1508,7 +1531,8 @@ export default function App() {
         setMessages((prev) => {
           let updated = false;
           const next = { ...prev };
-          for (const threadId in next) {
+          const threadIds = roomId && prev[roomId] ? [roomId] : Object.keys(prev);
+          for (const threadId of threadIds) {
             const list = next[threadId];
             if (!list || list.length === 0) continue;
             const pendingIdx = list.findIndex(
@@ -1524,6 +1548,7 @@ export default function App() {
               updated = true;
             }
           }
+          if (updated) messagesRef.current = next;
           return updated ? next : prev;
         });
       }
@@ -1531,42 +1556,91 @@ export default function App() {
       unlistenHeartbeat = fn;
     }).catch(() => {});
 
-    // 实时监听 Agent 流式 chunk 吐字，就地注入 isPending 占位卡
+    // 实时监听 Agent 流式 chunk 吐字：
+    // 1) 通过 Rust 透传的 session_key 精确路由到所属房间，杜绝跨会话串流污染；
+    // 2) 按「房间 + Agent」缓冲后按 Agent 策略的间隔合并刷新，避免逐 token 触发全量 React 更新。
+    type ChunkBuffer = {
+      threadId: string | null;
+      agentId: string;
+      text: string;
+      timer: number | null;
+    };
+    const chunkBuffers = new Map<string, ChunkBuffer>();
+
+    const flushChunkBuffer = (key: string) => {
+      const buf = chunkBuffers.get(key);
+      if (!buf) return;
+      chunkBuffers.delete(key);
+      if (buf.timer !== null) window.clearTimeout(buf.timer);
+      if (!buf.text) return;
+      const text = buf.text;
+
+      setMessages((prev) => {
+        let updated = false;
+        const next = { ...prev };
+        const threadIds = buf.threadId ? [buf.threadId] : Object.keys(prev);
+        for (const threadId of threadIds) {
+          const list = next[threadId];
+          if (!list || list.length === 0) continue;
+          // 同一 Agent 可能因重试留下多个 pending 卡，始终追加到最新一张。
+          let pendingIdx = -1;
+          for (let i = list.length - 1; i >= 0; i--) {
+            if (list[i].authorId === buf.agentId && list[i].isPending) {
+              pendingIdx = i;
+              break;
+            }
+          }
+          if (pendingIdx === -1) continue;
+          const updatedList = [...list];
+          updatedList[pendingIdx] = {
+            ...updatedList[pendingIdx],
+            content: (updatedList[pendingIdx].content || '') + text,
+          };
+          next[threadId] = updatedList;
+          updated = true;
+          if (buf.threadId) break;
+        }
+        if (updated) messagesRef.current = next;
+        return updated ? next : prev;
+      });
+    };
+
     let unlistenChunk: (() => void) | undefined;
     tauriListen('acp:chunk', (event: any) => {
       const payload = event?.payload;
-      if (payload && payload.agent_id && payload.chunk) {
-        const agentId = payload.agent_id;
-        const chunkText = payload.chunk;
+      if (!payload || !payload.agent_id || !payload.chunk) return;
 
-        setMessages((prev) => {
-          let updated = false;
-          const next = { ...prev };
-          for (const threadId in next) {
-            const list = next[threadId];
-            if (!list || list.length === 0) continue;
-            const pendingIdx = list.findIndex(
-              (m) => m.authorId === agentId && m.isPending
-            );
-            if (pendingIdx !== -1) {
-              const target = list[pendingIdx];
-              const updatedList = [...list];
-              updatedList[pendingIdx] = {
-                ...target,
-                content: (target.content || '') + chunkText,
-              };
-              next[threadId] = updatedList;
-              updated = true;
-            }
-          }
-          return updated ? next : prev;
-        });
+      const agentId = payload.agent_id as string;
+      const chunkText = payload.chunk as string;
+      const parsed = typeof payload.session_key === 'string'
+        ? parseSessionKey(payload.session_key)
+        : { type: 'legacy' as const, roomId: undefined };
+      const threadId = parsed.roomId ?? null;
+      const key = `${threadId ?? 'legacy'}::${agentId}`;
+
+      const existing = chunkBuffers.get(key);
+      if (existing) {
+        existing.text += chunkText;
+        return;
+      }
+
+      const agent = agentsRef.current.find((a) => a.id === agentId);
+      const flushInterval = resolveEffectiveRuntimePolicy(agent).streamFlushIntervalMs;
+      const buf: ChunkBuffer = { threadId, agentId, text: chunkText, timer: null };
+      chunkBuffers.set(key, buf);
+
+      if (flushInterval <= 0) {
+        flushChunkBuffer(key);
+      } else {
+        buf.timer = window.setTimeout(() => flushChunkBuffer(key), flushInterval);
       }
     }).then((fn: any) => {
       unlistenChunk = fn;
     }).catch(() => {});
 
     return () => {
+      // 卸载前把尚未刷新的流式片段落地，避免丢字。
+      for (const key of Array.from(chunkBuffers.keys())) flushChunkBuffer(key);
       window.clearInterval(permissionPollTimer);
       if (unlistenPermissionRequest) unlistenPermissionRequest();
       if (unlistenPermissionResolved) unlistenPermissionResolved();
@@ -2022,44 +2096,6 @@ export default function App() {
     setMainView('chat');
   };
 
-  // Handle Creation of New Thread in current channel
-  const handleNewThread = () => {
-    const threadId = `thread-${Date.now()}`;
-    const newThread: Thread = {
-      id: threadId,
-      channelId: activeChannel?.id,
-      channelName: activeChannel.name,
-      type: 'thread',
-      title: '新发起的工程研讨议题',
-      authorId: 'user-norris',
-      authorName: 'Norris_M5Pro',
-      authorAvatar: '👨‍💻',
-      authorHandle: '@Norris_M5Pro',
-      timestamp: 'Just now',
-      preview: '新议题就绪，请在底部 Composer 中输入指令或 @Agent 召唤编队。',
-      activeAgentIds: activeChannel.assignedAgentIds,
-    };
-    setThreads((prev) => [newThread, ...prev]);
-    setActiveThreadId(threadId);
-    setMessages((prev) => ({
-      ...prev,
-      [threadId]: [
-        {
-          id: `msg-${Date.now()}`,
-          threadId: threadId,
-          authorId: 'user-norris',
-          authorName: 'Norris_M5Pro',
-          authorHandle: '@Norris_M5Pro',
-          authorAvatar: '👨‍💻',
-          isAgent: false,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `已开启新议题！当前研讨环境处于沙盒就绪状态。可直接 @Agent 分派任务或开启子话题深潜。`,
-        },
-      ],
-    }));
-    setMainView('chat');
-  };
-
   // Topic Handlers (PRD 核心空间交互)
   const handleOpenTopic = (topicId: string) => {
     setActiveTopicId(topicId);
@@ -2449,6 +2485,11 @@ export default function App() {
     } = options;
     const cascade = activeCascadesRef.current[cascadeId];
     if (!cascade || cascade.isAborted) return;
+    // 级联派发必须绑定一个活动线程：缺失时直接终止，而不是继续读取 null 字段。
+    if (!activeThread) {
+      console.warn('[App] 级联调度缺少活动线程上下文，已跳过本轮派发');
+      return;
+    }
 
     const effectiveTurnOutputs: TurnAgentOutput[] =
       turnOutputs && turnOutputs.length > 0
@@ -2585,7 +2626,7 @@ export default function App() {
         continue;
       }
 
-      const loopCheck = checkLoopGuard(cascade, targetAgent.id);
+      const loopCheck = checkLoopGuard(cascade, targetAgent.id, targetAgent);
       if (!loopCheck.allowed) {
         console.log(`[CollaborationCascade] Cascade ${cascadeId} target ${targetAgent.name} terminated:`, loopCheck.reason);
         if (!loopCheck.isSilentEnd) {
@@ -3366,6 +3407,7 @@ export default function App() {
             modularState: updatedModularState,
             cognoNexus: {
               ...old.gameTheoreticState?.cognoNexus,
+              committedStates: old.gameTheoreticState?.cognoNexus?.committedStates ?? [],
               modularState: updatedModularState,
             },
           },
@@ -3649,8 +3691,9 @@ export default function App() {
 
         if (!contractValidation.isValid) {
           const refineKey = `${topicId}:challenge`;
+          const retryLimit = resolveCorrectionRetryLimit(challengerAgent);
           const currentRetries = stageRefineRetriesRef.current[refineKey] || 0;
-          if (currentRetries < STAGE_CONTRACT_MAX_RETRIES) {
+          if (currentRetries < retryLimit) {
             stageRefineRetriesRef.current[refineKey] = currentRetries + 1;
             const refineNotice: Message = {
               id: `msg-refine-notice-${Date.now()}`,
@@ -3661,7 +3704,7 @@ export default function App() {
               authorHandle: '@contract-guard',
               authorAvatar: '🛡️',
               isAgent: true,
-              agentBadge: `Self-Refine (${currentRetries + 1}/${STAGE_CONTRACT_MAX_RETRIES})`,
+              agentBadge: `Self-Refine (${currentRetries + 1}/${retryLimit})`,
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               content: contractValidation.refinePrompt || '阶段契约未达标，触发 Self-Refine',
               gameStage: 'challenge',
@@ -3686,7 +3729,7 @@ export default function App() {
               gameTheoreticState: {
                 ...old.gameTheoreticState,
                 currentStage: 'stageFailed',
-                quorumAlert: `红队挑战者 (${challengerAgent.name}) 经 ${STAGE_CONTRACT_MAX_RETRIES} 轮 Self-Refine 仍未满足契约规范，推演阻断转人工`,
+                quorumAlert: `红队挑战者 (${challengerAgent.name}) 经 ${retryLimit} 轮 Self-Refine 仍未满足契约规范，推演阻断转人工`,
               },
             }));
             logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
@@ -3704,7 +3747,7 @@ export default function App() {
               isAgent: true,
               agentBadge: 'Stage Failed',
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：挑战官 ${challengerAgent.name} 经 ${STAGE_CONTRACT_MAX_RETRIES} 次 Self-Refine 仍未满足结构化批判规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
+              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：挑战官 ${challengerAgent.name} 经 ${retryLimit} 次 Self-Refine 仍未满足结构化批判规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
               gameStage: 'stageFailed',
               gameRole: 'challenger',
             };
@@ -3718,9 +3761,11 @@ export default function App() {
         delete stageRefineRetriesRef.current[`${topicId}:challenge`];
 
         // 提取论点因果节点、升级为 Claim DAG 与图差分冲突定位 (Wave 3 P1-1)
-        const argumentNodes = extractArgumentNodes(targetProposalText);
+        // 缺失主导方案正文时以空串进入分析器（分析器会显式返回空节点），而不是让整个交接流程崩溃。
+        const proposalTextForAnalysis = targetProposalText ?? '';
+        const argumentNodes = extractArgumentNodes(proposalTextForAnalysis);
         const disputePacket = localizeGraphDiffDispute(argumentNodes, acpResp.textResponse);
-        const committedStates = dehydrateContextToCommittedStates(targetProposalText, acpResp.textResponse, argumentNodes);
+        const committedStates = dehydrateContextToCommittedStates(proposalTextForAnalysis, acpResp.textResponse, argumentNodes);
 
         // 提炼并保留伴生少数派异议报告 (P0-2 Disagreement-Aware Deliberation)
         const minorityReport = compileMinorityReport({
@@ -4184,8 +4229,9 @@ export default function App() {
 
         if (!contractValidation.isValid) {
           const refineKey = `${topicId}:verification`;
+          const retryLimit = resolveCorrectionRetryLimit(verifierAgent);
           const currentRetries = stageRefineRetriesRef.current[refineKey] || 0;
-          if (currentRetries < STAGE_CONTRACT_MAX_RETRIES) {
+          if (currentRetries < retryLimit) {
             stageRefineRetriesRef.current[refineKey] = currentRetries + 1;
             const refineNotice: Message = {
               id: `msg-refine-notice-${Date.now()}`,
@@ -4196,7 +4242,7 @@ export default function App() {
               authorHandle: '@contract-guard',
               authorAvatar: '🛡️',
               isAgent: true,
-              agentBadge: `Self-Refine (${currentRetries + 1}/${STAGE_CONTRACT_MAX_RETRIES})`,
+              agentBadge: `Self-Refine (${currentRetries + 1}/${retryLimit})`,
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               content: contractValidation.refinePrompt || '验证契约未达标，触发 Self-Refine',
               gameStage: 'verification',
@@ -4222,7 +4268,7 @@ export default function App() {
               gameTheoreticState: {
                 ...old.gameTheoreticState,
                 currentStage: 'stageFailed',
-                quorumAlert: `接地验证官 (${verifierAgent.name}) 经 ${STAGE_CONTRACT_MAX_RETRIES} 轮 Self-Refine 仍未满足实证规范，推演阻断转人工`,
+                quorumAlert: `接地验证官 (${verifierAgent.name}) 经 ${retryLimit} 轮 Self-Refine 仍未满足实证规范，推演阻断转人工`,
               },
             }));
             logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
@@ -4240,7 +4286,7 @@ export default function App() {
               isAgent: true,
               agentBadge: 'Stage Failed',
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：接地验证官 ${verifierAgent.name} 经 ${STAGE_CONTRACT_MAX_RETRIES} 次 Self-Refine 仍未满足实证真值规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
+              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：接地验证官 ${verifierAgent.name} 经 ${retryLimit} 次 Self-Refine 仍未满足实证真值规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
               gameStage: 'stageFailed',
               gameRole: 'verifier',
             };
@@ -4335,8 +4381,14 @@ export default function App() {
               gameStage: 'challenge',
             };
           } else if (verStep.posteriorAction === 'FREEZE_MODULE') {
-            const frozenCount = nextModular.modules.filter((m) => m.status === 'frozen').length;
-            const nextActiveMod = nextModular.modules.find((m) => m.moduleId === nextModular.activeModuleId);
+            if (!nextModular) {
+              throw new Error('模块状态机在 FREEZE_MODULE 分支缺少 nextState，拒绝以空状态推进');
+            }
+            const frozenModular = nextModular;
+            const frozenCount = frozenModular.modules.filter((m) => m.status === 'frozen').length;
+            const nextActiveMod = frozenModular.modules.find(
+              (m) => m.moduleId === frozenModular.activeModuleId
+            );
             verNoticeMsg = {
               id: `msg-fast-track-freeze-${Date.now()}`,
               threadId: topicId,
@@ -4741,8 +4793,9 @@ export default function App() {
 
         if (!contractValidation.isValid) {
           const refineKey = `${topicId}:defense`;
+          const retryLimit = resolveCorrectionRetryLimit(proposerAgent);
           const currentRetries = stageRefineRetriesRef.current[refineKey] || 0;
-          if (currentRetries < STAGE_CONTRACT_MAX_RETRIES) {
+          if (currentRetries < retryLimit) {
             stageRefineRetriesRef.current[refineKey] = currentRetries + 1;
             const refineNotice: Message = {
               id: `msg-refine-notice-${Date.now()}`,
@@ -4753,7 +4806,7 @@ export default function App() {
               authorHandle: '@contract-guard',
               authorAvatar: '🛡️',
               isAgent: true,
-              agentBadge: `Self-Refine (${currentRetries + 1}/${STAGE_CONTRACT_MAX_RETRIES})`,
+              agentBadge: `Self-Refine (${currentRetries + 1}/${retryLimit})`,
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               content: contractValidation.refinePrompt || '答辩补丁契约未达标，触发 Self-Refine',
               gameStage: 'defense',
@@ -4779,7 +4832,7 @@ export default function App() {
               gameTheoreticState: {
                 ...old.gameTheoreticState,
                 currentStage: 'stageFailed',
-                quorumAlert: `提案官 (${proposerAgent.name}) 经 ${STAGE_CONTRACT_MAX_RETRIES} 轮 Self-Refine 仍未满足答辩补丁契约规范，推演阻断转人工`,
+                quorumAlert: `提案官 (${proposerAgent.name}) 经 ${retryLimit} 轮 Self-Refine 仍未满足答辩补丁契约规范，推演阻断转人工`,
               },
             }));
             logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
@@ -4797,7 +4850,7 @@ export default function App() {
               isAgent: true,
               agentBadge: 'Stage Failed',
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：提案官 ${proposerAgent.name} 经 ${STAGE_CONTRACT_MAX_RETRIES} 次 Self-Refine 仍未满足答辩补丁契约规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
+              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：提案官 ${proposerAgent.name} 经 ${retryLimit} 次 Self-Refine 仍未满足答辩补丁契约规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
               gameStage: 'stageFailed',
               gameRole: 'proposer',
             };
@@ -4917,7 +4970,7 @@ export default function App() {
 
         // P2 二次对抗回边判定 (4 项硬条件守卫，不满足 4 条件不得回退，防止死循环) (R-4/R-6)
         const currentRoundCount = currentTopic.gameTheoreticState?.roundCount || 1;
-        const originalClaims = extractArgumentNodes(targetProposalText);
+        const originalClaims = extractArgumentNodes(targetProposalText ?? '');
         const defenseClaims = extractArgumentNodes(acpResp.textResponse);
         const hasNewUnverifiedClaims = defenseClaims.some(
           (dc) => !originalClaims.some((oc) => oc.claim === dc.claim || (oc.claim && dc.claim && (oc.claim.includes(dc.claim) || dc.claim.includes(oc.claim))))
@@ -5416,6 +5469,7 @@ export default function App() {
             ...old,
             gameTheoreticState: {
               ...old.gameTheoreticState,
+              currentStage: old.gameTheoreticState?.currentStage ?? 'arbitration',
               minorityReport: old.gameTheoreticState?.minorityReport,
               mcdaPayload,
               colMadReport,
@@ -5423,6 +5477,7 @@ export default function App() {
               concurrenceState: initialConcurrence,
               cognoNexus: {
                 ...old.gameTheoreticState?.cognoNexus,
+                committedStates: old.gameTheoreticState?.cognoNexus?.committedStates ?? [],
                 minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
                 mcdaPayload,
                 colMadReport,
@@ -5669,6 +5724,7 @@ export default function App() {
                 ...old,
                 gameTheoreticState: {
                   ...old.gameTheoreticState,
+                  currentStage: old.gameTheoreticState?.currentStage ?? 'arbitration',
                   concurrenceState: currentConcurrence,
                 },
               }));
@@ -6444,7 +6500,7 @@ export default function App() {
         roomId: topicId,
         originalPrompt: agentTurnContent,
         depth: 1,
-        maxDepth: 12,
+        maxDepth: resolveCascadeMaxHops(onlineAgents),
         visitedAgentIds: onlineAgents.map((a) => a.id),
         agentCallCounts: initialCallCounts,
         isAborted: false,
@@ -6609,7 +6665,7 @@ export default function App() {
           deltaMessages: deltaBatch.deltaMessages,
           triggerContent: agentTurnContent,
           hop: 1,
-          maxHops: 12,
+          maxHops: resolveCascadeMaxHops(onlineAgents),
           topic: topicContext,
           isDm: false,
           isParallelFirstTurn: onlineAgents.length > 1,
@@ -6630,7 +6686,7 @@ export default function App() {
           roomId: topicId,
           originalPrompt: agentTurnContent,
           depth: 1,
-          maxDepth: 12,
+          maxDepth: resolveCascadeMaxHops(onlineAgents),
           visitedAgentIds: [agent.id],
           agentCallCounts: { [agent.id]: 1 },
           isAborted: false,
@@ -6772,7 +6828,7 @@ export default function App() {
             collaborationInfo: {
               cascadeId,
               hop: 1,
-              maxHops: 12,
+              maxHops: resolveCascadeMaxHops(onlineAgents),
               rootMessageId: userMsg.id,
               sourceMessageId: userMsg.id,
               invokedByAgentId: userMsg.authorId,
@@ -7635,6 +7691,13 @@ export default function App() {
   const handleExecuteTopicPatch = (topicId: string, executorId: string) => {
     const currentTopic = getTopicData(topicId);
     if (!currentTopic) return;
+    updateTopicDataInState(topicId, (old) => ({
+      ...old,
+      gameTheoreticState: {
+        ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
+        executionVerificationRepairAttempts: 0,
+      },
+    }));
     dispatchTopicExecution({
       topicId,
       executorId,
@@ -7647,16 +7710,29 @@ export default function App() {
     });
   };
 
+  const appendTopicSystemMessage = (
+    topicId: string,
+    _channelId: string | undefined,
+    message: Message
+  ) => {
+    setMessages((prev) => ({
+      ...prev,
+      [topicId]: [...(prev[topicId] || []), message],
+    }));
+  };
+
   const handleApplyTopicPatch = async (topicId?: string, customDiffs?: TopicPatchDiffItem[]) => {
     const targetTopicId = topicId || activeDiff?.topicId || activeTopicId;
     const currentTopic = targetTopicId ? getTopicData(targetTopicId) : null;
-    const diffsToApply: TopicPatchDiffItem[] =
+    const requestedDiffs: TopicPatchDiffItem[] =
       customDiffs && customDiffs.length > 0
         ? customDiffs
         : currentTopic?.gameTheoreticState?.executionDiffs ||
           (activeDiff?.allDiffs && activeDiff.allDiffs.length > 0 ? activeDiff.allDiffs : activeDiff ? [activeDiff] : []);
 
-    if (!diffsToApply || diffsToApply.length === 0) return;
+    // 已经真实落盘的文件不再重复应用，避免二次合入制造冲突。
+    const diffsToApply = requestedDiffs.filter((diff) => diff.applyStatus !== 'applied');
+    if (diffsToApply.length === 0) return;
 
     const topicChannel =
       (currentTopic?.channelId ? channels.find((c) => c.id === currentTopic.channelId) : null) ||
@@ -7677,30 +7753,72 @@ export default function App() {
     });
 
     const appliedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const updatedDiffs: TopicPatchDiffItem[] = diffsToApply.map((d) => {
-      const match = res.appliedFiles.find((af) => af.filename === d.filename);
+    const updatedDiffs: TopicPatchDiffItem[] = diffsToApply.map((diff, index) => {
+      // Rust 按输入顺序逐项返回状态；索引映射可避免路径前缀归一化造成的匹配失败。
+      const match =
+        res.appliedFiles[index] ||
+        res.appliedFiles.find((file) => file.filename === diff.filename);
       return {
-        ...d,
-        applied: true,
-        appliedMode: match?.mode || 'artifact_saved',
+        ...diff,
+        applied: match?.status === 'applied',
+        appliedMode: match?.mode || 'failed',
+        applyStatus: match?.status || 'failed',
+        applyError: match?.error,
+        backupPath: match?.backupPath,
         targetPath: match?.targetPath,
       };
     });
+    const realAppliedCount = updatedDiffs.filter((diff) => diff.applied).length;
+    const allApplied = realAppliedCount === diffsToApply.length;
+    const execMeta = currentTopic?.gameTheoreticState?.executionUiMeta;
+    const mergedDiffs = [
+      ...(currentTopic?.gameTheoreticState?.executionDiffs || []).map(
+        (existing) => updatedDiffs.find((updated) => updated.filename === existing.filename) || existing
+      ),
+      ...updatedDiffs.filter(
+        (updated) =>
+          !(currentTopic?.gameTheoreticState?.executionDiffs || []).some(
+            (existing) => existing.filename === updated.filename
+          )
+      ),
+    ];
 
     if (targetTopicId) {
       updateTopicDataInState(targetTopicId, (old) => ({
         ...old,
         gameTheoreticState: {
           ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
-          executionStatus: 'applied',
-          executionAppliedAt: appliedAt,
-          executionArtifactsDir: res.artifactsDir,
+          executionStatus: allApplied ? 'applied' : 'failed',
+          executionAppliedAt: realAppliedCount > 0 ? appliedAt : old.gameTheoreticState?.executionAppliedAt,
+          executionArtifactsDir: res.artifactsDir || old.gameTheoreticState?.executionArtifactsDir,
           executionSummary: res.summary,
-          executionDiffs: updatedDiffs,
+          executionDiffs: mergedDiffs,
+          executionPatchHistoryPath: res.historyPath || old.gameTheoreticState?.executionPatchHistoryPath,
+          executionVerification:
+            realAppliedCount > 0
+              ? {
+                  status: 'running',
+                  checkedAt: new Date().toISOString(),
+                  commands: [],
+                  summary: '补丁已落盘，正在执行宿主验证命令...',
+                }
+              : undefined,
         },
       }));
 
-      const execMeta = currentTopic?.gameTheoreticState?.executionUiMeta;
+      const detailLines = res.appliedFiles
+        .map((file) => {
+          const statusLabel =
+            file.status === 'applied'
+              ? `已合入 (${file.mode})`
+              : file.status === 'conflict'
+              ? '冲突，已拒绝覆盖'
+              : file.status === 'archived_only'
+              ? '仅归档，未写入工作区'
+              : '失败';
+          return `  • \`${file.filename}\` → ${statusLabel}${file.error ? `：${file.error}` : ''}`;
+        })
+        .join('\n');
       const applyConfirmMsg: Message = {
         id: `topic-patch-applied-${Date.now()}`,
         threadId: targetTopicId,
@@ -7708,12 +7826,12 @@ export default function App() {
         authorId: 'system',
         authorName: 'Shadow Crew 工作区合入引擎',
         authorHandle: '@workspace-patcher',
-        authorAvatar: '⚖️',
+        authorAvatar: realAppliedCount > 0 ? '⚖️' : '⚠️',
         isAgent: true,
-        agentBadge: 'Workspace Applied',
+        agentBadge: allApplied ? 'Workspace Applied' : 'Workspace Patch Conflict',
         timestamp: appliedAt,
         relatedTopicId: targetTopicId,
-        content: `✅ **${execMeta?.podTitle || '决议交付文件'}已物理合入本地工作区**\n\n- **合入摘要**：${res.summary}\n- **归档目录**：\`${res.artifactsDir}\`\n- **变更文件明细**：\n${res.appliedFiles.map((f) => `  • \`${f.filename}\` → \`${f.targetPath}\` (${f.mode})`).join('\n')}`,
+        content: `${realAppliedCount > 0 ? '✅' : '❌'} **${execMeta?.podTitle || '决议交付文件'}合入结果**\n\n- **合入摘要**：${res.summary}\n- **归档目录**：\`${res.artifactsDir || '未生成'}\`\n- **变更文件明细**：\n${detailLines || '  • 无'}`,
       };
 
       setMessages((prev) => {
@@ -7731,7 +7849,7 @@ export default function App() {
                 const baseContent = m.content.split('\n\n---\n')[0];
                 return {
                   ...m,
-                  content: `${baseContent}\n\n---\n🎉 **${execMeta?.podTitle || '决议交付'}已合入工作区 (${appliedAt})**：${res.summary}（归档于 \`${res.artifactsDir}\`）`,
+                  content: `${baseContent}\n\n---\n${realAppliedCount > 0 ? '🎉' : '⚠️'} **${execMeta?.podTitle || '决议交付'}合入结果 (${appliedAt})**：${res.summary}（归档于 \`${res.artifactsDir || '未生成'}\`）`,
                 };
               }
               return m;
@@ -7750,12 +7868,198 @@ export default function App() {
       prev
         ? {
             ...prev,
-            executionStatus: 'applied',
+            executionStatus: allApplied ? 'applied' : 'failed',
             artifactsDir: res.artifactsDir,
-            allDiffs: updatedDiffs,
+            allDiffs: mergedDiffs,
           }
         : prev
     );
+
+    if (realAppliedCount === 0) return;
+
+    // P0-2：补丁真实落盘后，执行宿主验证并记录证据。
+    const verification = await verifyWorkspaceAfterPatch({
+      workspaceBindingId: topicBinding.id,
+      workspaceRoot: topicBinding.cwd,
+      channelId: effectiveChanId,
+      topicId: targetTopicId || 'adhoc-patch',
+    });
+
+    const executorId =
+      currentTopic?.gameTheoreticState?.assignedExecutorId ||
+      currentTopic?.decisionRecord?.executorId ||
+      currentTopic?.rulingRecord?.executorId;
+    const executorAgent = executorId ? agentsRef.current.find((agent) => agent.id === executorId) : undefined;
+    const previousAttempts = currentTopic?.gameTheoreticState?.executionVerificationRepairAttempts || 0;
+    const repairLimit = resolveCorrectionRetryLimit(executorAgent);
+
+    if (targetTopicId) {
+      updateTopicDataInState(targetTopicId, (old) => ({
+        ...old,
+        gameTheoreticState: {
+          ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
+          executionVerification: verification,
+          executionVerificationRepairAttempts:
+            verification.status === 'passed' ? 0 : old.gameTheoreticState?.executionVerificationRepairAttempts || 0,
+        },
+      }));
+
+      const verificationMsg: Message = {
+        id: `topic-patch-verification-${Date.now()}`,
+        threadId: targetTopicId,
+        channelId: topicChannel?.id,
+        authorId: 'system',
+        authorName: 'Shadow Crew 验证门禁',
+        authorHandle: '@verification-gate',
+        authorAvatar: verification.status === 'passed' ? '🛡️' : verification.status === 'failed' ? '🚫' : '⏭️',
+        isAgent: true,
+        agentBadge: 'Host Verification',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        relatedTopicId: targetTopicId,
+        content: formatVerificationReport(verification),
+      };
+      appendTopicSystemMessage(targetTopicId, topicChannel?.id, verificationMsg);
+
+      if (verification.status === 'failed') {
+        const digest = extractVerificationFailureDigest(verification);
+        if (executorId && executorAgent && previousAttempts < repairLimit) {
+          const nextAttempt = previousAttempts + 1;
+          updateTopicDataInState(targetTopicId, (old) => ({
+            ...old,
+            gameTheoreticState: {
+              ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
+              executionVerificationRepairAttempts: nextAttempt,
+            },
+          }));
+          const repairNotice: Message = {
+            id: `topic-patch-repair-${Date.now()}`,
+            threadId: targetTopicId,
+            channelId: topicChannel?.id,
+            authorId: 'system',
+            authorName: 'Shadow Crew 验证门禁',
+            authorHandle: '@verification-gate',
+            authorAvatar: '🔁',
+            isAgent: true,
+            agentBadge: 'Auto Repair',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            relatedTopicId: targetTopicId,
+            content: `🔁 **验证失败，已自动回派执行 Agent 修复（${nextAttempt}/${repairLimit}）**\n\n\`\`\`\n${digest.slice(0, 1800)}\n\`\`\``,
+          };
+          appendTopicSystemMessage(targetTopicId, topicChannel?.id, repairNotice);
+
+          const baseSolution =
+            currentTopic?.decisionRecord?.solution ||
+            currentTopic?.rulingRecord?.solution ||
+            currentTopic?.description ||
+            currentTopic?.title ||
+            '';
+          setTimeout(() => {
+            dispatchTopicExecution({
+              topicId: targetTopicId,
+              executorId,
+              decision: {
+                solution: `${baseSolution}\n\n【宿主验证失败证据（自动修复第 ${nextAttempt}/${repairLimit} 次）】\n${digest}\n\n请只针对上述真实报错输出最小修正补丁；不要复述方案，不要修改未报错的文件。`,
+                impactedFiles:
+                  currentTopic?.decisionRecord?.impactedFiles ||
+                  currentTopic?.rulingRecord?.impactedFiles ||
+                  updatedDiffs.map((diff) => diff.filename),
+                approvers: currentTopic?.decisionRecord?.approvers || [],
+                rulingRecord: currentTopic?.rulingRecord,
+              },
+            });
+          }, 600);
+        } else {
+          const exhaustedMsg: Message = {
+            id: `topic-patch-repair-exhausted-${Date.now()}`,
+            threadId: targetTopicId,
+            channelId: topicChannel?.id,
+            authorId: 'system',
+            authorName: 'Shadow Crew 验证门禁',
+            authorHandle: '@verification-gate',
+            authorAvatar: '🛑',
+            isAgent: true,
+            agentBadge: 'Manual Required',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            relatedTopicId: targetTopicId,
+            content: `🛑 **验证失败且自动修复次数已用尽**（上限 ${repairLimit} 次）。请人工检查验证输出，或使用「回退本次合入」撤销本地改动。\n\n\`\`\`\n${digest.slice(0, 1800)}\n\`\`\``,
+          };
+          appendTopicSystemMessage(targetTopicId, topicChannel?.id, exhaustedMsg);
+        }
+      }
+    }
+  };
+
+  const handleRollbackTopicPatch = async (topicId?: string) => {
+    const targetTopicId = topicId || activeTopicId;
+    const currentTopic = targetTopicId ? getTopicData(targetTopicId) : null;
+    if (!targetTopicId || !currentTopic) return;
+    const historyPath = currentTopic.gameTheoreticState?.executionPatchHistoryPath;
+    if (!historyPath) {
+      throw new Error('当前议题没有可用的补丁历史快照，无法回退');
+    }
+    const topicBinding = getTopicWorkspaceBinding(targetTopicId);
+    if (!topicBinding) {
+      throw new Error(`议题 ${targetTopicId} 缺少 Workspace Binding`);
+    }
+    const topicChannel =
+      (currentTopic.channelId ? channels.find((c) => c.id === currentTopic.channelId) : null) ||
+      activeChannel;
+
+    const res = await rollbackTopicPatchFromWorkspace({
+      workspaceBindingId: topicBinding.id,
+      channelId: topicChannel?.id || 'general',
+      topicId: targetTopicId,
+      historyPath,
+    });
+
+    const rolledBackAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const rolledBackFiles = new Set(
+      res.files
+        .filter((file) => file.status === 'restored' || file.status === 'deleted_created_file')
+        .map((file) => file.filename)
+    );
+    updateTopicDataInState(targetTopicId, (old) => ({
+      ...old,
+      gameTheoreticState: {
+        ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
+        executionStatus: res.restoredCount > 0 ? 'completed' : old.gameTheoreticState?.executionStatus,
+        executionAppliedAt: res.restoredCount > 0 ? undefined : old.gameTheoreticState?.executionAppliedAt,
+        executionRolledBackAt: res.restoredCount > 0 ? rolledBackAt : old.gameTheoreticState?.executionRolledBackAt,
+        executionPatchHistoryPath: res.ok ? undefined : old.gameTheoreticState?.executionPatchHistoryPath,
+        executionVerification: undefined,
+        executionDiffs: (old.gameTheoreticState?.executionDiffs || []).map((diff) =>
+          rolledBackFiles.has(diff.filename)
+            ? {
+                ...diff,
+                applied: false,
+                applyStatus: undefined,
+                appliedMode: undefined,
+                applyError: undefined,
+                backupPath: undefined,
+                targetPath: undefined,
+              }
+            : diff
+        ),
+      },
+    }));
+
+    const detailLines = res.files
+      .map((file) => `  • \`${file.filename}\` → ${file.status}${file.message ? `：${file.message}` : ''}`)
+      .join('\n');
+    appendTopicSystemMessage(targetTopicId, topicChannel?.id, {
+      id: `topic-patch-rollback-${Date.now()}`,
+      threadId: targetTopicId,
+      channelId: topicChannel?.id,
+      authorId: 'system',
+      authorName: 'Shadow Crew 工作区回退引擎',
+      authorHandle: '@workspace-rollback',
+      authorAvatar: res.ok ? '↩️' : '⚠️',
+      isAgent: true,
+      agentBadge: res.ok ? 'Workspace Rolled Back' : 'Rollback Partial',
+      timestamp: rolledBackAt,
+      relatedTopicId: targetTopicId,
+      content: `${res.ok ? '↩️' : '⚠️'} **补丁回退结果**\n\n- **回退摘要**：${res.summary}\n- **文件明细**：\n${detailLines || '  • 无可回退文件'}`,
+    });
   };
 
   const handleReopenTopic = (topicId: string) => {
@@ -8034,7 +8338,7 @@ export default function App() {
       roomId: activeThread.id,
       originalPrompt: agentTurnContent,
       depth: 1,
-      maxDepth: 12, // 对标 Buzz: 提升至 12 轮作为不可见安全兜底
+      maxDepth: resolveCascadeMaxHops(onlineAgents), // 取参与 Agent 配置的最小轮次，防止长循环
       visitedAgentIds: onlineAgents.map((ag) => ag.id),
       agentCallCounts: initialCallCounts,
       isAborted: false,
@@ -8196,7 +8500,7 @@ export default function App() {
         deltaMessages: deltaBatch.deltaMessages,
         triggerContent: agentTurnContent,
         hop: 1,
-        maxHops: 12,
+        maxHops: resolveCascadeMaxHops(onlineAgents),
         isDm: isDmThread,
         isParallelFirstTurn: onlineAgents.length > 1,
       });
@@ -8264,7 +8568,7 @@ export default function App() {
             collaborationInfo: isDmThread ? undefined : {
               cascadeId,
               hop: 1,
-              maxHops: 12,
+              maxHops: resolveCascadeMaxHops(onlineAgents),
               rootMessageId: userMsg.id,
               sourceMessageId: userMsg.id,
               invokedByAgentId: userMsg.authorId,
@@ -8388,7 +8692,7 @@ export default function App() {
 
   // Add Message to SubThread
   const handleSendSubMessage = (content: string) => {
-    if (!activeSubThreadId || !activeSubThread) return;
+    if (!activeSubThreadId || !activeSubThread || !activeThread) return;
     const subMsg: Message = {
       id: `sub-msg-${Date.now()}`,
       threadId: activeThread.id,
@@ -8413,10 +8717,11 @@ export default function App() {
   // Sync SubThread consensus back to Main Thread
   const handleSyncBackToMainThread = (summary: string) => {
     if (!activeSubThreadId || !activeSubThread || !activeThread) return;
+    const mainThreadId = activeThread.id;
     const responder = agents[0];
     const syncMsg: Message = {
       id: `msg-sync-${Date.now()}`,
-      threadId: activeThread.id,
+      threadId: mainThreadId,
       authorId: responder?.id || 'system',
       authorName: responder?.name || 'Shinobi 编队',
       authorHandle: responder?.handle || '@shinobi',
@@ -8429,7 +8734,7 @@ export default function App() {
 
     setMessages((prev) => ({
       ...prev,
-      [activeThread.id]: [...(prev[activeThread.id] || []), syncMsg],
+      [mainThreadId]: [...(prev[mainThreadId] || []), syncMsg],
     }));
 
     setActiveSubThreadId(null);
@@ -8437,8 +8742,10 @@ export default function App() {
 
   // Add Emoji Reaction
   const handleAddReaction = (messageId: string, emoji: string) => {
+    if (!activeThread) return;
+    const reactionThreadId = activeThread.id;
     setMessages((prev) => {
-      const threadMsgs = prev[activeThread.id] || [];
+      const threadMsgs = prev[reactionThreadId] || [];
       const updated = threadMsgs.map((m) => {
         if (m.id !== messageId) return m;
         const currentReactions = m.reactions || [];
@@ -8457,7 +8764,7 @@ export default function App() {
           };
         }
       });
-      return { ...prev, [activeThread.id]: updated };
+      return { ...prev, [reactionThreadId]: updated };
     });
   };
 
@@ -8558,11 +8865,12 @@ export default function App() {
                   cartridges: agent.memory?.cartridges ? [...agent.memory.cartridges] : [],
                 },
                 capabilities: {
-                  canAccessWorkspaceFiles: true,
-                  canExecuteSkills: true,
-                  canDelegateToSubAgents: true,
-                  supportsStreaming: true,
                   ...(agent.capabilities || {}),
+                  // 派生副本默认继承完整能力，但允许源 Agent 显式关闭；内部记忆固定不可用。
+                  canAccessWorkspaceFiles: agent.capabilities?.canAccessWorkspaceFiles ?? true,
+                  canExecuteSkills: agent.capabilities?.canExecuteSkills ?? true,
+                  canDelegateToSubAgents: agent.capabilities?.canDelegateToSubAgents ?? true,
+                  supportsStreaming: agent.capabilities?.supportsStreaming ?? true,
                   canUseInternalMemory: false,
                 },
               },
@@ -8694,10 +9002,11 @@ export default function App() {
                 <ChatTimeline
                   messages={activeMessages}
                   activeThread={activeThread}
-                  channel={activeThread.type === 'dm' ? undefined : activeChannel}
+                  channel={activeThread.type === 'dm' ? undefined : activeChannel ?? undefined}
                   agents={agents}
                   activeExecutions={Object.values(activeExecutions)}
                   onApplyTopicPatch={handleApplyTopicPatch}
+                  onRollbackTopicPatch={handleRollbackTopicPatch}
                   onAbortAgent={(agentId) => activeThread && handleAbortAgent(agentId, activeThread.id)}
                   onAddReaction={handleAddReaction}
                   onInspectAgent={(id) => {
@@ -8789,7 +9098,8 @@ export default function App() {
                 onReopenTopic={handleReopenTopic}
                 onExecuteTopicPatch={handleExecuteTopicPatch}
                 onApplyTopicPatch={(tid) => handleApplyTopicPatch(tid)}
-                workspaceCwd={getTopicWorkspaceBinding(activeTopicId)?.cwd}
+                onRollbackTopicPatch={handleRollbackTopicPatch}
+                workspaceCwd={getTopicWorkspaceBinding(activeTopicId ?? undefined)?.cwd}
                 overlappingFiles={(() => {
                   if (!activeTopicData || activeTopicData.gameTheoreticState?.executionStatus === 'applied') return [];
                   const myFiles = new Set(
@@ -8849,7 +9159,6 @@ export default function App() {
             isOpen={isCodexDiffOpen}
             onClose={() => setIsCodexDiffOpen(false)}
             activeDiff={activeDiff}
-            workspaceFiles={workspaceFiles}
             onApplyDiff={handleApplyTopicPatch}
           />
         )}
@@ -8859,7 +9168,6 @@ export default function App() {
         <AcpInspector
           selectedAgent={selectedAgent}
           rpcLogs={rpcLogs}
-          workspaceFiles={workspaceFiles}
           onRunAgentSkill={(agentId, skillId) => {
             const ag = agents.find((a) => a.id === agentId);
             if (ag) {
@@ -9221,6 +9529,9 @@ export default function App() {
             status: initialStatus,
             modelBadge: agentData.modelBadge || (agentData.isRemote ? 'Remote ACP' : 'ACP Stdio'),
             modelConfig: agentData.modelConfig,
+            runtimePolicy: resolveEffectiveRuntimePolicy({
+              runtimePolicy: agentData.runtimePolicy,
+            }),
             isModelHealthy: agentData.isModelHealthy,
             modelLatencyMs: agentData.modelLatencyMs,
             statusDetail: agentData.statusDetail,
@@ -9275,7 +9586,7 @@ export default function App() {
           isOpen={isNewTopicModalOpen}
           onClose={() => setIsNewTopicModalOpen(false)}
           scopeType={activeThread?.type === 'dm' ? 'dm' : 'channel'}
-          channel={activeThread?.type === 'dm' ? undefined : activeChannel}
+          channel={activeThread?.type === 'dm' ? undefined : activeChannel ?? undefined}
           dmAgent={
             activeThread?.type === 'dm'
               ? agents.find((agent) => agent.id === activeThread.authorId)

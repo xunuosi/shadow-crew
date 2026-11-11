@@ -51,6 +51,7 @@ interface ChatTimelineProps {
   agents: Agent[];
   activeExecutions?: ActiveAgentExecution[];
   onApplyTopicPatch?: (topicId: string, customDiffs?: TopicPatchDiffItem[]) => Promise<void> | void;
+  onRollbackTopicPatch?: (topicId: string) => Promise<void> | void;
   onAbortAgent?: (agentId: string) => void;
   onAddReaction: (messageId: string, emoji: string) => void;
   onInspectAgent: (agentId: string) => void;
@@ -75,6 +76,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   agents,
   activeExecutions = [],
   onApplyTopicPatch,
+  onRollbackTopicPatch,
   onAbortAgent,
   onAddReaction,
   onInspectAgent,
@@ -858,6 +860,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                   activeExecutions={activeExecutions}
                   onOpenCodexDiff={onOpenCodexDiff}
                   onApplyTopicPatch={onApplyTopicPatch}
+                  onRollbackTopicPatch={onRollbackTopicPatch}
                   overlappingFiles={topicOverlapMap[message.topicData.id] || []}
                 />
               </div>
@@ -1065,7 +1068,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-surface border border-border rounded-lg px-1.5 py-0.5 shadow-lg">
                   {message.subThreadId && (
                     <button
-                      onClick={() => onOpenSubThread(message.subThreadId!)}
+                      onClick={() => onOpenSubThread?.(message.subThreadId!)}
                       className="p-1 hover:text-purple-500 hover:bg-purple-500/10 rounded transition-colors flex items-center gap-1 cursor-pointer"
                       title="打开子话题分支"
                     >
@@ -1206,7 +1209,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 {/* Sub-Thread Branch Pill Card (Crucial for Nested Topics) */}
                 {message.subThreadId && (
                   <div 
-                    onClick={() => onOpenSubThread(message.subThreadId!)}
+                    onClick={() => onOpenSubThread?.(message.subThreadId!)}
                     className="p-2.5 rounded-xl bg-purple-500/10 border border-purple-500/30 hover:border-purple-500 flex items-center justify-between cursor-pointer transition-all shadow-xs group/sub"
                   >
                     <div className="flex items-center gap-2">

@@ -245,10 +245,12 @@ export function stepSprtGovernor(options: EvaluateSprtOptions): SprtGovernorStat
   const semanticInput = options.semanticScore ?? boundedScore;
   const dssInput = dssScore ?? 0.0;
 
+  // 阈值必须高于浮点噪声：0.001 这类接近零的值意味着"几乎没有有效接地证据"，
+  // 若按"有接地"处理，会把无实证议题误判为已被物理验证。
   const hasActiveGrounding =
     typeof groundedTrueRatio === 'number' &&
     !Number.isNaN(groundedTrueRatio) &&
-    groundedTrueRatio > 0.001;
+    groundedTrueRatio >= 0.05;
 
   let combinedScore = boundedScore;
   if (hasActiveGrounding) {

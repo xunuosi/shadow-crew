@@ -35,6 +35,12 @@ import {
 import { resolveSavedAgentNativeMemoryState } from '../services/remoteAgentLifecycle';
 import { DEFAULT_MODEL_NAME } from '../config/models';
 import { normalizeAgentHandle } from '../services/agentCollaboration';
+import {
+  MAX_ALLOWED_CASCADE_HOPS,
+  MAX_ALLOWED_STREAM_FLUSH_INTERVAL_MS,
+  normalizeAgentRuntimePolicy,
+  resolveEffectiveRuntimePolicy,
+} from '../services/agentRuntimePolicy';
 import { AgentRuntimeStatus } from '../types';
 
 interface ConnectAgentModalProps {
@@ -165,6 +171,26 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         : '')
     );
   });
+  // 运行时预算与循环收敛策略（可在每个 Agent 上独立调节）
+  const [maxOutputTokens, setMaxOutputTokens] = useState<number>(
+    () => resolveEffectiveRuntimePolicy(initialTarget).maxOutputTokens
+  );
+  const [cascadeMaxHops, setCascadeMaxHops] = useState<number>(
+    () => resolveEffectiveRuntimePolicy(initialTarget).cascadeMaxHops
+  );
+  const [maxCorrectionRetries, setMaxCorrectionRetries] = useState<number>(
+    () => resolveEffectiveRuntimePolicy(initialTarget).maxCorrectionRetries
+  );
+  const [autoRelay, setAutoRelay] = useState<boolean>(
+    () => resolveEffectiveRuntimePolicy(initialTarget).autoRelay
+  );
+  const [conciseReplies, setConciseReplies] = useState<boolean>(
+    () => resolveEffectiveRuntimePolicy(initialTarget).conciseReplies
+  );
+  const [streamFlushIntervalMs, setStreamFlushIntervalMs] = useState<number>(
+    () => resolveEffectiveRuntimePolicy(initialTarget).streamFlushIntervalMs
+  );
+
   const [nativeMemoryEnabled, setNativeMemoryEnabled] = useState(() =>
     initialTarget ? initialTarget.memory.mode === 'native' : true
   );
@@ -326,6 +352,15 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
             : '');
         setModelIdInput(existingBadgeOrId);
 
+        // Map Runtime Policy
+        const runtimePolicy = resolveEffectiveRuntimePolicy(target);
+        setMaxOutputTokens(runtimePolicy.maxOutputTokens);
+        setCascadeMaxHops(runtimePolicy.cascadeMaxHops);
+        setMaxCorrectionRetries(runtimePolicy.maxCorrectionRetries);
+        setAutoRelay(runtimePolicy.autoRelay);
+        setConciseReplies(runtimePolicy.conciseReplies);
+        setStreamFlushIntervalMs(runtimePolicy.streamFlushIntervalMs);
+
         // Map ACP runtime
         const matched = runtimes.find(
           (r) =>
@@ -353,6 +388,14 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         setModelIdInput('');
         setNativeMemoryEnabled(true);
         setNativeMemoryAutoGenerate(false);
+
+        const defaultPolicy = resolveEffectiveRuntimePolicy(null);
+        setMaxOutputTokens(defaultPolicy.maxOutputTokens);
+        setCascadeMaxHops(defaultPolicy.cascadeMaxHops);
+        setMaxCorrectionRetries(defaultPolicy.maxCorrectionRetries);
+        setAutoRelay(defaultPolicy.autoRelay);
+        setConciseReplies(defaultPolicy.conciseReplies);
+        setStreamFlushIntervalMs(defaultPolicy.streamFlushIntervalMs);
       }
     }
 
@@ -592,6 +635,15 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
       healthCheck,
     });
 
+    const runtimePolicyPayload = normalizeAgentRuntimePolicy({
+      maxOutputTokens,
+      cascadeMaxHops,
+      maxCorrectionRetries,
+      autoRelay,
+      conciseReplies,
+      streamFlushIntervalMs,
+    });
+
     if (initialAgent && onUpdateAgent) {
       const trimmedName = name.trim();
       const finalHandle = normalizeAgentHandle(trimmedName, initialAgent.id);
@@ -637,6 +689,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
           nativeCapability: savedMemoryState.nativeCapability,
         },
         ...modelPayload,
+        runtimePolicy: runtimePolicyPayload,
         capabilities: nextCapabilities,
         ...(healthCheck
           ? {
@@ -669,6 +722,7 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
         color: isRemoteMode ? '#06b6d4' : '#3b82f6',
         status: 'idle',
         ...modelPayload,
+        runtimePolicy: runtimePolicyPayload,
         isManagedByYou: true,
         acpTransport: transport,
         acpCommandOrUrl: resolvedCommand,
@@ -1599,6 +1653,172 @@ export const ConnectAgentModal: React.FC<ConnectAgentModalProps> = ({
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* 运行时预算与循环收敛 (Runtime Budget & Convergence) */}
+          <div
+            className={`p-3.5 rounded-2xl border space-y-3 ${
+              isLightMode
+                ? 'bg-blue-50 border-blue-300'
+                : 'bg-blue-500/15 border-blue-500/30'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-1.5 font-semibold text-xs text-blue-800 dark:text-blue-300">
+                <ShieldCheck className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                <span>运行时预算与循环收敛 (Runtime Budget)</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMaxOutputTokens(1200);
+                    setCascadeMaxHops(2);
+                    setMaxCorrectionRetries(0);
+                    setAutoRelay(false);
+                    setConciseReplies(true);
+                    setStreamFlushIntervalMs(60);
+                  }}
+                  className={`px-2 py-0.5 text-[10px] rounded-lg border font-medium transition-colors cursor-pointer ${
+                    isLightMode
+                      ? 'bg-white hover:bg-blue-100 border-blue-300 text-blue-800'
+                      : 'bg-blue-900/30 hover:bg-blue-800/40 border-blue-500/30 text-blue-300'
+                  }`}
+                >
+                  轻量问答预设
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const defaults = resolveEffectiveRuntimePolicy(null);
+                    setMaxOutputTokens(defaults.maxOutputTokens);
+                    setCascadeMaxHops(defaults.cascadeMaxHops);
+                    setMaxCorrectionRetries(defaults.maxCorrectionRetries);
+                    setAutoRelay(defaults.autoRelay);
+                    setConciseReplies(defaults.conciseReplies);
+                    setStreamFlushIntervalMs(defaults.streamFlushIntervalMs);
+                  }}
+                  className={`px-2 py-0.5 text-[10px] rounded-lg border font-medium transition-colors cursor-pointer ${
+                    isLightMode
+                      ? 'bg-white hover:bg-blue-100 border-blue-300 text-blue-800'
+                      : 'bg-blue-900/30 hover:bg-blue-800/40 border-blue-500/30 text-blue-300'
+                  }`}
+                >
+                  恢复默认
+                </button>
+              </div>
+            </div>
+
+            <p className={`text-[11px] leading-relaxed ${isLightMode ? 'text-blue-800' : 'text-blue-300'}`}>
+              控制该 Agent 的单轮输出长度、协同接力轮次与自我纠错次数，防止简单问答被拖入无限循环。宿主会按这些上限强制收敛。
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                  单轮输出上限 (tokens)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={32768}
+                  step={100}
+                  value={maxOutputTokens}
+                  onChange={(e) => setMaxOutputTokens(Number(e.target.value) || 0)}
+                  className={`w-full rounded-xl px-3 py-1.5 text-xs focus:outline-none transition-all ${inputBg}`}
+                />
+                <span className={`block mt-1 text-[10px] ${isLightMode ? 'text-blue-700/80' : 'text-blue-300/80'}`}>
+                  0 = 不限制；建议 800–2000
+                </span>
+              </div>
+              <div>
+                <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                  协同最大轮次 (hops)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={MAX_ALLOWED_CASCADE_HOPS}
+                  step={1}
+                  value={cascadeMaxHops}
+                  onChange={(e) => setCascadeMaxHops(Number(e.target.value) || 1)}
+                  className={`w-full rounded-xl px-3 py-1.5 text-xs focus:outline-none transition-all ${inputBg}`}
+                />
+                <span className={`block mt-1 text-[10px] ${isLightMode ? 'text-blue-700/80' : 'text-blue-300/80'}`}>
+                  参与协同的 Agent 取最小值
+                </span>
+              </div>
+              <div>
+                <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                  自我纠错次数
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={2}
+                  step={1}
+                  value={maxCorrectionRetries}
+                  onChange={(e) => setMaxCorrectionRetries(Number(e.target.value) || 0)}
+                  className={`w-full rounded-xl px-3 py-1.5 text-xs focus:outline-none transition-all ${inputBg}`}
+                />
+                <span className={`block mt-1 text-[10px] ${isLightMode ? 'text-blue-700/80' : 'text-blue-300/80'}`}>
+                  0 = 契约不达标直接转人工
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className={`block text-[11px] font-semibold mb-1 ${labelColor}`}>
+                  流式刷新间隔 (ms)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={MAX_ALLOWED_STREAM_FLUSH_INTERVAL_MS}
+                  step={10}
+                  value={streamFlushIntervalMs}
+                  onChange={(e) => setStreamFlushIntervalMs(Number(e.target.value) || 0)}
+                  className={`w-full rounded-xl px-3 py-1.5 text-xs focus:outline-none transition-all ${inputBg}`}
+                />
+                <span className={`block mt-1 text-[10px] ${isLightMode ? 'text-blue-700/80' : 'text-blue-300/80'}`}>
+                  越大越省渲染开销，不影响计费
+                </span>
+              </div>
+              <label className="flex items-start gap-2 cursor-pointer sm:col-span-2">
+                <input
+                  type="checkbox"
+                  checked={conciseReplies}
+                  onChange={(e) => setConciseReplies(e.target.checked)}
+                  className="mt-0.5 rounded text-blue-600 focus:ring-blue-500"
+                />
+                <span className="leading-relaxed">
+                  <strong className={`block text-xs ${isLightMode ? 'text-slate-900' : 'text-slate-50'}`}>
+                    简洁回答模式
+                  </strong>
+                  <span className={`block mt-0.5 text-[10px] ${isLightMode ? 'text-slate-700' : 'text-slate-300'}`}>
+                    只给结论与最小可执行改动，禁止铺垫、复述与客套收尾。
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={autoRelay}
+                onChange={(e) => setAutoRelay(e.target.checked)}
+                className="mt-0.5 rounded text-blue-600 focus:ring-blue-500"
+              />
+              <span className="leading-relaxed">
+                <strong className={`block text-xs ${isLightMode ? 'text-slate-900' : 'text-slate-50'}`}>
+                  允许主动 @ 其他 Agent 接力
+                </strong>
+                <span className={`block mt-0.5 text-[10px] ${isLightMode ? 'text-slate-700' : 'text-slate-300'}`}>
+                  关闭后本轮回答即结束，不再触发跨 Agent 协同链；适用于单点问答与快速修复。
+                </span>
+              </span>
+            </label>
           </div>
 
           {/* Native Memory Policy */}

@@ -31,6 +31,7 @@ interface TopicMessageCardProps {
   activeExecutions?: ActiveAgentExecution[];
   onOpenCodexDiff?: (payload: ActiveCodexDiffPayload) => void;
   onApplyTopicPatch?: (topicId: string, customDiffs?: TopicPatchDiffItem[]) => Promise<void> | void;
+  onRollbackTopicPatch?: (topicId: string) => Promise<void> | void;
   overlappingFiles?: string[];
 }
 
@@ -42,6 +43,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
   activeExecutions = [],
   onOpenCodexDiff,
   onApplyTopicPatch,
+  onRollbackTopicPatch,
   overlappingFiles = [],
 }) => {
   const isResolved = topic.status === 'resolved';
@@ -68,6 +70,8 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
 
   const [elapsedSec, setElapsedSec] = useState<number>(0);
   const [isApplyingPatch, setIsApplyingPatch] = useState(false);
+  const [isRollingBack, setIsRollingBack] = useState(false);
+  const verification = execState?.executionVerification;
 
   useEffect(() => {
     if (!isCurrentlyRunning) {
@@ -447,6 +451,36 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                     尚未指派执行 Agent 推进决议落地
                   </span>
                 )}
+
+                {verification?.status === 'running' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100/80 dark:bg-blue-500/20 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-500/30">
+                    <Loader2 className="w-3 h-3 text-blue-600 dark:text-blue-400 animate-spin" />
+                    <span>宿主验证中...</span>
+                  </span>
+                )}
+                {verification?.status === 'passed' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100/80 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30">
+                    <ShieldCheck className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                    <span>验证通过</span>
+                  </span>
+                )}
+                {verification?.status === 'failed' && (
+                  <span
+                    title={verification.summary}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100/80 dark:bg-rose-500/20 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30"
+                  >
+                    <AlertTriangle className="w-3 h-3 text-rose-600 dark:text-rose-400" />
+                    <span className="max-w-[16rem] truncate">验证失败：{verification.summary}</span>
+                  </span>
+                )}
+                {verification?.status === 'skipped' && (
+                  <span
+                    title={verification.skippedReason || verification.summary}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-subtle text-fg-secondary border border-border"
+                  >
+                    <span>验证未执行</span>
+                  </span>
+                )}
               </div>
 
               {/* Action Buttons */}
@@ -494,7 +528,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                 {execDiffs.length > 0 && execStatus !== 'applied' && onApplyTopicPatch && (
                   <button
                     type="button"
-                    disabled={isApplyingPatch}
+                    disabled={isApplyingPatch || verification?.status === 'running'}
                     onClick={async () => {
                       setIsApplyingPatch(true);
                       try {
@@ -517,6 +551,31 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                     </span>
                   </button>
                 )}
+
+                {onRollbackTopicPatch &&
+                  execState?.executionPatchHistoryPath &&
+                  (execStatus === 'applied' || Boolean(execState?.executionAppliedAt)) && (
+                    <button
+                      type="button"
+                      disabled={isRollingBack}
+                      onClick={async () => {
+                        setIsRollingBack(true);
+                        try {
+                          await onRollbackTopicPatch(topic.id);
+                        } finally {
+                          setIsRollingBack(false);
+                        }
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-surface hover:bg-surface-hover disabled:opacity-50 border border-rose-300 dark:border-rose-500/35 text-rose-800 dark:text-rose-300 text-[11px] font-semibold flex items-center gap-1 transition-all cursor-pointer shadow-2xs"
+                    >
+                      {isRollingBack ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <RotateCcw className="w-3 h-3" />
+                      )}
+                      <span>{isRollingBack ? '回退中...' : '回退本次合入'}</span>
+                    </button>
+                  )}
 
                 {(execStatus === 'idle' || execStatus === 'failed') && (
                   <button

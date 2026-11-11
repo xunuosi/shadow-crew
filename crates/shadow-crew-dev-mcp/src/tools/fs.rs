@@ -1,6 +1,95 @@
 use anyhow::{anyhow, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::fs;
+
+/// 读取宿主注入的允许根目录列表（平台原生分隔符）。
+/// 未注入时返回空列表，保持独立运行 MCP 时的原有行为。
+fn allowed_roots() -> Vec<PathBuf> {
+    let Some(raw) = std::env::var_os("SHADOW_CREW_WORKSPACE_ROOTS") else {
+        return Vec::new();
+    };
+    std::env::split_paths(&raw)
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect()
+}
+
+/// 解析路径用于包含性检查：目标不存在时回溯到最近存在的祖先再拼回剩余部分，
+/// 这样既解析了符号链接与 `..`，也能正确处理待创建的新文件。
+fn resolve_for_containment(path: &Path) -> PathBuf {
+    // 相对路径必须先按进程 cwd 转成绝对路径，否则会与绝对根目录比较失败而被误判越界。
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(path),
+            Err(_) => path.to_path_buf(),
+        }
+    };
+    if let Ok(canonical) = std::fs::canonicalize(&absolute) {
+        return canonical;
+    }
+    let mut current = absolute;
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Some(name) = current.file_name() {
+            tail.push(name.to_os_string());
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if let Ok(canonical_parent) = std::fs::canonicalize(parent) {
+            let mut resolved = canonical_parent;
+            for part in tail.iter().rev() {
+                resolved.push(part);
+            }
+            return resolved;
+        }
+        current = parent.to_path_buf();
+    }
+    path.to_path_buf()
+}
+
+/// 校验路径位于任一允许根目录内。未配置根目录时不限制（由宿主决定是否注入）。
+/// 注意：必须先解析再比较，禁止仅比较字面字符串，否则 `..` 与符号链接可绕过。
+fn ensure_within_allowed_roots(path: &Path) -> Result<()> {
+    let roots = allowed_roots();
+    if roots.is_empty() {
+        return Ok(());
+    }
+    let resolved = resolve_for_containment(path);
+    let allowed = roots
+        .iter()
+        .any(|root| resolved.starts_with(resolve_for_containment(root)));
+    if allowed {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "拒绝访问工作区外路径: {}（允许的根目录: {:?}）",
+            path.display(),
+            roots
+        ))
+    }
+}
+
+/// 将 channelId / agentId 等外部 id 限制为安全字符，防止目录穿越。
+fn sanitize_id(raw: &str, fallback: &str) -> String {
+    let cleaned: String = raw
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        fallback.to_string()
+    } else {
+        cleaned
+    }
+}
 
 /// 读取文件内容，支持行切片
 pub async fn read_file(
@@ -9,6 +98,7 @@ pub async fn read_file(
     limit: Option<usize>,
 ) -> Result<String> {
     let p = Path::new(path);
+    ensure_within_allowed_roots(p)?;
     if !p.exists() {
         return Err(anyhow!("文件不存在: {}", path));
     }
@@ -52,6 +142,7 @@ pub async fn read_file(
 /// 写入或全量覆盖文件，自动创建父级目录
 pub async fn write_file(path: &str, content: &str) -> Result<String> {
     let p = Path::new(path);
+    ensure_within_allowed_roots(p)?;
     if let Some(parent) = p.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent)
@@ -74,6 +165,7 @@ pub async fn write_file(path: &str, content: &str) -> Result<String> {
 /// 对文件内容进行精准子串替换 (str_replace)
 pub async fn str_replace(path: &str, old_str: &str, new_str: &str) -> Result<String> {
     let p = Path::new(path);
+    ensure_within_allowed_roots(p)?;
     if !p.exists() {
         return Err(anyhow!("文件不存在: {}", path));
     }
@@ -112,6 +204,7 @@ pub async fn str_replace(path: &str, old_str: &str, new_str: &str) -> Result<Str
 pub async fn list_dir(path: Option<&str>, max_depth: Option<usize>) -> Result<String> {
     let root = path.unwrap_or(".");
     let root_path = Path::new(root);
+    ensure_within_allowed_roots(root_path)?;
     if !root_path.exists() {
         return Err(anyhow!("路径不存在: {}", root));
     }
@@ -167,6 +260,7 @@ pub async fn search_code(
 
     let root = path.unwrap_or(".");
     let root_path = Path::new(root);
+    ensure_within_allowed_roots(root_path)?;
     if !root_path.exists() {
         return Err(anyhow!("搜索路径不存在: {}", root));
     }
@@ -274,11 +368,19 @@ pub fn get_channel_artifacts_dir(channel_id: Option<&str>) -> std::path::PathBuf
         }
     }
 
-    let clean_id = channel_id
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .or_else(|| std::env::var("SHADOW_CREW_CHANNEL_ID").or_else(|_| std::env::var("SHINOBI_CHANNEL_ID")).ok().filter(|s| !s.trim().is_empty()))
-        .unwrap_or_else(|| "chan-default".to_string());
+    let clean_id = sanitize_id(
+        &channel_id
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().to_string())
+            .or_else(|| {
+                std::env::var("SHADOW_CREW_CHANNEL_ID")
+                    .or_else(|_| std::env::var("SHINOBI_CHANNEL_ID"))
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or_else(|| "chan-default".to_string()),
+        "chan-default",
+    );
 
     let artifacts_dir = get_shadow_crew_home_dir()
         .join("channels")
@@ -290,11 +392,19 @@ pub fn get_channel_artifacts_dir(channel_id: Option<&str>) -> std::path::PathBuf
 
 /// 解析指定 Agent 的专属落地产物目录 (~/.shadow-crew/agents/<agent_id>/artifacts/)
 pub fn get_agent_artifacts_dir(agent_id: Option<&str>) -> std::path::PathBuf {
-    let clean_id = agent_id
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .or_else(|| std::env::var("SHADOW_CREW_AGENT_ID").or_else(|_| std::env::var("SHINOBI_AGENT_ID")).ok().filter(|s| !s.trim().is_empty()))
-        .unwrap_or_else(|| "agent-default".to_string());
+    let clean_id = sanitize_id(
+        &agent_id
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().to_string())
+            .or_else(|| {
+                std::env::var("SHADOW_CREW_AGENT_ID")
+                    .or_else(|_| std::env::var("SHINOBI_AGENT_ID"))
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or_else(|| "agent-default".to_string()),
+        "agent-default",
+    );
 
     let artifacts_dir = get_shadow_crew_home_dir()
         .join("agents")

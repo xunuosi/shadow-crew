@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -249,19 +249,33 @@ fn migrate_remove_project_concept(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+/// 若 `table.column` 不存在则执行 `ddl`。用于幂等的显式结构升级。
+fn ensure_column(conn: &Connection, table: &str, column: &str, ddl: &str) -> Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        params![table, column],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        conn.execute(ddl, [])?;
+    }
+    Ok(())
+}
+
 impl DatabaseManager {
     /// 初始化 SQLite 数据库连接并确保必要数据表与索引就绪
     pub fn new(db_path: &str) -> Result<Self> {
-        let mut conn = match Connection::open(db_path) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("Failed to open SQLite file at {}, fallback to in-memory: {}", db_path, e);
-                Connection::open_in_memory()?
-            }
-        };
+        // 打开失败必须上报：静默退化为内存库会让所有持久化数据在重启后无声丢失。
+        let mut conn = Connection::open(db_path).with_context(|| {
+            format!(
+                "无法打开 SQLite 数据库文件 {}（请检查路径权限或磁盘状态）",
+                db_path
+            )
+        })?;
 
-        // 启用 WAL 模式保障并发读写与 5000ms 繁忙等待
-        let _ = conn.execute_batch("
+        // 启用 WAL 模式保障并发读写与 5000ms 繁忙等待。
+        // 初始化语句失败意味着表结构不可用，必须终止启动而不是带着残缺 schema 继续运行。
+        conn.execute_batch("
             PRAGMA journal_mode = WAL;
             PRAGMA busy_timeout = 5000;
 
@@ -374,14 +388,22 @@ impl DatabaseManager {
                 name TEXT PRIMARY KEY,
                 applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
-        ");
+        ")?;
 
-        // 平滑升级已有历史数据库结构
-        let _ = conn.execute("ALTER TABLE acp_sessions ADD COLUMN created_gen INTEGER DEFAULT 0", []);
-        let _ = conn.execute(
+        // 显式结构升级：先探测列是否存在，再决定是否 ALTER。
+        // 不再用 `let _ =` 吞掉真实错误（例如磁盘只读、表被锁）。
+        ensure_column(
+            &conn,
+            "acp_sessions",
+            "created_gen",
+            "ALTER TABLE acp_sessions ADD COLUMN created_gen INTEGER DEFAULT 0",
+        )?;
+        ensure_column(
+            &conn,
+            "acp_sessions",
+            "workspace_binding_id",
             "ALTER TABLE acp_sessions ADD COLUMN workspace_binding_id TEXT NOT NULL DEFAULT ''",
-            [],
-        );
+        )?;
         migrate_remove_project_concept(&mut conn)?;
         migrate_workspace_binding_storage_paths(&mut conn)?;
 
@@ -466,7 +488,7 @@ impl DatabaseManager {
                     let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
                     let message_json = serde_json::to_string(val)?;
 
-                    let _ = stmt.execute(params![
+                    stmt.execute(params![
                         id,
                         thread_id,
                         channel_id,
@@ -475,7 +497,7 @@ impl DatabaseManager {
                         timestamp,
                         content,
                         message_json
-                    ]);
+                    ])?;
                     count += 1;
                 }
             }
@@ -653,7 +675,7 @@ impl DatabaseManager {
                 let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 if !id.is_empty() {
                     let json_str = serde_json::to_string(val)?;
-                    let _ = stmt.execute(params![id, name, json_str]);
+                    stmt.execute(params![id, name, json_str])?;
                 }
             }
         }
@@ -815,7 +837,7 @@ impl DatabaseManager {
                 let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("");
                 if !id.is_empty() {
                     let json_str = serde_json::to_string(val)?;
-                    let _ = stmt.execute(params![id, channel_id, title, json_str]);
+                    stmt.execute(params![id, channel_id, title, json_str])?;
                 }
             }
         }
@@ -852,7 +874,7 @@ impl DatabaseManager {
                 let handle = val.get("handle").and_then(|v| v.as_str()).unwrap_or("");
                 if !id.is_empty() {
                     let json_str = serde_json::to_string(val)?;
-                    let _ = stmt.execute(params![id, name, handle, json_str]);
+                    stmt.execute(params![id, name, handle, json_str])?;
                 }
             }
         }
@@ -888,7 +910,7 @@ impl DatabaseManager {
                 let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 if !id.is_empty() {
                     let json_str = serde_json::to_string(val)?;
-                    let _ = stmt.execute(params![id, name, json_str]);
+                    stmt.execute(params![id, name, json_str])?;
                 }
             }
         }

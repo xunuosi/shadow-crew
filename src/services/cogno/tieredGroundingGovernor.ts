@@ -411,7 +411,8 @@ class TieredGroundingGovernor {
       let totalWeight = 0;
       let weightedTrueSum = 0;
       for (const ev of evidences) {
-        const weight = this.clampEvidenceWeight(ev.tier, ev.confidence ?? 0.8);
+        const tier = ev.tier ?? this.getToolTier(ev.sourceTool);
+        const weight = this.clampEvidenceWeight(tier, ev.confidence ?? 0.8);
         totalWeight += weight;
         if (ev.truthValue) {
           weightedTrueSum += weight;

@@ -9,8 +9,8 @@ export const FALLBACK_PRESET_RUNTIMES: LocalAcpRuntime[] = [
     command: 'claude-code-acp',
     default_args: [],
     underlying_cli: 'claude',
-    availability: 'available',
-    binary_path: '/opt/homebrew/bin/claude-code-acp',
+    availability: 'unknown',
+    binary_path: null,
     install_hint:
       'Claude CLI detected, but claude-acp adapter is missing. Install with: npm install -g @agentclientprotocol/claude-agent-acp',
     install_url: 'https://docs.anthropic.com/en/docs/agents-and-tools/claude-code',
@@ -27,8 +27,8 @@ export const FALLBACK_PRESET_RUNTIMES: LocalAcpRuntime[] = [
     command: 'codex-acp',
     default_args: [],
     underlying_cli: 'codex',
-    availability: 'available',
-    binary_path: '~/.local/bin/codex-acp',
+    availability: 'unknown',
+    binary_path: null,
     install_hint:
       'Codex CLI detected. Powered by local codex-acp stdio adapter.',
     install_url: 'https://openai.com',
@@ -41,8 +41,8 @@ export const FALLBACK_PRESET_RUNTIMES: LocalAcpRuntime[] = [
     transport: 'stdio',
     command: 'openclaw',
     default_args: ['acp'],
-    availability: 'available',
-    binary_path: '/opt/homebrew/bin/openclaw',
+    availability: 'unknown',
+    binary_path: null,
     install_hint:
       'OpenClaw not found. Install via: npm install -g openclaw and run openclaw gateway.',
     install_url: 'https://docs.openclaw.ai',

@@ -105,6 +105,9 @@ export function runClaimExtractionGoldenTest() {
   const dehydration = dehydrateContextWithAlert(SAMPLE_PROPOSALS[0].text, critiqueText, sampleNodes, verificationText);
   console.log('三态脱水结果统计:');
   dehydration.allNodes.forEach((n) => {
+    if (!n.status) {
+      throw new Error(`❌ [R-5 失败] 脱水节点缺少三态状态: ${n.claim}`);
+    }
     console.log(`  - [${n.status.toUpperCase()}] ${n.claim}`);
   });
 

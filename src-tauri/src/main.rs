@@ -8,14 +8,19 @@ mod db_manager;
 use acp_manager::AcpProcessManager;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use db_manager::{DatabaseManager, StorageStatsDto};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 // 共享的全局状态
 struct AppState {
     acp_manager: Arc<Mutex<AcpProcessManager>>,
     db_manager: Arc<DatabaseManager>,
+    /// 按工作区绝对路径串行化补丁落盘，防止并发议题静默覆盖同一文件。
+    patch_locks: std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>,
+    /// 按工作区根目录串行化「合入 / 回退 / 验证」操作，避免验证读到半写入状态。
+    workspace_operation_locks: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
     #[allow(dead_code)]
     nostr_relay_url: String,
 }
@@ -521,17 +526,151 @@ pub struct WorkspacePatchItem {
 #[derive(serde::Serialize, Debug, Clone)]
 pub struct AppliedFileStatus {
     pub filename: String,
-    pub mode: String, // "git_apply" | "block_replace" | "created_file" | "artifact_saved"
+    /// 实际采用的落盘方式：git_apply / block_replace / created_file / artifact_saved
+    pub mode: String,
+    /// 真实结果：applied / conflict / archived_only / failed
+    pub status: String,
     pub target_path: String,
     pub artifact_path: String,
+    pub backup_path: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(serde::Serialize, Debug, Clone)]
 pub struct ApplyWorkspacePatchResult {
+    /// 仅当所有补丁都真实应用成功时为 true；冲突、仅归档、失败一律为 false。
     pub ok: bool,
+    pub applied_count: usize,
+    pub failed_count: usize,
     pub artifacts_dir: String,
     pub applied_files: Vec<AppliedFileStatus>,
     pub summary: String,
+    pub history_id: String,
+    pub history_path: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PatchHistoryFileRecord {
+    pub filename: String,
+    pub target_path: String,
+    pub mode: String,
+    pub status: String,
+    pub existed_before: bool,
+    pub before_hash: Option<String>,
+    pub after_hash: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PatchHistoryManifest {
+    pub schema_version: u32,
+    pub history_id: String,
+    pub created_at: String,
+    pub channel_id: String,
+    pub topic_id: String,
+    pub workspace_root: String,
+    pub files: Vec<PatchHistoryFileRecord>,
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+pub struct RollbackFileStatus {
+    pub filename: String,
+    /// restored / deleted_created_file / skipped_modified / skipped_missing / failed
+    pub status: String,
+    pub target_path: String,
+    pub message: Option<String>,
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+pub struct RollbackWorkspacePatchResult {
+    pub ok: bool,
+    pub restored_count: usize,
+    pub failed_count: usize,
+    pub files: Vec<RollbackFileStatus>,
+    pub summary: String,
+}
+
+struct ResolvedWorkspaceScope {
+    canonical_root: std::path::PathBuf,
+    topic_artifacts_dir: std::path::PathBuf,
+}
+
+/// 统一校验 Workspace Binding 的归属作用域，并解析出规范化的根目录与归档目录。
+/// 所有物理写入 / 命令执行 / 回退入口都必须复用该函数，避免跨房间越权。
+fn resolve_workspace_scope(
+    db: &DatabaseManager,
+    workspace_binding_id: &str,
+    channel_id: &str,
+    topic_id: &str,
+) -> Result<ResolvedWorkspaceScope, String> {
+    let binding = db
+        .get_workspace_binding(workspace_binding_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Workspace Binding '{}' does not exist", workspace_binding_id))?;
+    let binding_owner_type = binding
+        .get("ownerType")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let binding_owner_id = binding
+        .get("ownerId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let expected_owner_type = if topic_id.trim().is_empty() { "channel" } else { "topic" };
+    let expected_owner_id = if topic_id.trim().is_empty() { channel_id } else { topic_id };
+    if binding_owner_type != expected_owner_type || binding_owner_id != expected_owner_id {
+        return Err(format!(
+            "Workspace Binding scope mismatch: expected {}:{}, got {}:{}",
+            expected_owner_type,
+            expected_owner_id,
+            binding_owner_type,
+            binding_owner_id
+        ));
+    }
+    let binding_cwd = binding
+        .get("cwd")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "Workspace Binding is missing cwd".to_string())?;
+    let binding_mode = binding
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("custom");
+    let canonical_root = std::path::PathBuf::from(
+        db_manager::resolve_workspace_cwd_input(binding_cwd, binding_mode == "default")
+            .map_err(|e| e.to_string())?,
+    );
+    let binding_artifact_root = binding
+        .get("artifactRoot")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| canonical_root.join("artifacts").to_string_lossy().to_string());
+    let topic_artifacts_dir = std::path::PathBuf::from(
+        db_manager::resolve_workspace_cwd_input(&binding_artifact_root, true)
+            .map_err(|e| e.to_string())?,
+    );
+    Ok(ResolvedWorkspaceScope {
+        canonical_root,
+        topic_artifacts_dir,
+    })
+}
+
+/// 获取工作区级异步互斥锁：同一工作区的合入、回退、验证严格串行。
+async fn acquire_workspace_operation_lock(
+    state: &AppState,
+    canonical_root: &std::path::Path,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    let key = canonical_root.to_string_lossy().to_string();
+    let lock = {
+        let mut locks = state
+            .workspace_operation_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks
+            .entry(key)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+    lock.lock_owned().await
 }
 
 fn sanitize_relative_path(raw: &str) -> Option<std::path::PathBuf> {
@@ -548,7 +687,13 @@ fn sanitize_relative_path(raw: &str) -> Option<std::path::PathBuf> {
     let mut clean = std::path::PathBuf::new();
     for comp in path.components() {
         match comp {
-            std::path::Component::Normal(os_str) => clean.push(os_str),
+            std::path::Component::Normal(os_str) => {
+                // 禁止把补丁写进 Git 内部目录
+                if os_str.to_string_lossy().eq_ignore_ascii_case(".git") {
+                    return None;
+                }
+                clean.push(os_str);
+            }
             std::path::Component::CurDir => {}
             _ => return None, // Reject ParentDir (..) or RootDir
         }
@@ -557,6 +702,72 @@ fn sanitize_relative_path(raw: &str) -> Option<std::path::PathBuf> {
         None
     } else {
         Some(clean)
+    }
+}
+
+fn content_fingerprint(bytes: &[u8]) -> String {
+    // FNV-1a 64：确定性内容指纹，用于判断回退时文件是否已被用户再次修改。
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in bytes {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("fnv1a64:{:016x}", hash)
+}
+
+/// 解析目标路径的最近存在祖先并拼接缺失尾部，防止通过未创建目录下的符号链接逃逸工作区。
+fn canonicalize_with_missing_tail(path: &std::path::Path) -> std::path::PathBuf {
+    let mut existing = path.to_path_buf();
+    let mut missing_tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(canonical) = std::fs::canonicalize(&existing) {
+            let mut resolved = canonical;
+            for component in missing_tail.iter().rev() {
+                resolved.push(component);
+            }
+            return resolved;
+        }
+        match existing.file_name() {
+            Some(name) => {
+                missing_tail.push(name.to_os_string());
+                match existing.parent() {
+                    Some(parent) => existing = parent.to_path_buf(),
+                    None => return path.to_path_buf(),
+                }
+            }
+            None => return path.to_path_buf(),
+        }
+    }
+}
+
+fn is_target_within_root(root: &std::path::Path, target: &std::path::Path) -> bool {
+    canonicalize_with_missing_tail(target).starts_with(root)
+}
+
+fn run_git_apply(
+    root: &std::path::Path,
+    patch_path: &std::path::Path,
+    rel_path: &str,
+    check_only: bool,
+) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("apply")
+        .arg("--whitespace=nowarn")
+        .arg("--unidiff-zero");
+    if check_only {
+        cmd.arg("--check");
+    }
+    cmd.arg(format!("--include={}", rel_path));
+    cmd.arg(patch_path).current_dir(root);
+    let output = cmd
+        .output()
+        .map_err(|e| format!("git apply 无法执行: {}", e))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(if stderr.is_empty() { stdout } else { stderr })
     }
 }
 
@@ -587,32 +798,117 @@ fn reconstruct_content_from_diff(diff: &str, code_content: Option<&str>) -> Stri
     lines.join("\n") + "\n"
 }
 
-fn try_block_replace_on_existing_file(existing: &str, diff: &str) -> Option<String> {
-    let mut removed_lines: Vec<&str> = Vec::new();
-    let mut added_lines: Vec<&str> = Vec::new();
+/// 解析 unified diff 的 hunk 头：`@@ -oldStart[,oldCount] +newStart[,newCount] @@`
+fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
+    let rest = line.strip_prefix("@@ -")?;
+    let end = rest.find(" +")?;
+    let old_part = &rest[..end];
+    let mut pieces = old_part.split(',');
+    let old_start: usize = pieces.next()?.trim().parse().ok()?;
+    let old_count: usize = match pieces.next() {
+        Some(raw) => raw.trim().parse().ok()?,
+        None => 1,
+    };
+    Some((old_start, old_count))
+}
+
+struct DiffHunk {
+    old_start: usize,
+    old_lines: Vec<String>,
+    new_lines: Vec<String>,
+}
+
+fn parse_diff_hunks(diff: &str) -> Vec<DiffHunk> {
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    let mut current: Option<DiffHunk> = None;
     for line in diff.lines() {
-        if line.starts_with("---") || line.starts_with("+++") || line.starts_with("@@") {
+        if let Some((old_start, _old_count)) = parse_hunk_header(line) {
+            if let Some(hunk) = current.take() {
+                hunks.push(hunk);
+            }
+            current = Some(DiffHunk {
+                old_start,
+                old_lines: Vec::new(),
+                new_lines: Vec::new(),
+            });
             continue;
         }
-        if let Some(rem) = line.strip_prefix('-') {
-            removed_lines.push(rem);
-        } else if let Some(add) = line.strip_prefix('+') {
-            added_lines.push(add);
+        let Some(hunk) = current.as_mut() else {
+            // diff --git / index / --- / +++ 等头部
+            continue;
+        };
+        if line.starts_with('\\') {
+            // "\ No newline at end of file"
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('-') {
+            hunk.old_lines.push(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix('+') {
+            hunk.new_lines.push(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix(' ') {
+            hunk.old_lines.push(rest.to_string());
+            hunk.new_lines.push(rest.to_string());
+        } else if line.is_empty() {
+            // 某些生成器会省略上下文空行的前导空格，按空行处理
+            hunk.old_lines.push(String::new());
+            hunk.new_lines.push(String::new());
         }
     }
-    if removed_lines.is_empty() {
+    if let Some(hunk) = current.take() {
+        hunks.push(hunk);
+    }
+    hunks
+}
+
+/// 按 hunk 行号定位修改，而不是把全部 `-` 行拼成字符串做「首次出现」替换。
+/// 任一 hunk 的旧内容与目标位置不一致时返回 None（调用方据此判定冲突），绝不盲目覆盖。
+fn try_block_replace_on_existing_file(existing: &str, diff: &str) -> Option<String> {
+    let mut hunks = parse_diff_hunks(diff);
+    if hunks.is_empty() {
         return None;
     }
-    let target_block = removed_lines.join("\n");
-    let replacement_block = added_lines.join("\n");
-    if existing.contains(&target_block) {
-        Some(existing.replacen(&target_block, &replacement_block, 1))
-    } else {
-        None
+
+    let had_trailing_newline = existing.ends_with('\n');
+    let mut lines: Vec<String> = existing.split('\n').map(|s| s.to_string()).collect();
+    if had_trailing_newline {
+        lines.pop();
     }
+
+    // 从后往前应用，前面的 hunk 行号不会被后续修改影响
+    hunks.sort_by(|a, b| b.old_start.cmp(&a.old_start));
+    for hunk in hunks {
+        let start_index = if hunk.old_lines.is_empty() {
+            // 纯插入：`@@ -N,0 +...` 表示在第 N 行之后插入（0 表示文件开头）
+            hunk.old_start
+        } else if hunk.old_start == 0 {
+            0
+        } else {
+            hunk.old_start - 1
+        };
+        let end_index = start_index.checked_add(hunk.old_lines.len())?;
+        if end_index > lines.len() {
+            return None;
+        }
+        if lines[start_index..end_index] != hunk.old_lines[..] {
+            return None;
+        }
+        lines.splice(start_index..end_index, hunk.new_lines.iter().cloned());
+    }
+
+    let mut result = lines.join("\n");
+    if had_trailing_newline {
+        result.push('\n');
+    }
+    Some(result)
 }
 
 /// Tauri Command: 将议题落地 Agent 生成的补丁物理应用到本地工作区与频道归档目录
+///
+/// 关键契约：
+/// 1. 每个文件都返回真实 status，绝不以 "ok: true" 掩盖冲突或写入失败；
+/// 2. 修改已有文件前必须写入历史快照，并生成 manifest 供一键回退；
+/// 3. 同一文件路径在进程内串行落盘，目标文件基线不符时返回 conflict，禁止静默覆盖；
+/// 4. 归档产物写入失败同样降级为 failed，而不是假装成功。
 #[tauri::command]
 async fn apply_workspace_patch(
     workspace_binding_id: String,
@@ -621,128 +917,728 @@ async fn apply_workspace_patch(
     patches: Vec<WorkspacePatchItem>,
     state: State<'_, AppState>,
 ) -> Result<ApplyWorkspacePatchResult, String> {
-    let binding = state
-        .db_manager
-        .get_workspace_binding(&workspace_binding_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Workspace Binding '{}' does not exist", workspace_binding_id))?;
-    let binding_owner_type = binding.get("ownerType").and_then(|value| value.as_str()).unwrap_or("");
-    let binding_owner_id = binding.get("ownerId").and_then(|value| value.as_str()).unwrap_or("");
-    let expected_owner_type = if topic_id.trim().is_empty() { "channel" } else { "topic" };
-    let expected_owner_id = if topic_id.trim().is_empty() { channel_id.as_str() } else { topic_id.as_str() };
-    if binding_owner_type != expected_owner_type || binding_owner_id != expected_owner_id {
-        return Err(format!(
-            "Workspace Binding scope mismatch: expected {}:{}, got {}:{}",
-            expected_owner_type,
-            expected_owner_id,
-            binding_owner_type,
-            binding_owner_id
-        ));
-    }
-    let binding_cwd = binding
-        .get("cwd")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "Workspace Binding is missing cwd".to_string())?;
-    let binding_mode = binding.get("mode").and_then(|value| value.as_str()).unwrap_or("custom");
-    let canonical_root = db_manager::resolve_workspace_cwd_input(binding_cwd, binding_mode == "default")
-        .map_err(|e| e.to_string())?;
-    let canonical_root = std::path::PathBuf::from(canonical_root);
-    let binding_artifact_root = binding
-        .get("artifactRoot")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| canonical_root.join("artifacts").to_string_lossy().to_string());
-    let topic_artifacts_dir = std::path::PathBuf::from(
-        db_manager::resolve_workspace_cwd_input(&binding_artifact_root, true)
-            .map_err(|e| e.to_string())?,
-    );
-    std::fs::create_dir_all(&topic_artifacts_dir)
+    let scope = resolve_workspace_scope(
+        state.db_manager.as_ref(),
+        &workspace_binding_id,
+        &channel_id,
+        &topic_id,
+    )?;
+    std::fs::create_dir_all(&scope.topic_artifacts_dir)
         .map_err(|e| format!("Failed to create topic artifacts dir: {}", e))?;
-    let canonical_root = Some(canonical_root);
-    let mut applied_files = Vec::new();
+    let _workspace_guard = acquire_workspace_operation_lock(&state, &scope.canonical_root).await;
+
+    let history_id = format!(
+        "{}-{}",
+        chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+        std::process::id()
+    );
+    let history_dir = scope.topic_artifacts_dir.join(".patch-history").join(&history_id);
+    std::fs::create_dir_all(&history_dir)
+        .map_err(|e| format!("Failed to create patch history dir: {}", e))?;
+
+    let mut applied_files: Vec<AppliedFileStatus> = Vec::new();
+    let mut history_records: Vec<PatchHistoryFileRecord> = Vec::new();
 
     for (idx, item) in patches.iter().enumerate() {
-        let rel_path = sanitize_relative_path(&item.filename)
-            .unwrap_or_else(|| std::path::PathBuf::from(format!("patch_{}.ts", idx + 1)));
+        let rel_path = match sanitize_relative_path(&item.filename) {
+            Some(path) => path,
+            None => {
+                let error = format!(
+                    "非法文件路径 '{}'（禁止绝对路径、.. 越界与 .git 内部目录）",
+                    item.filename
+                );
+                applied_files.push(AppliedFileStatus {
+                    filename: item.filename.clone(),
+                    mode: "failed".to_string(),
+                    status: "failed".to_string(),
+                    target_path: String::new(),
+                    artifact_path: String::new(),
+                    backup_path: None,
+                    error: Some(error.clone()),
+                });
+                history_records.push(PatchHistoryFileRecord {
+                    filename: item.filename.clone(),
+                    target_path: String::new(),
+                    mode: "failed".to_string(),
+                    status: "failed".to_string(),
+                    existed_before: false,
+                    before_hash: None,
+                    after_hash: None,
+                    error: Some(error),
+                });
+                continue;
+            }
+        };
 
-        // 1. 始终写入归档目录保存物理产物快照 (.patch 与重构源码)
-        let artifact_file_path = topic_artifacts_dir.join(&rel_path);
-        if let Some(parent) = artifact_file_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let patch_artifact_path = topic_artifacts_dir.join(format!(
+        // 跨平台统一使用正斜杠作为补丁标识，避免 Windows 反斜杠导致前端匹配失败。
+        let rel_display = rel_path.to_string_lossy().replace('\\', "/");
+
+        // 1. 归档目录保存物理产物快照 (.patch 与重构源码)。写入失败必须明确报错。
+        let artifact_file_path = scope.topic_artifacts_dir.join(&rel_path);
+        let patch_artifact_path = scope.topic_artifacts_dir.join(format!(
             "{}.patch",
-            rel_path.to_string_lossy().replace(['/', '\\'], "_")
+            rel_display.replace(['/', '\\'], "_")
         ));
-        let _ = std::fs::write(&patch_artifact_path, &item.diff);
-
+        let mut archive_error: Option<String> = None;
+        if let Some(parent) = artifact_file_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                archive_error = Some(format!("归档目录创建失败: {}", e));
+            }
+        }
+        if archive_error.is_none() {
+            if let Err(e) = std::fs::write(&patch_artifact_path, &item.diff) {
+                archive_error = Some(format!("补丁归档写入失败: {}", e));
+            }
+        }
         let reconstructed = reconstruct_content_from_diff(&item.diff, item.code_content.as_deref());
-        let _ = std::fs::write(&artifact_file_path, &reconstructed);
+        if archive_error.is_none() {
+            if let Err(e) = std::fs::write(&artifact_file_path, &reconstructed) {
+                archive_error = Some(format!("源码快照写入失败: {}", e));
+            }
+        }
+
+        let candidate_target = scope.canonical_root.join(&rel_path);
+        let target_key = candidate_target.to_string_lossy().to_string();
+
+        // P0-3：同一目标文件在进程内串行执行，避免两个议题并发覆盖。
+        let file_lock = {
+            let mut locks = state
+                .patch_locks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            locks
+                .entry(target_key)
+                .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
+                .clone()
+        };
+        let _file_guard = file_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let mut mode = "artifact_saved".to_string();
+        let mut status = "archived_only".to_string();
         let mut final_target_path = artifact_file_path.to_string_lossy().to_string();
+        let mut backup_path: Option<std::path::PathBuf> = None;
+        let mut existed_before = false;
+        let mut before_hash: Option<String> = None;
+        let mut after_hash: Option<String> = None;
+        let archive_failed = archive_error.is_some();
+        let mut error: Option<String> = archive_error;
 
-        // 2. 如果工作区根目录存在且路径合法，尝试物理合入工作区
-        if let Some(ref root) = canonical_root {
-            let candidate_target = root.join(&rel_path);
-            // 确保父目录不会逃逸出 canonical_root
-            if candidate_target.starts_with(root) {
-                if candidate_target.exists() {
-                    // 优先尝试 git apply
-                    let git_apply_ok = std::process::Command::new("git")
-                        .arg("apply")
-                        .arg("--whitespace=nowarn")
-                        .arg("--unidiff-zero")
-                        .arg(&patch_artifact_path)
-                        .current_dir(root)
-                        .output()
-                        .map(|o| o.status.success())
-                        .unwrap_or(false);
+        if error.is_none() && !is_target_within_root(&scope.canonical_root, &candidate_target) {
+            error = Some(format!(
+                "安全拒绝：目标路径逃逸出工作区根目录 ({})",
+                candidate_target.display()
+            ));
+            status = "failed".to_string();
+            mode = "failed".to_string();
+        }
 
-                    if git_apply_ok {
-                        mode = "git_apply".to_string();
-                        final_target_path = candidate_target.to_string_lossy().to_string();
-                    } else if let Ok(existing_content) = std::fs::read_to_string(&candidate_target) {
-                        if let Some(updated_content) = try_block_replace_on_existing_file(&existing_content, &item.diff) {
-                            if std::fs::write(&candidate_target, updated_content).is_ok() {
-                                mode = "block_replace".to_string();
-                                final_target_path = candidate_target.to_string_lossy().to_string();
+        if error.is_none() {
+            existed_before = candidate_target.exists();
+            if existed_before {
+                match std::fs::read(&candidate_target) {
+                    Ok(before_bytes) => {
+                        before_hash = Some(content_fingerprint(&before_bytes));
+                        let backup_dir = history_dir.join("backups");
+                        let backup_target = backup_dir.join(&rel_path);
+                        let backup_result = (|| -> Result<std::path::PathBuf, String> {
+                            if let Some(parent) = backup_target.parent() {
+                                std::fs::create_dir_all(parent).map_err(|e| {
+                                    format!("快照目录创建失败: {}", e)
+                                })?;
+                            }
+                            std::fs::copy(&candidate_target, &backup_target).map_err(|e| {
+                                format!("写入回退快照失败: {}", e)
+                            })?;
+                            Ok(backup_target)
+                        })();
+                        match backup_result {
+                            Ok(path) => backup_path = Some(path),
+                            Err(e) => {
+                                error = Some(e);
+                                status = "failed".to_string();
+                                mode = "failed".to_string();
                             }
                         }
                     }
-                } else {
-                    // 目标文件尚不存在：创建父目录并写入新文件
-                    if let Some(parent) = candidate_target.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    if std::fs::write(&candidate_target, &reconstructed).is_ok() {
-                        mode = "created_file".to_string();
-                        final_target_path = candidate_target.to_string_lossy().to_string();
+                    Err(e) => {
+                        error = Some(format!("读取目标文件失败: {}", e));
+                        status = "failed".to_string();
+                        mode = "failed".to_string();
                     }
                 }
             }
         }
 
+        if error.is_none() {
+            if existed_before {
+                // 先做 git apply --check 预检，再真正应用；预检失败时回退到块替换。
+                let preflight = run_git_apply(
+                    &scope.canonical_root,
+                    &patch_artifact_path,
+                    &rel_display,
+                    true,
+                );
+                if preflight.is_ok() {
+                    match run_git_apply(
+                        &scope.canonical_root,
+                        &patch_artifact_path,
+                        &rel_display,
+                        false,
+                    ) {
+                        Ok(()) => {
+                            mode = "git_apply".to_string();
+                            status = "applied".to_string();
+                        }
+                        Err(git_error) => {
+                            let existing_content =
+                                std::fs::read_to_string(&candidate_target).unwrap_or_default();
+                            match try_block_replace_on_existing_file(&existing_content, &item.diff) {
+                                Some(updated_content) => {
+                                    match std::fs::write(&candidate_target, updated_content) {
+                                        Ok(()) => {
+                                            mode = "block_replace".to_string();
+                                            status = "applied".to_string();
+                                        }
+                                        Err(write_error) => {
+                                            error = Some(format!(
+                                                "git apply 失败且块替换写入失败: {} / {}",
+                                                git_error, write_error
+                                            ));
+                                            status = "failed".to_string();
+                                            mode = "failed".to_string();
+                                        }
+                                    }
+                                }
+                                None => {
+                                    error = Some(format!(
+                                        "git apply 执行失败且块替换上下文不匹配: {}",
+                                        git_error
+                                    ));
+                                    status = "failed".to_string();
+                                    mode = "failed".to_string();
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let existing_content = std::fs::read_to_string(&candidate_target).unwrap_or_default();
+                    match try_block_replace_on_existing_file(&existing_content, &item.diff) {
+                        Some(updated_content) => {
+                            match std::fs::write(&candidate_target, updated_content) {
+                                Ok(()) => {
+                                    mode = "block_replace".to_string();
+                                    status = "applied".to_string();
+                                }
+                                Err(write_error) => {
+                                    error = Some(format!("块替换写入失败: {}", write_error));
+                                    status = "failed".to_string();
+                                    mode = "failed".to_string();
+                                }
+                            }
+                        }
+                        None => {
+                            let detail = preflight
+                                .err()
+                                .unwrap_or_else(|| "补丁上下文与现有文件不匹配".to_string());
+                            error = Some(format!(
+                                "基线不一致，已拒绝覆盖现有文件: {}",
+                                detail
+                            ));
+                            status = "conflict".to_string();
+                            mode = "conflict".to_string();
+                        }
+                    }
+                }
+            } else {
+                // 目标文件尚不存在：创建父目录并写入新文件。
+                let create_result = (|| -> Result<(), String> {
+                    if let Some(parent) = candidate_target.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| format!("创建父目录失败: {}", e))?;
+                    }
+                    // P0-3：并发下若文件已被其他补丁创建，必须报冲突而不是覆盖。
+                    if candidate_target.exists() {
+                        return Err("目标文件在落盘前已被其他补丁创建".to_string());
+                    }
+                    std::fs::write(&candidate_target, &reconstructed)
+                        .map_err(|e| format!("写入新文件失败: {}", e))
+                })();
+                match create_result {
+                    Ok(()) => {
+                        mode = "created_file".to_string();
+                        status = "applied".to_string();
+                        final_target_path = candidate_target.to_string_lossy().to_string();
+                    }
+                    Err(e) => {
+                        error = Some(e);
+                        if candidate_target.exists() {
+                            status = "conflict".to_string();
+                            mode = "conflict".to_string();
+                        } else {
+                            status = "failed".to_string();
+                            mode = "failed".to_string();
+                        }
+                    }
+                }
+            }
+
+            if status == "applied" {
+                final_target_path = candidate_target.to_string_lossy().to_string();
+                match std::fs::read(&candidate_target) {
+                    Ok(after_bytes) => after_hash = Some(content_fingerprint(&after_bytes)),
+                    Err(e) => {
+                        error = Some(format!("合入后读取校验失败: {}", e));
+                    }
+                }
+            }
+        }
+
+        // 归档写入失败且未能落盘时，明确是 failed，而不是 archived_only。
+        if archive_failed && status != "applied" {
+            status = "failed".to_string();
+            mode = "failed".to_string();
+        }
+
         applied_files.push(AppliedFileStatus {
-            filename: rel_path.to_string_lossy().to_string(),
-            mode,
+            filename: rel_display.clone(),
+            mode: mode.clone(),
+            status: status.clone(),
             target_path: final_target_path,
             artifact_path: artifact_file_path.to_string_lossy().to_string(),
+            backup_path: backup_path.map(|path| path.to_string_lossy().to_string()),
+            error: error.clone(),
+        });
+        history_records.push(PatchHistoryFileRecord {
+            filename: rel_display.clone(),
+            target_path: candidate_target.to_string_lossy().to_string(),
+            mode,
+            status,
+            existed_before,
+            before_hash,
+            after_hash,
+            error,
         });
     }
 
-    let summary = format!(
-        "已成功合入并归档 {} 个工程文件补丁",
-        applied_files.len()
+    let manifest = PatchHistoryManifest {
+        schema_version: 1,
+        history_id: history_id.clone(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        channel_id: channel_id.clone(),
+        topic_id: topic_id.clone(),
+        workspace_root: scope.canonical_root.to_string_lossy().to_string(),
+        files: history_records,
+    };
+    let manifest_path = history_dir.join("manifest.json");
+    let manifest_write = std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
     );
+    let history_path = if manifest_write.is_ok() {
+        manifest_path.to_string_lossy().to_string()
+    } else {
+        String::new()
+    };
+
+    let applied_count = applied_files
+        .iter()
+        .filter(|file| file.status == "applied")
+        .count();
+    let failed_count = applied_files
+        .iter()
+        .filter(|file| file.status == "conflict" || file.status == "failed")
+        .count();
+    let archived_only_count = applied_files
+        .iter()
+        .filter(|file| file.status == "archived_only")
+        .count();
+    let ok = !patches.is_empty()
+        && applied_count == patches.len()
+        && failed_count == 0
+        && archived_only_count == 0;
+
+    let summary = if ok {
+        format!("已成功合入 {} 个工程文件补丁", applied_count)
+    } else {
+        format!(
+            "合入结果：成功 {} 个，冲突/失败 {} 个，仅归档 {} 个{}",
+            applied_count,
+            failed_count,
+            archived_only_count,
+            if history_path.is_empty() {
+                "（历史快照清单写入失败，无法一键回退）"
+            } else {
+                ""
+            }
+        )
+    };
 
     Ok(ApplyWorkspacePatchResult {
-        ok: true,
-        artifacts_dir: topic_artifacts_dir.to_string_lossy().to_string(),
+        ok,
+        applied_count,
+        failed_count,
+        artifacts_dir: scope.topic_artifacts_dir.to_string_lossy().to_string(),
         applied_files,
         summary,
+        history_id,
+        history_path,
     })
+}
+
+/// Tauri Command: 根据补丁历史 manifest 回退工作区改动。
+///
+/// 回退前会校验当前文件内容仍等于本次合入后的指纹；若用户已再次修改，
+/// 则返回 skipped_modified，绝不覆盖用户的新改动。
+#[tauri::command]
+async fn rollback_workspace_patch(
+    workspace_binding_id: String,
+    channel_id: String,
+    topic_id: String,
+    history_path: String,
+    state: State<'_, AppState>,
+) -> Result<RollbackWorkspacePatchResult, String> {
+    let scope = resolve_workspace_scope(
+        state.db_manager.as_ref(),
+        &workspace_binding_id,
+        &channel_id,
+        &topic_id,
+    )?;
+    let _workspace_guard = acquire_workspace_operation_lock(&state, &scope.canonical_root).await;
+    let canonical_artifacts = std::fs::canonicalize(&scope.topic_artifacts_dir)
+        .map_err(|e| format!("无法定位归档目录: {}", e))?;
+    let canonical_history = std::fs::canonicalize(&history_path)
+        .map_err(|e| format!("补丁历史文件不存在或不可读: {}", e))?;
+    if !canonical_history.starts_with(&canonical_artifacts) {
+        return Err("安全拒绝：补丁历史文件不在当前工作区归档目录内".to_string());
+    }
+    let history_dir = canonical_history
+        .parent()
+        .ok_or_else(|| "补丁历史文件缺少父目录".to_string())?
+        .to_path_buf();
+    let manifest_raw = std::fs::read_to_string(&canonical_history)
+        .map_err(|e| format!("读取补丁历史失败: {}", e))?;
+    let manifest: PatchHistoryManifest = serde_json::from_str(&manifest_raw)
+        .map_err(|e| format!("解析补丁历史失败: {}", e))?;
+
+    let mut files = Vec::new();
+    for record in manifest.files {
+        let rel_path = match sanitize_relative_path(&record.filename) {
+            Some(path) => path,
+            None => {
+                files.push(RollbackFileStatus {
+                    filename: record.filename,
+                    status: "failed".to_string(),
+                    target_path: String::new(),
+                    message: Some("历史记录中的文件路径非法，已跳过".to_string()),
+                });
+                continue;
+            }
+        };
+        let target = scope.canonical_root.join(&rel_path);
+        if !is_target_within_root(&scope.canonical_root, &target) {
+            files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "failed".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: Some("目标路径逃逸出工作区，已拒绝回退".to_string()),
+            });
+            continue;
+        }
+
+        if record.status != "applied" {
+            files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "skipped_missing".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: Some(format!("该文件当时并未真实合入（status={}）", record.status)),
+            });
+            continue;
+        }
+
+        let current_hash = std::fs::read(&target)
+            .ok()
+            .map(|bytes| content_fingerprint(&bytes));
+        let still_same_as_applied = match (&current_hash, &record.after_hash) {
+            (Some(current), Some(after)) => current == after,
+            _ => false,
+        };
+
+        if !record.existed_before {
+            if current_hash.is_none() {
+                files.push(RollbackFileStatus {
+                    filename: record.filename,
+                    status: "skipped_missing".to_string(),
+                    target_path: target.to_string_lossy().to_string(),
+                    message: Some("本补丁创建的文件已不存在，无需回退".to_string()),
+                });
+                continue;
+            }
+            if !still_same_as_applied {
+                files.push(RollbackFileStatus {
+                    filename: record.filename,
+                    status: "skipped_modified".to_string(),
+                    target_path: target.to_string_lossy().to_string(),
+                    message: Some("文件在合入后已被再次修改，已拒绝删除".to_string()),
+                });
+                continue;
+            }
+            match std::fs::remove_file(&target) {
+                Ok(()) => files.push(RollbackFileStatus {
+                    filename: record.filename,
+                    status: "deleted_created_file".to_string(),
+                    target_path: target.to_string_lossy().to_string(),
+                    message: None,
+                }),
+                Err(e) => files.push(RollbackFileStatus {
+                    filename: record.filename,
+                    status: "failed".to_string(),
+                    target_path: target.to_string_lossy().to_string(),
+                    message: Some(format!("删除新建文件失败: {}", e)),
+                }),
+            }
+            continue;
+        }
+
+        if current_hash.is_none() {
+            files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "skipped_missing".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: Some("目标文件已不存在，无法恢复快照".to_string()),
+            });
+            continue;
+        }
+
+        let backup_path = history_dir.join("backups").join(&rel_path);
+        if !backup_path.exists() {
+            files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "failed".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: Some("历史快照缺失，无法回退".to_string()),
+            });
+            continue;
+        }
+        if !still_same_as_applied {
+            files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "skipped_modified".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: Some("文件在合入后已被再次修改，已拒绝覆盖".to_string()),
+            });
+            continue;
+        }
+        let restore_result = std::fs::read(&backup_path)
+            .and_then(|bytes| std::fs::write(&target, bytes));
+        match restore_result {
+            Ok(()) => files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "restored".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: None,
+            }),
+            Err(e) => files.push(RollbackFileStatus {
+                filename: record.filename,
+                status: "failed".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                message: Some(format!("恢复快照失败: {}", e)),
+            }),
+        }
+    }
+
+    let restored_count = files
+        .iter()
+        .filter(|file| file.status == "restored" || file.status == "deleted_created_file")
+        .count();
+    let failed_count = files
+        .iter()
+        .filter(|file| file.status == "failed" || file.status == "skipped_modified")
+        .count();
+    let ok = failed_count == 0;
+    let summary = if ok {
+        format!("已回退 {} 个文件的本地改动", restored_count)
+    } else {
+        format!(
+            "回退结果：成功 {} 个，失败/因后续修改被拒绝 {} 个",
+            restored_count, failed_count
+        )
+    };
+
+    Ok(RollbackWorkspacePatchResult {
+        ok,
+        restored_count,
+        failed_count,
+        files,
+        summary,
+    })
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+pub struct WorkspaceCommandResult {
+    pub program: String,
+    pub args: Vec<String>,
+    pub exit_code: Option<i32>,
+    pub success: bool,
+    pub timed_out: bool,
+    pub duration_ms: u64,
+    pub stdout: String,
+    pub stderr: String,
+    pub error: Option<String>,
+}
+
+/// 仅允许验证闭环所需的构建/检查工具，禁止任意命令执行。
+const ALLOWED_WORKSPACE_COMMAND_PROGRAMS: &[&str] = &[
+    "npm", "npx", "pnpm", "yarn", "node", "cargo", "tsc", "git", "go",
+];
+
+fn tail_chars(value: &str, max_chars: usize) -> String {
+    let count = value.chars().count();
+    if count <= max_chars {
+        return value.to_string();
+    }
+    let truncated: String = value.chars().skip(count - max_chars).collect();
+    format!("…（已截断前 {} 字符）\n{}", count - max_chars, truncated)
+}
+
+#[cfg(windows)]
+fn quote_windows_arg(arg: &str) -> Result<String, String> {
+    if arg.contains('\0') || arg.contains('\r') || arg.contains('\n') {
+        return Err("命令参数包含非法控制字符".to_string());
+    }
+    // cmd.exe 解释字符：验证命令无需使用它们，直接拒绝以避免命令注入。
+    if arg
+        .chars()
+        .any(|ch| matches!(ch, '&' | '|' | '<' | '>' | '^' | '%' | '"'))
+    {
+        return Err(format!("命令参数包含不允许的 shell 解释字符: {}", arg));
+    }
+    if arg.is_empty() {
+        return Ok("\"\"".to_string());
+    }
+    if arg.chars().any(char::is_whitespace) {
+        Ok(format!("\"{}\"", arg))
+    } else {
+        Ok(arg.to_string())
+    }
+}
+
+fn build_workspace_command(
+    program: &str,
+    args: &[String],
+) -> Result<tokio::process::Command, String> {
+    #[cfg(windows)]
+    {
+        // npm / pnpm 等入口在 Windows 上是 .cmd 垫片，必须经 cmd.exe 解析。
+        let mut line = program.to_string();
+        for arg in args {
+            line.push(' ');
+            line.push_str(&quote_windows_arg(arg)?);
+        }
+        let mut cmd = tokio::process::Command::new("cmd");
+        cmd.arg("/C").arg(line);
+        Ok(cmd)
+    }
+    #[cfg(not(windows))]
+    {
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args);
+        Ok(cmd)
+    }
+}
+
+/// Tauri Command: 在 Workspace Binding 根目录内执行白名单验证命令。
+///
+/// 该命令是「补丁应用后真实验证」的唯一宿主入口：
+/// - 只接受白名单程序，绝不启动 shell 任意命令；
+/// - cwd 固定为绑定工作区根目录；
+/// - 支持超时与输出截断，返回真实 exit code / stdout / stderr 作为证据。
+#[tauri::command]
+async fn run_workspace_command(
+    workspace_binding_id: String,
+    channel_id: String,
+    topic_id: String,
+    program: String,
+    args: Vec<String>,
+    timeout_secs: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<WorkspaceCommandResult, String> {
+    let normalized_program = program.trim().to_lowercase();
+    if !ALLOWED_WORKSPACE_COMMAND_PROGRAMS
+        .iter()
+        .any(|allowed| *allowed == normalized_program)
+    {
+        return Err(format!(
+            "命令 '{}' 不在验证白名单内（允许: {}）",
+            program,
+            ALLOWED_WORKSPACE_COMMAND_PROGRAMS.join(", ")
+        ));
+    }
+    if args.iter().any(|arg| arg.contains('\0')) {
+        return Err("命令参数包含 NUL 字符".to_string());
+    }
+
+    let scope = resolve_workspace_scope(
+        state.db_manager.as_ref(),
+        &workspace_binding_id,
+        &channel_id,
+        &topic_id,
+    )?;
+    let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(120).clamp(5, 600));
+    let _workspace_guard = acquire_workspace_operation_lock(&state, &scope.canonical_root).await;
+
+    let mut cmd = build_workspace_command(&normalized_program, &args)?;
+    cmd.current_dir(&scope.canonical_root)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+
+    let started = std::time::Instant::now();
+    let outcome = tokio::time::timeout(timeout, cmd.output()).await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    match outcome {
+        Err(_) => Ok(WorkspaceCommandResult {
+            program: normalized_program,
+            args,
+            exit_code: None,
+            success: false,
+            timed_out: true,
+            duration_ms,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: Some(format!(
+                "验证命令超时（{} 秒）已被终止",
+                timeout.as_secs()
+            )),
+        }),
+        Ok(Err(e)) => Ok(WorkspaceCommandResult {
+            program: normalized_program,
+            args,
+            exit_code: None,
+            success: false,
+            timed_out: false,
+            duration_ms,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: Some(format!("验证命令启动失败: {}", e)),
+        }),
+        Ok(Ok(output)) => {
+            let stdout = tail_chars(&String::from_utf8_lossy(&output.stdout), 16_000);
+            let stderr = tail_chars(&String::from_utf8_lossy(&output.stderr), 16_000);
+            Ok(WorkspaceCommandResult {
+                program: normalized_program,
+                args,
+                exit_code: output.status.code(),
+                success: output.status.success(),
+                timed_out: false,
+                duration_ms,
+                stdout,
+                stderr,
+                error: None,
+            })
+        }
+    }
 }
 
 /// Tauri Command: 获取 ACP 本地持久化日志文件绝对路径
@@ -960,6 +1856,7 @@ fn get_agent_dir_info(agent_id: String) -> Result<serde_json::Value, String> {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HttpPostRequest {
     pub url: String,
     pub headers: std::collections::HashMap<String, String>,
@@ -967,6 +1864,9 @@ pub struct HttpPostRequest {
     pub method: Option<String>,
     pub timeout_secs: Option<u64>,
 }
+
+/// curl `-w` 尾部标记；长度用于精确切分状态码，禁止硬编码偏移量。
+const HTTP_STATUS_MARKER: &str = "\n__SHADOW_HTTP_CODE__:";
 
 #[derive(serde::Serialize)]
 pub struct HttpResponsePayload {
@@ -976,10 +1876,16 @@ pub struct HttpResponsePayload {
     pub raw_text: String,
 }
 
-/// Tauri Command: 原生无跨域 HTTP 请求转发 (彻底消除前端 WebView CORS 限制与企业内网证书拦截)
+/// Tauri Command: 原生无跨域 HTTP 请求转发 (彻底消除前端 WebView CORS 限制)
+///
+/// 安全基线：
+/// - 默认校验 TLS 证书；企业内网自签证书需显式设置
+///   `SHADOW_CREW_NATIVE_HTTP_INSECURE_TLS=1` 才关闭校验；
+/// - 代理只使用环境变量 (https_proxy / http_proxy / ALL_PROXY)，不再猜测硬编码端口；
+/// - 成功判定以 HTTP 状态码为准，不再从响应文本里猜字段。
 #[tauri::command]
 async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, String> {
-    let timeout = req.timeout_secs.unwrap_or(20).to_string();
+    let timeout = req.timeout_secs.unwrap_or(20).max(1).to_string();
     let method = req.method.unwrap_or_else(|| "POST".to_string()).to_uppercase();
     let is_post = method == "POST";
     let body_str = if is_post {
@@ -995,100 +1901,106 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
         "curl"
     };
 
-    let mut cmd = tokio::process::Command::new(curl_bin);
-    cmd.arg("-s")
-       .arg("-S")
-       .arg("-X").arg(&method)
-       .arg("--connect-timeout").arg(&timeout)
-       .arg("--max-time").arg(&timeout)
-       .arg("-k"); // 支持企业内网自签/局域网证书
+    let allow_insecure_tls = std::env::var("SHADOW_CREW_NATIVE_HTTP_INSECURE_TLS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
-    for (k, v) in &req.headers {
-        cmd.arg("-H").arg(format!("{}: {}", k, v));
-    }
+    let build_command = |proxy: Option<&str>, connect_timeout: &str| {
+        let mut cmd = tokio::process::Command::new(curl_bin);
+        cmd.arg("-s")
+            .arg("-S")
+            .arg("-X").arg(&method)
+            .arg("--connect-timeout").arg(connect_timeout)
+            .arg("--max-time").arg(&timeout);
+        if allow_insecure_tls {
+            cmd.arg("-k");
+        }
+        if let Some(proxy_addr) = proxy {
+            cmd.arg("-x").arg(proxy_addr);
+        }
+        for (k, v) in &req.headers {
+            cmd.arg("-H").arg(format!("{}: {}", k, v));
+        }
+        if is_post && !body_str.is_empty() && body_str != "null" {
+            cmd.arg("-d").arg(&body_str);
+        }
+        cmd.arg("-w").arg(format!("{}%{{http_code}}", HTTP_STATUS_MARKER));
+        cmd.arg(&req.url);
+        cmd
+    };
 
-    if is_post && !body_str.is_empty() && body_str != "null" {
-        cmd.arg("-d").arg(&body_str);
-    }
-    cmd.arg("-w").arg("\n__SHADOW_HTTP_CODE__:%{http_code}");
-    cmd.arg(&req.url);
-
-    let mut output = cmd.output().await.map_err(|e| format!("执行系统 curl 失败: {}", e))?;
+    let mut output = build_command(None, &timeout)
+        .output()
+        .await
+        .map_err(|e| format!("执行系统 curl 失败: {}", e))?;
     let mut raw_output = String::from_utf8_lossy(&output.stdout).to_string();
     let mut err_output = String::from_utf8_lossy(&output.stderr).to_string();
 
-    // 检查首次直连响应是否已经包含合法的大模型输出数据或模型列表
-    let initial_has_payload = raw_output.contains("\"choices\"")
-        || raw_output.contains("\"id\"")
-        || raw_output.contains("\"content\"")
-        || raw_output.contains("\"data\"")
-        || raw_output.contains("\"models\"");
-
-    // 如果直连失败且未获取到任何有效数据，自动尝试通过代理重试
-    if !initial_has_payload && (!output.status.success() || raw_output.is_empty()) && !req.url.contains("127.0.0.1") {
-        let proxy_addr = std::env::var("https_proxy")
-            .or_else(|_| std::env::var("http_proxy"))
-            .or_else(|_| std::env::var("ALL_PROXY"))
-            .unwrap_or_else(|_| "http://127.0.0.1:7897".to_string());
-
-        let mut retry_cmd = tokio::process::Command::new(curl_bin);
-        retry_cmd.arg("-s")
-            .arg("-S")
-            .arg("-X").arg(&method)
-            .arg("--connect-timeout").arg("5")
-            .arg("--max-time").arg(&timeout)
-            .arg("-k")
-            .arg("-x").arg(&proxy_addr);
-
-        for (k, v) in &req.headers {
-            retry_cmd.arg("-H").arg(format!("{}: {}", k, v));
-        }
-
-        if is_post && !body_str.is_empty() && body_str != "null" {
-            retry_cmd.arg("-d").arg(&body_str);
-        }
-        retry_cmd.arg("-w").arg("\n__SHADOW_HTTP_CODE__:%{http_code}");
-        retry_cmd.arg(&req.url);
-
-        if let Ok(retry_out) = retry_cmd.output().await {
-            let retry_str = String::from_utf8_lossy(&retry_out.stdout).to_string();
-            if !retry_str.is_empty() {
-                output = retry_out;
-                raw_output = retry_str;
-                err_output = String::from_utf8_lossy(&output.stderr).to_string();
+    // 直连失败时，仅使用用户显式配置的环境变量代理重试；不猜测本地代理端口。
+    let proxy_addr = std::env::var("https_proxy")
+        .or_else(|_| std::env::var("http_proxy"))
+        .or_else(|_| std::env::var("ALL_PROXY"))
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    if !output.status.success() && raw_output.trim().is_empty() {
+        if let Some(proxy_addr) = proxy_addr.as_deref() {
+            if let Ok(retry_out) = build_command(Some(proxy_addr), "5").output().await {
+                let retry_str = String::from_utf8_lossy(&retry_out.stdout).to_string();
+                if !retry_str.trim().is_empty() {
+                    output = retry_out;
+                    raw_output = retry_str;
+                    err_output = String::from_utf8_lossy(&output.stderr).to_string();
+                }
             }
         }
     }
 
-    let mut status_code: u16 = 200;
+    let mut status_code: u16 = 0;
     let mut response_text = raw_output;
+    // 状态码是否成功解析。curl 正常退出却缺少标记时必须判为失败，
+    // 不能把"未知"静默降级成 0 后继续冒充请求结果。
+    let mut status_parsed = false;
 
-    if let Some(pos) = response_text.rfind("\n__SHADOW_HTTP_CODE__:") {
-        let code_part = response_text[pos + 23..].trim();
-        if let Ok(c) = code_part.parse::<u16>() {
-            status_code = c;
+    if let Some(pos) = response_text.rfind(HTTP_STATUS_MARKER) {
+        let code_start = pos + HTTP_STATUS_MARKER.len();
+        let code_part = response_text[code_start..].trim();
+        match code_part.parse::<u16>() {
+            Ok(c) => {
+                status_code = c;
+                status_parsed = true;
+            }
+            Err(_) => {
+                response_text.truncate(pos);
+                return Err(format!(
+                    "无法解析 HTTP 状态码 (curl 输出: {:?})",
+                    code_part
+                ));
+            }
         }
         response_text.truncate(pos);
     }
 
-    let parsed_json: serde_json::Value = serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null);
+    let parsed_json: serde_json::Value =
+        serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null);
 
-    // 容错判定：若响应 JSON 中已包含 choices/id/content/data/models 等标准 LLM 响应体，说明请求已成功被服务端处理完毕，
-    // 即使企业内网网关在传输末尾提前断开 TCP 连接导致系统 curl 产生非 0 退出码，也视为成功响应
-    let has_valid_llm_payload = parsed_json.get("choices").is_some()
-        || parsed_json.get("id").is_some()
-        || parsed_json.get("content").is_some()
-        || parsed_json.get("data").is_some()
-        || parsed_json.get("models").is_some();
-
-    if !output.status.success() && status_code == 200 && !has_valid_llm_payload {
-        status_code = 500;
-        if response_text.is_empty() {
-            response_text = format!("网络请求异常: {}", err_output.trim());
-        }
+    if !output.status.success() && response_text.trim().is_empty() {
+        return Ok(HttpResponsePayload {
+            status: 0,
+            ok: false,
+            body: serde_json::Value::Null,
+            raw_text: format!("网络请求异常: {}", err_output.trim()),
+        });
     }
 
-    let is_ok = (status_code >= 200 && status_code < 300) || has_valid_llm_payload;
+    if !status_parsed {
+        return Err(format!(
+            "HTTP 响应缺少状态码标记，无法确认请求结果 (curl 退出码: {:?}, stderr: {})",
+            output.status.code(),
+            err_output.trim()
+        ));
+    }
+
+    let is_ok = (200..300).contains(&status_code);
 
     Ok(HttpResponsePayload {
         status: status_code,
@@ -1098,37 +2010,112 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
     })
 }
 
-fn expand_tilde_path(raw: &str) -> std::path::PathBuf {
+/// 解析用户主目录：Unix 用 `HOME`，Windows 用 `USERPROFILE`（必要时回退 `HOMEDRIVE`+`HOMEPATH`）。
+/// 解析失败返回 `None`，由调用方显式报错，禁止回退到当前目录（会读写到意外位置）。
+pub(crate) fn user_home_dir() -> Option<std::path::PathBuf> {
+    if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
+        return Some(std::path::PathBuf::from(home));
+    }
+    if let Some(profile) = std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()) {
+        return Some(std::path::PathBuf::from(profile));
+    }
+    match (
+        std::env::var_os("HOMEDRIVE").filter(|v| !v.is_empty()),
+        std::env::var_os("HOMEPATH").filter(|v| !v.is_empty()),
+    ) {
+        (Some(drive), Some(path)) => {
+            let mut joined = std::path::PathBuf::from(drive);
+            joined.push(path);
+            Some(joined)
+        }
+        _ => None,
+    }
+}
+
+/// 展开 `~` / `~/xxx`。无法解析主目录时返回错误，绝不回退到相对路径。
+pub(crate) fn expand_tilde_path(raw: &str) -> Result<std::path::PathBuf, String> {
     let trimmed = raw.trim();
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let needs_home = trimmed == "~"
+        || trimmed.starts_with("~/")
+        || trimmed.starts_with("~\\");
+    if !needs_home {
+        return Ok(std::path::PathBuf::from(trimmed));
+    }
+    let home = user_home_dir()
+        .ok_or_else(|| format!("无法解析用户主目录，无法展开路径: {}", trimmed))?;
     if trimmed == "~" {
-        return std::path::PathBuf::from(home);
+        return Ok(home);
     }
-    if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
-        return std::path::PathBuf::from(home).join(rest);
+    let rest = &trimmed[2..];
+    Ok(home.join(rest))
+}
+
+fn resolve_codex_home_dir(codex_home: Option<String>) -> Result<std::path::PathBuf, String> {
+    match codex_home.filter(|s| !s.trim().is_empty()) {
+        Some(custom) => expand_tilde_path(&custom),
+        None => expand_tilde_path("~/.codex"),
     }
-    std::path::PathBuf::from(trimmed)
 }
 
-fn resolve_codex_home_dir(codex_home: Option<String>) -> std::path::PathBuf {
-    codex_home
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| expand_tilde_path(&s))
-        .unwrap_or_else(|| expand_tilde_path("~/.codex"))
+fn resolve_packs_root_dir(packs_dir: Option<String>) -> Result<std::path::PathBuf, String> {
+    match packs_dir.filter(|s| !s.trim().is_empty()) {
+        Some(custom) => expand_tilde_path(&custom),
+        None => Ok(db_manager::get_shadow_crew_home_dir().join("packs")),
+    }
 }
 
-fn resolve_packs_root_dir(packs_dir: Option<String>) -> std::path::PathBuf {
-    packs_dir
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| expand_tilde_path(&s))
-        .unwrap_or_else(|| db_manager::get_shadow_crew_home_dir().join("packs"))
+fn resolve_claude_home_dir(custom_path: Option<String>) -> Result<std::path::PathBuf, String> {
+    match custom_path.filter(|s| !s.trim().is_empty()) {
+        Some(custom) => expand_tilde_path(&custom),
+        None => expand_tilde_path("~/.claude"),
+    }
 }
 
-fn resolve_claude_home_dir(custom_path: Option<String>) -> std::path::PathBuf {
-    custom_path
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| expand_tilde_path(&s))
-        .unwrap_or_else(|| expand_tilde_path("~/.claude"))
+/// 获取（或首次生成）本机专属的专家包签名种子。
+///
+/// 旧实现使用全平台共享的固定种子，任何安装都能伪造"签名有效"的包。
+/// 这里改为首次导出时生成 32 字节系统随机种子并持久化到 `~/.shadow-crew/signing_key.seed`：
+/// - 文件存在但内容损坏 → 直接报错，拒绝自动覆盖（否则会静默更换签名身份）；
+/// - 写入使用临时文件 + rename，避免半个文件。
+fn local_signing_seed_hex() -> Result<String, String> {
+    let home = db_manager::get_shadow_crew_home_dir();
+    std::fs::create_dir_all(&home)
+        .map_err(|e| format!("无法创建 Shadow Crew 目录 {}: {}", home.display(), e))?;
+    let seed_path = home.join("signing_key.seed");
+
+    if seed_path.exists() {
+        let text = std::fs::read_to_string(&seed_path)
+            .map_err(|e| format!("读取签名种子 {} 失败: {}", seed_path.display(), e))?;
+        let trimmed = text.trim();
+        let valid = trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit());
+        if valid {
+            return Ok(trimmed.to_ascii_lowercase());
+        }
+        return Err(format!(
+            "签名种子文件 {} 已损坏；为避免静默更换签名身份，请备份后手动删除该文件再重试",
+            seed_path.display()
+        ));
+    }
+
+    // 两个 UUID v4 提供 32 字节系统熵（uuid crate 内部使用 getrandom）。
+    let mut seed = [0u8; 32];
+    seed[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    seed[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    let seed_hex: String = seed.iter().map(|b| format!("{:02x}", b)).collect();
+
+    let tmp_path = home.join("signing_key.seed.tmp");
+    std::fs::write(&tmp_path, &seed_hex)
+        .map_err(|e| format!("写入签名种子临时文件失败: {}", e))?;
+    std::fs::rename(&tmp_path, &seed_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!("落盘签名种子失败: {}", e)
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&seed_path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(seed_hex)
 }
 
 fn map_source_id_to_ui(raw_id: &str) -> &'static str {
@@ -1418,10 +2405,13 @@ async fn probe_acp_memory_sources_cmd(
     include_v1: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let effective_harness = harness.as_deref().unwrap_or("codex");
-    let effective_ws = workspace_root
+    let effective_ws = match workspace_root
         .or(workspace_cwd)
         .filter(|s| !s.trim().is_empty())
-        .map(|s| expand_tilde_path(&s).to_string_lossy().to_string());
+    {
+        Some(raw) => Some(expand_tilde_path(&raw)?.to_string_lossy().to_string()),
+        None => None,
+    };
     let opts = shadow_crew_protocol::scpack::ProbeOptions {
         workspace_cwd: effective_ws,
         include_v1: include_v1.unwrap_or(false),
@@ -1429,12 +2419,12 @@ async fn probe_acp_memory_sources_cmd(
     };
 
     if effective_harness == "claude-code" {
-        let resolved_home = resolve_claude_home_dir(home_dir.or(codex_home));
+        let resolved_home = resolve_claude_home_dir(home_dir.or(codex_home))?;
         let report = shadow_crew_protocol::scpack::probe_claude_code_sources(&resolved_home, &opts)
             .map_err(|e| e.to_string())?;
         Ok(map_probe_report_to_ui_dto(&report))
     } else {
-        let resolved_home = resolve_codex_home_dir(home_dir.or(codex_home));
+        let resolved_home = resolve_codex_home_dir(home_dir.or(codex_home))?;
         let report = shadow_crew_protocol::scpack::probe_codex_memory_sources(&resolved_home, &opts)
             .map_err(|e| e.to_string())?;
         Ok(map_probe_report_to_ui_dto(&report))
@@ -1492,16 +2482,17 @@ async fn export_codex_scpack_cmd(
         if !confirmed {
             return Err("[ERR_SECRET_DETECTED] Export blocked: user_confirmed_redaction must be true after reviewing Redaction Audit preview".to_string());
         }
-        let effective_ws = workspace_root
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| expand_tilde_path(&s).to_string_lossy().to_string());
+        let effective_ws = match workspace_root.filter(|s| !s.trim().is_empty()) {
+            Some(raw) => Some(expand_tilde_path(&raw)?.to_string_lossy().to_string()),
+            None => None,
+        };
         let opts = shadow_crew_protocol::scpack::ProbeOptions {
             workspace_cwd: effective_ws,
             include_v1: false,
             simulate_concurrent_mutation: false,
         };
         let (probe_report, default_pkg_name, default_desc, cli_ver) = if is_claude {
-            let resolved_home = resolve_claude_home_dir(home_dir.or(codex_home));
+            let resolved_home = resolve_claude_home_dir(home_dir.or(codex_home))?;
             let r = shadow_crew_protocol::scpack::probe_claude_code_sources(&resolved_home, &opts)
                 .map_err(|e| e.to_string())?;
             (
@@ -1511,7 +2502,7 @@ async fn export_codex_scpack_cmd(
                 "claude-cli 1.0.0".to_string(),
             )
         } else {
-            let resolved_home = resolve_codex_home_dir(home_dir.or(codex_home));
+            let resolved_home = resolve_codex_home_dir(home_dir.or(codex_home))?;
             let r = shadow_crew_protocol::scpack::probe_codex_memory_sources(&resolved_home, &opts)
                 .map_err(|e| e.to_string())?;
             (
@@ -1555,7 +2546,7 @@ async fn export_codex_scpack_cmd(
                 source_cli_version: cli_ver,
                 source_repo_fingerprint: fingerprint,
                 user_confirmed_redaction: confirmed,
-                signing_seed_hex: None,
+                signing_seed_hex: Some(local_signing_seed_hex()?),
                 probe_report,
                 source_harness: Some(effective_harness),
             },
@@ -1569,7 +2560,7 @@ async fn export_codex_scpack_cmd(
 
     if let Some(ref out) = output_path {
         if !out.trim().is_empty() {
-            let expanded_out = expand_tilde_path(out);
+            let expanded_out = expand_tilde_path(out)?;
             if let Some(parent) = expanded_out.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| {
                     format!(
@@ -1590,7 +2581,7 @@ async fn export_codex_scpack_cmd(
     }
 
     if install_locally.unwrap_or(true) {
-        let packs_root = resolve_packs_root_dir(packs_dir);
+        let packs_root = resolve_packs_root_dir(packs_dir)?;
         shadow_crew_protocol::scpack::verify_and_install_scpack(&built.archive_bytes, &packs_root)
             .map_err(|e| e.to_string())?;
     }
@@ -1649,7 +2640,7 @@ async fn import_scpack_cmd(
             .decode(b64.trim())
             .map_err(|e| format!("[ERR_INTEGRITY_MISMATCH] Invalid base64 archive: {}", e))?
     } else if let Some(fp) = scpack_path.or(file_path).filter(|s| !s.trim().is_empty()) {
-        let resolved_fp = expand_tilde_path(&fp);
+        let resolved_fp = expand_tilde_path(&fp)?;
         std::fs::read(&resolved_fp).map_err(|e| {
             format!(
                 "[ERR_PACK_MISSING] Failed to read {}: {}",
@@ -1661,7 +2652,7 @@ async fn import_scpack_cmd(
         return Err("[ERR_PACK_MISSING] Either scpack_path or archive_base64 is required".to_string());
     };
 
-    let packs_root = resolve_packs_root_dir(packs_dir);
+    let packs_root = resolve_packs_root_dir(packs_dir)?;
     let manifest = shadow_crew_protocol::scpack::verify_and_install_scpack(&bytes, &packs_root)
         .map_err(|e| e.to_string())?;
     Ok(map_manifest_to_installed_summary_dto(&manifest, &packs_root, false))
@@ -1671,11 +2662,12 @@ async fn import_scpack_cmd(
 async fn list_installed_scpacks_cmd(
     packs_dir: Option<String>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let packs_root = resolve_packs_root_dir(packs_dir);
+    let packs_root = resolve_packs_root_dir(packs_dir)?;
     if !packs_root.exists() {
         return Ok(Vec::new());
     }
-    let rev = shadow_crew_protocol::scpack::load_revocation_list(&packs_root);
+    let rev = shadow_crew_protocol::scpack::load_revocation_list(&packs_root)
+        .map_err(|e| e.to_string())?;
     let mut manifests = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&packs_root) {
         for ent in entries.flatten() {
@@ -1709,7 +2701,7 @@ async fn uninstall_scpack_cmd(
     revoke: Option<bool>,
     packs_dir: Option<String>,
 ) -> Result<bool, String> {
-    let packs_root = resolve_packs_root_dir(packs_dir);
+    let packs_root = resolve_packs_root_dir(packs_dir)?;
     let should_revoke = add_to_revoked.or(revoke).unwrap_or(false);
     shadow_crew_protocol::scpack::uninstall_scpack(&packs_root, &package_id, should_revoke)
         .map_err(|e| e.to_string())?;
@@ -1728,7 +2720,7 @@ async fn retrieve_scpack_expertise_cmd(
     let effective_prompt = user_prompt
         .or(prompt)
         .unwrap_or_default();
-    let packs_root = resolve_packs_root_dir(packs_dir);
+    let packs_root = resolve_packs_root_dir(packs_dir)?;
     let res = shadow_crew_protocol::scpack::retrieve_and_build_expertise_prompt(
         &packs_root,
         &package_id,
@@ -1800,7 +2792,7 @@ async fn validate_b_side_codex_env_cmd(
         .map(|p| p.availability == agent_discovery::AcpAvailabilityStatus::Available)
         .unwrap_or(false);
     let detected_version = "0.166.0-alpha.6".to_string();
-    let codex_home = resolve_codex_home_dir(None);
+    let codex_home = resolve_codex_home_dir(None)?;
     let auth_ready = codex_home.join("auth.json").exists() || codex_home.join("config.toml").exists();
 
     let preflight = shadow_crew_protocol::scpack::BSidePreflightInput {
@@ -1839,6 +2831,8 @@ async fn main() {
     let state = AppState {
         acp_manager: Arc::new(Mutex::new(AcpProcessManager::with_db(db_manager.clone()))),
         db_manager,
+        patch_locks: std::sync::Mutex::new(HashMap::new()),
+        workspace_operation_locks: std::sync::Mutex::new(HashMap::new()),
         nostr_relay_url: "ws://127.0.0.1:8080/relay".to_string(),
     };
 
@@ -1865,6 +2859,8 @@ async fn main() {
             clear_agent_sessions,
             read_workspace_file_sandboxed,
             apply_workspace_patch,
+            rollback_workspace_patch,
+            run_workspace_command,
             get_acp_log_path,
             read_recent_acp_logs,
             db_save_message,
@@ -1899,8 +2895,21 @@ async fn main() {
             retrieve_scpack_expertise_cmd,
             validate_b_side_codex_env_cmd,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running shadow-crew tauri desktop application");
+        .build(tauri::generate_context!())
+        .expect("error while building shadow-crew tauri desktop application")
+        .run(|app_handle, event| {
+            // 应用退出前终止全部 ACP 子进程并释放句柄。
+            // 仅监听 Exit（此时窗口已关闭、退出不可撤销），避免 ExitRequested 被取消时误杀进程。
+            if let tauri::RunEvent::Exit = event {
+                let manager = app_handle.state::<AppState>().acp_manager.clone();
+                tauri::async_runtime::block_on(async move {
+                    let mut guard = manager.lock().await;
+                    if let Err(e) = guard.stop_all().await {
+                        tracing::warn!("Failed to stop all ACP agents on exit: {}", e);
+                    }
+                });
+            }
+        });
 }
 
 #[cfg(test)]
@@ -2210,7 +3219,7 @@ mod attachment_tests {
 
     #[tokio::test]
     async fn real_host_codex_home_probe_and_export_roundtrip_if_accessible() {
-        let real_codex = expand_tilde_path("~/.codex");
+        let real_codex = expand_tilde_path("~/.codex").expect("home directory must be resolvable in tests");
         // In sandboxed CI where ~/.codex is not readable, skip gracefully; when accessible, verify full pipeline
         if std::fs::read_dir(&real_codex).is_err() || !real_codex.join("memories_v2_1.sqlite").exists() {
             return;

@@ -3,6 +3,10 @@ import {
   Agent,
   AgentMemoryBank,
 } from '../types';
+import {
+  isSameAgentRuntimePolicy,
+  normalizeAgentRuntimePolicy,
+} from './agentRuntimePolicy';
 
 export const AGENT_MEMORY_SCHEMA_VERSION = 1 as const;
 export const ACP_NATIVE_MEMORY_ENV = 'SHADOW_CREW_ACP_NATIVE_MEMORY';
@@ -144,14 +148,23 @@ export function normalizeHydratedAgent(input: Agent): {
     input.status !== 'idle' ||
     input.statusDetail !== undefined ||
     hadHandshakeSessionCaps;
+
+  // 显式迁移：旧数据没有运行时预算策略时，一次性补全为规范默认值。
+  const normalizedPolicy = normalizeAgentRuntimePolicy(migrated.agent.runtimePolicy);
+  const runtimePolicyChanged = !isSameAgentRuntimePolicy(
+    migrated.agent.runtimePolicy,
+    normalizedPolicy
+  );
+
   return {
     agent: {
       ...migrated.agent,
       status: 'idle',
       statusDetail: undefined,
       capabilities: nextCapabilities,
+      runtimePolicy: normalizedPolicy,
     },
-    changed: migrated.changed || runtimeStateChanged,
+    changed: migrated.changed || runtimeStateChanged || runtimePolicyChanged,
   };
 }
 
