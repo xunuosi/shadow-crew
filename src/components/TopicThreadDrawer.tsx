@@ -1680,18 +1680,40 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     const isFrozen = mod.status === 'frozen';
                     const isActive = mod.moduleId === modularState.activeModuleId || (mod.status !== 'frozen' && mod.status !== 'pending');
                     const isSelected = activeModuleFilterId === mod.moduleId;
-                    const pillClasses = isFrozen
+                    const isExecRunning = mod.executionStatus === 'running' || mod.moduleId === modularState.activeExecutionModuleId;
+                    const isExecCompleted = mod.executionStatus === 'completed';
+                    const isExecFailed = mod.executionStatus === 'failed';
+
+                    const pillClasses = isExecCompleted
+                      ? 'text-emerald-800 bg-emerald-50 border-emerald-300 dark:text-emerald-300 dark:bg-emerald-500/15 dark:border-emerald-500/30 font-semibold'
+                      : isExecRunning
+                      ? 'text-amber-800 bg-amber-50 border-amber-300 dark:text-amber-300 dark:bg-amber-500/15 dark:border-amber-500/30 animate-pulse font-semibold'
+                      : isExecFailed
+                      ? 'text-rose-800 bg-rose-50 border-rose-300 dark:text-rose-300 dark:bg-rose-500/15 dark:border-rose-500/30 font-semibold'
+                      : isFrozen
                       ? 'text-emerald-800 bg-emerald-50 border-emerald-300 dark:text-emerald-300 dark:bg-emerald-500/15 dark:border-emerald-500/30'
                       : isActive
                       ? 'text-amber-800 bg-amber-50 border-amber-300 dark:text-amber-300 dark:bg-amber-500/15 dark:border-amber-500/30'
                       : 'text-blue-800 bg-blue-50 border-blue-300 dark:text-blue-300 dark:bg-blue-500/15 dark:border-blue-500/30';
+
+                    const statusIcon = isExecCompleted
+                      ? '✅'
+                      : isExecRunning
+                      ? '🛠️'
+                      : isExecFailed
+                      ? '❌'
+                      : isFrozen
+                      ? '🔒'
+                      : mod.belief.routingMode === 'deep_debate'
+                      ? '⚔️'
+                      : '⚡';
 
                     return (
                       <button
                         key={mod.moduleId}
                         type="button"
                         onClick={() => setActiveModuleFilterId(isSelected ? 'ALL' : mod.moduleId)}
-                        title={`${mod.title}: ${mod.responsibility} | 允许文件: ${mod.allowedFiles.join(', ')}`}
+                        title={`${mod.title}: ${mod.responsibility} | 落地状态: ${mod.executionStatus || '待执行'} | 允许文件: ${mod.allowedFiles.join(', ')}`}
                         className={`px-2 py-0.5 rounded-md font-mono text-[9px] border transition-all cursor-pointer flex items-center gap-1 shrink-0 ${pillClasses} ${
                           isSelected ? 'ring-1 ring-purple-500 font-bold' : 'opacity-90 hover:opacity-100'
                         }`}
@@ -1699,7 +1721,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                         <span className="font-bold">[{mod.moduleId}]</span>
                         <span className="truncate max-w-[110px] font-sans">{mod.title}</span>
                         <span>({mod.belief.priorRisk.toFixed(2)}→{mod.belief.posteriorRisk.toFixed(2)})</span>
-                        <span>{isFrozen ? '🔒' : mod.belief.routingMode === 'deep_debate' ? '⚔️' : '⚡'}</span>
+                        <span>{statusIcon}</span>
                       </button>
                     );
                   })}

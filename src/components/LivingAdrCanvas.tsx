@@ -675,11 +675,33 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                 {modularState.modules.map((mod) => {
                   const isFrozen = mod.status === 'frozen';
                   const isDebating = mod.moduleId === modularState.activeModuleId || (mod.status !== 'frozen' && mod.status !== 'pending');
-                  const statusClasses = isFrozen
+                  const isExecRunning = mod.executionStatus === 'running' || mod.moduleId === modularState.activeExecutionModuleId;
+                  const isExecCompleted = mod.executionStatus === 'completed';
+                  const isExecFailed = mod.executionStatus === 'failed';
+
+                  const statusClasses = isExecCompleted
+                    ? 'text-emerald-800 bg-emerald-50 border-emerald-300 dark:text-emerald-300 dark:bg-emerald-500/15 dark:border-emerald-500/30'
+                    : isExecRunning
+                    ? 'text-amber-800 bg-amber-50 border-amber-300 dark:text-amber-300 dark:bg-amber-500/15 dark:border-amber-500/30 animate-pulse'
+                    : isExecFailed
+                    ? 'text-rose-800 bg-rose-50 border-rose-300 dark:text-rose-300 dark:bg-rose-500/15 dark:border-rose-500/30'
+                    : isFrozen
                     ? 'text-emerald-800 bg-emerald-50 border-emerald-300 dark:text-emerald-300 dark:bg-emerald-500/15 dark:border-emerald-500/30'
                     : isDebating
                     ? 'text-amber-800 bg-amber-50 border-amber-300 dark:text-amber-300 dark:bg-amber-500/15 dark:border-amber-500/30'
                     : 'text-blue-800 bg-blue-50 border-blue-300 dark:text-blue-300 dark:bg-blue-500/15 dark:border-blue-500/30';
+
+                  const badgeText = isExecCompleted
+                    ? `✅ 落地交付完成 ${mod.executionDiffs && mod.executionDiffs.length > 0 ? `(${mod.executionDiffs.length} 文件)` : ''}`
+                    : isExecRunning
+                    ? '🛠️ 落地执行中...'
+                    : isExecFailed
+                    ? '❌ 落地执行异常'
+                    : isFrozen
+                    ? '🔒 已冻结定案'
+                    : mod.belief.routingMode === 'deep_debate'
+                    ? '⚔️ 对抗流'
+                    : '⚡ 快速流';
 
                   return (
                     <div key={mod.moduleId} className="p-2 rounded-md bg-surface border border-border space-y-1 min-w-0 w-full overflow-hidden">
@@ -693,11 +715,16 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
                             P: {mod.belief.priorRisk.toFixed(2)} → {mod.belief.posteriorRisk.toFixed(2)}
                           </span>
                           <span className={`px-1.5 py-0.5 rounded font-mono text-[9px] border font-semibold ${statusClasses}`}>
-                            {isFrozen ? '🔒 已冻结' : mod.belief.routingMode === 'deep_debate' ? '⚔️ 对抗流' : '⚡ 快速流'}
+                            {badgeText}
                           </span>
                         </div>
                       </div>
                       <div className="text-[10px] text-fg-secondary leading-snug">{mod.responsibility}</div>
+                      {mod.executionSummary && (
+                        <div className="text-[9.5px] font-mono text-emerald-800 dark:text-emerald-300 bg-emerald-50/70 dark:bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-200 dark:border-emerald-500/20">
+                          📦 交付成果: {mod.executionSummary}
+                        </div>
+                      )}
                       {mod.allowedFiles.length > 0 && (
                         <div className="flex items-center gap-1 flex-wrap pt-0.5">
                           <span className="text-[9px] text-fg-muted font-mono">作用域白名单:</span>

@@ -640,6 +640,9 @@ export interface TaskModuleSlice {
   frozenProposalSnippet?: string;   // 模块冻结定案后的最终方案摘要/契约实现
   assignedExecutorId?: string;      // 落地阶段指派给本模块的专职执行 Agent ID
   executionVerificationPassed?: boolean; // 执行期本模块静态检查/单测是否通过
+  executionStatus?: 'pending' | 'running' | 'completed' | 'failed'; // 落地执行阶段状态
+  executionDiffs?: TopicPatchDiffItem[]; // 该模块独立产出的工作区变更
+  executionSummary?: string;            // 该模块执行交付摘要
 }
 
 /**
@@ -682,6 +685,8 @@ export interface ModularOrchestrationState {
   activeModuleId?: string;          // 当前正在推演或聚焦的模块沙箱 ID
   overallEntropyReductionRatio?: number; // 相比全量上下文的 Token/信息熵压缩比 (0~1)
   whitelistDeduplications?: WhitelistDeduplicationRecord[]; // 白名单拓扑偏序收敛与去重审计记录 (N5)
+  activeExecutionModuleId?: string; // 落地执行阶段当前正在执行的模块沙箱 ID
+  executionCompletedCount?: number; // 落地执行阶段已完成交付的模块数量
 }
 
 export interface TopicPatchDiffItem {

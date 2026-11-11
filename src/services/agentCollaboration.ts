@@ -1390,6 +1390,116 @@ ${filesList}
 4. 无需在正文中 @ 任何人，直接交付高质量落地成果！`;
 }
 
+export interface BuildModularExecutionPromptOptions {
+  topic: TopicPromptContext;
+  executorAgent: Agent;
+  moduleSlice: TaskModuleSlice;
+  moduleIndex: number;
+  totalModules: number;
+  sharedContract?: SharedInterfaceContract;
+  priorMilestones?: Array<{
+    moduleId: string;
+    title: string;
+    summary: string;
+    touchedFiles: string[];
+  }>;
+  decision: {
+    summary: string;
+    solution?: string;
+    tradeOffPoints?: string[];
+  };
+}
+
+/**
+ * 构造 G-Frame 贝叶斯与团队博弈分治落地执行提示词
+ * 面向单一独立 Agent 串行多阶段落地流水线，提供物理隔离的本模块白名单、只读公共契约与前序已完成依赖摘要
+ */
+export function buildModularExecutionPrompt(options: BuildModularExecutionPromptOptions): string {
+  const {
+    topic,
+    executorAgent,
+    moduleSlice,
+    moduleIndex,
+    totalModules,
+    sharedContract,
+    priorMilestones = [],
+    decision,
+  } = options;
+
+  const roleDescriptionAddon = executorAgent.description?.trim()
+    ? `\n【执行人专精定位与知识设定】：\n${executorAgent.description.trim()}\n`
+    : '';
+
+  const tradeOffs = decision.tradeOffPoints && decision.tradeOffPoints.length > 0
+    ? `\n【终审裁定关键权衡约束】:\n${decision.tradeOffPoints.map((p) => `• ${p}`).join('\n')}\n`
+    : '';
+
+  // 1. 本模块专属文件沙箱白名单
+  const filesList = moduleSlice.allowedFiles && moduleSlice.allowedFiles.length > 0
+    ? moduleSlice.allowedFiles.map((f) => `• \`${f}\``).join('\n')
+    : '• (本模块未预设独立文件白名单，请依据职责单一性聚焦落盘)';
+
+  // 2. 跨模块只读《公共接口契约》
+  let contractBlock = '';
+  if (sharedContract) {
+    const invariantsList = sharedContract.invariants && sharedContract.invariants.length > 0
+      ? `\n- 不变量铁律:\n${sharedContract.invariants.map((inv) => `  * ${inv}`).join('\n')}`
+      : '';
+    const signaturesBlock = sharedContract.typeSignatures?.trim()
+      ? `\n- 跨模块共享类型与函数签名契约 (只读禁止篡改):\n\`\`\`typescript\n${sharedContract.typeSignatures.trim()}\n\`\`\``
+      : '';
+    contractBlock = `\n【🧩 跨模块只读《公共接口契约 (Shared Interface Contract)》】:
+- 核心契约目标: ${sharedContract.summary}${signaturesBlock}${invariantsList}\n`;
+  }
+
+  // 3. 前序已就绪的依赖模块成果
+  let priorBlock = '';
+  if (priorMilestones.length > 0) {
+    priorBlock = `\n【✅ 前序已就绪依赖模块与交付成果 (Prior Accomplished Milestones)】:
+${priorMilestones
+  .map(
+    (m, idx) =>
+      `• [阶段 ${idx + 1}: ${m.title}] (${m.moduleId})\n  - 交付摘要: ${m.summary}\n  - 涉及落盘文件: ${
+        m.touchedFiles.length > 0 ? m.touchedFiles.map((f) => `\`${f}\``).join(', ') : '(无文件变更)'
+      }`
+  )
+  .join('\n')}\n`;
+  }
+
+  return `[🛠️ G-Frame 模块化分治落地执行任务 (Phase ${moduleIndex}/${totalModules}: ${moduleSlice.title})]
+【执行负责人】: ${executorAgent.name} (${executorAgent.handle} · ${executorAgent.role})${roleDescriptionAddon}
+【所属议题】: 【${topic.title}】 (ID: ${topic.topicId})
+【议题终审裁定总览】:
+${decision.summary}${tradeOffs}
+${contractBlock}
+【🎯 当前执行模块切片信息】:
+• 模块标识: [${moduleSlice.moduleId}] (${moduleSlice.complexityLevel})
+• 模块名称: ${moduleSlice.title}
+• 职责边界: ${moduleSlice.responsibility}
+${priorBlock}
+【📦 本模块受影响与变更文件白名单 (Allowed Files Sandbox)】:
+${filesList}
+
+【落地实施与沙箱规范要求】:
+1. 你已被指派以【单一独立 Agent】身份串行推进 G-Frame 模块化重构流水线中的 **[阶段 ${moduleIndex}/${totalModules}: ${moduleSlice.title}]**；
+2. **【爆炸半径隔离铁律】**：当前处于本模块专属沙箱，你**只能**修改或新建上方白名单列出的文件，**严禁越界修改其他未授权模块的文件**！
+3. **【公共契约一致性铁律】**：涉及跨模块通信、共享数据结构或接口调用时，必须严格遵守《公共接口契约》，严禁擅自修改已约定的函数签名或字段；
+4. 若本模块涉及修改/新建工作区文件，请针对每个白名单文件输出标准 Unified Diff 块（使用 \`\`\`diff 包裹，首行注明 \`--- a/文件路径\` 与 \`+++ b/文件路径\`），或在代码块首行注明 \`// filepath: 文件路径\`，以便工作台自动解析并支持一键物理合入；
+5. **【强制 UI 描述契约】**：请在回复最末尾附带如下格式的 JSON 元数据块：
+<<<EXECUTION_META>>>
+{
+  "sectionTitle": "阶段 ${moduleIndex}/${totalModules}: ${moduleSlice.title} 落地交付",
+  "podTitle": "🛠️ ${moduleSlice.title.slice(0, 8)}",
+  "statusSummary": "本阶段交付摘要（40字以内，如：已完成模块 1 核心数据结构与契约定义）",
+  "deliverableKind": "workspace_files",
+  "reviewActionLabel": "审查本阶段 Diff",
+  "applyActionLabel": "合入本阶段代码"
+}
+<<<EXECUTION_META_END>>>
+6. 无需在正文中 @ 任何人，专注于本模块的高质量工程实现！`;
+}
+
+
 interface CriterionCandidate {
   id: string;
   name: string;
