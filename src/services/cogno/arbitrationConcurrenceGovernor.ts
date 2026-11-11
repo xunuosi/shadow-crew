@@ -571,17 +571,31 @@ export function evaluateRulingGates(
   allGatesPassed: boolean;
   reason?: string;
 } {
-  const isConsistencyPassed = mcdaPayload?.consistencyPassed ?? (topic.gameTheoreticState?.mcdaPayload?.consistencyPassed ?? true);
+  const isGameTheoretic = topic.discussionMode === 'game_theoretic';
+  const effectiveConsistency =
+    mcdaPayload ?? topic.gameTheoreticState?.mcdaPayload ?? undefined;
+
+  // Fail-closed：博弈模式下没有 MCDA 证据 = 一致性无法确认，必须判为未通过。
+  // 只有显式 consistencyPassed === true 才放行；未知/缺失一律拒绝。
+  const isConsistencyPassed = !isGameTheoretic || effectiveConsistency?.consistencyPassed === true;
+
+  // 法定人数同样 fail-closed：存在挑战者时，必须有明确响应证据或显式旁路，
+  // 不能因为字段缺失（undefined）就默认通过。
+  const hasChallengers = Boolean(topic.gameRoles?.challengers?.length);
   const isChallengerQuorumMet =
-    topic.discussionMode !== 'game_theoretic' ||
-    !topic.gameRoles?.challengers?.length ||
+    !isGameTheoretic ||
+    !hasChallengers ||
     topic.gameTheoreticState?.isChallengerBypassed === true ||
-    topic.gameTheoreticState?.isChallengerResponded !== false;
+    topic.gameTheoreticState?.isChallengerResponded === true;
 
   const allGatesPassed = isConsistencyPassed && isChallengerQuorumMet;
   let reason: string | undefined;
   if (!isConsistencyPassed) {
-    reason = `MCDA 运筹一致性指标未达标 (ξ* > 0.12)`;
+    const xi = effectiveConsistency?.consistencyIndex;
+    reason =
+      typeof xi === 'number'
+        ? `MCDA 运筹一致性指标未达标 (ξ* = ${xi} > 0.12)`
+        : `MCDA 运筹一致性指标缺失或未达标，无法确认裁决一致性`;
   } else if (!isChallengerQuorumMet) {
     reason = `挑战方法定人数门禁未达成 (红队未响应且未被旁路)`;
   }
