@@ -37,11 +37,13 @@ export function stripTrailingSeparators(raw: string): string {
 /** 按已有路径风格拼接子路径，避免 Windows 上产出 `D:\repo\/artifacts`。 */
 export function joinFsPath(base: string, child: string): string {
   const separator = base.includes('\\') && !base.includes('/') ? '\\' : '/';
+  const normalizedChild =
+    separator === '\\' ? child.replace(/\//g, '\\') : child.replace(/\\/g, '/');
   const normalized = stripTrailingSeparators(base);
   if (normalized === '/' || isWindowsDriveRoot(normalized)) {
-    return `${normalized}${child}`;
+    return `${normalized}${normalizedChild.replace(/^[\\/]+/, '')}`;
   }
-  return `${normalized}${separator}${child}`;
+  return `${normalized}${separator}${normalizedChild.replace(/^[\\/]+/, '')}`;
 }
 
 export function getDefaultArtifactRoot(cwd: string): string {
@@ -84,7 +86,7 @@ export function createChannelBinding(options: {
     cwd,
     artifactRoot: options.mode === 'default'
       ? getDefaultArtifactRoot(cwd)
-      : `${cwd}/.shadow-crew/channels/${options.channelId}/artifacts`,
+      : joinFsPath(cwd, `.shadow-crew/channels/${options.channelId}/artifacts`),
     createdAt: options.createdAt ?? Date.now(),
   };
 }
@@ -121,7 +123,10 @@ export function createTopicBinding(options: {
       mode: 'custom',
       origin: 'channel_cwd_snapshot',
       cwd: options.channelBinding.cwd,
-      artifactRoot: `${options.channelBinding.cwd}/.shadow-crew/channels/${options.channelId}/topics/${options.topicId}/artifacts`,
+      artifactRoot: joinFsPath(
+        options.channelBinding.cwd,
+        `.shadow-crew/channels/${options.channelId}/topics/${options.topicId}/artifacts`
+      ),
       createdAt: options.createdAt ?? Date.now(),
     };
   }
@@ -134,7 +139,10 @@ export function createTopicBinding(options: {
     mode: 'custom',
     origin: 'created_custom',
     cwd,
-    artifactRoot: `${cwd}/.shadow-crew/channels/${options.channelId}/topics/${options.topicId}/artifacts`,
+    artifactRoot: joinFsPath(
+      cwd,
+      `.shadow-crew/channels/${options.channelId}/topics/${options.topicId}/artifacts`
+    ),
     createdAt: options.createdAt ?? Date.now(),
   };
 }
@@ -175,7 +183,10 @@ export function createDmTopicBinding(options: {
       mode: 'custom',
       origin: 'channel_cwd_snapshot',
       cwd: agentCwd,
-      artifactRoot: `${agentCwd}/.shadow-crew/agents/${options.agentId}/topics/${options.topicId}/artifacts`,
+      artifactRoot: joinFsPath(
+        agentCwd,
+        `.shadow-crew/agents/${options.agentId}/topics/${options.topicId}/artifacts`
+      ),
       createdAt: options.createdAt ?? Date.now(),
     };
   }
@@ -188,7 +199,10 @@ export function createDmTopicBinding(options: {
     mode: 'custom',
     origin: 'created_custom',
     cwd,
-    artifactRoot: `${cwd}/.shadow-crew/agents/${options.agentId}/topics/${options.topicId}/artifacts`,
+    artifactRoot: joinFsPath(
+      cwd,
+      `.shadow-crew/agents/${options.agentId}/topics/${options.topicId}/artifacts`
+    ),
     createdAt: options.createdAt ?? Date.now(),
   };
 }
