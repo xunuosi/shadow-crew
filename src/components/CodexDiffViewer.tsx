@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { WorkspaceFile, TopicPatchDiffItem } from '../types';
+import { TopicPatchDiffItem } from '../types';
 import { 
   X, 
   FileCode2, 
@@ -26,7 +26,6 @@ interface CodexDiffViewerProps {
   isOpen: boolean;
   onClose: () => void;
   activeDiff: ActiveCodexDiffPayload | null;
-  workspaceFiles: WorkspaceFile[];
   onApplyDiff?: (topicId?: string, diffs?: TopicPatchDiffItem[]) => Promise<void> | void;
 }
 

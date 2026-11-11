@@ -11,8 +11,7 @@ import {
   Thread, 
   Message, 
   SubThread, 
-  AcpRpcLog, 
-  WorkspaceFile,
+  AcpRpcLog,
   TopicMessageData,
   DecisionRecord,
   TopicStatus,
@@ -43,8 +42,7 @@ import {
   INITIAL_THREADS, 
   INITIAL_MESSAGES, 
   INITIAL_SUB_THREADS, 
-  INITIAL_RPC_LOGS, 
-  MOCK_WORKSPACE_FILES 
+  INITIAL_RPC_LOGS
 } from './data/mockData';
 import { Hash, Plus, PanelLeft } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
@@ -238,7 +236,41 @@ const REMOTE_ACP_PROBE_TIMEOUT_MS = 5_000;
 const REMOTE_ACP_HEALTH_INTERVAL_MS = 5_000;
 const REMOTE_ACP_HEALTH_REFRESH_MS = 15_000;
 
+const LEGACY_UI_STATE_MIGRATION_KEY = 'shinobi_legacy_ui_keys_migrated_v1';
+let legacyUiStateMigrationChecked = false;
+
+/**
+ * 显式一次性迁移：把历史遗留的蛇形 / 驼峰重复键收敛为唯一规范键。
+ * 迁移完成后删除旧键，业务读取只认规范键，不保留任何回退读取。
+ */
+function migrateLegacyUiStateKeysOnce(): void {
+  if (legacyUiStateMigrationChecked || typeof window === 'undefined') return;
+  legacyUiStateMigrationChecked = true;
+  try {
+    if (localStorage.getItem(LEGACY_UI_STATE_MIGRATION_KEY) === 'true') return;
+    const pairs: Array<[legacy: string, canonical: string]> = [
+      ['shinobi_active_channel_id', 'shinobi_activeChannelId'],
+      ['shinobi_active_thread_id', 'shinobi_activeThreadId'],
+      ['shinobi_sub_threads', 'shinobi_subThreads'],
+    ];
+    for (const [legacy, canonical] of pairs) {
+      const legacyValue = localStorage.getItem(legacy);
+      if (legacyValue === null) continue;
+      if (localStorage.getItem(canonical) === null) {
+        localStorage.setItem(canonical, legacyValue);
+      }
+      localStorage.removeItem(legacy);
+    }
+    localStorage.setItem(LEGACY_UI_STATE_MIGRATION_KEY, 'true');
+  } catch (err) {
+    console.warn('[App] 旧版 UI 状态键迁移失败，保留原数据待下次启动重试', err);
+  }
+}
+
 export default function App() {
+  // 必须在任何 useState 初始化器读取 localStorage 之前完成显式迁移。
+  migrateLegacyUiStateKeysOnce();
+
   // Main View Navigation ('chat' | 'agents') - Default to chat for PRD Messaging Space
   const [mainView, setMainView] = useState<'chat' | 'agents'>('chat');
 
@@ -324,7 +356,9 @@ export default function App() {
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveAgentsToDb(agents);
+    void saveAgentsToDb(agents).catch((err) => {
+      console.error('[App] Failed to persist agents:', err);
+    });
   }, [agents]);
 
   const [teams, setTeams] = useState<AgentTeam[]>(() => {
@@ -347,7 +381,9 @@ export default function App() {
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveTeamsToDb(teams);
+    void saveTeamsToDb(teams).catch((err) => {
+      console.error('[App] Failed to persist teams:', err);
+    });
   }, [teams]);
 
   // Mock data ID blacklist to purge contaminated cache from previous sessions
@@ -390,7 +426,7 @@ export default function App() {
 
   const [activeChannelId, setActiveChannelId] = useState<string>(() => {
     try {
-      const saved = localStorage.getItem('shinobi_active_channel_id') || localStorage.getItem('shinobi_activeChannelId');
+      const saved = localStorage.getItem('shinobi_activeChannelId');
       if (saved && !MOCK_CHANNEL_IDS.has(saved)) return saved;
     } catch {}
     return '';
@@ -398,7 +434,9 @@ export default function App() {
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveChannelsToDb(channels);
+    void saveChannelsToDb(channels).catch((err) => {
+      console.error('[App] Failed to persist channels:', err);
+    });
   }, [channels]);
 
   const [workspaceBindings, setWorkspaceBindings] = useState<WorkspaceBinding[]>(() => {
@@ -433,7 +471,9 @@ export default function App() {
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveWorkspaceStateToDb('activeChannelId', activeChannelId);
+    void saveWorkspaceStateToDb('activeChannelId', activeChannelId).catch((err) => {
+      console.error('[App] Failed to persist activeChannelId:', err);
+    });
   }, [activeChannelId]);
 
   // Threads State with Local Storage Persistence
@@ -455,7 +495,7 @@ export default function App() {
 
   const [activeThreadId, setActiveThreadId] = useState<string>(() => {
     try {
-      const saved = localStorage.getItem('shinobi_active_thread_id') || localStorage.getItem('shinobi_activeThreadId');
+      const saved = localStorage.getItem('shinobi_activeThreadId');
       if (saved && !MOCK_THREAD_IDS.has(saved)) return saved;
     } catch {}
     return '';
@@ -463,12 +503,16 @@ export default function App() {
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveThreadsToDb(threads);
+    void saveThreadsToDb(threads).catch((err) => {
+      console.error('[App] Failed to persist threads:', err);
+    });
   }, [threads]);
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveWorkspaceStateToDb('activeThreadId', activeThreadId);
+    void saveWorkspaceStateToDb('activeThreadId', activeThreadId).catch((err) => {
+      console.error('[App] Failed to persist activeThreadId:', err);
+    });
   }, [activeThreadId]);
 
   // Messages State with Local Storage Persistence
@@ -528,7 +572,9 @@ export default function App() {
         void saveWorkspaceStateToDb(
           'workspaceBindingSchemaVersion',
           WORKSPACE_BINDING_SCHEMA_VERSION
-        );
+        ).catch((err) => {
+          console.error('[App] Failed to persist workspace binding schema version:', err);
+        });
       }
     } catch (err) {
       console.error('[App] Workspace Binding migration failed:', err);
@@ -729,7 +775,7 @@ export default function App() {
   // SubThreads State with Local Storage Persistence
   const [subThreads, setSubThreads] = useState<Record<string, SubThread>>(() => {
     try {
-      const saved = localStorage.getItem('shinobi_sub_threads') || localStorage.getItem('shinobi_subThreads');
+      const saved = localStorage.getItem('shinobi_subThreads');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === 'object') return parsed;
@@ -740,11 +786,12 @@ export default function App() {
 
   useEffect(() => {
     if (!isWorkspaceHydratedRef.current) return;
-    saveWorkspaceStateToDb('subThreads', subThreads);
+    void saveWorkspaceStateToDb('subThreads', subThreads).catch((err) => {
+      console.error('[App] Failed to persist subThreads:', err);
+    });
   }, [subThreads]);
 
   const [rpcLogs, setRpcLogs] = useState<AcpRpcLog[]>(INITIAL_RPC_LOGS);
-  const [workspaceFiles] = useState<WorkspaceFile[]>(MOCK_WORKSPACE_FILES);
 
   // Topic States (PRD 三层半扁平拓扑：频道 ➔ Topic 消息卡片 ➔ 独立推演抽屉)
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
@@ -1169,79 +1216,6 @@ export default function App() {
       setActiveThreadId('');
     }
   }, [activeThread?.id, isDirectMessageSelected]);
-
-  // One-time repair for TestChannel: Ensure MyClaudeCode is included, ShinobiCore is excluded, and never override user changes
-  useEffect(() => {
-    try {
-      const MIGRATION_KEY = 'shinobi_testchannel_repaired_v4';
-      if (localStorage.getItem(MIGRATION_KEY)) return;
-      if (agents.length === 0) return;
-
-      // Find Claude Code agent (MyClaudeCode)
-      const claudeAgent = agents.find(
-        (a) =>
-          a.name.toLowerCase().includes('claude') ||
-          a.handle?.toLowerCase().includes('claude') ||
-          a.id.toLowerCase().includes('claude')
-      );
-
-      setChannels((prevChannels) => {
-        let changed = false;
-        const updated = prevChannels.map((channel) => {
-          const isTestChannel =
-            channel.name.toLowerCase().includes('test') ||
-            channel.id.toLowerCase().includes('test');
-
-          if (isTestChannel) {
-            changed = true;
-            const newAssigned = (channel.assignedAgentIds || []).filter(
-              (id) => id !== 'agent-shinobi-core'
-            );
-            const newMembers = (channel.memberIds || [channel.creatorId || currentUserId]).filter(
-              (id) => id !== 'agent-shinobi-core'
-            );
-
-            // Include claudeAgent if found
-            if (claudeAgent) {
-              if (!newAssigned.includes(claudeAgent.id)) newAssigned.push(claudeAgent.id);
-              if (!newMembers.includes(claudeAgent.id)) newMembers.push(claudeAgent.id);
-            }
-
-            return {
-              ...channel,
-              assignedAgentIds: newAssigned,
-              memberIds: newMembers,
-            };
-          }
-          return channel;
-        });
-
-        if (changed) {
-          localStorage.setItem(MIGRATION_KEY, 'true');
-          setThreads((prevThreads) =>
-            prevThreads.map((thread) => {
-              const chan = updated.find((c) => c.id === thread.channelId);
-              if (
-                chan &&
-                (chan.name.toLowerCase().includes('test') ||
-                  chan.id.toLowerCase().includes('test'))
-              ) {
-                return {
-                  ...thread,
-                  activeAgentIds: chan.assignedAgentIds,
-                };
-              }
-              return thread;
-            })
-          );
-          return updated;
-        }
-
-        localStorage.setItem(MIGRATION_KEY, 'true');
-        return prevChannels;
-      });
-    } catch {}
-  }, [agents, currentUserId]);
 
   // Synchronize Agent running status with Tauri backend process manager
   const syncRunningAgentsWithBackend = useCallback(async (
@@ -2122,44 +2096,6 @@ export default function App() {
     setMainView('chat');
   };
 
-  // Handle Creation of New Thread in current channel
-  const handleNewThread = () => {
-    const threadId = `thread-${Date.now()}`;
-    const newThread: Thread = {
-      id: threadId,
-      channelId: activeChannel?.id,
-      channelName: activeChannel.name,
-      type: 'thread',
-      title: '新发起的工程研讨议题',
-      authorId: 'user-norris',
-      authorName: 'Norris_M5Pro',
-      authorAvatar: '👨‍💻',
-      authorHandle: '@Norris_M5Pro',
-      timestamp: 'Just now',
-      preview: '新议题就绪，请在底部 Composer 中输入指令或 @Agent 召唤编队。',
-      activeAgentIds: activeChannel.assignedAgentIds,
-    };
-    setThreads((prev) => [newThread, ...prev]);
-    setActiveThreadId(threadId);
-    setMessages((prev) => ({
-      ...prev,
-      [threadId]: [
-        {
-          id: `msg-${Date.now()}`,
-          threadId: threadId,
-          authorId: 'user-norris',
-          authorName: 'Norris_M5Pro',
-          authorHandle: '@Norris_M5Pro',
-          authorAvatar: '👨‍💻',
-          isAgent: false,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `已开启新议题！当前研讨环境处于沙盒就绪状态。可直接 @Agent 分派任务或开启子话题深潜。`,
-        },
-      ],
-    }));
-    setMainView('chat');
-  };
-
   // Topic Handlers (PRD 核心空间交互)
   const handleOpenTopic = (topicId: string) => {
     setActiveTopicId(topicId);
@@ -2549,6 +2485,11 @@ export default function App() {
     } = options;
     const cascade = activeCascadesRef.current[cascadeId];
     if (!cascade || cascade.isAborted) return;
+    // 级联派发必须绑定一个活动线程：缺失时直接终止，而不是继续读取 null 字段。
+    if (!activeThread) {
+      console.warn('[App] 级联调度缺少活动线程上下文，已跳过本轮派发');
+      return;
+    }
 
     const effectiveTurnOutputs: TurnAgentOutput[] =
       turnOutputs && turnOutputs.length > 0
@@ -3466,6 +3407,7 @@ export default function App() {
             modularState: updatedModularState,
             cognoNexus: {
               ...old.gameTheoreticState?.cognoNexus,
+              committedStates: old.gameTheoreticState?.cognoNexus?.committedStates ?? [],
               modularState: updatedModularState,
             },
           },
@@ -3819,9 +3761,11 @@ export default function App() {
         delete stageRefineRetriesRef.current[`${topicId}:challenge`];
 
         // 提取论点因果节点、升级为 Claim DAG 与图差分冲突定位 (Wave 3 P1-1)
-        const argumentNodes = extractArgumentNodes(targetProposalText);
+        // 缺失主导方案正文时以空串进入分析器（分析器会显式返回空节点），而不是让整个交接流程崩溃。
+        const proposalTextForAnalysis = targetProposalText ?? '';
+        const argumentNodes = extractArgumentNodes(proposalTextForAnalysis);
         const disputePacket = localizeGraphDiffDispute(argumentNodes, acpResp.textResponse);
-        const committedStates = dehydrateContextToCommittedStates(targetProposalText, acpResp.textResponse, argumentNodes);
+        const committedStates = dehydrateContextToCommittedStates(proposalTextForAnalysis, acpResp.textResponse, argumentNodes);
 
         // 提炼并保留伴生少数派异议报告 (P0-2 Disagreement-Aware Deliberation)
         const minorityReport = compileMinorityReport({
@@ -4437,8 +4381,14 @@ export default function App() {
               gameStage: 'challenge',
             };
           } else if (verStep.posteriorAction === 'FREEZE_MODULE') {
-            const frozenCount = nextModular.modules.filter((m) => m.status === 'frozen').length;
-            const nextActiveMod = nextModular.modules.find((m) => m.moduleId === nextModular.activeModuleId);
+            if (!nextModular) {
+              throw new Error('模块状态机在 FREEZE_MODULE 分支缺少 nextState，拒绝以空状态推进');
+            }
+            const frozenModular = nextModular;
+            const frozenCount = frozenModular.modules.filter((m) => m.status === 'frozen').length;
+            const nextActiveMod = frozenModular.modules.find(
+              (m) => m.moduleId === frozenModular.activeModuleId
+            );
             verNoticeMsg = {
               id: `msg-fast-track-freeze-${Date.now()}`,
               threadId: topicId,
@@ -5020,7 +4970,7 @@ export default function App() {
 
         // P2 二次对抗回边判定 (4 项硬条件守卫，不满足 4 条件不得回退，防止死循环) (R-4/R-6)
         const currentRoundCount = currentTopic.gameTheoreticState?.roundCount || 1;
-        const originalClaims = extractArgumentNodes(targetProposalText);
+        const originalClaims = extractArgumentNodes(targetProposalText ?? '');
         const defenseClaims = extractArgumentNodes(acpResp.textResponse);
         const hasNewUnverifiedClaims = defenseClaims.some(
           (dc) => !originalClaims.some((oc) => oc.claim === dc.claim || (oc.claim && dc.claim && (oc.claim.includes(dc.claim) || dc.claim.includes(oc.claim))))
@@ -5519,6 +5469,7 @@ export default function App() {
             ...old,
             gameTheoreticState: {
               ...old.gameTheoreticState,
+              currentStage: old.gameTheoreticState?.currentStage ?? 'arbitration',
               minorityReport: old.gameTheoreticState?.minorityReport,
               mcdaPayload,
               colMadReport,
@@ -5526,6 +5477,7 @@ export default function App() {
               concurrenceState: initialConcurrence,
               cognoNexus: {
                 ...old.gameTheoreticState?.cognoNexus,
+                committedStates: old.gameTheoreticState?.cognoNexus?.committedStates ?? [],
                 minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
                 mcdaPayload,
                 colMadReport,
@@ -5772,6 +5724,7 @@ export default function App() {
                 ...old,
                 gameTheoreticState: {
                   ...old.gameTheoreticState,
+                  currentStage: old.gameTheoreticState?.currentStage ?? 'arbitration',
                   concurrenceState: currentConcurrence,
                 },
               }));
@@ -8739,7 +8692,7 @@ export default function App() {
 
   // Add Message to SubThread
   const handleSendSubMessage = (content: string) => {
-    if (!activeSubThreadId || !activeSubThread) return;
+    if (!activeSubThreadId || !activeSubThread || !activeThread) return;
     const subMsg: Message = {
       id: `sub-msg-${Date.now()}`,
       threadId: activeThread.id,
@@ -8764,10 +8717,11 @@ export default function App() {
   // Sync SubThread consensus back to Main Thread
   const handleSyncBackToMainThread = (summary: string) => {
     if (!activeSubThreadId || !activeSubThread || !activeThread) return;
+    const mainThreadId = activeThread.id;
     const responder = agents[0];
     const syncMsg: Message = {
       id: `msg-sync-${Date.now()}`,
-      threadId: activeThread.id,
+      threadId: mainThreadId,
       authorId: responder?.id || 'system',
       authorName: responder?.name || 'Shinobi 编队',
       authorHandle: responder?.handle || '@shinobi',
@@ -8780,7 +8734,7 @@ export default function App() {
 
     setMessages((prev) => ({
       ...prev,
-      [activeThread.id]: [...(prev[activeThread.id] || []), syncMsg],
+      [mainThreadId]: [...(prev[mainThreadId] || []), syncMsg],
     }));
 
     setActiveSubThreadId(null);
@@ -8788,8 +8742,10 @@ export default function App() {
 
   // Add Emoji Reaction
   const handleAddReaction = (messageId: string, emoji: string) => {
+    if (!activeThread) return;
+    const reactionThreadId = activeThread.id;
     setMessages((prev) => {
-      const threadMsgs = prev[activeThread.id] || [];
+      const threadMsgs = prev[reactionThreadId] || [];
       const updated = threadMsgs.map((m) => {
         if (m.id !== messageId) return m;
         const currentReactions = m.reactions || [];
@@ -8808,7 +8764,7 @@ export default function App() {
           };
         }
       });
-      return { ...prev, [activeThread.id]: updated };
+      return { ...prev, [reactionThreadId]: updated };
     });
   };
 
@@ -8909,11 +8865,12 @@ export default function App() {
                   cartridges: agent.memory?.cartridges ? [...agent.memory.cartridges] : [],
                 },
                 capabilities: {
-                  canAccessWorkspaceFiles: true,
-                  canExecuteSkills: true,
-                  canDelegateToSubAgents: true,
-                  supportsStreaming: true,
                   ...(agent.capabilities || {}),
+                  // 派生副本默认继承完整能力，但允许源 Agent 显式关闭；内部记忆固定不可用。
+                  canAccessWorkspaceFiles: agent.capabilities?.canAccessWorkspaceFiles ?? true,
+                  canExecuteSkills: agent.capabilities?.canExecuteSkills ?? true,
+                  canDelegateToSubAgents: agent.capabilities?.canDelegateToSubAgents ?? true,
+                  supportsStreaming: agent.capabilities?.supportsStreaming ?? true,
                   canUseInternalMemory: false,
                 },
               },
@@ -9045,7 +9002,7 @@ export default function App() {
                 <ChatTimeline
                   messages={activeMessages}
                   activeThread={activeThread}
-                  channel={activeThread.type === 'dm' ? undefined : activeChannel}
+                  channel={activeThread.type === 'dm' ? undefined : activeChannel ?? undefined}
                   agents={agents}
                   activeExecutions={Object.values(activeExecutions)}
                   onApplyTopicPatch={handleApplyTopicPatch}
@@ -9142,7 +9099,7 @@ export default function App() {
                 onExecuteTopicPatch={handleExecuteTopicPatch}
                 onApplyTopicPatch={(tid) => handleApplyTopicPatch(tid)}
                 onRollbackTopicPatch={handleRollbackTopicPatch}
-                workspaceCwd={getTopicWorkspaceBinding(activeTopicId)?.cwd}
+                workspaceCwd={getTopicWorkspaceBinding(activeTopicId ?? undefined)?.cwd}
                 overlappingFiles={(() => {
                   if (!activeTopicData || activeTopicData.gameTheoreticState?.executionStatus === 'applied') return [];
                   const myFiles = new Set(
@@ -9202,7 +9159,6 @@ export default function App() {
             isOpen={isCodexDiffOpen}
             onClose={() => setIsCodexDiffOpen(false)}
             activeDiff={activeDiff}
-            workspaceFiles={workspaceFiles}
             onApplyDiff={handleApplyTopicPatch}
           />
         )}
@@ -9212,7 +9168,6 @@ export default function App() {
         <AcpInspector
           selectedAgent={selectedAgent}
           rpcLogs={rpcLogs}
-          workspaceFiles={workspaceFiles}
           onRunAgentSkill={(agentId, skillId) => {
             const ag = agents.find((a) => a.id === agentId);
             if (ag) {
@@ -9631,7 +9586,7 @@ export default function App() {
           isOpen={isNewTopicModalOpen}
           onClose={() => setIsNewTopicModalOpen(false)}
           scopeType={activeThread?.type === 'dm' ? 'dm' : 'channel'}
-          channel={activeThread?.type === 'dm' ? undefined : activeChannel}
+          channel={activeThread?.type === 'dm' ? undefined : activeChannel ?? undefined}
           dmAgent={
             activeThread?.type === 'dm'
               ? agents.find((agent) => agent.id === activeThread.authorId)
