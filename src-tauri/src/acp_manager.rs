@@ -1415,8 +1415,19 @@ impl AcpProcessManager {
             drop(agent.stdin_tx);
             if let Some(mut child) = agent.child.lock().await.take() {
                 let _ = child.kill().await;
+                // 回收进程句柄，避免僵尸进程与句柄泄漏
+                let _ = child.wait().await;
             }
             log_acp_event(agent_id, "STOPPED", "Agent process terminated by user");
+        }
+        Ok(())
+    }
+
+    /// 停机时终止全部 ACP 子进程，用于应用退出与进程崩溃前的兜底清理。
+    pub async fn stop_all(&mut self) -> Result<()> {
+        let ids: Vec<String> = self.agents.keys().cloned().collect();
+        for agent_id in ids {
+            self.stop_agent(&agent_id).await?;
         }
         Ok(())
     }
@@ -1436,6 +1447,7 @@ impl AcpProcessManager {
             drop(old_agent.stdin_tx);
             if let Some(mut old_child) = old_agent.child.lock().await.take() {
                 let _ = old_child.kill().await;
+                let _ = old_child.wait().await;
             }
             log_acp_event(
                 agent_id,
@@ -1480,7 +1492,10 @@ impl AcpProcessManager {
         }
 
         // 智能路径探测: codex-acp 适配器命令
-        let home = std::env::var("HOME").unwrap_or_default();
+        // 主目录解析统一走 HOME → USERPROFILE → HOMEDRIVE+HOMEPATH，Windows 上不能只认 HOME。
+        let home = crate::user_home_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
         if command_line.contains("codex-acp") {
             let possible_bins = [
                 format!("{}/bin/codex-acp", cwd),
@@ -1499,9 +1514,26 @@ impl AcpProcessManager {
             }
         }
 
-        // 注入常见环境 PATH，保障 macOS GUI 模式下能正常执行 cargo/openclaw/codex 等 CLI
-        let current_path = std::env::var("PATH").unwrap_or_default();
-        let extra_paths = format!("{}/.local/bin:{}/.cargo/bin:{}/.codex/plugins/.plugin-appserver:/opt/homebrew/bin:/usr/local/bin:{}", home, home, home, current_path);
+        // 注入常见环境 PATH，保障 GUI 模式下能正常执行 cargo/openclaw/codex 等 CLI。
+        // 必须使用平台原生分隔符（Windows 为 `;`，Unix 为 `:`），否则整串会被当成单个路径。
+        let mut path_entries: Vec<PathBuf> = Vec::new();
+        if !home.is_empty() {
+            let home_path = Path::new(&home);
+            path_entries.push(home_path.join(".local/bin"));
+            path_entries.push(home_path.join(".cargo/bin"));
+            path_entries.push(home_path.join(".codex/plugins/.plugin-appserver"));
+        }
+        if cfg!(not(windows)) {
+            path_entries.push(PathBuf::from("/opt/homebrew/bin"));
+            path_entries.push(PathBuf::from("/usr/local/bin"));
+        }
+        if let Some(current_path) = std::env::var_os("PATH") {
+            path_entries.extend(std::env::split_paths(&current_path));
+        }
+        let extra_paths = std::env::join_paths(path_entries)
+            .map_err(|e| anyhow::anyhow!("构建子进程 PATH 失败: {}", e))?
+            .to_string_lossy()
+            .to_string();
 
         let parts: Vec<&str> = actual_cmd.split_whitespace().collect();
         if parts.is_empty() {
@@ -1527,6 +1559,19 @@ impl AcpProcessManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+
+        // 向内置 MCP 注入允许访问的根目录：具体工作区 + Shadow Crew 全局目录。
+        // 内置 fs 工具据此拒绝工作区外的任意路径，避免 prompt 注入读写系统文件。
+        {
+            let mut allowed_roots: Vec<PathBuf> = Vec::new();
+            if !cwd.trim().is_empty() {
+                allowed_roots.push(PathBuf::from(cwd));
+            }
+            allowed_roots.push(shadow_crew_home.clone());
+            if let Ok(joined) = std::env::join_paths(allowed_roots.iter().map(|p| p.as_os_str())) {
+                cmd.env("SHADOW_CREW_WORKSPACE_ROOTS", joined);
+            }
+        }
 
         if let Some(ref mcp_path) = resolved_dev_mcp {
             cmd.env("SHADOW_CREW_DEV_MCP_PATH", mcp_path);
@@ -1717,6 +1762,7 @@ impl AcpProcessManager {
         let session_permission_grants_clone = session_permission_grants.clone();
         let pending_permission_count_clone = pending_permission_count.clone();
         let permission_db_manager = self.db_manager.clone();
+        let child_arc_reader = child_arc.clone();
 
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
@@ -2168,6 +2214,12 @@ impl AcpProcessManager {
 
             // 当 stdout 到达 EOF 时，标记子进程退出并通知所有挂起的请求
             is_alive_clone.store(false, Ordering::SeqCst);
+            // 显式回收子进程：仅关闭管道不会释放进程句柄，
+            // 反复重启会累积孤儿进程并可能令端口/文件锁无法释放。
+            if let Some(mut child) = child_arc_reader.lock().await.take() {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
             log_acp_event(&agent_id_clone, "EXIT", "Agent process stdout EOF reached");
             let _ = app_handle_clone.emit(
                 "acp:status_change",
@@ -2236,7 +2288,40 @@ impl AcpProcessManager {
             },
         );
 
-        // 1. 立即发起 ACP initialize 握手 (超时 10 秒，兼容适配器冷启动探测)
+        // 1. 异步发起 ACP initialize 握手 (超时 10 秒，兼容适配器冷启动探测)。
+        // 握手可能阻塞 10 秒；若在全局管理器锁内等待，其它 Agent 的启动/停止/查询会被整体串行化。
+        // 这里把握手等待与状态回写移到独立任务，spawn 只负责进程拉起与登记。
+        let agent_id_init = agent_id.to_string();
+        let command_line_init = command_line.to_string();
+        let env_vars_init = env_vars.clone();
+        let app_handle_init = app_handle.clone();
+        let stdin_tx_init = stdin_tx;
+        let pending_requests_init = pending_requests;
+        let initialized_init = initialized;
+        let init_error_init = init_error;
+        let auth_state_init = auth_state;
+        let status_detail_init = status_detail;
+        let supports_load_session_init = supports_load_session;
+        let supports_resume_session_init = supports_resume_session;
+        let supports_prompt_image_init = supports_prompt_image;
+        let supports_embedded_context_init = supports_embedded_context;
+        let native_memory_capability_init = native_memory_capability;
+        tokio::spawn(async move {
+        let agent_id = agent_id_init.as_str();
+        let command_line = command_line_init;
+        let env_vars = env_vars_init;
+        let app_handle = app_handle_init;
+        let stdin_tx = stdin_tx_init;
+        let pending_requests = pending_requests_init;
+        let initialized = initialized_init;
+        let init_error = init_error_init;
+        let auth_state = auth_state_init;
+        let status_detail = status_detail_init;
+        let supports_load_session = supports_load_session_init;
+        let supports_resume_session = supports_resume_session_init;
+        let supports_prompt_image = supports_prompt_image_init;
+        let supports_embedded_context = supports_embedded_context_init;
+        let native_memory_capability = native_memory_capability_init;
         let init_id = next_init_request_id();
         let (init_tx, init_rx) = oneshot::channel();
         {
@@ -2367,6 +2452,7 @@ impl AcpProcessManager {
                 "pid": pid
             }),
         );
+        });
 
         Ok(pid)
     }
@@ -2539,6 +2625,24 @@ impl RunningAgent {
             }),
         );
         Ok(())
+    }
+
+    /// 向 Agent 发送 `session/cancel` 通知，终止当前 session 正在进行的回合。
+    /// 发送失败只记录日志：此时连接大概率已断，后续由 EOF 处理路径收尾。
+    async fn send_session_cancel(&self, session_id: &str) {
+        let notification = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/cancel",
+            "params": { "sessionId": session_id }
+        });
+        if let Err(e) = self.stdin_tx.send(notification.to_string()).await {
+            tracing::warn!(
+                "[Agent {}] Failed to send session/cancel for {}: {}",
+                self.agent_id,
+                session_id,
+                e
+            );
+        }
     }
 
     async fn cancel_pending_permissions_for_session(
@@ -3813,6 +3917,15 @@ impl RunningAgent {
         });
 
         if let Err(e) = self.stdin_tx.send(request.to_string()).await {
+            // 写失败意味着本次请求根本不会得到响应，必须撤销已登记的 pending / active 状态，
+            // 否则会留下永不 resolve 的 oneshot 与陈旧的 session 活跃请求 id。
+            self.pending_requests.lock().await.remove(&req_id);
+            {
+                let mut active_reqs = self.session_active_req.lock().await;
+                if active_reqs.get(&current_session_id) == Some(&req_id) {
+                    active_reqs.remove(&current_session_id);
+                }
+            }
             self.is_alive.store(false, Ordering::SeqCst);
             anyhow::bail!("Failed to write to agent stdin channel: {}", e);
         }
@@ -3994,6 +4107,11 @@ impl RunningAgent {
             Err(timeout_err_msg) => {
                 let mut map = self.pending_requests.lock().await;
                 map.remove(&req_id);
+                drop(map);
+                // 超时后必须显式取消远端回合，否则子进程会继续生成 token，
+                // 并与同一 session 的下一条 prompt 产生交错输出。
+                self.send_session_cancel(&current_session_id).await;
+                self.active_chunks.lock().await.remove(&req_id);
                 let mut active_reqs = self.session_active_req.lock().await;
                 if active_reqs.get(&current_session_id) == Some(&req_id) {
                     active_reqs.remove(&current_session_id);

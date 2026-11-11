@@ -24,3 +24,4 @@ anyhow.workspace = true
 thiserror.workspace = true
 chrono = "0.4"
 rusqlite.workspace = true
+uuid.workspace = true

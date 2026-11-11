@@ -10,7 +10,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use db_manager::{DatabaseManager, StorageStatsDto};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 // 共享的全局状态
@@ -798,29 +798,108 @@ fn reconstruct_content_from_diff(diff: &str, code_content: Option<&str>) -> Stri
     lines.join("\n") + "\n"
 }
 
-fn try_block_replace_on_existing_file(existing: &str, diff: &str) -> Option<String> {
-    let mut removed_lines: Vec<&str> = Vec::new();
-    let mut added_lines: Vec<&str> = Vec::new();
+/// 解析 unified diff 的 hunk 头：`@@ -oldStart[,oldCount] +newStart[,newCount] @@`
+fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
+    let rest = line.strip_prefix("@@ -")?;
+    let end = rest.find(" +")?;
+    let old_part = &rest[..end];
+    let mut pieces = old_part.split(',');
+    let old_start: usize = pieces.next()?.trim().parse().ok()?;
+    let old_count: usize = match pieces.next() {
+        Some(raw) => raw.trim().parse().ok()?,
+        None => 1,
+    };
+    Some((old_start, old_count))
+}
+
+struct DiffHunk {
+    old_start: usize,
+    old_lines: Vec<String>,
+    new_lines: Vec<String>,
+}
+
+fn parse_diff_hunks(diff: &str) -> Vec<DiffHunk> {
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    let mut current: Option<DiffHunk> = None;
     for line in diff.lines() {
-        if line.starts_with("---") || line.starts_with("+++") || line.starts_with("@@") {
+        if let Some((old_start, _old_count)) = parse_hunk_header(line) {
+            if let Some(hunk) = current.take() {
+                hunks.push(hunk);
+            }
+            current = Some(DiffHunk {
+                old_start,
+                old_lines: Vec::new(),
+                new_lines: Vec::new(),
+            });
             continue;
         }
-        if let Some(rem) = line.strip_prefix('-') {
-            removed_lines.push(rem);
-        } else if let Some(add) = line.strip_prefix('+') {
-            added_lines.push(add);
+        let Some(hunk) = current.as_mut() else {
+            // diff --git / index / --- / +++ 等头部
+            continue;
+        };
+        if line.starts_with('\\') {
+            // "\ No newline at end of file"
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('-') {
+            hunk.old_lines.push(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix('+') {
+            hunk.new_lines.push(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix(' ') {
+            hunk.old_lines.push(rest.to_string());
+            hunk.new_lines.push(rest.to_string());
+        } else if line.is_empty() {
+            // 某些生成器会省略上下文空行的前导空格，按空行处理
+            hunk.old_lines.push(String::new());
+            hunk.new_lines.push(String::new());
         }
     }
-    if removed_lines.is_empty() {
+    if let Some(hunk) = current.take() {
+        hunks.push(hunk);
+    }
+    hunks
+}
+
+/// 按 hunk 行号定位修改，而不是把全部 `-` 行拼成字符串做「首次出现」替换。
+/// 任一 hunk 的旧内容与目标位置不一致时返回 None（调用方据此判定冲突），绝不盲目覆盖。
+fn try_block_replace_on_existing_file(existing: &str, diff: &str) -> Option<String> {
+    let mut hunks = parse_diff_hunks(diff);
+    if hunks.is_empty() {
         return None;
     }
-    let target_block = removed_lines.join("\n");
-    let replacement_block = added_lines.join("\n");
-    if existing.contains(&target_block) {
-        Some(existing.replacen(&target_block, &replacement_block, 1))
-    } else {
-        None
+
+    let had_trailing_newline = existing.ends_with('\n');
+    let mut lines: Vec<String> = existing.split('\n').map(|s| s.to_string()).collect();
+    if had_trailing_newline {
+        lines.pop();
     }
+
+    // 从后往前应用，前面的 hunk 行号不会被后续修改影响
+    hunks.sort_by(|a, b| b.old_start.cmp(&a.old_start));
+    for hunk in hunks {
+        let start_index = if hunk.old_lines.is_empty() {
+            // 纯插入：`@@ -N,0 +...` 表示在第 N 行之后插入（0 表示文件开头）
+            hunk.old_start
+        } else if hunk.old_start == 0 {
+            0
+        } else {
+            hunk.old_start - 1
+        };
+        let end_index = start_index.checked_add(hunk.old_lines.len())?;
+        if end_index > lines.len() {
+            return None;
+        }
+        if lines[start_index..end_index] != hunk.old_lines[..] {
+            return None;
+        }
+        lines.splice(start_index..end_index, hunk.new_lines.iter().cloned());
+    }
+
+    let mut result = lines.join("\n");
+    if had_trailing_newline {
+        result.push('\n');
+    }
+    Some(result)
 }
 
 /// Tauri Command: 将议题落地 Agent 生成的补丁物理应用到本地工作区与频道归档目录
@@ -1777,6 +1856,7 @@ fn get_agent_dir_info(agent_id: String) -> Result<serde_json::Value, String> {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HttpPostRequest {
     pub url: String,
     pub headers: std::collections::HashMap<String, String>,
@@ -1784,6 +1864,9 @@ pub struct HttpPostRequest {
     pub method: Option<String>,
     pub timeout_secs: Option<u64>,
 }
+
+/// curl `-w` 尾部标记；长度用于精确切分状态码，禁止硬编码偏移量。
+const HTTP_STATUS_MARKER: &str = "\n__SHADOW_HTTP_CODE__:";
 
 #[derive(serde::Serialize)]
 pub struct HttpResponsePayload {
@@ -1841,7 +1924,7 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
         if is_post && !body_str.is_empty() && body_str != "null" {
             cmd.arg("-d").arg(&body_str);
         }
-        cmd.arg("-w").arg("\n__SHADOW_HTTP_CODE__:%{http_code}");
+        cmd.arg("-w").arg(format!("{}%{{http_code}}", HTTP_STATUS_MARKER));
         cmd.arg(&req.url);
         cmd
     };
@@ -1874,11 +1957,25 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
 
     let mut status_code: u16 = 0;
     let mut response_text = raw_output;
+    // 状态码是否成功解析。curl 正常退出却缺少标记时必须判为失败，
+    // 不能把"未知"静默降级成 0 后继续冒充请求结果。
+    let mut status_parsed = false;
 
-    if let Some(pos) = response_text.rfind("\n__SHADOW_HTTP_CODE__:") {
-        let code_part = response_text[pos + 23..].trim();
-        if let Ok(c) = code_part.parse::<u16>() {
-            status_code = c;
+    if let Some(pos) = response_text.rfind(HTTP_STATUS_MARKER) {
+        let code_start = pos + HTTP_STATUS_MARKER.len();
+        let code_part = response_text[code_start..].trim();
+        match code_part.parse::<u16>() {
+            Ok(c) => {
+                status_code = c;
+                status_parsed = true;
+            }
+            Err(_) => {
+                response_text.truncate(pos);
+                return Err(format!(
+                    "无法解析 HTTP 状态码 (curl 输出: {:?})",
+                    code_part
+                ));
+            }
         }
         response_text.truncate(pos);
     }
@@ -1895,6 +1992,14 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
         });
     }
 
+    if !status_parsed {
+        return Err(format!(
+            "HTTP 响应缺少状态码标记，无法确认请求结果 (curl 退出码: {:?}, stderr: {})",
+            output.status.code(),
+            err_output.trim()
+        ));
+    }
+
     let is_ok = (200..300).contains(&status_code);
 
     Ok(HttpResponsePayload {
@@ -1905,37 +2010,112 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
     })
 }
 
-fn expand_tilde_path(raw: &str) -> std::path::PathBuf {
+/// 解析用户主目录：Unix 用 `HOME`，Windows 用 `USERPROFILE`（必要时回退 `HOMEDRIVE`+`HOMEPATH`）。
+/// 解析失败返回 `None`，由调用方显式报错，禁止回退到当前目录（会读写到意外位置）。
+pub(crate) fn user_home_dir() -> Option<std::path::PathBuf> {
+    if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
+        return Some(std::path::PathBuf::from(home));
+    }
+    if let Some(profile) = std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()) {
+        return Some(std::path::PathBuf::from(profile));
+    }
+    match (
+        std::env::var_os("HOMEDRIVE").filter(|v| !v.is_empty()),
+        std::env::var_os("HOMEPATH").filter(|v| !v.is_empty()),
+    ) {
+        (Some(drive), Some(path)) => {
+            let mut joined = std::path::PathBuf::from(drive);
+            joined.push(path);
+            Some(joined)
+        }
+        _ => None,
+    }
+}
+
+/// 展开 `~` / `~/xxx`。无法解析主目录时返回错误，绝不回退到相对路径。
+pub(crate) fn expand_tilde_path(raw: &str) -> Result<std::path::PathBuf, String> {
     let trimmed = raw.trim();
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let needs_home = trimmed == "~"
+        || trimmed.starts_with("~/")
+        || trimmed.starts_with("~\\");
+    if !needs_home {
+        return Ok(std::path::PathBuf::from(trimmed));
+    }
+    let home = user_home_dir()
+        .ok_or_else(|| format!("无法解析用户主目录，无法展开路径: {}", trimmed))?;
     if trimmed == "~" {
-        return std::path::PathBuf::from(home);
+        return Ok(home);
     }
-    if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
-        return std::path::PathBuf::from(home).join(rest);
+    let rest = &trimmed[2..];
+    Ok(home.join(rest))
+}
+
+fn resolve_codex_home_dir(codex_home: Option<String>) -> Result<std::path::PathBuf, String> {
+    match codex_home.filter(|s| !s.trim().is_empty()) {
+        Some(custom) => expand_tilde_path(&custom),
+        None => expand_tilde_path("~/.codex"),
     }
-    std::path::PathBuf::from(trimmed)
 }
 
-fn resolve_codex_home_dir(codex_home: Option<String>) -> std::path::PathBuf {
-    codex_home
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| expand_tilde_path(&s))
-        .unwrap_or_else(|| expand_tilde_path("~/.codex"))
+fn resolve_packs_root_dir(packs_dir: Option<String>) -> Result<std::path::PathBuf, String> {
+    match packs_dir.filter(|s| !s.trim().is_empty()) {
+        Some(custom) => expand_tilde_path(&custom),
+        None => Ok(db_manager::get_shadow_crew_home_dir().join("packs")),
+    }
 }
 
-fn resolve_packs_root_dir(packs_dir: Option<String>) -> std::path::PathBuf {
-    packs_dir
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| expand_tilde_path(&s))
-        .unwrap_or_else(|| db_manager::get_shadow_crew_home_dir().join("packs"))
+fn resolve_claude_home_dir(custom_path: Option<String>) -> Result<std::path::PathBuf, String> {
+    match custom_path.filter(|s| !s.trim().is_empty()) {
+        Some(custom) => expand_tilde_path(&custom),
+        None => expand_tilde_path("~/.claude"),
+    }
 }
 
-fn resolve_claude_home_dir(custom_path: Option<String>) -> std::path::PathBuf {
-    custom_path
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| expand_tilde_path(&s))
-        .unwrap_or_else(|| expand_tilde_path("~/.claude"))
+/// 获取（或首次生成）本机专属的专家包签名种子。
+///
+/// 旧实现使用全平台共享的固定种子，任何安装都能伪造"签名有效"的包。
+/// 这里改为首次导出时生成 32 字节系统随机种子并持久化到 `~/.shadow-crew/signing_key.seed`：
+/// - 文件存在但内容损坏 → 直接报错，拒绝自动覆盖（否则会静默更换签名身份）；
+/// - 写入使用临时文件 + rename，避免半个文件。
+fn local_signing_seed_hex() -> Result<String, String> {
+    let home = db_manager::get_shadow_crew_home_dir();
+    std::fs::create_dir_all(&home)
+        .map_err(|e| format!("无法创建 Shadow Crew 目录 {}: {}", home.display(), e))?;
+    let seed_path = home.join("signing_key.seed");
+
+    if seed_path.exists() {
+        let text = std::fs::read_to_string(&seed_path)
+            .map_err(|e| format!("读取签名种子 {} 失败: {}", seed_path.display(), e))?;
+        let trimmed = text.trim();
+        let valid = trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit());
+        if valid {
+            return Ok(trimmed.to_ascii_lowercase());
+        }
+        return Err(format!(
+            "签名种子文件 {} 已损坏；为避免静默更换签名身份，请备份后手动删除该文件再重试",
+            seed_path.display()
+        ));
+    }
+
+    // 两个 UUID v4 提供 32 字节系统熵（uuid crate 内部使用 getrandom）。
+    let mut seed = [0u8; 32];
+    seed[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    seed[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    let seed_hex: String = seed.iter().map(|b| format!("{:02x}", b)).collect();
+
+    let tmp_path = home.join("signing_key.seed.tmp");
+    std::fs::write(&tmp_path, &seed_hex)
+        .map_err(|e| format!("写入签名种子临时文件失败: {}", e))?;
+    std::fs::rename(&tmp_path, &seed_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!("落盘签名种子失败: {}", e)
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&seed_path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(seed_hex)
 }
 
 fn map_source_id_to_ui(raw_id: &str) -> &'static str {
@@ -2225,10 +2405,13 @@ async fn probe_acp_memory_sources_cmd(
     include_v1: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let effective_harness = harness.as_deref().unwrap_or("codex");
-    let effective_ws = workspace_root
+    let effective_ws = match workspace_root
         .or(workspace_cwd)
         .filter(|s| !s.trim().is_empty())
-        .map(|s| expand_tilde_path(&s).to_string_lossy().to_string());
+    {
+        Some(raw) => Some(expand_tilde_path(&raw)?.to_string_lossy().to_string()),
+        None => None,
+    };
     let opts = shadow_crew_protocol::scpack::ProbeOptions {
         workspace_cwd: effective_ws,
         include_v1: include_v1.unwrap_or(false),
@@ -2236,12 +2419,12 @@ async fn probe_acp_memory_sources_cmd(
     };
 
     if effective_harness == "claude-code" {
-        let resolved_home = resolve_claude_home_dir(home_dir.or(codex_home));
+        let resolved_home = resolve_claude_home_dir(home_dir.or(codex_home))?;
         let report = shadow_crew_protocol::scpack::probe_claude_code_sources(&resolved_home, &opts)
             .map_err(|e| e.to_string())?;
         Ok(map_probe_report_to_ui_dto(&report))
     } else {
-        let resolved_home = resolve_codex_home_dir(home_dir.or(codex_home));
+        let resolved_home = resolve_codex_home_dir(home_dir.or(codex_home))?;
         let report = shadow_crew_protocol::scpack::probe_codex_memory_sources(&resolved_home, &opts)
             .map_err(|e| e.to_string())?;
         Ok(map_probe_report_to_ui_dto(&report))
@@ -2299,16 +2482,17 @@ async fn export_codex_scpack_cmd(
         if !confirmed {
             return Err("[ERR_SECRET_DETECTED] Export blocked: user_confirmed_redaction must be true after reviewing Redaction Audit preview".to_string());
         }
-        let effective_ws = workspace_root
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| expand_tilde_path(&s).to_string_lossy().to_string());
+        let effective_ws = match workspace_root.filter(|s| !s.trim().is_empty()) {
+            Some(raw) => Some(expand_tilde_path(&raw)?.to_string_lossy().to_string()),
+            None => None,
+        };
         let opts = shadow_crew_protocol::scpack::ProbeOptions {
             workspace_cwd: effective_ws,
             include_v1: false,
             simulate_concurrent_mutation: false,
         };
         let (probe_report, default_pkg_name, default_desc, cli_ver) = if is_claude {
-            let resolved_home = resolve_claude_home_dir(home_dir.or(codex_home));
+            let resolved_home = resolve_claude_home_dir(home_dir.or(codex_home))?;
             let r = shadow_crew_protocol::scpack::probe_claude_code_sources(&resolved_home, &opts)
                 .map_err(|e| e.to_string())?;
             (
@@ -2318,7 +2502,7 @@ async fn export_codex_scpack_cmd(
                 "claude-cli 1.0.0".to_string(),
             )
         } else {
-            let resolved_home = resolve_codex_home_dir(home_dir.or(codex_home));
+            let resolved_home = resolve_codex_home_dir(home_dir.or(codex_home))?;
             let r = shadow_crew_protocol::scpack::probe_codex_memory_sources(&resolved_home, &opts)
                 .map_err(|e| e.to_string())?;
             (
@@ -2362,7 +2546,7 @@ async fn export_codex_scpack_cmd(
                 source_cli_version: cli_ver,
                 source_repo_fingerprint: fingerprint,
                 user_confirmed_redaction: confirmed,
-                signing_seed_hex: None,
+                signing_seed_hex: Some(local_signing_seed_hex()?),
                 probe_report,
                 source_harness: Some(effective_harness),
             },
@@ -2376,7 +2560,7 @@ async fn export_codex_scpack_cmd(
 
     if let Some(ref out) = output_path {
         if !out.trim().is_empty() {
-            let expanded_out = expand_tilde_path(out);
+            let expanded_out = expand_tilde_path(out)?;
             if let Some(parent) = expanded_out.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| {
                     format!(
@@ -2397,7 +2581,7 @@ async fn export_codex_scpack_cmd(
     }
 
     if install_locally.unwrap_or(true) {
-        let packs_root = resolve_packs_root_dir(packs_dir);
+        let packs_root = resolve_packs_root_dir(packs_dir)?;
         shadow_crew_protocol::scpack::verify_and_install_scpack(&built.archive_bytes, &packs_root)
             .map_err(|e| e.to_string())?;
     }
@@ -2456,7 +2640,7 @@ async fn import_scpack_cmd(
             .decode(b64.trim())
             .map_err(|e| format!("[ERR_INTEGRITY_MISMATCH] Invalid base64 archive: {}", e))?
     } else if let Some(fp) = scpack_path.or(file_path).filter(|s| !s.trim().is_empty()) {
-        let resolved_fp = expand_tilde_path(&fp);
+        let resolved_fp = expand_tilde_path(&fp)?;
         std::fs::read(&resolved_fp).map_err(|e| {
             format!(
                 "[ERR_PACK_MISSING] Failed to read {}: {}",
@@ -2468,7 +2652,7 @@ async fn import_scpack_cmd(
         return Err("[ERR_PACK_MISSING] Either scpack_path or archive_base64 is required".to_string());
     };
 
-    let packs_root = resolve_packs_root_dir(packs_dir);
+    let packs_root = resolve_packs_root_dir(packs_dir)?;
     let manifest = shadow_crew_protocol::scpack::verify_and_install_scpack(&bytes, &packs_root)
         .map_err(|e| e.to_string())?;
     Ok(map_manifest_to_installed_summary_dto(&manifest, &packs_root, false))
@@ -2478,11 +2662,12 @@ async fn import_scpack_cmd(
 async fn list_installed_scpacks_cmd(
     packs_dir: Option<String>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let packs_root = resolve_packs_root_dir(packs_dir);
+    let packs_root = resolve_packs_root_dir(packs_dir)?;
     if !packs_root.exists() {
         return Ok(Vec::new());
     }
-    let rev = shadow_crew_protocol::scpack::load_revocation_list(&packs_root);
+    let rev = shadow_crew_protocol::scpack::load_revocation_list(&packs_root)
+        .map_err(|e| e.to_string())?;
     let mut manifests = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&packs_root) {
         for ent in entries.flatten() {
@@ -2516,7 +2701,7 @@ async fn uninstall_scpack_cmd(
     revoke: Option<bool>,
     packs_dir: Option<String>,
 ) -> Result<bool, String> {
-    let packs_root = resolve_packs_root_dir(packs_dir);
+    let packs_root = resolve_packs_root_dir(packs_dir)?;
     let should_revoke = add_to_revoked.or(revoke).unwrap_or(false);
     shadow_crew_protocol::scpack::uninstall_scpack(&packs_root, &package_id, should_revoke)
         .map_err(|e| e.to_string())?;
@@ -2535,7 +2720,7 @@ async fn retrieve_scpack_expertise_cmd(
     let effective_prompt = user_prompt
         .or(prompt)
         .unwrap_or_default();
-    let packs_root = resolve_packs_root_dir(packs_dir);
+    let packs_root = resolve_packs_root_dir(packs_dir)?;
     let res = shadow_crew_protocol::scpack::retrieve_and_build_expertise_prompt(
         &packs_root,
         &package_id,
@@ -2607,7 +2792,7 @@ async fn validate_b_side_codex_env_cmd(
         .map(|p| p.availability == agent_discovery::AcpAvailabilityStatus::Available)
         .unwrap_or(false);
     let detected_version = "0.166.0-alpha.6".to_string();
-    let codex_home = resolve_codex_home_dir(None);
+    let codex_home = resolve_codex_home_dir(None)?;
     let auth_ready = codex_home.join("auth.json").exists() || codex_home.join("config.toml").exists();
 
     let preflight = shadow_crew_protocol::scpack::BSidePreflightInput {
@@ -2710,8 +2895,21 @@ async fn main() {
             retrieve_scpack_expertise_cmd,
             validate_b_side_codex_env_cmd,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running shadow-crew tauri desktop application");
+        .build(tauri::generate_context!())
+        .expect("error while building shadow-crew tauri desktop application")
+        .run(|app_handle, event| {
+            // 应用退出前终止全部 ACP 子进程并释放句柄。
+            // 仅监听 Exit（此时窗口已关闭、退出不可撤销），避免 ExitRequested 被取消时误杀进程。
+            if let tauri::RunEvent::Exit = event {
+                let manager = app_handle.state::<AppState>().acp_manager.clone();
+                tauri::async_runtime::block_on(async move {
+                    let mut guard = manager.lock().await;
+                    if let Err(e) = guard.stop_all().await {
+                        tracing::warn!("Failed to stop all ACP agents on exit: {}", e);
+                    }
+                });
+            }
+        });
 }
 
 #[cfg(test)]
@@ -3021,7 +3219,7 @@ mod attachment_tests {
 
     #[tokio::test]
     async fn real_host_codex_home_probe_and_export_roundtrip_if_accessible() {
-        let real_codex = expand_tilde_path("~/.codex");
+        let real_codex = expand_tilde_path("~/.codex").expect("home directory must be resolvable in tests");
         // In sandboxed CI where ~/.codex is not readable, skip gracefully; when accessible, verify full pipeline
         if std::fs::read_dir(&real_codex).is_err() || !real_codex.join("memories_v2_1.sqlite").exists() {
             return;
