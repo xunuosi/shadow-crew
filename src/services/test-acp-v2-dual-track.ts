@@ -86,6 +86,9 @@ async function runAcpProcessConversation(
     rl.on('line', (line) => {
       const trimmed = line.trim();
       if (!trimmed) return;
+      if (process.env.DEBUG_ACP_RAW === '1') {
+        console.error(`[acp-raw] ${trimmed}`);
+      }
       try {
         const msg = JSON.parse(trimmed) as JsonRpcMessage;
         if (msg.id !== undefined) {
@@ -110,6 +113,15 @@ async function runAcpProcessConversation(
         reject(err);
       }
     });
+
+    if (process.env.DEBUG_ACP_RAW === '1') {
+      child.stderr.on('data', (data) => {
+        console.error(`[acp-stderr] ${String(data).trimEnd()}`);
+      });
+      child.on('close', (code, signal) => {
+        console.error(`[acp-close] code=${code} signal=${signal}`);
+      });
+    }
 
     for (const msg of messagesToSend) {
       child.stdin.write(JSON.stringify(msg) + '\n');
@@ -598,6 +610,7 @@ sleep 25
   fs.writeFileSync(tempScriptPath, mockScriptContent, { mode: 0o755 });
 
   const startTime = Date.now();
+  const antiFreezeBudgetMs = 5000;
   const runRes = await runAcpProcessConversation(
     [
       {
@@ -619,7 +632,8 @@ sleep 25
     {
       CODEX_BINARY: tempScriptPath,
       SHADOW_CREW_USE_BUILTIN_CODEX_ADAPTER: '1',
-    }
+    },
+    8000
   );
   const elapsedMs = Date.now() - startTime;
 
@@ -629,9 +643,9 @@ sleep 25
     // ignore
   }
 
-  // 1. 验证响应时长：必须在 ~2 秒内基于 turn.completed 结题收网，绝不能被 25 秒的死锁休眠阻塞
+  // 1. 验证响应时长：必须在 5 秒内基于 turn.completed 结题收网，绝不能被 25 秒的死锁休眠阻塞
   check(
-    elapsedMs < 5000,
+    elapsedMs < antiFreezeBudgetMs,
     `Adapter must conclude turn via turn.completed without waiting for lingering child sleep (took ${elapsedMs}ms)`
   );
 
@@ -667,9 +681,11 @@ sleep 25
   );
   check(Boolean(turnCompleteNotif), 'Must emit session/update turn_complete notification');
   check(turnCompleteNotif?.params?.update?.stopReason === 'end_turn', 'Turn complete stopReason must be end_turn');
-}
 
-console.log('✓ Round 6 passed: turn.completed harvested in <2s with active tool execution streaming.\n');
+  console.log(
+    `✓ Round 6 passed: turn.completed harvested in ${elapsedMs}ms (budget ${antiFreezeBudgetMs}ms) with active tool execution streaming.\n`
+  );
+}
 
 console.log('================================================================================');
 console.log(`✅ ALL ACP V2.0 DUAL-TRACK & ENGINE TESTS PASSED! (${totalAssertions} assertions)`);
