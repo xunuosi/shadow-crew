@@ -40,7 +40,8 @@ interface JsonRpcMessage {
 
 async function runAcpProcessConversation(
   messagesToSend: JsonRpcMessage[],
-  envOverrides: Record<string, string> = {}
+  envOverrides: Record<string, string> = {},
+  timeoutMs = 3000
 ): Promise<{ results: Map<number | string, JsonRpcMessage>; notifications: JsonRpcMessage[] }> {
   return new Promise((resolve, reject) => {
     const binPath = path.resolve('bin/codex-acp');
@@ -55,6 +56,27 @@ async function runAcpProcessConversation(
 
     const results = new Map<number | string, JsonRpcMessage>();
     const notifications: JsonRpcMessage[] = [];
+    const expectedIds = new Set(
+      messagesToSend
+        .map((m) => m.id)
+        .filter((id): id is number | string => id !== undefined)
+    );
+
+    let isDone = false;
+    let timer: NodeJS.Timeout | null = null;
+
+    function cleanupAndResolve() {
+      if (isDone) return;
+      isDone = true;
+      if (timer) clearTimeout(timer);
+      try {
+        child.stdin.end();
+        child.kill('SIGTERM');
+      } catch {
+        // ignore
+      }
+      resolve({ results, notifications });
+    }
 
     const rl = readline.createInterface({
       input: child.stdout,
@@ -68,6 +90,11 @@ async function runAcpProcessConversation(
         const msg = JSON.parse(trimmed) as JsonRpcMessage;
         if (msg.id !== undefined) {
           results.set(msg.id, msg);
+          expectedIds.delete(msg.id);
+          // 当预期的所有请求都已经收到结果响应，稍等 100ms 接收可能尾随的通知后平滑结束
+          if (expectedIds.size === 0) {
+            setTimeout(cleanupAndResolve, 120);
+          }
         } else if (msg.method) {
           notifications.push(msg);
         }
@@ -77,18 +104,18 @@ async function runAcpProcessConversation(
     });
 
     child.on('error', (err) => {
-      reject(err);
+      if (!isDone) {
+        isDone = true;
+        if (timer) clearTimeout(timer);
+        reject(err);
+      }
     });
 
     for (const msg of messagesToSend) {
       child.stdin.write(JSON.stringify(msg) + '\n');
     }
 
-    setTimeout(() => {
-      child.stdin.end();
-      child.kill('SIGTERM');
-      resolve({ results, notifications });
-    }, 800);
+    timer = setTimeout(cleanupAndResolve, timeoutMs);
   });
 }
 
@@ -538,6 +565,111 @@ console.log('▶ [Round 5] Verifying Official Codex Engine Bridge Gates & Mock D
 }
 
 console.log('✓ Round 5 passed: Official codex adapter bridge gates & mock detection verified.\n');
+
+// -----------------------------------------------------------------------------
+// Round 6: Active turn.completed Harvesting & Tool Heartbeat Anti-Freeze Verification
+// -----------------------------------------------------------------------------
+console.log('▶ [Round 6] Verifying Active turn.completed Harvesting & Tool Heartbeat Anti-Freeze...');
+
+{
+  const fs = await import('node:fs');
+  const tempScriptPath = path.resolve('.mock-codex-lingering.sh');
+  const mockScriptContent = `#!/bin/bash
+if [ "$1" = "--version" ]; then
+  echo "codex 0.167.0"
+  exit 0
+fi
+if [ "$1" = "--enable" ] || [ "$1" = "--disable" ]; then
+  echo "features list"
+  exit 0
+fi
+
+# 仅在实际执行 turn (exec) 时输出事件流并模拟子进程/网络句柄残留休眠
+cat << 'EOF'
+{"type":"thread.started","thread_id":"thread-freeze-probe-1"}
+{"type":"item.started","item":{"id":"cmd-1","type":"command_execution","command":"cargo test -p shadow-crew-protocol"}}
+{"type":"item.completed","item":{"id":"cmd-1","type":"command_execution","command":"cargo test -p shadow-crew-protocol","exit_code":0}}
+{"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"All 10 assertions passed in cargo test."}}
+{"type":"turn.completed","status":"completed"}
+EOF
+sleep 25
+`;
+
+  fs.writeFileSync(tempScriptPath, mockScriptContent, { mode: 0o755 });
+
+  const startTime = Date.now();
+  const runRes = await runAcpProcessConversation(
+    [
+      {
+        jsonrpc: '2.0',
+        id: 601,
+        method: 'initialize',
+        params: { protocolVersion: 2 },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 602,
+        method: 'session/prompt',
+        params: {
+          sessionId: 'test-session-anti-freeze',
+          prompt: 'run validation tests',
+        },
+      },
+    ],
+    {
+      CODEX_BINARY: tempScriptPath,
+      SHADOW_CREW_USE_BUILTIN_CODEX_ADAPTER: '1',
+    }
+  );
+  const elapsedMs = Date.now() - startTime;
+
+  try {
+    fs.unlinkSync(tempScriptPath);
+  } catch {
+    // ignore
+  }
+
+  // 1. 验证响应时长：必须在 ~2 秒内基于 turn.completed 结题收网，绝不能被 25 秒的死锁休眠阻塞
+  check(
+    elapsedMs < 5000,
+    `Adapter must conclude turn via turn.completed without waiting for lingering child sleep (took ${elapsedMs}ms)`
+  );
+
+  const promptResult = runRes.results.get(602);
+  check(Boolean(promptResult), 'Must return JSON-RPC response to session/prompt');
+  check(
+    promptResult?.result?.stopReason === 'completed',
+    `stopReason must be completed, got: ${promptResult?.result?.stopReason}`
+  );
+  check(
+    String(promptResult?.result?.text_response || '').includes('All 10 assertions passed'),
+    'Final text response must contain the completed agent message'
+  );
+
+  // 2. 验证工具与命令执行心跳 chunk
+  const chunks = runRes.notifications
+    .filter((n) => n.method === 'session/update' && n.params?.update?.sessionUpdate === 'agent_message_chunk')
+    .map((n) => n.params?.update?.delta || '');
+  const allChunkText = chunks.join('');
+
+  check(
+    allChunkText.includes('正在执行: `cargo test -p shadow-crew-protocol`'),
+    'Adapter must stream command execution progress chunk to keep stdout alive'
+  );
+  check(
+    allChunkText.includes('命令已完成'),
+    'Adapter must stream command completed progress chunk'
+  );
+
+  // 3. 验证终态通知
+  const turnCompleteNotif = runRes.notifications.find(
+    (n) => n.method === 'session/update' && n.params?.update?.sessionUpdate === 'turn_complete'
+  );
+  check(Boolean(turnCompleteNotif), 'Must emit session/update turn_complete notification');
+  check(turnCompleteNotif?.params?.update?.stopReason === 'end_turn', 'Turn complete stopReason must be end_turn');
+}
+
+console.log('✓ Round 6 passed: turn.completed harvested in <2s with active tool execution streaming.\n');
 
 console.log('================================================================================');
 console.log(`✅ ALL ACP V2.0 DUAL-TRACK & ENGINE TESTS PASSED! (${totalAssertions} assertions)`);

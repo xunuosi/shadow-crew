@@ -4260,6 +4260,17 @@ impl RunningAgent {
                         let chunks = self.active_chunks.lock().await;
                         chunks.get(&req_id).cloned().unwrap_or_default()
                     };
+                    let fallback_text = term_val
+                        .get("error")
+                        .or_else(|| term_val.get("text_response"))
+                        .or_else(|| term_val.get("text"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("");
+                    let final_text = if accumulated_text.trim().is_empty() && !fallback_text.trim().is_empty() {
+                        fallback_text.to_string()
+                    } else {
+                        accumulated_text
+                    };
                     let msg_id = receipt_resp
                         .get("result")
                         .and_then(|r| r.get("messageId"))
@@ -4268,7 +4279,7 @@ impl RunningAgent {
                     let mut res_obj = serde_json::json!({
                         "messageId": msg_id,
                         "stopReason": stop_reason,
-                        "text_response": accumulated_text
+                        "text_response": final_text
                     });
                     if let Some(nm) = term_val.get("nativeMemory") {
                         if let Some(obj) = res_obj.as_object_mut() {
