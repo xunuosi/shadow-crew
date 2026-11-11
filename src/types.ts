@@ -4,7 +4,7 @@
 
 export type AcpTransport = 'stdio' | 'websocket' | 'http_sse';
 
-export type AcpAvailabilityStatus = 'available' | 'not_adapted' | 'not_installed';
+export type AcpAvailabilityStatus = 'available' | 'not_adapted' | 'not_installed' | 'unknown';
 
 export interface LocalAcpRuntime {
   id: string;

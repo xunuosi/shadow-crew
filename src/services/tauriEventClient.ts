@@ -41,7 +41,7 @@ export async function listenTauriEvent<T>(
     return () => {
       const eventPluginInternals = tauriWindow.__TAURI_EVENT_PLUGIN_INTERNALS__;
       if (typeof eventPluginInternals?.unregisterListener === 'function') {
-        eventPluginInternals.unregisterListener(eventName, handlerId);
+        eventPluginInternals.unregisterListener(eventName, eventId);
       } else if (typeof internals.unregisterCallback === 'function') {
         internals.unregisterCallback(handlerId);
       }

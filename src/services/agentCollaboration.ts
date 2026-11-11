@@ -559,7 +559,7 @@ export function buildTopicPrompt(options: {
 
   const peers = availableAgents.filter((a) => a.id !== targetAgent.id);
   const peerList = peers.length > 0
-    ? peers.map((p) => `${p.handle} (${p.name} · ${p.role})`).join('、')
+    ? peers.map((p) => `${resolveEffectiveAgentHandle(p)} (${p.name} · ${p.role})`).join('、')
     : '(当前仅你独立在线)';
 
   let historySection = '';
@@ -1994,7 +1994,7 @@ export function executeAbortAgentOrchestration<TExec extends AbortableExecutionI
 
   if (setAgents) {
     setAgents((prev) =>
-      prev.map((a) => (a.id === agentId && a.status !== 'idle' ? { ...a, status: 'running' } : a))
+      prev.map((a) => (a.id === agentId && a.status !== 'idle' ? { ...a, status: 'idle' } : a))
     );
   }
 

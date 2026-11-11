@@ -426,7 +426,11 @@ export function extractArbitrationRulingFromAcpResponse(
           c.tool === 'submit_arbitration_ruling' ||
           c.name === 'submit_arbitration_ruling'
       );
-      if (rulingCall && (rulingCall.arguments || rulingCall.args)) {
+      if (
+        rulingCall &&
+        isSuccessfulMcpCallStatus(rulingCall.status) &&
+        (rulingCall.arguments || rulingCall.args)
+      ) {
         const args = rulingCall.arguments || rulingCall.args;
         const rawDecision = args.decision_type || args.decisionType || 'trade_off_matrix';
         const validDecision: RulingDecisionType =
@@ -507,8 +511,12 @@ function collectAcpMcpToolCalls(acpResp: Partial<AcpAgentResponse>): any[] {
 }
 
 function isSuccessfulMcpCallStatus(status: unknown): boolean {
-  const normalized = typeof status === 'string' ? status.trim().toLowerCase() : '';
-  return !normalized || ['completed', 'success', 'succeeded', 'ok'].includes(normalized);
+  // 字段缺失视为旧记录兼容；但显式空字符串代表状态未知，必须判失败。
+  if (status === undefined || status === null) return true;
+  if (typeof status !== 'string') return false;
+  const normalized = status.trim().toLowerCase();
+  if (!normalized) return false;
+  return ['completed', 'success', 'succeeded', 'ok'].includes(normalized);
 }
 
 function readStrictStringArray(
@@ -973,6 +981,17 @@ export async function probeRemoteAcpConnection(
               });
               return;
             }
+            // 必须是合法 JSON-RPC 响应，否则端口上任何会回包的 TCP 服务都会被误判为 ACP 可用。
+            if (data?.jsonrpc !== '2.0' || typeof data?.result !== 'object' || data.result === null) {
+              ws?.close();
+              resolve({
+                ok: false,
+                latencyMs,
+                error: '远程端返回的不是合法的 ACP initialize 响应',
+                rawRpcResult: data,
+              });
+              return;
+            }
             const agentInfo = data?.result?.agentInfo || { name: 'Remote ACP Agent' };
             const loadSession =
               data?.result?.capabilities?.loadSession ??
@@ -999,8 +1018,13 @@ export async function probeRemoteAcpConnection(
               rawRpcResult: data,
             });
           } catch {
+            // 无法解析的帧不能视为"探测成功"
             ws?.close();
-            resolve({ ok: true, latencyMs });
+            resolve({
+              ok: false,
+              latencyMs,
+              error: '远程端返回了无法解析的响应（不是合法 JSON-RPC）',
+            });
           }
         }
       };
@@ -1082,6 +1106,7 @@ export async function sendPromptToRemoteAcpWebSocket(
           resolve({
             textResponse: `⚠️【远程 ACP】响应空闲超时 (超过 ${IDLE_TIMEOUT_MS / 1000}s 未收到任何模型输出或心跳)。若使用深度思考或大参数量慢模型，可在端点处增加心跳支持。`,
             durationMs: Date.now() - startTime,
+            isError: true,
             isRealProcess: true,
           });
         }
@@ -1100,6 +1125,7 @@ export async function sendPromptToRemoteAcpWebSocket(
         resolve({
           textResponse: `⚠️【远程 ACP】执行超过最大硬上限 (${MAX_DURATION_MS / 1000}s)，会话已安全收敛。`,
           durationMs: Date.now() - startTime,
+          isError: true,
           isRealProcess: true,
         });
       }
@@ -1114,14 +1140,25 @@ export async function sendPromptToRemoteAcpWebSocket(
       }
       ws = new WebSocket(urlObj.toString());
 
-      ws.onopen = () => {
-        resetIdleTimer();
-        // 发送 session/prompt 报文
+      // 每个连接使用唯一且可区分的 JSON-RPC id，避免与 Date.now() 撞号后错误关联响应。
+      const initRequestId = Date.now();
+      const promptRequestId = initRequestId + 1;
+      let promptSent = false;
+      let initTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const sendPrompt = (sessionId?: string) => {
+        if (promptSent) return;
+        promptSent = true;
+        if (initTimer) {
+          clearTimeout(initTimer);
+          initTimer = null;
+        }
         const rpcPayload = {
           jsonrpc: '2.0',
-          id: Date.now(),
+          id: promptRequestId,
           method: 'session/prompt',
           params: {
+            ...(sessionId ? { sessionId } : {}),
             roomId,
             prompt: [{ type: 'text', text: prompt }],
             readOnlyGuard,
@@ -1149,6 +1186,30 @@ export async function sendPromptToRemoteAcpWebSocket(
         ws?.send(JSON.stringify(rpcPayload));
       };
 
+      ws.onopen = () => {
+        resetIdleTimer();
+        // 标准 ACP 流程：先 initialize 获取 capabilities/sessionId，再发送 prompt。
+        ws?.send(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: initRequestId,
+            method: 'initialize',
+            params: {
+              protocolVersion: 1,
+              clientInfo: { name: 'shadow-crew', version: '0.1.0' },
+              clientCapabilities: {},
+            },
+          })
+        );
+        // 兼容不支持 initialize 的自定义网关：8 秒未收到握手响应时降级为直接 prompt。
+        initTimer = setTimeout(() => {
+          if (!resolved && !promptSent) {
+            console.warn('[acpClient] 远程端点未响应 initialize，降级为直接发送 session/prompt');
+            sendPrompt(undefined);
+          }
+        }, 8000);
+      };
+
       let accumulatedText = '';
       const memoryActions: Array<{ action: string; key: string; detail: string }> = [];
 
@@ -1157,13 +1218,57 @@ export async function sendPromptToRemoteAcpWebSocket(
         try {
           const msg = JSON.parse(event.data);
 
-          // 1. 流式 update 报文
-          if (msg.method === 'session/update' && msg.params?.content) {
-            accumulatedText += msg.params.content;
+          // initialize 响应：提取 sessionId 后再发送 prompt
+          if (
+            msg.id === initRequestId &&
+            !promptSent &&
+            (msg.result || msg.error)
+          ) {
+            if (initTimer) {
+              clearTimeout(initTimer);
+              initTimer = null;
+            }
+            if (msg.error) {
+              if (!resolved) {
+                resolved = true;
+                cleanupTimers();
+                ws?.close();
+                resolve({
+                  textResponse: `⚠️【远程 ACP】initialize 握手被拒绝: ${msg.error.message || JSON.stringify(msg.error)}`,
+                  durationMs: Date.now() - startTime,
+                  isError: true,
+                  isRealProcess: true,
+                  raw: msg,
+                });
+              }
+              return;
+            }
+            const sessionId =
+              msg.result?.sessionId ||
+              msg.result?.session_id ||
+              msg.result?.agentInfo?.sessionId;
+            sendPrompt(sessionId);
+            return;
           }
 
-          // 2. 最终返回报文
-          if (msg.result || msg.error) {
+          // 流式 update：ACP 标准字段是 params.update.content，兼容旧网关的 params.content。
+          if (msg.method === 'session/update') {
+            const content = msg.params?.update?.content ?? msg.params?.content;
+            if (typeof content === 'string') {
+              accumulatedText += content;
+            } else if (Array.isArray(content)) {
+              accumulatedText += content
+                .map((part: any) => (typeof part?.text === 'string' ? part.text : ''))
+                .join('');
+            }
+            return;
+          }
+
+          // 最终返回报文：只接受本次 prompt 的 id，或未带 id 的兼容响应。
+          const isFinal = msg.result || msg.error;
+          const belongsToPrompt =
+            promptSent && (msg.id === promptRequestId || msg.id === undefined);
+          if (isFinal && belongsToPrompt) {
             if (!resolved) {
               resolved = true;
               cleanupTimers();
@@ -1174,6 +1279,7 @@ export async function sendPromptToRemoteAcpWebSocket(
                 resolve({
                   textResponse: `⚠️【远程 ACP】执行报错: ${msg.error.message || JSON.stringify(msg.error)}`,
                   durationMs,
+                  isError: true,
                   isRealProcess: true,
                   raw: msg,
                 });
@@ -1210,6 +1316,19 @@ export async function sendPromptToRemoteAcpWebSocket(
         }
       };
 
+      ws.onclose = () => {
+        if (!resolved && promptSent) {
+          resolved = true;
+          cleanupTimers();
+          resolve({
+            textResponse: `⚠️【远程 ACP】WebSocket 连接已关闭，未收到最终响应。`,
+            durationMs: Date.now() - startTime,
+            isError: true,
+            isRealProcess: true,
+          });
+        }
+      };
+
       ws.onerror = (err) => {
         if (!resolved) {
           resolved = true;
@@ -1217,6 +1336,7 @@ export async function sendPromptToRemoteAcpWebSocket(
           resolve({
             textResponse: `⚠️【远程 ACP】WebSocket 网络断开或鉴权拒绝，请确认端点是否存活。`,
             durationMs: Date.now() - startTime,
+            isError: true,
             isRealProcess: true,
           });
         }
@@ -1228,6 +1348,7 @@ export async function sendPromptToRemoteAcpWebSocket(
         resolve({
           textResponse: `⚠️【远程 ACP】无效端点地址: ${err?.message || err}`,
           durationMs: Date.now() - startTime,
+          isError: true,
           isRealProcess: false,
         });
       }
