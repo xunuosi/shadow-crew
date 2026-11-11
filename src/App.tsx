@@ -52,25 +52,13 @@ import { FilePreviewProvider } from './context/FilePreviewContext';
 import { ThreadList } from './components/ThreadList';
 import { ChatTimeline } from './components/ChatTimeline';
 import { MessageInput } from './components/MessageInput';
-import { AcpPermissionModal } from './components/AcpPermissionModal';
-import { AcpPermissionCenterModal } from './components/AcpPermissionCenterModal';
+import { AppModalsContainer } from './components/AppModalsContainer';
 
-// 按需异步加载高体积分支抽屉与低频弹窗组件，从首屏关键渲染路径剥离
+// 按需异步加载高体积分支抽屉与仪表盘组件，从首屏关键渲染路径剥离
 const SubThreadDrawer = lazy(() => import('./components/SubThreadDrawer').then((m) => ({ default: m.SubThreadDrawer })));
 const TopicThreadDrawer = lazy(() => import('./components/TopicThreadDrawer').then((m) => ({ default: m.TopicThreadDrawer })));
-const NewTopicModal = lazy(() => import('./components/NewTopicModal').then((m) => ({ default: m.NewTopicModal })));
-const EditTopicModal = lazy(() => import('./components/EditTopicModal').then((m) => ({ default: m.EditTopicModal })));
 const CodexDiffViewer = lazy(() => import('./components/CodexDiffViewer').then((m) => ({ default: m.CodexDiffViewer })));
 const AcpInspector = lazy(() => import('./components/AcpInspector').then((m) => ({ default: m.AcpInspector })));
-const AgentTeamsModal = lazy(() => import('./components/AgentTeamsModal').then((m) => ({ default: m.AgentTeamsModal })));
-const CreateChannelModal = lazy(() => import('./components/CreateChannelModal').then((m) => ({ default: m.CreateChannelModal })));
-const ChannelMembersModal = lazy(() => import('./components/ChannelMembersModal').then((m) => ({ default: m.ChannelMembersModal })));
-const DeleteChannelModal = lazy(() => import('./components/DeleteChannelModal').then((m) => ({ default: m.DeleteChannelModal })));
-const ConnectAgentModal = lazy(() => import('./components/ConnectAgentModal').then((m) => ({ default: m.ConnectAgentModal })));
-const CreateTeamModal = lazy(() => import('./components/CreateTeamModal').then((m) => ({ default: m.CreateTeamModal })));
-const AgentDefaultsModal = lazy(() => import('./components/AgentDefaultsModal').then((m) => ({ default: m.AgentDefaultsModal })));
-const StorageSettingsModal = lazy(() => import('./components/StorageSettingsModal').then((m) => ({ default: m.StorageSettingsModal })));
-const RustTauriArchitectureHub = lazy(() => import('./components/RustTauriArchitectureHub').then((m) => ({ default: m.RustTauriArchitectureHub })));
 const AgentDashboard = lazy(() => import('./components/AgentDashboard').then((m) => ({ default: m.AgentDashboard })));
 import {
   sendPromptToAcpAgent,
@@ -9149,6 +9137,277 @@ export default function App() {
     );
   };
 
+  const handleClearAllMessages = useCallback(async () => {
+    generationEpochRef.current++;
+    bumpGlobalEpoch(turnEpochTrackerRef.current);
+    inFlightHandoverRef.current.clear();
+    stageRefineRetriesRef.current = {};
+    handleAbortAll();
+    setMessages({});
+    messagesRef.current = {};
+    resetAllSessionWarmState();
+    clearLlmSessionHistory();
+    try {
+      await clearAcpAgentSessions();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      setSessionCleanupNotice(
+        `⚠️ 清空全部历史消息时底层 ACP 会话重置异常 (${reason})，已启用 Fail-Closed 保护，请检查连接后重试`
+      );
+      throw err;
+    }
+  }, [handleAbortAll, resetAllSessionWarmState]);
+
+  const handleUpdateAgent = useCallback((agentId: string, updatedData: Partial<Agent>) => {
+    cancelRemoteAgentProbe(agentId);
+    const editGeneration = cancelLocalSpawn(
+      localSpawnGenerationRef.current,
+      agentId
+    );
+    resetAllSessionWarmState();
+    void safelyClearAcpSessions(agentId, undefined, '更新 Agent 配置');
+
+    const existingAgent = agents.find((a) => a.id === agentId);
+    const wasOnline =
+      !!existingAgent && existingAgent.status !== 'idle' && existingAgent.status !== 'error';
+    const wasLocalAgent = Boolean(
+      existingAgent &&
+        !existingAgent.isRemote &&
+        existingAgent.acpTransport !== 'websocket'
+    );
+    const isRemoteAgent = Boolean(
+      updatedData.isRemote ??
+        existingAgent?.isRemote ??
+        updatedData.acpTransport === 'websocket'
+    );
+    if (isRemoteAgent && updatedData.status === 'running') {
+      recordRemoteProbeSuccess(remoteProbeRuntimeRef.current, agentId);
+    }
+
+    setAgents((prev) =>
+      prev.map((a) => {
+        if (a.id === agentId) {
+          const nextStatus =
+            updatedData.status !== undefined
+              ? updatedData.status
+              : isRemoteAgent
+                ? a.status || 'idle'
+                : 'idle';
+          const merged: Agent = {
+            ...a,
+            ...updatedData,
+            status: nextStatus,
+            workspace: {
+              ...a.workspace,
+              ...(updatedData.workspace || {}),
+            },
+          };
+          if (nextStatus !== 'running') {
+            return resetAgentHandshakeCapabilities(
+              merged,
+              nextStatus,
+              updatedData.statusDetail
+            );
+          }
+          return merged;
+        }
+        return a;
+      })
+    );
+
+    if (updatedData.name || updatedData.avatar || updatedData.handle) {
+      setThreads((prev) =>
+        prev.map((t) => {
+          if (t.authorId === agentId || t.id === `thread-dm-${agentId}`) {
+            const newName = updatedData.name ?? t.authorName;
+            const newAvatar = updatedData.avatar ?? t.authorAvatar;
+            const newHandle = updatedData.handle ?? t.authorHandle;
+            return {
+              ...t,
+              authorName: newName,
+              authorAvatar: newAvatar,
+              authorHandle: newHandle,
+              ...(t.type === 'dm'
+                ? {
+                    title: `与 ${newName} 的私信会话`,
+                    channelName: `与 ${newName} 私聊`,
+                  }
+                : {}),
+            };
+          }
+          return t;
+        })
+      );
+
+      setMessages((prev) => {
+        let changed = false;
+        const next: Record<string, Message[]> = {};
+        for (const [threadId, msgs] of Object.entries(prev)) {
+          let threadChanged = false;
+          const newMsgs = msgs.map((m) => {
+            const isAuthor = m.authorId === agentId;
+            const isTopicAuthor = m.topicData && m.topicData.authorId === agentId;
+            if (isAuthor || isTopicAuthor) {
+              threadChanged = true;
+              return {
+                ...m,
+                ...(isAuthor && updatedData.name ? { authorName: updatedData.name } : {}),
+                ...(isAuthor && updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
+                ...(isAuthor && updatedData.handle ? { authorHandle: updatedData.handle } : {}),
+                ...(m.topicData ? {
+                  topicData: {
+                    ...m.topicData,
+                    ...(isTopicAuthor && updatedData.name ? { authorName: updatedData.name } : {}),
+                    ...(isTopicAuthor && updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
+                  },
+                } : {}),
+              };
+            }
+            return m;
+          });
+          if (threadChanged) {
+            changed = true;
+            next[threadId] = newMsgs;
+          } else {
+            next[threadId] = msgs;
+          }
+        }
+        return changed ? next : prev;
+      });
+
+      setSubThreads((prev) => {
+        let changed = false;
+        const next: Record<string, SubThread> = {};
+        for (const [subId, sub] of Object.entries(prev)) {
+          let subChanged = false;
+          const newMsgs = sub.messages.map((m) => {
+            if (m.authorId === agentId) {
+              subChanged = true;
+              return {
+                ...m,
+                ...(updatedData.name ? { authorName: updatedData.name } : {}),
+                ...(updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
+                ...(updatedData.handle ? { authorHandle: updatedData.handle } : {}),
+              };
+            }
+            return m;
+          });
+          if (subChanged) {
+            changed = true;
+            next[subId] = { ...sub, messages: newMsgs };
+          } else {
+            next[subId] = sub;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+
+    const tauriInvoke =
+      typeof window !== 'undefined'
+        ? (window as any).__TAURI_INTERNALS__?.invoke || (window as any).__TAURI__?.core?.invoke
+        : undefined;
+    if ((wasLocalAgent || !isRemoteAgent) && tauriInvoke) {
+      tauriInvoke('stop_acp_agent', { agentId })
+        .then(async () => {
+          await syncRunningAgentsWithBackend();
+          if (
+            !isRemoteAgent &&
+            wasOnline &&
+            existingAgent &&
+            updatedData.isModelHealthy !== false &&
+            isCurrentLocalSpawnGeneration(
+              localSpawnGenerationRef.current,
+              agentId,
+              editGeneration
+            )
+          ) {
+            const respawnAgent: Agent = { ...existingAgent, ...updatedData } as Agent;
+            spawnLocalAcpAgent(respawnAgent);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [
+    agents,
+    cancelRemoteAgentProbe,
+    resetAllSessionWarmState,
+    safelyClearAcpSessions,
+    spawnLocalAcpAgent,
+    syncRunningAgentsWithBackend,
+  ]);
+
+  const handleConnectAgent = useCallback((agentData: Partial<Agent>) => {
+    const initialStatus = agentData.status || 'idle';
+    const isOnlineOnCreate = initialStatus === 'running';
+    const baseMemory =
+      agentData.memory || {
+        ...createAgentMemoryBank('native'),
+        nativeCapability: createUnknownNativeMemoryCapability(),
+      };
+    const effectiveMemory = isOnlineOnCreate
+      ? baseMemory
+      : {
+          ...baseMemory,
+          nativeCapability: createUnknownNativeMemoryCapability(),
+        };
+    const rawNewAg: Agent = {
+      id: `agent-${Date.now()}`,
+      name: agentData.name || 'Custom Agent',
+      handle: agentData.handle || `@${(agentData.name || 'agent').toLowerCase()}`,
+      avatar: agentData.avatar || '🥷',
+      role: agentData.role || 'Specialized Agent',
+      description: agentData.description || agentData.role || 'Custom ACP Agent',
+      color: '#06b6d4',
+      status: initialStatus,
+      modelBadge: agentData.modelBadge || (agentData.isRemote ? 'Remote ACP' : 'ACP Stdio'),
+      modelConfig: agentData.modelConfig,
+      isModelHealthy: agentData.isModelHealthy,
+      modelLatencyMs: agentData.modelLatencyMs,
+      statusDetail: agentData.statusDetail,
+      localAcpProfile: agentData.localAcpProfile,
+      envVars: agentData.envVars,
+      isManagedByYou: true,
+      isRemote: agentData.isRemote,
+      remoteUrl: agentData.remoteUrl,
+      authToken: agentData.authToken,
+      remoteLatencyMs: agentData.remoteLatencyMs,
+      readOnlyGuard: agentData.readOnlyGuard,
+      acpTransport: agentData.acpTransport || (agentData.isRemote ? 'websocket' : 'stdio'),
+      acpCommandOrUrl: agentData.acpCommandOrUrl || (agentData.isRemote ? (agentData.remoteUrl || 'ws://127.0.0.1:9090/acp') : 'cargo run --bin custom-agent -- --acp'),
+      protocolVersion: '2 (ACP v2.0.0)',
+      capabilities: {
+        canAccessWorkspaceFiles: true,
+        canExecuteSkills: true,
+        canDelegateToSubAgents: true,
+        supportsStreaming: true,
+        ...(agentData.capabilities || {}),
+        canUseInternalMemory:
+          isOnlineOnCreate &&
+          effectiveMemory.mode === 'native' &&
+          effectiveMemory.nativeCapability.status === 'enabled',
+      },
+      workspace: {
+        rootPath: agentData.workspace?.rootPath || '~/.shadow-crew',
+        repoName: 'shadow-crew-workspace',
+        gitBranch: 'main',
+        permissionMode: agentData.readOnlyGuard ? 'read_only' : 'full_read_write',
+        activeFiles: ['~/.shadow-crew/agents'],
+      },
+      skills: [],
+      memory: effectiveMemory,
+    };
+    const newAg = isOnlineOnCreate
+      ? rawNewAg
+      : resetAgentHandshakeCapabilities(
+          rawNewAg,
+          initialStatus,
+          agentData.statusDetail
+        );
+    setAgents((prev) => [...prev, newAg]);
+    setDuplicatingAgent(null);
+  }, []);
+
   const activeWorkspaceCwd = activeChannel
     ? findWorkspaceBinding(workspaceBindings, 'channel', activeChannel.id)?.cwd
     : undefined;
@@ -9554,447 +9813,94 @@ export default function App() {
         />
       )}
 
-      {/* 7. Modals: Agent Teams Management */}
-      {isAgentTeamsModalOpen && (
-        <AgentTeamsModal
-          isOpen={isAgentTeamsModalOpen}
-          onClose={() => setIsAgentTeamsModalOpen(false)}
-          agents={agents}
-          teams={teams}
-          onCreateTeam={(newTeam) => {
-            const created: AgentTeam = { ...newTeam, id: `team-${Date.now()}` };
-            setTeams((prev) => [...prev, created]);
-          }}
-          onOpenConnectModal={() => {
-            setEditingAgent(null);
-            setDuplicatingAgent(null);
-            setIsConnectModalOpen(true);
-          }}
-        />
-      )}
-
-      {/* 7.1 Modal: Create Team Popup */}
-      {isCreateTeamModalOpen && (
-        <CreateTeamModal
-          isOpen={isCreateTeamModalOpen}
-          onClose={() => setIsCreateTeamModalOpen(false)}
-          agents={agents}
-          onCreateTeam={(newTeam) => {
-            const created: AgentTeam = { ...newTeam, id: `team-${Date.now()}` };
-            setTeams((prev) => [...prev, created]);
-          }}
-        />
-      )}
-
-      {/* 7.2 Modal: Agent Defaults */}
-      {isAgentDefaultsModalOpen && (
-        <AgentDefaultsModal
-          isOpen={isAgentDefaultsModalOpen}
-          onClose={() => setIsAgentDefaultsModalOpen(false)}
-          onOpenStorageSettings={() => setIsStorageSettingsModalOpen(true)}
-        />
-      )}
-
-      {pendingAcpPermissions[0] && (
-        <AcpPermissionModal
-          request={pendingAcpPermissions[0]}
-          agent={agents.find((agent) => agent.id === pendingAcpPermissions[0].agentId)}
-          queuedCount={Math.max(0, pendingAcpPermissions.length - 1)}
-          onDecision={handleAcpPermissionDecision}
-        />
-      )}
-
-      <AcpPermissionCenterModal
-        isOpen={isPermissionCenterOpen}
+      {/* 7. App Modals Container */}
+      <AppModalsContainer
+        isAgentTeamsModalOpen={isAgentTeamsModalOpen}
+        onCloseAgentTeamsModal={() => setIsAgentTeamsModalOpen(false)}
         agents={agents}
-        onClose={() => setIsPermissionCenterOpen(false)}
-      />
-
-      {/* 7.3 Modal: Storage Architecture & Cache Management (Option 3: SQLite) */}
-      {isStorageSettingsModalOpen && (
-        <StorageSettingsModal
-          isOpen={isStorageSettingsModalOpen}
-          onClose={() => setIsStorageSettingsModalOpen(false)}
-          messages={Object.values(messages).flat()}
-          onMessagesCleared={async () => {
-            generationEpochRef.current++;
-            bumpGlobalEpoch(turnEpochTrackerRef.current);
-            inFlightHandoverRef.current.clear();
-            stageRefineRetriesRef.current = {};
-            handleAbortAll();
-            setMessages({});
-            messagesRef.current = {};
-            resetAllSessionWarmState();
-            clearLlmSessionHistory();
-            try {
-              await clearAcpAgentSessions();
-            } catch (err) {
-              const reason = err instanceof Error ? err.message : String(err);
-              setSessionCleanupNotice(
-                `⚠️ 清空全部历史消息时底层 ACP 会话重置异常 (${reason})，已启用 Fail-Closed 保护，请检查连接后重试`
-              );
-              throw err;
-            }
-          }}
-        />
-      )}
-
-      {/* 8. Modals: Create Topic / Channel */}
-      {isCreateChannelOpen && (
-        <CreateChannelModal
-          isOpen={isCreateChannelOpen}
-          onClose={() => setIsCreateChannelOpen(false)}
-          currentUserId={currentUserId}
-          teams={teams}
-          agents={agents}
-          onCreateChannel={handleCreateChannel}
-        />
-      )}
-
-      {/* 8.1 Modal: Channel Members & Invites */}
-      {targetModalChannel && isChannelMembersModalOpen && (
-        <ChannelMembersModal
-          isOpen={isChannelMembersModalOpen}
-          onClose={() => {
-            setIsChannelMembersModalOpen(false);
-            setModalChannelId(null);
-          }}
-          channel={targetModalChannel}
-          agents={agents}
-          currentUserId={currentUserId}
-          onUpdateMembers={handleUpdateChannelMembers}
-        />
-      )}
-
-      {/* 8.2 Modal: Delete Channel Confirmation */}
-      {targetModalChannel && isDeleteChannelModalOpen && (
-        <DeleteChannelModal
-          isOpen={isDeleteChannelModalOpen}
-          onClose={() => {
-            setIsDeleteChannelModalOpen(false);
-            setModalChannelId(null);
-          }}
-          channel={targetModalChannel}
-          unresolvedTopicsCount={modalChannelUnresolvedTopics}
-          onConfirmDelete={handleDeleteChannel}
-        />
-      )}
-
-      {/* 9. Connect / Edit ACP Agent Modal */}
-      {isConnectModalOpen && (
-        <ConnectAgentModal
-          isOpen={isConnectModalOpen}
-        onClose={() => {
+        teams={teams}
+        onCreateTeam={(newTeam) => {
+          const created: AgentTeam = { ...newTeam, id: `team-${Date.now()}` };
+          setTeams((prev) => [...prev, created]);
+        }}
+        onOpenConnectModalFromTeams={() => {
+          setEditingAgent(null);
+          setDuplicatingAgent(null);
+          setIsConnectModalOpen(true);
+        }}
+        isCreateTeamModalOpen={isCreateTeamModalOpen}
+        onCloseCreateTeamModal={() => setIsCreateTeamModalOpen(false)}
+        isAgentDefaultsModalOpen={isAgentDefaultsModalOpen}
+        onCloseAgentDefaultsModal={() => setIsAgentDefaultsModalOpen(false)}
+        onOpenStorageSettings={() => setIsStorageSettingsModalOpen(true)}
+        pendingAcpPermissions={pendingAcpPermissions}
+        onAcpPermissionDecision={handleAcpPermissionDecision}
+        isPermissionCenterOpen={isPermissionCenterOpen}
+        onClosePermissionCenter={() => setIsPermissionCenterOpen(false)}
+        isStorageSettingsModalOpen={isStorageSettingsModalOpen}
+        onCloseStorageSettingsModal={() => setIsStorageSettingsModalOpen(false)}
+        allMessages={Object.values(messages).flat()}
+        onMessagesCleared={handleClearAllMessages}
+        isCreateChannelOpen={isCreateChannelOpen}
+        onCloseCreateChannelModal={() => setIsCreateChannelOpen(false)}
+        currentUserId={currentUserId}
+        onCreateChannel={handleCreateChannel}
+        targetModalChannel={targetModalChannel}
+        isChannelMembersModalOpen={isChannelMembersModalOpen}
+        onCloseChannelMembersModal={() => {
+          setIsChannelMembersModalOpen(false);
+          setModalChannelId(null);
+        }}
+        onUpdateChannelMembers={handleUpdateChannelMembers}
+        isDeleteChannelModalOpen={isDeleteChannelModalOpen}
+        onCloseDeleteChannelModal={() => {
+          setIsDeleteChannelModalOpen(false);
+          setModalChannelId(null);
+        }}
+        modalChannelUnresolvedTopics={modalChannelUnresolvedTopics}
+        onDeleteChannel={handleDeleteChannel}
+        isConnectModalOpen={isConnectModalOpen}
+        onCloseConnectModal={() => {
           setIsConnectModalOpen(false);
           setEditingAgent(null);
           setDuplicatingAgent(null);
         }}
-        initialAgent={editingAgent}
-        duplicateAgent={duplicatingAgent}
+        editingAgent={editingAgent}
+        duplicatingAgent={duplicatingAgent}
         defaultWorkspaceRoot="~/.shadow-crew"
-        onUpdateAgent={(agentId, updatedData) => {
-          // Invalidate any in-flight remote probe or local spawn so an edit cannot be
-          // overwritten by an attempt that started with the previous config.
-          cancelRemoteAgentProbe(agentId);
-          const editGeneration = cancelLocalSpawn(
-            localSpawnGenerationRef.current,
-            agentId
-          );
-          // 清空已交付公约、花名册缓存与水位线，确保后续全会话即时重装最新的人设与团队花名册
-          resetAllSessionWarmState();
-          void safelyClearAcpSessions(agentId, undefined, '更新 Agent 配置');
-
-          const existingAgent = agents.find((a) => a.id === agentId);
-          const wasOnline =
-            !!existingAgent && existingAgent.status !== 'idle' && existingAgent.status !== 'error';
-          const wasLocalAgent = Boolean(
-            existingAgent &&
-              !existingAgent.isRemote &&
-              existingAgent.acpTransport !== 'websocket'
-          );
-          const isRemoteAgent = Boolean(
-            updatedData.isRemote ??
-              existingAgent?.isRemote ??
-              updatedData.acpTransport === 'websocket'
-          );
-          if (isRemoteAgent && updatedData.status === 'running') {
-            recordRemoteProbeSuccess(remoteProbeRuntimeRef.current, agentId);
-          }
-
-          setAgents((prev) =>
-            prev.map((a) => {
-              if (a.id === agentId) {
-                const nextStatus =
-                  updatedData.status !== undefined
-                    ? updatedData.status
-                    : isRemoteAgent
-                      ? a.status || 'idle'
-                      : 'idle';
-                const merged: Agent = {
-                  ...a,
-                  ...updatedData,
-                  status: nextStatus,
-                  workspace: {
-                    ...a.workspace,
-                    ...(updatedData.workspace || {}),
-                  },
-                };
-                if (nextStatus !== 'running') {
-                  return resetAgentHandshakeCapabilities(
-                    merged,
-                    nextStatus,
-                    updatedData.statusDetail
-                  );
-                }
-                return merged;
-              }
-              return a;
-            })
-          );
-
-          // 远程 Agent 的 online/dismiss 状态由保存时的 WebSocket 探测结果直接驱动；
-          // 本地 Agent 通过进程重启自证连通性，无需额外轮询
-
-          // 同步全量更新所有线程中由该 Agent 发起或该 Agent 的 DM 会话
-          if (updatedData.name || updatedData.avatar || updatedData.handle) {
-            setThreads((prev) =>
-              prev.map((t) => {
-                if (t.authorId === agentId || t.id === `thread-dm-${agentId}`) {
-                  const newName = updatedData.name ?? t.authorName;
-                  const newAvatar = updatedData.avatar ?? t.authorAvatar;
-                  const newHandle = updatedData.handle ?? t.authorHandle;
-                  return {
-                    ...t,
-                    authorName: newName,
-                    authorAvatar: newAvatar,
-                    authorHandle: newHandle,
-                    ...(t.type === 'dm'
-                      ? {
-                          title: `与 ${newName} 的私信会话`,
-                          channelName: `与 ${newName} 私聊`,
-                        }
-                      : {}),
-                  };
-                }
-                return t;
-              })
-            );
-
-            // 同步更新所有会话/频道中该 Agent 历史与当前发言的头像与昵称（包含议题卡片元数据）
-            setMessages((prev) => {
-              let changed = false;
-              const next: Record<string, Message[]> = {};
-              for (const [threadId, msgs] of Object.entries(prev)) {
-                let threadChanged = false;
-                const newMsgs = msgs.map((m) => {
-                  const isAuthor = m.authorId === agentId;
-                  const isTopicAuthor = m.topicData && m.topicData.authorId === agentId;
-                  if (isAuthor || isTopicAuthor) {
-                    threadChanged = true;
-                    return {
-                      ...m,
-                      ...(isAuthor && updatedData.name ? { authorName: updatedData.name } : {}),
-                      ...(isAuthor && updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
-                      ...(isAuthor && updatedData.handle ? { authorHandle: updatedData.handle } : {}),
-                      ...(m.topicData ? {
-                        topicData: {
-                          ...m.topicData,
-                          ...(isTopicAuthor && updatedData.name ? { authorName: updatedData.name } : {}),
-                          ...(isTopicAuthor && updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
-                        },
-                      } : {}),
-                    };
-                  }
-                  return m;
-                });
-                if (threadChanged) {
-                  changed = true;
-                  next[threadId] = newMsgs;
-                } else {
-                  next[threadId] = msgs;
-                }
-              }
-              return changed ? next : prev;
-            });
-
-            // 同步更新所有子话题 (SubThread) 中该 Agent 的历史与当前回复
-            setSubThreads((prev) => {
-              let changed = false;
-              const next: Record<string, SubThread> = {};
-              for (const [subId, sub] of Object.entries(prev)) {
-                let subChanged = false;
-                const newMsgs = sub.messages.map((m) => {
-                  if (m.authorId === agentId) {
-                    subChanged = true;
-                    return {
-                      ...m,
-                      ...(updatedData.name ? { authorName: updatedData.name } : {}),
-                      ...(updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
-                      ...(updatedData.handle ? { authorHandle: updatedData.handle } : {}),
-                    };
-                  }
-                  return m;
-                });
-                if (subChanged) {
-                  changed = true;
-                  next[subId] = { ...sub, messages: newMsgs };
-                } else {
-                  next[subId] = sub;
-                }
-              }
-              return changed ? next : prev;
-            });
-          }
-
-          // 若编辑前是本地 Agent（即便切换为远程模式），必须先终止旧本地子进程防泄漏；
-          // 若编辑后仍为本地 Agent 且编辑前在线，则以新配置自动重启恢复 online
-          const tauriInvoke =
-            typeof window !== 'undefined'
-              ? (window as any).__TAURI_INTERNALS__?.invoke || (window as any).__TAURI__?.core?.invoke
-              : undefined;
-          if ((wasLocalAgent || !isRemoteAgent) && tauriInvoke) {
-            tauriInvoke('stop_acp_agent', { agentId })
-              .then(async () => {
-                await syncRunningAgentsWithBackend();
-                if (
-                  !isRemoteAgent &&
-                  wasOnline &&
-                  existingAgent &&
-                  updatedData.isModelHealthy !== false &&
-                  isCurrentLocalSpawnGeneration(
-                    localSpawnGenerationRef.current,
-                    agentId,
-                    editGeneration
-                  )
-                ) {
-                  const respawnAgent: Agent = { ...existingAgent, ...updatedData } as Agent;
-                  spawnLocalAcpAgent(respawnAgent);
-                }
-              })
-              .catch(() => {});
-          }
-        }}
-        onConnectAgent={(agentData) => {
-          const initialStatus = agentData.status || 'idle';
-          const isOnlineOnCreate = initialStatus === 'running';
-          const baseMemory =
-            agentData.memory || {
-              ...createAgentMemoryBank('native'),
-              nativeCapability: createUnknownNativeMemoryCapability(),
-            };
-          const effectiveMemory = isOnlineOnCreate
-            ? baseMemory
-            : {
-                ...baseMemory,
-                nativeCapability: createUnknownNativeMemoryCapability(),
-              };
-          const rawNewAg: Agent = {
-            id: `agent-${Date.now()}`,
-            name: agentData.name || 'Custom Agent',
-            handle: agentData.handle || `@${(agentData.name || 'agent').toLowerCase()}`,
-            avatar: agentData.avatar || '🥷',
-            role: agentData.role || 'Specialized Agent',
-            description: agentData.description || agentData.role || 'Custom ACP Agent',
-            color: '#06b6d4',
-            status: initialStatus,
-            modelBadge: agentData.modelBadge || (agentData.isRemote ? 'Remote ACP' : 'ACP Stdio'),
-            modelConfig: agentData.modelConfig,
-            isModelHealthy: agentData.isModelHealthy,
-            modelLatencyMs: agentData.modelLatencyMs,
-            statusDetail: agentData.statusDetail,
-            localAcpProfile: agentData.localAcpProfile,
-            envVars: agentData.envVars,
-            isManagedByYou: true,
-            isRemote: agentData.isRemote,
-            remoteUrl: agentData.remoteUrl,
-            authToken: agentData.authToken,
-            remoteLatencyMs: agentData.remoteLatencyMs,
-            readOnlyGuard: agentData.readOnlyGuard,
-            acpTransport: agentData.acpTransport || (agentData.isRemote ? 'websocket' : 'stdio'),
-            acpCommandOrUrl: agentData.acpCommandOrUrl || (agentData.isRemote ? (agentData.remoteUrl || 'ws://127.0.0.1:9090/acp') : 'cargo run --bin custom-agent -- --acp'),
-            protocolVersion: '2 (ACP v2.0.0)',
-            capabilities: {
-              canAccessWorkspaceFiles: true,
-              canExecuteSkills: true,
-              canDelegateToSubAgents: true,
-              supportsStreaming: true,
-              ...(agentData.capabilities || {}),
-              canUseInternalMemory:
-                isOnlineOnCreate &&
-                effectiveMemory.mode === 'native' &&
-                effectiveMemory.nativeCapability.status === 'enabled',
-            },
-            workspace: {
-              rootPath: agentData.workspace?.rootPath || '~/.shadow-crew',
-              repoName: 'shadow-crew-workspace',
-              gitBranch: 'main',
-              permissionMode: agentData.readOnlyGuard ? 'read_only' : 'full_read_write',
-              activeFiles: ['~/.shadow-crew/agents'],
-            },
-            skills: [],
-            memory: effectiveMemory,
-          };
-          const newAg = isOnlineOnCreate
-            ? rawNewAg
-            : resetAgentHandshakeCapabilities(
-                rawNewAg,
-                initialStatus,
-                agentData.statusDetail
-              );
-          setAgents((prev) => [...prev, newAg]);
-          setDuplicatingAgent(null);
-        }}
-      />
-      )}
-
-      {/* 9.1 Modal: Create New Topic */}
-      {isNewTopicModalOpen && (
-        <NewTopicModal
-          isOpen={isNewTopicModalOpen}
-          onClose={() => setIsNewTopicModalOpen(false)}
-          scopeType={activeThread?.type === 'dm' ? 'dm' : 'channel'}
-          channel={activeThread?.type === 'dm' ? undefined : activeChannel}
-          dmAgent={
-            activeThread?.type === 'dm'
-              ? agents.find((agent) => agent.id === activeThread.authorId)
+        onUpdateAgent={handleUpdateAgent}
+        onConnectAgent={handleConnectAgent}
+        isNewTopicModalOpen={isNewTopicModalOpen}
+        onCloseNewTopicModal={() => setIsNewTopicModalOpen(false)}
+        newTopicScopeType={activeThread?.type === 'dm' ? 'dm' : 'channel'}
+        newTopicChannel={activeThread?.type === 'dm' ? undefined : activeChannel}
+        newTopicDmAgent={
+          activeThread?.type === 'dm'
+            ? agents.find((agent) => agent.id === activeThread.authorId)
+            : undefined
+        }
+        newTopicDmThreadId={activeThread?.type === 'dm' ? activeThread.id : undefined}
+        newTopicChannelWorkspaceCwd={
+          activeThread?.type === 'dm'
+            ? `~/.shadow-crew/agents/${activeThread.authorId}`
+            : activeChannel
+              ? findWorkspaceBinding(workspaceBindings, 'channel', activeChannel.id)?.cwd
               : undefined
-          }
-          dmThreadId={activeThread?.type === 'dm' ? activeThread.id : undefined}
-          channelWorkspaceCwd={
-            activeThread?.type === 'dm'
-              ? `~/.shadow-crew/agents/${activeThread.authorId}`
-              : activeChannel
-                ? findWorkspaceBinding(workspaceBindings, 'channel', activeChannel.id)?.cwd
-                : undefined
-          }
-          agents={
-            activeThread?.type === 'dm'
-              ? agents.filter((agent) => agent.id === activeThread.authorId)
-              : currentChannelAgents
-          }
-          onCreateTopic={handleCreateTopic}
-        />
-      )}
-
-      {/* 9.1.1 Modal: Edit Topic */}
-      {Boolean(editingTopic) && (
-        <EditTopicModal
-          isOpen={Boolean(editingTopic)}
-          topic={editingTopic}
-          channel={editingTopicChannel}
-          agents={editingTopicAgents}
-          onClose={() => setEditingTopic(null)}
-          onUpdateTopic={handleUpdateTopic}
-        />
-      )}
-
-      {/* 10. Rust + Tauri Architecture & Source Code Hub */}
-      {isRustTauriHubOpen && (
-        <RustTauriArchitectureHub
-          isOpen={isRustTauriHubOpen}
-          onClose={() => setIsRustTauriHubOpen(false)}
-        />
-      )}
+        }
+        newTopicAgents={
+          activeThread?.type === 'dm'
+            ? agents.filter((agent) => agent.id === activeThread.authorId)
+            : currentChannelAgents
+        }
+        onCreateTopic={handleCreateTopic}
+        editingTopic={editingTopic}
+        editingTopicChannel={editingTopicChannel}
+        editingTopicAgents={editingTopicAgents}
+        onCloseEditTopicModal={() => setEditingTopic(null)}
+        onUpdateTopic={handleUpdateTopic}
+        isRustTauriHubOpen={isRustTauriHubOpen}
+        onCloseRustTauriHub={() => setIsRustTauriHubOpen(false)}
+      />
 
       </Suspense>
 
