@@ -365,7 +365,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     };
   };
 
-  const handleOpenRuling = (type: RulingDecisionType) => {
+  const handleOpenRuling = (type: RulingDecisionType = 'adopt_proposer') => {
     setRulingType(type);
     setExemptionChecked(false);
     setExemptionReason('');

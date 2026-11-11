@@ -1675,7 +1675,6 @@ async function verifyRemoteWebSocketAndUiContracts(): Promise<number> {
       React.createElement(AcpInspector, {
         selectedAgent: agentVariant,
         rpcLogs: [],
-        workspaceFiles: [],
         initialTab: 'rust_tauri',
         onRunAgentSkill: () => {},
         onClose: () => {},
@@ -1688,7 +1687,6 @@ async function verifyRemoteWebSocketAndUiContracts(): Promise<number> {
       React.createElement(AcpInspector, {
         selectedAgent: agentVariant,
         rpcLogs: [],
-        workspaceFiles: [],
         initialTab: 'memory',
         onRunAgentSkill: () => {},
         onClose: () => {},
@@ -1831,7 +1829,6 @@ async function verifyRemoteWebSocketAndUiContracts(): Promise<number> {
     React.createElement(AcpInspector, {
       selectedAgent: startingAgent,
       rpcLogs: [],
-      workspaceFiles: [],
       initialTab: 'rust_tauri',
       onRunAgentSkill: () => {},
       onClose: () => {},

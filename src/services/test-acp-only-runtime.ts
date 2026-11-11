@@ -46,7 +46,7 @@ const fakeAgent = {
   ...INITIAL_AGENTS[0],
   id: 'agent-no-transport',
   name: 'No Transport ACP',
-  acpCommandOrUrl: undefined,
+  acpCommandOrUrl: '',
   status: 'running' as const,
 };
 

@@ -445,7 +445,7 @@ console.log('\n🔟 测试思考强度配置与默认选项 (Reasoning levels & 
 
   const defaultOption = REASONING_EFFORT_OPTIONS.find((o) => o.value === 'medium');
   assert(Boolean(defaultOption), '存在 medium 作为默认选项');
-  assert(defaultOption?.label.includes('默认'), 'medium 选项标明了默认标识');
+  assert(Boolean(defaultOption?.label.includes('默认')), 'medium 选项标明了默认标识');
 }
 
 // 1️⃣1️⃣ 测试双模架构：微型智能总结 Agent 与本地规则提取保底 (compactConversationHistoryAsync & Dual-Mode)

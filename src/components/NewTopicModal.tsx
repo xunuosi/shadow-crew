@@ -686,7 +686,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
               <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 space-y-1 text-[11px]">
                 <div className="font-semibold flex items-center gap-1.5">
                   <Bot className="w-3.5 h-3.5" />
-                  <span>当前频道 #{channel.name} 暂无成员 Agent</span>
+                  <span>当前频道 #{channel?.name ?? '当前会话'} 暂无成员 Agent</span>
                 </div>
                 <p className="text-[10px] opacity-90 leading-relaxed">
                   本频道目前尚未邀请任何智能体。可先创建议题，并在频道右上角「成员管理」中邀请专属 Agent 加入本频道。

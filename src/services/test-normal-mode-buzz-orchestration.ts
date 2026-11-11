@@ -1612,7 +1612,8 @@ async function runEpochAndBarrierTests() {
     );
 
     assert(
-      updatedCh1?.assignedAgentIds?.length === 2 &&
+      Boolean(
+        updatedCh1?.assignedAgentIds?.length === 2 &&
         updatedCh1.assignedAgentIds.includes(mockOutsiderD.id) &&
         !updatedCh1.assignedAgentIds.includes(mockAgentB.id) &&
         updatedThreadCh1?.activeAgentIds?.includes(mockOutsiderD.id) &&
@@ -1628,7 +1629,8 @@ async function runEpochAndBarrierTests() {
         ctrlAfterMemberUpdate.sessionWatermarksRef.current.get(ch2StandingKey) === 'wm-3' &&
         warmStateMutationCount === 1 &&
         clearedPrefixesInComponent.includes('channel:ch-1') &&
-        clearedPrefixesInComponent.includes('topic:ch-1'),
+        clearedPrefixesInComponent.includes('topic:ch-1')
+      ),
       '真实 React 19 组件挂载下调用 handleUpdateChannelMembers：同步中止该频道在途执行、更新频道与线程成员状态、精准失效 ch-1 花名册与水位线并清理底层 Session'
     );
 

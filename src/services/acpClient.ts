@@ -441,10 +441,10 @@ export function extractArbitrationRulingFromAcpResponse(
           decisionType: validDecision,
           summary: String(args.summary || '已通过 MCP 工具提交仲裁定案裁决').trim(),
           tradeOffPoints: Array.isArray(args.trade_off_points)
-            ? args.trade_off_points.map(String).filter((s) => s.trim().length > 0)
+            ? (args.trade_off_points as unknown[]).map((item) => String(item)).filter((s: string) => s.trim().length > 0)
             : [],
           impactedFiles: Array.isArray(args.impacted_files)
-            ? args.impacted_files.map(String).filter((s) => s.trim().length > 0)
+            ? (args.impacted_files as unknown[]).map((item) => String(item)).filter((s: string) => s.trim().length > 0)
             : [],
           solution: args.solution ? String(args.solution).trim() : undefined,
           submittedBy: authorName,

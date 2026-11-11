@@ -351,7 +351,7 @@ function runModularLifecycle(
     stagesByModule[activeId] = [...(stagesByModule[activeId] || []), stage];
     const refineCount = refineCounts[activeId] || 0;
 
-    const result =
+    const result: ReturnType<typeof stepModularStageTransition> =
       stage === 'proposal'
         ? stepModularStageTransition({
             state,
@@ -551,7 +551,7 @@ console.log('\n--- N5 拓扑去重会静默剥夺模块白名单 (静默过滤�
   const dropped = ['src/shared.ts', 'src/a.ts'].filter((f) => !m1.allowedFiles.includes(f));
   console.log(`    M1 声明文件 [src/shared.ts,src/a.ts] -> 实际获得 [${m1.allowedFiles.join(',') || '空'}]；M2 获得 [${m2.allowedFiles.join(',')}]`);
   const hasAudit = (state.whitelistDeduplications?.length || 0) > 0;
-  const hasContractInvariant = state.sharedContract.invariants.some(
+  const hasContractInvariant = (state.sharedContract?.invariants ?? []).some(
     (inv) => inv.includes('白名单') || inv.includes('共享文件')
   );
   if (dropped.length > 0 && (!hasAudit || !hasContractInvariant)) {
