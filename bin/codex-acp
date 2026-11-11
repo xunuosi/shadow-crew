@@ -400,6 +400,9 @@ function startOfficialAdapterBridge(codexBin) {
     stdio: ['pipe', 'pipe', 'inherit'],
   });
 
+  let lastReceivedId = null;
+  let hasProducedOutput = false;
+
   const inRl = readline.createInterface({
     input: process.stdin,
     terminal: false,
@@ -410,6 +413,9 @@ function startOfficialAdapterBridge(codexBin) {
     if (!trimmed) return;
     try {
       const msg = JSON.parse(trimmed);
+      if (msg && msg.id !== undefined) {
+        lastReceivedId = msg.id;
+      }
       if (msg && msg.method === 'initialize' && msg.params) {
         if (!msg.params.info && msg.params.clientInfo) {
           msg.params.info = msg.params.clientInfo;
@@ -443,9 +449,28 @@ function startOfficialAdapterBridge(codexBin) {
   process.on('SIGTERM', () => forwardSignal('SIGTERM'));
   process.on('SIGINT', () => forwardSignal('SIGINT'));
 
+  officialChild.stdout.on('data', () => {
+    hasProducedOutput = true;
+  });
   officialChild.stdout.pipe(process.stdout);
 
   officialChild.on('close', (code) => {
+    if (code !== 0 && !hasProducedOutput && lastReceivedId !== null) {
+      try {
+        process.stdout.write(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: lastReceivedId,
+            error: {
+              code: 1001,
+              message: `Official Codex ACP engine exited with code ${code}`,
+            },
+          }) + '\n'
+        );
+      } catch {
+        // ignore
+      }
+    }
     process.exit(code ?? 0);
   });
 
@@ -769,12 +794,75 @@ function startBuiltinAdapter() {
 
     let fullOutput = '';
     let hasSentChunk = false;
+    let turnFinished = false;
+    let turnFinishTimer = null;
 
     const child = spawn(CODEX_BIN, args, {
       cwd: session.cwd && fs.existsSync(session.cwd) ? session.cwd : undefined,
       env: codexChildEnv(nativeMemoryPolicy),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    let stderrBuffer = '';
+    child.stderr.on('data', (data) => {
+      stderrBuffer += data.toString();
+    });
+
+    function finishTurn(stopReason = 'completed', isError = false, customError = null) {
+      if (turnFinished) return;
+      turnFinished = true;
+      if (turnFinishTimer) {
+        clearTimeout(turnFinishTimer);
+        turnFinishTimer = null;
+      }
+
+      session.updatedAt = Date.now();
+      saveSession(session);
+      const textResponse = customError
+        ? customError
+        : isError
+        ? `⚠️ Codex 执行退出 (exit code: 1)\n${stderrBuffer.trim()}`
+        : fullOutput || '（Codex 执行完成，无输出文本）';
+
+      // 1. 发送 ACP v2 异步 turn_complete 通知
+      sendNotification('session/update', {
+        sessionId: session.sessionId,
+        update: {
+          sessionUpdate: 'turn_complete',
+          messageId,
+          stopReason: isError ? 'error' : (stopReason === 'completed' ? 'end_turn' : stopReason),
+          nativeMemory: promptNativeMemoryCapability,
+          ...(isError
+            ? { error: textResponse }
+            : {}),
+        },
+      });
+
+      // 2. 发送 JSON-RPC 结果回包 (附带 messageId、v2 capabilities 与文本结果)
+      sendResult(id, {
+        messageId,
+        status: 'accepted',
+        text_response: textResponse,
+        stopReason: isError ? 'error' : stopReason,
+        capabilities: {
+          nativeMemory: promptNativeMemoryCapability,
+        },
+        agentCapabilities: {
+          nativeMemory: promptNativeMemoryCapability,
+        },
+      });
+
+      // 如果子进程因外部命令 (如 cargo test、subshell) 未关闭句柄残留，主动收割避免僵尸进程
+      setTimeout(() => {
+        try {
+          if (!child.killed) {
+            child.kill('SIGTERM');
+          }
+        } catch {
+          // ignore
+        }
+      }, 1200);
+    }
 
     // Pipe the user prompt into stdin
     child.stdin.write(fullPrompt);
@@ -799,8 +887,37 @@ function startBuiltinAdapter() {
           saveSession(session);
         }
 
-        if (event.type === 'item.completed' && event.item) {
-          if (event.item.type === 'agent_message' && event.item.text) {
+        // 1. 工具调用与命令执行进度事件：实时流式回传，保持管道活跃并刷新宿主活跃水位线
+        if (event.type === 'item.started' && event.item) {
+          const itemType = String(event.item.type || '').toLowerCase();
+          if (itemType.includes('command') || itemType.includes('exec') || event.item.command) {
+            const cmd = event.item.command || event.item.cmd || '执行命令';
+            const progressText = `\n> ⚙️ 正在执行: \`${cmd}\`\n`;
+            sendNotification('session/update', {
+              sessionId: session.sessionId,
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                messageId,
+                delta: progressText,
+                content: { text: progressText },
+              },
+            });
+          } else if (itemType.includes('file')) {
+            const filePath = event.item.path || event.item.file || '工作区文件';
+            const progressText = `\n> 📝 正在修改: \`${filePath}\`\n`;
+            sendNotification('session/update', {
+              sessionId: session.sessionId,
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                messageId,
+                delta: progressText,
+                content: { text: progressText },
+              },
+            });
+          }
+        } else if (event.type === 'item.completed' && event.item) {
+          const itemType = String(event.item.type || '').toLowerCase();
+          if (itemType === 'agent_message' && event.item.text) {
             const text = event.item.text;
             fullOutput += (fullOutput ? '\n\n' : '') + text;
             hasSentChunk = true;
@@ -814,6 +931,44 @@ function startBuiltinAdapter() {
                 content: { text },
               },
             });
+          } else if (itemType.includes('command') || itemType.includes('exec') || event.item.command) {
+            const exitCode = event.item.exit_code ?? event.item.exitCode;
+            const statusLabel = exitCode === 0 || exitCode === undefined ? '完成' : `退出 (code ${exitCode})`;
+            const progressText = `> ✅ 命令已${statusLabel}\n\n`;
+            sendNotification('session/update', {
+              sessionId: session.sessionId,
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                messageId,
+                delta: progressText,
+                content: { text: progressText },
+              },
+            });
+          }
+        } else if (event.type === 'item.updated' && event.item) {
+          if (String(event.item.type || '').toLowerCase() === 'agent_message' && event.delta) {
+            fullOutput += event.delta;
+            hasSentChunk = true;
+            sendNotification('session/update', {
+              sessionId: session.sessionId,
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                messageId,
+                delta: event.delta,
+                content: { text: event.delta },
+              },
+            });
+          }
+        }
+
+        // 2. 核心突破：Codex 显式宣告 Turn 完成！
+        // 收到 turn.completed 后启动 150ms 平滑收尾定时器，确保收集完尾部输出后主动结题，
+        // 彻底杜绝因子进程未完全关闭 stdio 句柄导致的无休止死锁卡死！
+        if (event.type === 'turn.completed') {
+          if (!turnFinished && !turnFinishTimer) {
+            turnFinishTimer = setTimeout(() => {
+              finishTurn('completed', false);
+            }, 150);
           }
         }
       } catch {
@@ -833,66 +988,15 @@ function startBuiltinAdapter() {
       }
     });
 
-    let stderrBuffer = '';
-    child.stderr.on('data', (data) => {
-      stderrBuffer += data.toString();
-    });
-
     child.on('close', (code) => {
-      session.updatedAt = Date.now();
-      saveSession(session);
       const isError = code !== 0 && !fullOutput;
       const stopReason = isError ? 'error' : 'completed';
-      const textResponse = isError
-        ? `⚠️ Codex 执行退出 (exit code: ${code})\n${stderrBuffer.trim()}`
-        : fullOutput || '（Codex 执行完成，无输出文本）';
-
-      // 1. 发送 ACP v2 异步 turn_complete 通知
-      sendNotification('session/update', {
-        sessionId: session.sessionId,
-        update: {
-          sessionUpdate: 'turn_complete',
-          messageId,
-          stopReason: isError ? 'error' : 'end_turn',
-          nativeMemory: promptNativeMemoryCapability,
-          ...(isError
-            ? { error: `⚠️ Codex 执行退出 (exit code: ${code})\n${stderrBuffer.trim()}` }
-            : {}),
-        },
-      });
-
-      // 2. 发送 JSON-RPC 结果回包 (附带 messageId、v2 capabilities 与文本结果)
-      sendResult(id, {
-        messageId,
-        status: 'accepted',
-        text_response: textResponse,
-        stopReason,
-        capabilities: {
-          nativeMemory: promptNativeMemoryCapability,
-        },
-        agentCapabilities: {
-          nativeMemory: promptNativeMemoryCapability,
-        },
-      });
+      finishTurn(stopReason, isError);
     });
 
     child.on('error', (err) => {
       const errMsg = `⚠️ 无法启动 Codex 进程 (${CODEX_BIN}): ${err.message}\n${codexUnavailableReason()}。`;
-      sendNotification('session/update', {
-        sessionId: session.sessionId,
-        update: {
-          sessionUpdate: 'turn_complete',
-          messageId,
-          stopReason: 'error',
-          error: errMsg,
-        },
-      });
-      sendResult(id, {
-        messageId,
-        status: 'accepted',
-        text_response: errMsg,
-        stopReason: 'error',
-      });
+      finishTurn('error', true, errMsg);
     });
 
     return;

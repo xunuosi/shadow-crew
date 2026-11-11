@@ -4390,6 +4390,8 @@ impl RunningAgent {
                         let chunks = self.active_chunks.lock().await;
                         chunks.get(&req_id).cloned().unwrap_or_default()
                     };
+                    let final_text =
+                        resolve_v2_terminal_text(stop_reason, &accumulated_text, &term_val);
                     let msg_id = receipt_resp
                         .get("result")
                         .and_then(|r| r.get("messageId"))
@@ -4398,7 +4400,7 @@ impl RunningAgent {
                     let mut res_obj = serde_json::json!({
                         "messageId": msg_id,
                         "stopReason": stop_reason,
-                        "text_response": accumulated_text
+                        "text_response": final_text
                     });
                     if let Some(nm) = term_val.get("nativeMemory") {
                         if let Some(obj) = res_obj.as_object_mut() {
@@ -4505,6 +4507,26 @@ impl RunningAgent {
     }
 }
 
+fn resolve_v2_terminal_text(
+    stop_reason: &str,
+    accumulated_text: &str,
+    terminal_update: &serde_json::Value,
+) -> String {
+    let fallback_text = terminal_update
+        .get("error")
+        .or_else(|| terminal_update.get("text_response"))
+        .or_else(|| terminal_update.get("text"))
+        .and_then(|text| text.as_str())
+        .unwrap_or("");
+    if stop_reason == "error" && !fallback_text.trim().is_empty() {
+        fallback_text.to_string()
+    } else if accumulated_text.trim().is_empty() && !fallback_text.trim().is_empty() {
+        fallback_text.to_string()
+    } else {
+        accumulated_text.to_string()
+    }
+}
+
 /// 判断 session/prompt 返回的 JSON-RPC 错误是否属于明确的会话失效/不存在。
 /// 仅当错误码为 -32001 (Session not found) 或 -32002 (Invalid session)，
 /// 或错误提示包含 session not found / invalid session / unknown session / session expired 时，
@@ -4551,8 +4573,8 @@ mod runtime_status_tests {
         classify_permission_capability, derive_runtime_status, is_dm_session_scope,
         jsonrpc_id_key, parse_permission_options, partition_permission_paths,
         permission_cancelled_response, permission_selected_response,
-        resolve_session_workspace, select_permission_option, AcpPermissionDecision,
-        AcpPromptAttachment, PermissionScopeContext,
+        resolve_session_workspace, resolve_v2_terminal_text, select_permission_option,
+        AcpPermissionDecision, AcpPromptAttachment, PermissionScopeContext,
     };
 
     #[test]
@@ -4570,6 +4592,38 @@ mod runtime_status_tests {
     #[test]
     fn healthy_handshake_is_running() {
         assert_eq!(derive_runtime_status(true, "ok", false), "running");
+    }
+
+    #[test]
+    fn v2_terminal_text_falls_back_only_when_stream_is_empty() {
+        let update = serde_json::json!({
+            "stopReason": "end_turn",
+            "text_response": "fallback result"
+        });
+        assert_eq!(
+            resolve_v2_terminal_text("end_turn", "", &update),
+            "fallback result"
+        );
+        assert_eq!(
+            resolve_v2_terminal_text("end_turn", "streamed result", &update),
+            "streamed result"
+        );
+    }
+
+    #[test]
+    fn v2_terminal_error_takes_precedence_over_progress_chunks() {
+        let update = serde_json::json!({
+            "stopReason": "error",
+            "error": "permission denied by host policy"
+        });
+        assert_eq!(
+            resolve_v2_terminal_text(
+                "error",
+                "\n> ⚙️ 正在执行: `cargo test`\n",
+                &update
+            ),
+            "permission denied by host policy"
+        );
     }
 
     #[test]

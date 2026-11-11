@@ -1,14 +1,18 @@
 import React, { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { FileCode2, ExternalLink } from 'lucide-react';
 import { CodeBlock } from './CodeBlock';
 import { InlineCode } from './InlineCode';
 import { GitHubAlert, AlertType } from './GitHubAlert';
 import { renderFormattedContent } from '../../utils/formatMentions';
+import { useFilePreview } from '../../context/FilePreviewContext';
+import { parseFileLink } from '../../services/fileViewerService';
 
 interface MarkdownRendererProps {
   content: string;
   className?: string;
+  workspaceRoot?: string;
 }
 
 /**
@@ -97,7 +101,9 @@ function extractAlert(children: React.ReactNode): { isAlert: boolean; type?: Ale
 }
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
-  ({ content, className = '' }) => {
+  ({ content, className = '', workspaceRoot }) => {
+    const { openFilePreview } = useFilePreview();
+
     // 流式自愈保护：如果输出流中存在未闭合的 ``` 代码栅栏，自动在渲染时补齐
     const healedContent = useMemo(() => {
       if (!content) return '';
@@ -217,17 +223,53 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
               </td>
             ),
 
-            // 7. 外链优化
-            a: ({ href, children }) => (
-              <a
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-accent hover:underline font-medium inline-flex items-center gap-0.5 select-text"
-              >
-                {children}
-              </a>
-            ),
+            // 7. 链接优化 (本地文件预览直通 + 外部链接安全新标签页打开)
+            a: ({ href, children }) => {
+              const rawHref = href || '';
+              const parsed = parseFileLink(rawHref);
+
+              if (parsed.isLocalFile) {
+                return (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openFilePreview(rawHref, workspaceRoot);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        openFilePreview(rawHref, workspaceRoot);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded-md font-mono text-[11px] bg-surface-subtle border border-border text-accent hover:bg-surface-hover hover:border-accent/40 cursor-pointer transition-colors select-text group"
+                    title={`点击在本地预览: ${parsed.cleanPath}${parsed.startLine ? ` (行 ${parsed.startLine})` : ''}`}
+                  >
+                    <FileCode2 className="w-3 h-3 text-accent shrink-0 group-hover:scale-110 transition-transform" />
+                    <span className="underline decoration-accent/40 underline-offset-2">{children || parsed.displayName}</span>
+                    {parsed.startLine && (
+                      <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/15 text-amber-800 dark:text-amber-300 font-sans">
+                        :{parsed.startLine}
+                      </span>
+                    )}
+                  </span>
+                );
+              }
+
+              return (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-accent hover:underline font-medium inline-flex items-center gap-0.5 select-text"
+                >
+                  {children}
+                  <ExternalLink className="w-2.5 h-2.5 opacity-60 inline shrink-0" />
+                </a>
+              );
+            },
 
             // 8. 分割线
             hr: () => <hr className="my-3 border-border/70" />,
@@ -238,5 +280,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
       </div>
     );
   },
-  (prev, next) => prev.content === next.content && prev.className === next.className
+  (prev, next) =>
+    prev.content === next.content &&
+    prev.className === next.className &&
+    prev.workspaceRoot === next.workspaceRoot
 );

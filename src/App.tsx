@@ -46,6 +46,7 @@ import {
 } from './data/mockData';
 import { Hash, Plus, PanelLeft } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
+import { FilePreviewProvider } from './context/FilePreviewContext';
 import { ThreadList } from './components/ThreadList';
 import { ChatTimeline } from './components/ChatTimeline';
 import { MessageInput } from './components/MessageInput';
@@ -8783,8 +8784,13 @@ export default function App() {
     );
   };
 
+  const activeWorkspaceCwd = activeChannel
+    ? findWorkspaceBinding(workspaceBindings, 'channel', activeChannel.id)?.cwd
+    : undefined;
+
   return (
-    <div className="h-full w-full flex bg-canvas text-fg overflow-hidden font-sans select-none antialiased transition-colors duration-150">
+    <FilePreviewProvider defaultWorkspaceRoot={activeWorkspaceCwd}>
+      <div className="h-full w-full flex bg-canvas text-fg overflow-hidden font-sans select-none antialiased transition-colors duration-150">
       {/* 1. Left Primary Sidebar (Antigravity-style Smooth Collapsible) */}
       <div
         className={`h-full flex shrink-0 overflow-hidden ${
@@ -9643,6 +9649,7 @@ export default function App() {
           </button>
         </div>
       )}
-    </div>
+      </div>
+    </FilePreviewProvider>
   );
 }

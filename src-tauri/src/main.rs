@@ -1855,6 +1855,248 @@ fn get_agent_dir_info(agent_id: String) -> Result<serde_json::Value, String> {
     }))
 }
 
+// -----------------------------------------------------------------------------
+// 本地文件预览与打开能力 (Local File Preview & Native Open)
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePreviewDto {
+    pub path: String,
+    pub display_name: String,
+    pub extension: String,
+    pub size_bytes: u64,
+    pub is_binary: bool,
+    pub content: String,
+    pub total_lines: usize,
+    pub is_truncated: bool,
+    pub error: Option<String>,
+}
+
+fn percent_decode_str(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut result = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(
+                std::str::from_utf8(&bytes[i + 1..=i + 2]).unwrap_or(""),
+                16,
+            ) {
+                result.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&result).to_string()
+}
+
+fn normalize_file_target_path(raw: &str, workspace_root: Option<&str>) -> std::path::PathBuf {
+    let mut cleaned = raw.trim();
+    if let Some(stripped) = cleaned.strip_prefix("file://") {
+        cleaned = stripped;
+    }
+    let decoded = percent_decode_str(cleaned);
+    #[allow(unused_mut)]
+    let mut cleaned_str = decoded.as_str();
+
+    // 在 Windows 上，若类似 "/C:/path" 则去除首个斜杠
+    #[cfg(target_os = "windows")]
+    if cleaned_str.starts_with('/') && cleaned_str.len() > 3 && cleaned_str.as_bytes()[2] == b':' {
+        cleaned_str = &cleaned_str[1..];
+    }
+
+    let mut path = std::path::PathBuf::from(cleaned_str);
+    if path.is_relative() {
+        if let Some(root) = workspace_root {
+            let root_buf = std::path::PathBuf::from(root.trim());
+            let candidate = root_buf.join(&path);
+            if candidate.exists() {
+                path = candidate;
+            }
+        }
+    }
+    path
+}
+
+/// Tauri Command: 读取本地文件用于应用内轻量抽屉预览
+#[tauri::command]
+async fn read_file_for_preview(
+    path: String,
+    workspace_root: Option<String>,
+) -> Result<FilePreviewDto, String> {
+    use std::io::Read;
+
+    let target_path = normalize_file_target_path(&path, workspace_root.as_deref());
+    let canonical = match std::fs::canonicalize(&target_path) {
+        Ok(p) => p,
+        Err(_) => target_path.clone(),
+    };
+
+    if !canonical.exists() {
+        return Err(format!("文件不存在: {}", canonical.display()));
+    }
+    if canonical.is_dir() {
+        return Err(format!("目标是一个目录而非文件: {}", canonical.display()));
+    }
+
+    let metadata = std::fs::metadata(&canonical).map_err(|e| format!("无法获取文件元数据: {}", e))?;
+    let size_bytes = metadata.len();
+    let display_name = canonical
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let extension = canonical
+        .extension()
+        .map(|s| s.to_string_lossy().to_string().to_lowercase())
+        .unwrap_or_default();
+
+    // 常见二进制扩展名
+    let known_binary_exts = [
+        "png", "jpg", "jpeg", "gif", "webp", "ico", "pdf", "zip", "tar", "gz", "wasm", "exe",
+        "dylib", "so", "bin", "scpack", "mp4", "mp3", "mov", "avi", "woff", "woff2", "ttf",
+    ];
+    let is_binary_by_ext = known_binary_exts.contains(&extension.as_str());
+
+    // 探针读取前 8KB 检查是否有 0x00 空字符
+    let mut file = std::fs::File::open(&canonical).map_err(|e| format!("打开文件失败: {}", e))?;
+    let mut probe_buf = vec![0u8; 8192.min(size_bytes as usize)];
+    let bytes_read = file.read(&mut probe_buf).map_err(|e| format!("读取文件头失败: {}", e))?;
+    let is_binary = is_binary_by_ext || probe_buf[..bytes_read].contains(&0);
+
+    if is_binary {
+        return Ok(FilePreviewDto {
+            path: canonical.to_string_lossy().to_string(),
+            display_name,
+            extension,
+            size_bytes,
+            is_binary: true,
+            content: String::new(),
+            total_lines: 0,
+            is_truncated: false,
+            error: None,
+        });
+    }
+
+    // 文本文件保护：限制最大预览 3MB
+    const MAX_PREVIEW_BYTES: u64 = 3 * 1024 * 1024;
+    let (content, is_truncated) = if size_bytes > MAX_PREVIEW_BYTES {
+        let mut text_buf = vec![0u8; MAX_PREVIEW_BYTES as usize];
+        let mut f = std::fs::File::open(&canonical).map_err(|e| format!("打开文件失败: {}", e))?;
+        let _ = f.read_exact(&mut text_buf);
+        let safe_text = String::from_utf8_lossy(&text_buf).to_string();
+        (safe_text, true)
+    } else {
+        let full_text = std::fs::read_to_string(&canonical).map_err(|e| format!("读取文本失败: {}", e))?;
+        (full_text, false)
+    };
+
+    let total_lines = content.lines().count();
+
+    Ok(FilePreviewDto {
+        path: canonical.to_string_lossy().to_string(),
+        display_name,
+        extension,
+        size_bytes,
+        is_binary: false,
+        content,
+        total_lines,
+        is_truncated,
+        error: None,
+    })
+}
+
+/// Tauri Command: 使用系统默认程序打开文件 (macOS open / Windows start / Linux xdg-open)
+#[tauri::command]
+async fn open_file_in_system(
+    path: String,
+    workspace_root: Option<String>,
+) -> Result<String, String> {
+    let target_path = normalize_file_target_path(&path, workspace_root.as_deref());
+    if !target_path.exists() {
+        return Err(format!("文件不存在: {}", target_path.display()));
+    }
+    let path_str = target_path.to_string_lossy().to_string();
+
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(&path_str).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd").args(["/c", "start", "", &path_str]).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(&path_str).spawn();
+
+    Ok(path_str)
+}
+
+/// Tauri Command: 在文件管理器中高亮选中文件 (Finder / Explorer)
+#[tauri::command]
+async fn reveal_file_in_folder(
+    path: String,
+    workspace_root: Option<String>,
+) -> Result<String, String> {
+    let target_path = normalize_file_target_path(&path, workspace_root.as_deref());
+    if !target_path.exists() {
+        return Err(format!("文件不存在: {}", target_path.display()));
+    }
+    let path_str = target_path.to_string_lossy().to_string();
+
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg("-R").arg(&path_str).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path_str)).spawn();
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(parent) = target_path.parent() {
+            let _ = std::process::Command::new("xdg-open").arg(parent).spawn();
+        }
+    }
+
+    Ok(path_str)
+}
+
+/// Tauri Command: 在外部代码编辑器中打开指定代码行 (默认 code -g)
+#[tauri::command]
+async fn open_file_in_editor(
+    path: String,
+    line: Option<u32>,
+    column: Option<u32>,
+    editor: Option<String>,
+    workspace_root: Option<String>,
+) -> Result<String, String> {
+    let target_path = normalize_file_target_path(&path, workspace_root.as_deref());
+    if !target_path.exists() {
+        return Err(format!("文件不存在: {}", target_path.display()));
+    }
+    let path_str = target_path.to_string_lossy().to_string();
+    let ed = editor.unwrap_or_else(|| "code".to_string());
+
+    let target_arg = match (line, column) {
+        (Some(l), Some(c)) => format!("{}:{}:{}", path_str, l, c),
+        (Some(l), None) => format!("{}:{}", path_str, l),
+        _ => path_str.clone(),
+    };
+
+    let spawned = std::process::Command::new(&ed)
+        .arg("-g")
+        .arg(&target_arg)
+        .spawn();
+
+    if spawned.is_err() {
+        // 如果未安装或找不到指定命令行（如 code），回退使用系统默认打开
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg(&path_str).spawn();
+        #[cfg(target_os = "windows")]
+        let _ = std::process::Command::new("cmd").args(["/c", "start", "", &path_str]).spawn();
+        #[cfg(target_os = "linux")]
+        let _ = std::process::Command::new("xdg-open").arg(&path_str).spawn();
+    }
+
+    Ok(target_arg)
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HttpPostRequest {
@@ -2894,6 +3136,10 @@ async fn main() {
             uninstall_scpack_cmd,
             retrieve_scpack_expertise_cmd,
             validate_b_side_codex_env_cmd,
+            read_file_for_preview,
+            open_file_in_system,
+            reveal_file_in_folder,
+            open_file_in_editor,
         ])
         .build(tauri::generate_context!())
         .expect("error while building shadow-crew tauri desktop application")
@@ -3428,6 +3674,44 @@ mod attachment_tests {
             .contains("Multi-Agent Turn Barrier"));
 
         let _ = uninstall_scpack_cmd(pkg_id, Some(false), None, Some(packs_dir)).await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn test_read_file_for_preview_text_and_binary() {
+        let root = temp_root();
+        let _ = std::fs::create_dir_all(&root);
+
+        // 1. 测试常规文本文件预览
+        let test_txt = root.join("hello_preview.txt");
+        std::fs::write(&test_txt, "Line 1: Hello World\nLine 2: Shadow Crew\nLine 3: Preview\n").unwrap();
+
+        let path_uri = format!("file://{}", test_txt.to_string_lossy());
+        let preview = read_file_for_preview(path_uri, None).await.expect("read_file_for_preview should succeed");
+        assert_eq!(preview.display_name, "hello_preview.txt");
+        assert_eq!(preview.extension, "txt");
+        assert_eq!(preview.is_binary, false);
+        assert_eq!(preview.total_lines, 3);
+        assert!(preview.content.contains("Line 2: Shadow Crew"));
+
+        // 2. 测试相对路径结合 workspace_root
+        let rel_preview = read_file_for_preview(
+            "hello_preview.txt".to_string(),
+            Some(root.to_string_lossy().to_string()),
+        ).await.expect("relative path with workspace_root should succeed");
+        assert_eq!(rel_preview.display_name, "hello_preview.txt");
+        assert_eq!(rel_preview.total_lines, 3);
+
+        // 3. 测试二进制文件检测
+        let bin_file = root.join("test_image.png");
+        std::fs::write(&bin_file, [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01, 0x02, 0x03]).unwrap();
+        let bin_preview = read_file_for_preview(
+            bin_file.to_string_lossy().to_string(),
+            None,
+        ).await.expect("binary read should succeed");
+        assert_eq!(bin_preview.is_binary, true);
+        assert!(bin_preview.content.is_empty());
+
         let _ = std::fs::remove_dir_all(root);
     }
 }
