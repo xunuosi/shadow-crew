@@ -1053,20 +1053,25 @@ export function getModelSafeContextBudget(config: AgentModelConfig): {
       ? config.contextWindowTokens
       : spec.maxContextTokens;
 
-  const reservedForOutput =
-    config.maxTokens && config.maxTokens > 0 ? config.maxTokens : spec.defaultMaxOutput;
+  // 输出预留不得超过上下文的一半，否则小窗口模型会算出负的历史预算。
+  const reservedForOutput = Math.min(
+    Math.max(1, config.maxTokens && config.maxTokens > 0 ? config.maxTokens : spec.defaultMaxOutput),
+    Math.max(1, Math.floor(maxContext / 2))
+  );
+
+  const usableTokens = Math.max(0, maxContext - reservedForOutput);
 
   if (config.customContextBudget && config.customContextBudget > 0) {
     return {
       maxContextTokens: maxContext,
-      historyTokenBudget: config.customContextBudget,
+      // 自定义预算同样要夹紧到物理可用空间，禁止超过上下文窗口
+      historyTokenBudget: Math.min(config.customContextBudget, usableTokens),
       reservedForOutput,
       modelFamily: spec.family,
     };
   }
 
   // 预留输出空间与系统提示词空间后，按 70% 作为历史上下文安全水位
-  const usableTokens = Math.max(2048, maxContext - reservedForOutput);
   let computedBudget = Math.floor(usableTokens * 0.7);
 
   // 工程稳态守卫：在 1M~2M 超大窗口场景下，将桌面多 Agent 协同历史稳态预算设定在 512,000 Tokens 上限，
@@ -1076,7 +1081,8 @@ export function getModelSafeContextBudget(config: AgentModelConfig): {
     computedBudget = MAX_DESKTOP_STEADY_BUDGET;
   }
 
-  const historyTokenBudget = Math.max(2048, computedBudget);
+  // 下限不能反过来突破可用空间：极小窗口下直接取 usableTokens。
+  const historyTokenBudget = Math.min(Math.max(512, computedBudget), usableTokens);
 
   return {
     maxContextTokens: maxContext,
@@ -1419,13 +1425,9 @@ export function clearMicroSummaryCache(scope?: string): void {
   }
   const targetScope = scope.trim();
   for (const [key, entry] of Array.from(microSummaryCache.entries())) {
-    if (
-      entry.scope === targetScope ||
-      key.startsWith(`${targetScope}:`) ||
-      key.includes(`:${targetScope}:`) ||
-      key.endsWith(`:${targetScope}`) ||
-      (entry.scope && entry.scope.includes(targetScope))
-    ) {
+    // key 的格式固定为 `${scope}:${fingerprint}`，必须精确匹配作用域，
+    // 不能用 includes 做子串匹配，否则 `chan-1` 会误删 `chan-10` 的缓存。
+    if (entry.scope === targetScope || key.startsWith(`${targetScope}:`)) {
       microSummaryCache.delete(key);
     }
   }
@@ -1936,8 +1938,17 @@ export async function callLlmModel(
   // 硬预算闭环：必须将 systemPrompt 与当前 prompt 消耗从 historyTokenBudget 中扣除，
   // 确保 (systemPrompt + prompt + compactedHistory + reservedForOutput) 绝对不超出物理上下文总上限！
   const systemTokens = systemPrompt ? estimateTokenCount(systemPrompt) : 0;
-  const promptTokens = estimateTokenCount(prompt);
-  const effectiveHistoryBudget = Math.max(64, budget.historyTokenBudget - systemTokens - promptTokens);
+  let promptTokens = estimateTokenCount(prompt);
+
+  // 系统提示词 + 当前 prompt 本身也可能超出预算；此前只裁剪历史、不裁剪 prompt，
+  // 超长粘贴会直接把请求顶到上下文上限并触发 400。这里对 prompt 做同等预算折叠。
+  let effectivePrompt = prompt;
+  if (systemTokens + promptTokens > budget.historyTokenBudget) {
+    const promptBudget = Math.max(256, budget.historyTokenBudget - systemTokens);
+    effectivePrompt = foldMessageContentToTokenBudget(prompt, promptBudget);
+    promptTokens = estimateTokenCount(effectivePrompt);
+  }
+  const effectiveHistoryBudget = Math.max(0, budget.historyTokenBudget - systemTokens - promptTokens);
 
   const rawHistory = sessionKey ? llmSessionHistoryMap.get(sessionKey) || [] : [];
   const compactedHistory = await compactConversationHistoryAsync(
@@ -1950,14 +1961,14 @@ export async function callLlmModel(
 
   const conversationTurns: Array<{ role: 'user' | 'assistant'; content: string }> = [
     ...compactedHistory,
-    { role: 'user', content: prompt },
+    { role: 'user', content: effectivePrompt },
   ];
 
   const recordTurnSuccess = (assistantReply: string) => {
     if (!sessionKey || !assistantReply.trim()) return;
     const nextHistory = [
       ...compactedHistory,
-      { role: 'user' as const, content: prompt },
+      { role: 'user' as const, content: effectivePrompt },
       { role: 'assistant' as const, content: assistantReply },
     ];
     // 下一轮存储时预留系统提示词后的历史预算
@@ -1974,27 +1985,36 @@ export async function callLlmModel(
       'content-type': 'application/json',
       'anthropic-dangerous-direct-browser-access': 'true',
     };
+    // 输出上限必须落在上下文可用空间内，否则 max_tokens 本身就会触发 400。
+    const maxOutputTokens = Math.max(1, Math.min(config.maxTokens || 4096, budget.reservedForOutput));
     const body: Record<string, any> = {
       model: config.modelId || 'claude-3-7-sonnet-20250219',
       system: systemPrompt || undefined,
       messages: conversationTurns,
-      max_tokens: config.maxTokens || 4096,
+      max_tokens: maxOutputTokens,
       temperature: config.temperature ?? 0.7,
     };
 
     // 思考强度支持 (Anthropic Extended Thinking)
+    // 约束：budget_tokens 必须 >= 1024 且严格小于 max_tokens。
     if (config.enableReasoning && config.reasoningEffort && config.reasoningEffort !== 'off') {
       const budgetMap: Record<string, number> = {
         low: 2048,
         medium: 8192,
         high: 16384,
       };
-      const budgetTokens = budgetMap[config.reasoningEffort] || 4096;
-      body.thinking = {
-        type: 'enabled',
-        budget_tokens: budgetTokens,
-      };
-      body.temperature = 1.0; // Anthropic extended thinking 规范要求 temperature 锁定为 1.0
+      const desiredThoughtTokens = budgetMap[config.reasoningEffort] || 4096;
+      if (maxOutputTokens > 1024) {
+        body.thinking = {
+          type: 'enabled',
+          budget_tokens: Math.min(desiredThoughtTokens, maxOutputTokens - 1),
+        };
+        body.temperature = 1.0; // Anthropic extended thinking 规范要求 temperature 锁定为 1.0
+      } else {
+        console.warn(
+          '[llmService] max_tokens 不足以容纳思考预算，已跳过 extended thinking 以避免 400'
+        );
+      }
     }
 
     const res = await postJsonUniversal(endpoint, headers, body, 60000);
@@ -2002,7 +2022,13 @@ export async function callLlmModel(
       throw new Error(res.error || `Anthropic API Error: HTTP ${res.status}`);
     }
 
-    const text = res.data?.content?.[0]?.text || '';
+    // 开启 thinking 时 content[0] 是 thinking 块，正文需要按类型提取，而不是盲取第一个元素。
+    const text = Array.isArray(res.data?.content)
+      ? res.data.content
+          .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
+          .map((block: any) => block.text)
+          .join('')
+      : '';
     recordTurnSuccess(text);
     return { textResponse: text, durationMs: Date.now() - start };
   } else {
@@ -2024,7 +2050,7 @@ export async function callLlmModel(
     const body: Record<string, any> = {
       model: config.modelId || 'deepseek-chat',
       messages,
-      max_tokens: config.maxTokens || 4096,
+      max_tokens: Math.max(1, Math.min(config.maxTokens || 4096, budget.reservedForOutput)),
       temperature: config.temperature ?? 0.7,
     };
 
@@ -2042,7 +2068,14 @@ export async function callLlmModel(
       throw new Error(res.error || `LLM API Error: HTTP ${res.status}`);
     }
 
-    const text = res.data?.choices?.[0]?.message?.content || '';
+    // 兼容 content 为字符串或分段数组两种返回形态。
+    const rawContent = res.data?.choices?.[0]?.message?.content;
+    const text =
+      typeof rawContent === 'string'
+        ? rawContent
+        : Array.isArray(rawContent)
+          ? rawContent.map((part: any) => (typeof part?.text === 'string' ? part.text : '')).join('')
+          : '';
     recordTurnSuccess(text);
     return { textResponse: text, durationMs: Date.now() - start };
   }
