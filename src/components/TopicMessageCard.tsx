@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { ActiveCodexDiffPayload } from './CodexDiffViewer';
+import { useFilePreview } from '../context/FilePreviewContext';
 
 interface TopicMessageCardProps {
   topic: TopicMessageData;
@@ -48,6 +49,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
   const isInvestigating = topic.status === 'investigating';
   const isOpen = topic.status === 'open';
   const isGame = topic.discussionMode === 'game_theoretic';
+  const { openFilePreview } = useFilePreview();
   const isDmDuel = topic.scopeType === 'dm' && isGame;
   const ruling = topic.rulingRecord;
 
@@ -307,12 +309,18 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                   <span>影响文件:</span>
                 </span>
                 {ruling.impactedFiles.map((file) => (
-                  <span
+                  <button
                     key={file}
-                    className="font-mono text-[10px] px-2 py-0.5 rounded bg-surface border border-border text-fg-secondary"
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openFilePreview(file);
+                    }}
+                    className="font-mono text-[10px] px-2 py-0.5 rounded bg-surface border border-border text-fg-secondary hover:text-accent hover:border-accent/40 cursor-pointer transition-colors"
+                    title={`点击在本地预览: ${file}`}
                   >
                     {file}
-                  </span>
+                  </button>
                 ))}
               </div>
             )}
@@ -345,12 +353,18 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                   <span>影响文件:</span>
                 </span>
                 {topic.decisionRecord.impactedFiles.map((file) => (
-                  <span
+                  <button
                     key={file}
-                    className="font-mono text-[10px] px-2 py-0.5 rounded bg-surface border border-border text-fg-secondary"
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openFilePreview(file);
+                    }}
+                    className="font-mono text-[10px] px-2 py-0.5 rounded bg-surface border border-border text-fg-secondary hover:text-emerald-700 dark:hover:text-emerald-300 hover:border-emerald-500/40 cursor-pointer transition-colors"
+                    title={`点击在本地预览: ${file}`}
                   >
                     {file}
-                  </span>
+                  </button>
                 ))}
               </div>
             )}
