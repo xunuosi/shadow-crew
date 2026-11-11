@@ -217,44 +217,149 @@ shadow-crew/
 
 ---
 
-## 快速开始
+## 本地 Debug 运行
 
-### 环境要求
+本地调试分为两种入口：
 
-- Node.js 18+（推荐 20/22 LTS）
-- 当前稳定版 Rust 与 Cargo（Edition 2021）
-- 对应平台的 [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)
-- 如需接入外部 Agent，请另行安装其 CLI 与 ACP 适配器
+- **完整 Tauri 桌面端**：同时启动 Vite 前端与 Rust 宿主，支持 ACP Agent、SQLite、文件对话框、本地工作区和 Tauri IPC。联调核心功能时使用此入口。
+- **仅 Vite 前端**：只启动 React 页面，适合检查布局、样式和纯前端状态；无法使用 ACP 进程托管、SQLite 命令和本地工作区能力。
 
-### 1. 安装依赖
+### 1. 提前安装依赖
+
+| 依赖 | 必要性 | 版本或说明 |
+| :--- | :--- | :--- |
+| Git | 必需 | 用于获取源码和管理本地提交。 |
+| Node.js + npm | 必需 | 锁文件中的 Vite React 插件要求 Node.js `20.19+` 或 `22.12+`；推荐使用 Node.js 22 LTS。npm 随 Node.js 安装。 |
+| Rust stable + Cargo | 必需 | 通过 `rustup` 安装当前 stable 工具链，用于编译 Tauri 宿主与工作区 Rust crate。 |
+| Tauri 2 系统依赖 | 必需 | 包括 WebView、C/C++ 编译器和平台系统库，安装方式见下方。 |
+| ACP Agent | 功能联调时必需 | 如需实际对话，安装 Codex、Claude Code 等 Agent 及其 ACP 适配器，并完成该运行时的模型认证。仅检查界面时可以暂不安装。 |
+
+先确认基础工具链可用：
+
+```bash
+node --version
+npm --version
+rustc --version
+cargo --version
+git --version
+```
+
+如果尚未安装 Rust，macOS / Linux 可通过 [rustup](https://rustup.rs/) 安装：
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup default stable
+```
+
+Windows 请安装 `stable-x86_64-pc-windows-msvc` 工具链，并确保 Rust 使用 MSVC ABI。
+
+### 2. 安装 Tauri 2 平台依赖
+
+完整要求可参考 [Tauri 2 Prerequisites](https://v2.tauri.app/start/prerequisites/)。
+
+**macOS**
+
+安装 Xcode Command Line Tools；如果已安装完整 Xcode，也应确保命令行工具路径有效。项目当前在 macOS 上以 Xcode Command Line Tools / Xcode 构建。
+
+```bash
+xcode-select --install
+xcode-select -p
+```
+
+**Windows**
+
+- 安装 **Microsoft C++ Build Tools**，勾选“使用 C++ 的桌面开发”和 Windows SDK。
+- 安装 **Microsoft Edge WebView2 Runtime**；Windows 11 通常已预装。
+
+**Debian / Ubuntu**
+
+```bash
+sudo apt update
+sudo apt install \
+  libwebkit2gtk-4.1-dev \
+  build-essential \
+  curl wget file \
+  libxdo-dev \
+  libssl-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev
+```
+
+安装完成后，可在项目根目录运行 Tauri 环境诊断：
+
+```bash
+npm run tauri -- info
+```
+
+### 3. 安装项目依赖
+
+在仓库根目录执行：
 
 ```bash
 npm ci
 ```
 
-### 2. 构建可选 MCP 工具
+这里使用 `npm ci` 按 `package-lock.json` 安装确定性依赖。首次启动桌面端时，Cargo 还会下载并编译 Rust 依赖，耗时会明显长于后续增量编译。
+
+`shadow-crew-dev-mcp` 主链路并不要求提前单独构建；仅在调试该 Rust MCP crate 时执行：
 
 ```bash
 cargo build -p shadow-crew-dev-mcp
 ```
 
-Shadow Crew 不包含内置 Agent。所有 Agent 推理、Session 压缩、长期 Memory 与 Tool Loop 均由本地或远程 ACP 端点负责。
-
-### 3. 启动桌面端
+### 4. 启动完整桌面 Debug
 
 ```bash
 npm run dev:desktop
 ```
 
-首次启动后，在 **Agents** 面板连接本地 ACP 运行时。应用会自动扫描已安装的适配器；外部 Agent 的环境变量与模型认证由对应 ACP 进程自身管理。
+该命令等价于 Tauri debug 启动流程：
 
-### 前端单独调试
+1. 由 `beforeDevCommand` 自动执行 `npm run dev`，启动 Vite，默认地址为 `http://localhost:3033`。
+2. 编译并启动 `shadow-crew-desktop` 的 Rust debug 二进制。
+3. 打开 Tauri 桌面窗口，前端修改支持 Vite HMR，Rust 宿主修改会触发重新编译和应用重启。
+
+终端出现 Vite 监听地址并打开桌面窗口后即启动完成。按 `Ctrl+C` 同时停止桌面端和 Vite 开发服务器。
+
+首次启动后，在 **Agents** 面板连接本地或远程 ACP 运行时。应用会自动扫描可用的 ACP 适配器；Agent 的模型认证和环境变量由对应运行时管理。仓库自带 `bin/codex-acp` 桥接器，`npm ci` 也会安装项目局部的 Codex CLI 依赖。
+
+若 Codex 未被自动发现，可显式指定二进制后启动：
+
+```bash
+CODEX_BINARY="$PWD/node_modules/.bin/codex" npm run dev:desktop
+```
+
+如需让 debug 数据与日常使用的 `~/.shadow-crew` 隔离，可指定临时运行根目录：
+
+```bash
+SHADOW_CREW_HOME="/tmp/shadow-crew-debug" npm run dev:desktop
+```
+
+macOS / Linux 默认 ACP 日志位于 `~/.shadow-crew/logs/acp.log`；指定 `SHADOW_CREW_HOME` 后，日志和 SQLite 数据会写入该目录下。
+
+### 5. 仅启动前端
 
 ```bash
 npm run dev
 ```
 
-仅启动 Vite 前端，适合检查布局与纯前端逻辑；ACP 进程托管、SQLite 命令和本地工作区能力需要 Tauri 宿主。
+然后在浏览器打开 `http://localhost:3033`。此模式不会启动 Rust 宿主，以下能力不可用或只能走内存/浏览器降级实现：
+
+- ACP Agent 进程启动、流式事件与取消；
+- SQLite 持久化和 Tauri IPC；
+- 本地文件选择、打开与工作区读写；
+- 需要通过桌面宿主访问的原生能力。
+
+### 6. 启动前后检查
+
+建议在提交前至少执行：
+
+```bash
+npm run lint
+npm run build
+```
+
+如果 `npm ci`、`cargo build` 或 Tauri 窗口启动失败，优先重新执行 `npm run tauri -- info`，确认 Node.js、Rust、Xcode / MSVC、WebView2 和 Linux 系统库均已满足要求。
 
 ### 生产构建
 
