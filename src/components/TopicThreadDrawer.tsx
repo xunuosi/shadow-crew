@@ -64,7 +64,7 @@ import { ResizeHandle } from './ResizeHandle';
 import { getDraft, saveDraft, clearDraft } from '../services/draftService';
 import { logGameTheoreticTelemetry } from '../services/agentCollaboration';
 import { LivingAdrCanvas } from './LivingAdrCanvas';
-import { evaluateRulingGates } from '../services/cogno';
+import { evaluateRulingGates, synthesizeContextGroundedRulingDrafts } from '../services/cogno';
 import { isAgentOffline } from '../utils/agentRuntime';
 import {
   MAX_FILE_ATTACHMENT_BYTES,
@@ -142,7 +142,6 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   overlappingFiles = [],
 }) => {
   const [replyContent, setReplyContent] = useState('');
-  const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   const [showResolveModal, setShowResolveModal] = useState(false);
   const [solutionDraft, setSolutionDraft] = useState('');
   const [impactedFilesDraft, setImpactedFilesDraft] = useState('src/middleware/auth.ts, src/routes/oauth.ts');
@@ -298,6 +297,20 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   // 底部首席仲裁官法槌控制台折叠状态
   const [isGavelCollapsed, setIsGavelCollapsed] = useState(false);
 
+  // 记录人类在法槌弹窗中对三种模式的定制方案修改状态（切换模式时独立保留，绝不相互覆盖丢失）
+  const [customDraftsByMode, setCustomDraftsByMode] = useState<Partial<Record<RulingDecisionType, {
+    rulingSummary: string;
+    rulingSolution: string;
+    rulingImpactedFiles: string;
+    tradeOffPoints: string[];
+    isCustomized: boolean;
+  }>>>({});
+
+  // 切换议题时，清空法槌草案定制缓存
+  useEffect(() => {
+    setCustomDraftsByMode({});
+  }, [topic?.id]);
+
   const isChallengerQuorumMet = topic
     ? evaluateRulingGates(topic).isChallengerQuorumMet
     : true;
@@ -309,59 +322,59 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     rulingSolution: string;
     rulingImpactedFiles: string;
     tradeOffPoints: string[];
+    isCustomized: boolean;
   } => {
-    const existingDraft = topic?.gameTheoreticState?.rulingDraft;
+    // 1. 若人类已对当前模式进行过定制编辑，优先返回人类定制的内容
+    const custom = customDraftsByMode[type];
+    if (custom && custom.isCustomized) {
+      return custom;
+    }
 
-    // 1. 若综合仲裁官通过 submit_arbitration_ruling 工具已提交草案，优先采用
-    if (existingDraft) {
+    // 2. 查找由综合仲裁官 Agent 预先生成的该模式选项 (rulingDraftOptions)
+    const options = topic?.gameTheoreticState?.rulingDraftOptions;
+    if (options && options[type]) {
+      const draft = options[type];
+      return {
+        rulingSummary: draft.summary || '',
+        rulingSolution: draft.solution || '',
+        rulingImpactedFiles: (draft.impactedFiles || []).join(', '),
+        tradeOffPoints: draft.tradeOffPoints || [],
+        isCustomized: false,
+      };
+    }
+
+    // 3. 若综合仲裁官仅提交了单一草案且恰好为该类型，直接采用
+    const existingDraft = topic?.gameTheoreticState?.rulingDraft;
+    if (existingDraft && existingDraft.decisionType === type) {
       return {
         rulingSummary: existingDraft.summary || '',
         rulingSolution: existingDraft.solution || '',
         rulingImpactedFiles: (existingDraft.impactedFiles || []).join(', '),
         tradeOffPoints: existingDraft.tradeOffPoints || [],
+        isCustomized: false,
       };
     }
 
-    // 2. 否则生成清晰干净的默认草案（绝无死板截断与污染前缀）
-    const topicTitle = topic?.title || '当前研讨议题';
-    const mcda = topic?.gameTheoreticState?.mcdaPayload;
-    const tradeOffPoints: string[] = [];
+    // 4. 否则基于议题真实立论、反例、答辩与实证事实动态合成针对性草案（严禁死模板）
+    const synthesized = synthesizeContextGroundedRulingDrafts({
+      topicTitle: topic?.title || '当前研讨议题',
+      topicDescription: topic?.description,
+      proposalText: topic?.gameTheoreticState?.targetProposalContent,
+      critiqueText: topic?.gameTheoreticState?.targetChallengeContent,
+      defenseText: topic?.gameTheoreticState?.targetDefenseContent,
+      verificationText: topic?.gameTheoreticState?.targetVerificationContent,
+      mcdaPayload: topic?.gameTheoreticState?.mcdaPayload,
+      existingDraft,
+      existingOptions: options,
+    });
 
-    if (mcda?.computedWeights && mcda?.criteria && mcda.criteria.length >= 2) {
-      const sorted = [...mcda.criteria]
-        .map((c) => ({ name: c.name, weight: mcda.computedWeights[c.id] ?? 0 }))
-        .sort((a, b) => b.weight - a.weight);
-      const top = sorted[0];
-      const bottom = sorted[sorted.length - 1];
-      if (top && bottom && top.name !== bottom.name) {
-        tradeOffPoints.push(
-          `优先保障【${top.name}】(确定性权重 ${(top.weight * 100).toFixed(0)}%)，适度折中【${bottom.name}】开销`
-        );
-      }
-    }
-
-    let rulingSummary = '';
-    let rulingSolution = '';
-
-    if (type === 'adopt_proposer') {
-      rulingSummary = `经博弈推演与实证检验，围绕“${topicTitle}”的提案方案具备落地可行性与工程优势，准予合并交付。`;
-      rulingSolution = `采纳提案官核心架构设计与防御补丁，按标准实施交付并建立运行期监控。`;
-      tradeOffPoints.push(`严格执行红队审查确立的边界前置校验，杜绝极端工况下的状态穿透`);
-    } else if (type === 'reject_rebuild') {
-      rulingSummary = `红队对抗官与接地实证检验揭示“${topicTitle}”方案存在关键架构漏洞或实证证伪，原方案予以驳回重构。`;
-      rulingSolution = `驳回当前提案架构。由责任团队全面吸收红队反例要点，重新确立安全假设并提交新版方案。`;
-      tradeOffPoints.push(`拒绝以牺牲系统健壮性为代价的局部优化，强制推倒单点失效架构`);
-    } else {
-      rulingSummary = `围绕“${topicTitle}”，两造各有技术权衡。依据运筹权衡矩阵构建折中方案，分阶段演进推进。`;
-      rulingSolution = `采纳折中权衡演进路径：第一阶段快速落地核心主线功能，第二阶段完善防御补偿与容灾审计。`;
-      tradeOffPoints.push(`第一阶段优先交付核心基准业务流，沉淀基础能力并收集压测指标`);
-    }
-
+    const targetDraft = synthesized[type];
     return {
-      rulingSummary,
-      rulingSolution,
-      rulingImpactedFiles: '',
-      tradeOffPoints,
+      rulingSummary: targetDraft?.summary || '',
+      rulingSolution: targetDraft?.solution || '',
+      rulingImpactedFiles: (targetDraft?.impactedFiles || []).join(', '),
+      tradeOffPoints: targetDraft?.tradeOffPoints || [],
+      isCustomized: false,
     };
   };
 
@@ -384,31 +397,143 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     setShowRulingModal(true);
   };
 
-  const handleSwitchRulingType = (type: RulingDecisionType) => {
-    setRulingType(type);
-    const defaultExecutor = type === 'adopt_proposer'
+  const handleSwitchRulingType = (nextType: RulingDecisionType) => {
+    // 1. 先保存当前模式下人类的编辑草案（无论是否改动，均完整保存防止丢失）
+    setCustomDraftsByMode((prev) => ({
+      ...prev,
+      [rulingType]: {
+        rulingSummary,
+        rulingSolution,
+        rulingImpactedFiles,
+        tradeOffPoints,
+        isCustomized: prev[rulingType]?.isCustomized ?? false,
+      },
+    }));
+
+    // 2. 切换模式并设置执行者推荐
+    setRulingType(nextType);
+    const defaultExecutor = nextType === 'adopt_proposer'
       ? (topic?.gameRoles?.proposers?.[0] || '')
-      : type === 'reject_rebuild'
+      : nextType === 'reject_rebuild'
       ? (topic?.gameRoles?.challengers?.[0] || topic?.gameRoles?.proposers?.[0] || '')
       : (topic?.gameRoles?.proposers?.[0] || topic?.gameRoles?.arbiters?.[0] || '');
     setSelectedExecutorId(defaultExecutor);
 
-    const draft = resolveRulingDraftForModal(type);
-    setRulingSummary(draft.rulingSummary);
-    setRulingSolution(draft.rulingSolution);
-    if (draft.tradeOffPoints.length > 0) {
-      setTradeOffPoints(draft.tradeOffPoints);
-    }
+    // 3. 读取目标模式的内容（若此前已定制过则展示定制版，否则展示由 AI 针对该模式生成的草案）
+    const targetDraft = resolveRulingDraftForModal(nextType);
+    setRulingSummary(targetDraft.rulingSummary);
+    setRulingSolution(targetDraft.rulingSolution);
+    setRulingImpactedFiles(targetDraft.rulingImpactedFiles);
+    setTradeOffPoints(targetDraft.tradeOffPoints);
+  };
+
+  const handleUpdateSummary = (val: string) => {
+    setRulingSummary(val);
+    setCustomDraftsByMode((prev) => ({
+      ...prev,
+      [rulingType]: {
+        rulingSummary: val,
+        rulingSolution,
+        rulingImpactedFiles,
+        tradeOffPoints,
+        isCustomized: true,
+      },
+    }));
+  };
+
+  const handleUpdateSolution = (val: string) => {
+    setRulingSolution(val);
+    setCustomDraftsByMode((prev) => ({
+      ...prev,
+      [rulingType]: {
+        rulingSummary,
+        rulingSolution: val,
+        rulingImpactedFiles,
+        tradeOffPoints,
+        isCustomized: true,
+      },
+    }));
+  };
+
+  const handleUpdateImpactedFiles = (val: string) => {
+    setRulingImpactedFiles(val);
+    setCustomDraftsByMode((prev) => ({
+      ...prev,
+      [rulingType]: {
+        rulingSummary,
+        rulingSolution,
+        rulingImpactedFiles: val,
+        tradeOffPoints,
+        isCustomized: true,
+      },
+    }));
   };
 
   const handleAddTradeOffPoint = () => {
     if (!newPointInput.trim()) return;
-    setTradeOffPoints((prev) => [...prev, newPointInput.trim()]);
+    const nextPoints = [...tradeOffPoints, newPointInput.trim()];
+    setTradeOffPoints(nextPoints);
     setNewPointInput('');
+    setCustomDraftsByMode((prev) => ({
+      ...prev,
+      [rulingType]: {
+        rulingSummary,
+        rulingSolution,
+        rulingImpactedFiles,
+        tradeOffPoints: nextPoints,
+        isCustomized: true,
+      },
+    }));
   };
 
   const handleRemoveTradeOffPoint = (index: number) => {
-    setTradeOffPoints((prev) => prev.filter((_, i) => i !== index));
+    const nextPoints = tradeOffPoints.filter((_, i) => i !== index);
+    setTradeOffPoints(nextPoints);
+    setCustomDraftsByMode((prev) => ({
+      ...prev,
+      [rulingType]: {
+        rulingSummary,
+        rulingSolution,
+        rulingImpactedFiles,
+        tradeOffPoints: nextPoints,
+        isCustomized: true,
+      },
+    }));
+  };
+
+  // 一键恢复当前模式由综合仲裁官 Agent 动态生成的原草案
+  const handleResetToAiDraft = () => {
+    setCustomDraftsByMode((prev) => {
+      const next = { ...prev };
+      delete next[rulingType];
+      return next;
+    });
+
+    const aiDraft = (() => {
+      const options = topic?.gameTheoreticState?.rulingDraftOptions;
+      if (options && options[rulingType]) return options[rulingType];
+      const existing = topic?.gameTheoreticState?.rulingDraft;
+      if (existing && existing.decisionType === rulingType) return existing;
+      const synthesized = synthesizeContextGroundedRulingDrafts({
+        topicTitle: topic?.title || '当前研讨议题',
+        topicDescription: topic?.description,
+        proposalText: topic?.gameTheoreticState?.targetProposalContent,
+        critiqueText: topic?.gameTheoreticState?.targetChallengeContent,
+        defenseText: topic?.gameTheoreticState?.targetDefenseContent,
+        verificationText: topic?.gameTheoreticState?.targetVerificationContent,
+        mcdaPayload: topic?.gameTheoreticState?.mcdaPayload,
+        existingDraft: existing,
+        existingOptions: options,
+      });
+      return synthesized[rulingType];
+    })();
+
+    if (aiDraft) {
+      setRulingSummary(aiDraft.summary || '');
+      setRulingSolution(aiDraft.solution || '');
+      setRulingImpactedFiles((aiDraft.impactedFiles || []).join(', '));
+      setTradeOffPoints(aiDraft.tradeOffPoints || []);
+    }
   };
 
   const handleConfirmRuling = () => {
@@ -864,10 +989,6 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       };
     }
     return null;
-  };
-
-  const toggleThinking = (msgId: string) => {
-    setExpandedThinking((prev) => ({ ...prev, [msgId]: !prev[msgId] }));
   };
 
   const handleSend = async () => {
@@ -1567,18 +1688,40 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     const isFrozen = mod.status === 'frozen';
                     const isActive = mod.moduleId === modularState.activeModuleId || (mod.status !== 'frozen' && mod.status !== 'pending');
                     const isSelected = activeModuleFilterId === mod.moduleId;
-                    const pillClasses = isFrozen
+                    const isExecRunning = mod.executionStatus === 'running' || mod.moduleId === modularState.activeExecutionModuleId;
+                    const isExecCompleted = mod.executionStatus === 'completed';
+                    const isExecFailed = mod.executionStatus === 'failed';
+
+                    const pillClasses = isExecCompleted
+                      ? 'text-emerald-800 bg-emerald-50 border-emerald-300 dark:text-emerald-300 dark:bg-emerald-500/15 dark:border-emerald-500/30 font-semibold'
+                      : isExecRunning
+                      ? 'text-amber-800 bg-amber-50 border-amber-300 dark:text-amber-300 dark:bg-amber-500/15 dark:border-amber-500/30 animate-pulse font-semibold'
+                      : isExecFailed
+                      ? 'text-rose-800 bg-rose-50 border-rose-300 dark:text-rose-300 dark:bg-rose-500/15 dark:border-rose-500/30 font-semibold'
+                      : isFrozen
                       ? 'text-emerald-800 bg-emerald-50 border-emerald-300 dark:text-emerald-300 dark:bg-emerald-500/15 dark:border-emerald-500/30'
                       : isActive
                       ? 'text-amber-800 bg-amber-50 border-amber-300 dark:text-amber-300 dark:bg-amber-500/15 dark:border-amber-500/30'
                       : 'text-blue-800 bg-blue-50 border-blue-300 dark:text-blue-300 dark:bg-blue-500/15 dark:border-blue-500/30';
+
+                    const statusIcon = isExecCompleted
+                      ? '✅'
+                      : isExecRunning
+                      ? '🛠️'
+                      : isExecFailed
+                      ? '❌'
+                      : isFrozen
+                      ? '🔒'
+                      : mod.belief.routingMode === 'deep_debate'
+                      ? '⚔️'
+                      : '⚡';
 
                     return (
                       <button
                         key={mod.moduleId}
                         type="button"
                         onClick={() => setActiveModuleFilterId(isSelected ? 'ALL' : mod.moduleId)}
-                        title={`${mod.title}: ${mod.responsibility} | 允许文件: ${mod.allowedFiles.join(', ')}`}
+                        title={`${mod.title}: ${mod.responsibility} | 落地状态: ${mod.executionStatus || '待执行'} | 允许文件: ${mod.allowedFiles.join(', ')}`}
                         className={`px-2 py-0.5 rounded-md font-mono text-[9px] border transition-all cursor-pointer flex items-center gap-1 shrink-0 ${pillClasses} ${
                           isSelected ? 'ring-1 ring-purple-500 font-bold' : 'opacity-90 hover:opacity-100'
                         }`}
@@ -1586,7 +1729,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                         <span className="font-bold">[{mod.moduleId}]</span>
                         <span className="truncate max-w-[110px] font-sans">{mod.title}</span>
                         <span>({mod.belief.priorRisk.toFixed(2)}→{mod.belief.posteriorRisk.toFixed(2)})</span>
-                        <span>{isFrozen ? '🔒' : mod.belief.routingMode === 'deep_debate' ? '⚔️' : '⚡'}</span>
+                        <span>{statusIcon}</span>
                       </button>
                     );
                   })}
@@ -1921,7 +2064,6 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           messages
             .filter((msg) => activeModuleFilterId === 'ALL' || !msg.moduleId || msg.moduleId === activeModuleFilterId)
             .map((msg, msgIdx, visibleMsgs) => {
-            const isThinkingOpen = expandedThinking[msg.id] ?? true;
             const isAgent = typeof msg.isAgent === 'boolean'
               ? msg.isAgent
               : Boolean(msg.agentBadge || msg.authorName.includes('Agent') || msg.authorName.includes('Reviewer'));
@@ -2196,31 +2338,6 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     )}
                   </div>
                 </div>
-
-                {/* Thinking Process Accordion (Finalized messages) */}
-                {msg.thinkingProcess && (
-                  <div className="rounded-lg bg-surface border border-border overflow-hidden text-[10px]">
-                    <button
-                      onClick={() => toggleThinking(msg.id)}
-                      className="w-full px-2.5 py-1.5 flex items-center justify-between text-fg-muted hover:text-fg transition-colors cursor-pointer bg-surface-subtle"
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <BrainCircuit className="w-3.5 h-3.5 text-accent" />
-                        <span className="font-semibold text-fg">
-                          Thinking Process ({msg.thinkingProcess.duration} · {msg.thinkingProcess.tokens} tokens)
-                        </span>
-                      </div>
-                      {isThinkingOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                    </button>
-
-                    {isThinkingOpen && (
-                      <div className="p-2.5 border-t border-border font-mono text-[10px] text-fg-secondary leading-relaxed whitespace-pre-wrap bg-surface select-text">
-                        <div className="text-accent font-bold mb-1 select-text">推理摘要: {msg.thinkingProcess.summary}</div>
-                        <div className="text-fg-muted select-text">{msg.thinkingProcess.detail}</div>
-                      </div>
-                    )}
-                  </div>
-                )}
 
                 {/* Message Content: Streaming / Pending or Finalized */}
                 {msg.isPending ? (
@@ -3508,6 +3625,37 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 </div>
               </div>
 
+              {/* Draft Provenance & Human Customization Status Banner */}
+              <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-surface-subtle border border-border text-[11px]">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {customDraftsByMode[rulingType]?.isCustomized ? (
+                    <span className="flex items-center gap-1 text-amber-700 dark:text-amber-300 font-semibold shrink-0">
+                      <Edit3 className="w-3.5 h-3.5 text-amber-500" />
+                      <span>人类首席仲裁官定制方案建议 (已修改)</span>
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-purple-700 dark:text-purple-300 font-semibold shrink-0">
+                      <Sparkles className="w-3.5 h-3.5 text-purple-500" />
+                      <span>综合仲裁官 Agent 针对本模式动态预生成草案</span>
+                    </span>
+                  )}
+                  <span className="text-[10px] text-fg-muted font-normal truncate hidden sm:inline">
+                    · 紧扣立论与反例事实
+                  </span>
+                </div>
+                {customDraftsByMode[rulingType]?.isCustomized && (
+                  <button
+                    type="button"
+                    onClick={handleResetToAiDraft}
+                    className="text-[10px] text-purple-600 dark:text-purple-400 hover:underline flex items-center gap-1 cursor-pointer shrink-0 ml-2"
+                    title="恢复由综合仲裁官针对该模式生成的原草案"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5" />
+                    <span>恢复 AI 原草案</span>
+                  </button>
+                )}
+              </div>
+
               {/* Ruling Summary */}
               <div>
                 <label className="block text-xs font-semibold text-fg mb-1">
@@ -3516,7 +3664,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 <textarea
                   rows={2}
                   value={rulingSummary}
-                  onChange={(e) => setRulingSummary(e.target.value)}
+                  onChange={(e) => handleUpdateSummary(e.target.value)}
                   placeholder="请输入仲裁官对本轮博弈的最终定案陈词..."
                   className="w-full px-3 py-2 rounded-xl bg-surface-subtle border border-border focus:border-amber-500 text-fg text-xs focus:outline-none transition-all placeholder:text-fg-muted resize-none leading-relaxed"
                 />
@@ -3530,7 +3678,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 <textarea
                   rows={2}
                   value={rulingSolution}
-                  onChange={(e) => setRulingSolution(e.target.value)}
+                  onChange={(e) => handleUpdateSolution(e.target.value)}
                   placeholder={rulingType === 'reject_rebuild' ? '请输入重构的核心要求与改写路径...' : '请输入通过方案的落地细节或防御补齐要求...'}
                   className="w-full px-3 py-2 rounded-xl bg-surface-subtle border border-border focus:border-amber-500 text-fg text-xs focus:outline-none transition-all placeholder:text-fg-muted resize-none leading-relaxed"
                 />
@@ -3612,7 +3760,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 <input
                   type="text"
                   value={rulingImpactedFiles}
-                  onChange={(e) => setRulingImpactedFiles(e.target.value)}
+                  onChange={(e) => handleUpdateImpactedFiles(e.target.value)}
                   placeholder="自动从研讨中识别涉及文件；或手动输入，逗号分隔 (如: src/services/order.ts)"
                   className="w-full px-3 py-1.5 rounded-xl bg-surface-subtle border border-border focus:border-amber-500 text-fg text-xs focus:outline-none transition-all font-mono placeholder:text-fg-muted"
                 />

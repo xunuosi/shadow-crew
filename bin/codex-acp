@@ -380,6 +380,53 @@ const OFFICIAL_ACP_ENTRY = path.join(
   '../node_modules/@agentclientprotocol/codex-acp/dist/index.js'
 );
 
+/**
+ * 从 ACP session 请求参数中提取纯文本 systemPrompt，兼容：
+ * 1. ACP v1/v2 标准对象结构 `{ mode: 'append', content: [{ type: 'text', text: '...' }] }`
+ * 2. 传统字符串结构 `'...'`
+ * 3. `_meta.systemPrompt.append` 扩展字段
+ */
+function extractSystemPromptText(params) {
+  const sp = params?.systemPrompt;
+  if (typeof sp === 'string') {
+    return sp;
+  }
+  if (sp && typeof sp === 'object' && Array.isArray(sp.content)) {
+    const joined = sp.content
+      .map((block) =>
+        typeof block === 'string'
+          ? block
+          : block && typeof block.text === 'string'
+            ? block.text
+            : ''
+      )
+      .filter((t) => t.trim().length > 0)
+      .join('\n\n');
+    if (joined) return joined;
+  }
+  const metaAppend = params?._meta?.systemPrompt?.append;
+  if (typeof metaAppend === 'string') {
+    return metaAppend;
+  }
+  return '';
+}
+
+/**
+ * 将请求中的 systemPrompt 归一化为官方 `@agentclientprotocol/codex-acp` 严格要求的
+ * `{ mode: 'append', content: [{ type: 'text', text: '...' }] }` 结构；
+ * 若为空字符串或空内容块则返回 undefined（由调用方删除该字段，避免触发空内容校验异常）。
+ */
+function normalizeOfficialSystemPromptParam(params) {
+  const text = extractSystemPromptText(params);
+  if (!text || text.trim().length === 0) {
+    return undefined;
+  }
+  return {
+    mode: 'append',
+    content: [{ type: 'text', text }],
+  };
+}
+
 function startOfficialAdapterBridge(codexBin) {
   const childEnv = codexChildEnv();
   if (codexBin) {
@@ -402,6 +449,8 @@ function startOfficialAdapterBridge(codexBin) {
 
   let lastReceivedId = null;
   let hasProducedOutput = false;
+  let bridgeNegotiatedProtocolVersion = 2;
+  let lastInitializeParams = null;
 
   const inRl = readline.createInterface({
     input: process.stdin,
@@ -416,12 +465,58 @@ function startOfficialAdapterBridge(codexBin) {
       if (msg && msg.id !== undefined) {
         lastReceivedId = msg.id;
       }
-      if (msg && msg.method === 'initialize' && msg.params) {
-        if (!msg.params.info && msg.params.clientInfo) {
-          msg.params.info = msg.params.clientInfo;
+      if (msg && typeof msg.method === 'string') {
+        if (msg.method === 'initialize') {
+          msg.params = msg.params && typeof msg.params === 'object' ? msg.params : {};
+          lastInitializeParams = msg.params;
+          if (!msg.params.info) {
+            msg.params.info = msg.params.clientInfo || {
+              name: 'shadow-crew',
+              version: '0.1.0',
+            };
+          }
+          officialChild.stdin.write(JSON.stringify(msg) + '\n');
+          return;
         }
-        officialChild.stdin.write(JSON.stringify(msg) + '\n');
-        return;
+        if (
+          (msg.method === 'session/new' ||
+            msg.method === 'session/load' ||
+            msg.method === 'session/resume' ||
+            msg.method === 'session/fork') &&
+          msg.params &&
+          typeof msg.params === 'object'
+        ) {
+          if (typeof msg.params.cwd === 'string' && msg.params.cwd.trim()) {
+            if (!path.isAbsolute(msg.params.cwd)) {
+              msg.params.cwd = path.resolve(msg.params.cwd);
+            }
+          } else {
+            msg.params.cwd = process.cwd();
+          }
+          if (Array.isArray(msg.params.additionalDirectories)) {
+            msg.params.additionalDirectories = msg.params.additionalDirectories
+              .filter((d) => typeof d === 'string' && d.trim().length > 0)
+              .map((d) => (path.isAbsolute(d) ? d : path.resolve(d)));
+          }
+          const normalizedSp = normalizeOfficialSystemPromptParam(msg.params);
+          if (msg.method === 'session/new' || msg.method === 'session/fork') {
+            if (normalizedSp) {
+              msg.params.systemPrompt = normalizedSp;
+            } else {
+              delete msg.params.systemPrompt;
+            }
+          } else {
+            // session/resume 与 session/load 仅在恢复已有线程；若附带 systemPrompt 会触发官方引擎
+            // changesSystemPrompt 重订阅卸载检查（对未落盘 rollout 的线程会抛 -32602 异常）
+            delete msg.params.systemPrompt;
+          }
+          if (msg.method === 'session/load' && bridgeNegotiatedProtocolVersion >= 2) {
+            msg.method = 'session/resume';
+            msg.params.replayFrom = msg.params.replayFrom || { type: 'start' };
+          }
+          officialChild.stdin.write(JSON.stringify(msg) + '\n');
+          return;
+        }
       }
     } catch {
       // ignore
@@ -449,10 +544,43 @@ function startOfficialAdapterBridge(codexBin) {
   process.on('SIGTERM', () => forwardSignal('SIGTERM'));
   process.on('SIGINT', () => forwardSignal('SIGINT'));
 
-  officialChild.stdout.on('data', () => {
-    hasProducedOutput = true;
+  const outRl = readline.createInterface({
+    input: officialChild.stdout,
+    terminal: false,
   });
-  officialChild.stdout.pipe(process.stdout);
+
+  outRl.on('line', (line) => {
+    hasProducedOutput = true;
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      const msg = JSON.parse(trimmed);
+      if (
+        msg &&
+        msg.result &&
+        typeof msg.result === 'object' &&
+        msg.result.protocolVersion !== undefined
+      ) {
+        if (typeof msg.result.protocolVersion === 'number') {
+          bridgeNegotiatedProtocolVersion = msg.result.protocolVersion;
+        }
+        const nativeMem = codexNativeMemoryCapability(lastInitializeParams || {});
+        if (!msg.result.capabilities || typeof msg.result.capabilities !== 'object') {
+          msg.result.capabilities = {};
+        }
+        msg.result.capabilities.nativeMemory = nativeMem;
+        if (!msg.result.agentCapabilities || typeof msg.result.agentCapabilities !== 'object') {
+          msg.result.agentCapabilities = {};
+        }
+        msg.result.agentCapabilities.nativeMemory = nativeMem;
+        process.stdout.write(JSON.stringify(msg) + '\n');
+        return;
+      }
+    } catch {
+      // ignore non-JSON or passthrough
+    }
+    process.stdout.write(line + '\n');
+  });
 
   officialChild.on('close', (code) => {
     if (code !== 0 && !hasProducedOutput && lastReceivedId !== null) {
@@ -492,11 +620,13 @@ function isMockCodexBinary(binPath) {
 }
 
 const shouldUseOfficialEngine =
-  Boolean(CODEX_BIN) &&
-  fs.existsSync(OFFICIAL_ACP_ENTRY) &&
-  !process.env.FAKE_CODEX_ACTIONS &&
-  !isMockCodexBinary(CODEX_BIN) &&
-  process.env.SHADOW_CREW_USE_BUILTIN_CODEX_ADAPTER !== '1';
+  process.env.SHADOW_CREW_FORCE_OFFICIAL_CODEX_ADAPTER === '1'
+    ? Boolean(CODEX_BIN) && fs.existsSync(OFFICIAL_ACP_ENTRY)
+    : Boolean(CODEX_BIN) &&
+      fs.existsSync(OFFICIAL_ACP_ENTRY) &&
+      !process.env.FAKE_CODEX_ACTIONS &&
+      !isMockCodexBinary(CODEX_BIN) &&
+      process.env.SHADOW_CREW_USE_BUILTIN_CODEX_ADAPTER !== '1';
 
 if (shouldUseOfficialEngine) {
   startOfficialAdapterBridge(CODEX_BIN);
@@ -593,7 +723,7 @@ function startBuiltinAdapter() {
       additionalDirectories: Array.isArray(params?.additionalDirectories)
         ? params.additionalDirectories.filter(Boolean)
         : [],
-      systemPrompt: params?.systemPrompt || '',
+      systemPrompt: extractSystemPromptText(params),
       codexThreadId: null,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -624,6 +754,10 @@ function startBuiltinAdapter() {
     }
     if (Array.isArray(params?.additionalDirectories)) {
       session.additionalDirectories = params.additionalDirectories.filter(Boolean);
+    }
+    const updatedSp = extractSystemPromptText(params);
+    if (updatedSp) {
+      session.systemPrompt = updatedSp;
     }
     session.updatedAt = Date.now();
     activeSessionId = targetSessionId;
@@ -678,7 +812,7 @@ function startBuiltinAdapter() {
         additionalDirectories: Array.isArray(params?.additionalDirectories)
           ? params.additionalDirectories.filter(Boolean)
           : [],
-        systemPrompt: params?.systemPrompt || '',
+        systemPrompt: extractSystemPromptText(params),
         codexThreadId: null,
         createdAt: Date.now(),
         updatedAt: Date.now(),

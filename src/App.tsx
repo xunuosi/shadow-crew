@@ -10,7 +10,7 @@ import {
   Channel, 
   Thread, 
   Message, 
-  SubThread, 
+  SubThread,
   AcpRpcLog,
   TopicMessageData,
   DecisionRecord,
@@ -41,7 +41,7 @@ import {
   INITIAL_CHANNELS, 
   INITIAL_THREADS, 
   INITIAL_MESSAGES, 
-  INITIAL_SUB_THREADS, 
+  INITIAL_SUB_THREADS,
   INITIAL_RPC_LOGS
 } from './data/mockData';
 import { Hash, Plus, PanelLeft } from 'lucide-react';
@@ -50,28 +50,22 @@ import { FilePreviewProvider } from './context/FilePreviewContext';
 import { ThreadList } from './components/ThreadList';
 import { ChatTimeline } from './components/ChatTimeline';
 import { MessageInput } from './components/MessageInput';
-import { AcpPermissionModal } from './components/AcpPermissionModal';
-import { AcpPermissionCenterModal } from './components/AcpPermissionCenterModal';
+import { AppModalsContainer } from './components/AppModalsContainer';
+import { useArbitrationConcurrence } from './hooks/useArbitrationConcurrence';
+import { useTopicExecutionPipeline } from './hooks/useTopicExecutionPipeline';
+import { useGameTheoreticFsm } from './hooks/useGameTheoreticFsm';
 
-// 按需异步加载高体积分支抽屉与低频弹窗组件，从首屏关键渲染路径剥离
+
+
+// 按需异步加载高体积分支抽屉与仪表盘组件，从首屏关键渲染路径剥离
 const SubThreadDrawer = lazy(() => import('./components/SubThreadDrawer').then((m) => ({ default: m.SubThreadDrawer })));
 const TopicThreadDrawer = lazy(() => import('./components/TopicThreadDrawer').then((m) => ({ default: m.TopicThreadDrawer })));
-const NewTopicModal = lazy(() => import('./components/NewTopicModal').then((m) => ({ default: m.NewTopicModal })));
-const EditTopicModal = lazy(() => import('./components/EditTopicModal').then((m) => ({ default: m.EditTopicModal })));
 const CodexDiffViewer = lazy(() => import('./components/CodexDiffViewer').then((m) => ({ default: m.CodexDiffViewer })));
 const AcpInspector = lazy(() => import('./components/AcpInspector').then((m) => ({ default: m.AcpInspector })));
-const AgentTeamsModal = lazy(() => import('./components/AgentTeamsModal').then((m) => ({ default: m.AgentTeamsModal })));
-const CreateChannelModal = lazy(() => import('./components/CreateChannelModal').then((m) => ({ default: m.CreateChannelModal })));
-const ChannelMembersModal = lazy(() => import('./components/ChannelMembersModal').then((m) => ({ default: m.ChannelMembersModal })));
-const DeleteChannelModal = lazy(() => import('./components/DeleteChannelModal').then((m) => ({ default: m.DeleteChannelModal })));
-const ConnectAgentModal = lazy(() => import('./components/ConnectAgentModal').then((m) => ({ default: m.ConnectAgentModal })));
-const CreateTeamModal = lazy(() => import('./components/CreateTeamModal').then((m) => ({ default: m.CreateTeamModal })));
-const AgentDefaultsModal = lazy(() => import('./components/AgentDefaultsModal').then((m) => ({ default: m.AgentDefaultsModal })));
-const StorageSettingsModal = lazy(() => import('./components/StorageSettingsModal').then((m) => ({ default: m.StorageSettingsModal })));
-const RustTauriArchitectureHub = lazy(() => import('./components/RustTauriArchitectureHub').then((m) => ({ default: m.RustTauriArchitectureHub })));
 const AgentDashboard = lazy(() => import('./components/AgentDashboard').then((m) => ({ default: m.AgentDashboard })));
 import {
   sendPromptToAcpAgent,
+  type AcpAgentResponse,
   setOnAcpNativeMemoryCapabilityUpdated,
   clearAcpAgentSessions,
   ensureAcpAgentSession,
@@ -82,22 +76,16 @@ import {
   buildAgentLaunchEnv,
   buildThinkingProcessFromAcp,
   extractArbitrationRulingFromAcpResponse,
+  extractArbitrationRulingOptionsFromAcpResponse,
   extractRoleConcurrenceFromAcpResponse,
   extractModuleDecompositionFromAcpResponse,
   extractWorkspaceDiffsFromText,
   applyTopicPatchToWorkspace,
-  rollbackTopicPatchFromWorkspace,
   parseSessionKey,
 } from './services/acpClient';
 import {
-  extractVerificationFailureDigest,
-  formatVerificationReport,
-  verifyWorkspaceAfterPatch,
-} from './services/workspaceVerification';
-import {
   resolveCascadeMaxHops,
   resolveEffectiveRuntimePolicy,
-  resolveCorrectionRetryLimit,
 } from './services/agentRuntimePolicy';
 import {
   listPendingAcpPermissions,
@@ -178,6 +166,7 @@ import {
   buildCascadePrompt,
   buildTopicPrompt,
   buildExecutionPrompt,
+  buildModularExecutionPrompt,
   extractUnreadDeltaMessages,
   buildNormalModeTurnPrompt,
   aggregateTurnBarrierMentions,
@@ -230,6 +219,9 @@ import {
   checkAllRolesConcurred,
   formatFullDateTime,
   evaluateRulingGates,
+  computeTopologicalExecutionOrder,
+  getNextExecutableModuleSlice,
+  mergeTopicPatchDiffs,
 } from './services/cogno';
 import { MIN_MAIN_TIMELINE_WIDTH } from './config/layout';
 
@@ -3147,2809 +3139,196 @@ export default function App() {
     });
   };
 
-  const triggerGameTheoreticStageHandover = async (options: {
-    topicId: string;
-    nextStage: 'proposal' | 'challenge' | 'verification' | 'defense' | 'arbitration';
-    targetProposalText?: string;
-    targetChallengeText?: string;
-    targetVerificationText?: string;
-    targetDefenseText?: string;
-  }) => {
-    const { topicId, nextStage, targetProposalText, targetChallengeText, targetVerificationText, targetDefenseText } = options;
-    const currentTopic = getTopicData(topicId);
-    if (!currentTopic || currentTopic.status === 'resolved') return;
-    const turnSnapshot = captureTurnEpoch(topicId, currentTopic.channelId || activeChannel?.id);
+  // 1. 落地执行管线 (G-Frame 模块化与单轮落地执行)
+  const {
+    dispatchTopicExecution,
+    handleExecuteTopicPatch,
+    handleApplyTopicPatch,
+    handleRollbackTopicPatch,
+  } = useTopicExecutionPipeline({
+    getTopicData,
+    updateTopicDataInState,
+    captureTurnEpoch,
+    isTurnStale,
+    channels,
+    activeChannel,
+    agentsRef,
+    activeExecutionsRef,
+    setActiveExecutions,
+    setIsGenerating,
+    setAgents,
+    setMessages,
+    getTopicWorkspaceBinding,
+    activeTopicId,
+    activeDiff,
+    setActiveDiff,
+  });
 
-    const handoverKey = `${topicId}:${nextStage}`;
-    if (inFlightHandoverRef.current.has(handoverKey)) {
-      console.warn(`[GameTheoretic] Handover for ${handoverKey} is already in-flight, skipping duplicate trigger.`);
-      return;
-    }
-    inFlightHandoverRef.current.add(handoverKey);
-
-    const topicChannel = channels.find((c) => c.id === currentTopic.channelId) || activeChannel;
-    const channelAgents = (topicChannel?.assignedAgentIds || [])
-      .map((id) => agentsRef.current.find((a) => a.id === id))
-      .filter((a): a is Agent => Boolean(a));
-    const topicAgents = (currentTopic.participatingAgentIds || [])
-      .map((id) => agentsRef.current.find((a) => a.id === id))
-      .filter((a): a is Agent => Boolean(a));
-    const candidateAgents = topicAgents.length > 0 ? topicAgents : channelAgents;
-
-    // 阶段 1：模块沙箱独立提案立论 (Stage: proposal, N9)
-    if (nextStage === 'proposal') {
-      const proposerIds = currentTopic.gameRoles?.proposers || [];
-      const proposerAgent = candidateAgents.find((a) => proposerIds.includes(a.id)) || candidateAgents[0];
-
-      if (!proposerAgent) {
-        inFlightHandoverRef.current.delete(handoverKey);
-        console.warn('[GameTheoretic] No proposer agent available for modular proposal handover.');
-        return;
+  // 2. 议题裁决敲定处理函数 (含 Rollup 汇总与落地派发)
+  const handleResolveTopic = useCallback(
+    (
+      topicId: string,
+      decision: {
+        solution: string;
+        impactedFiles: string[];
+        approvers: string[];
+        rulingRecord?: RulingRecord;
+        executorId?: string;
+        autoDispatch?: boolean;
       }
+    ) => {
+    const resolvedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const targetExecutorId = decision.executorId || decision.rulingRecord?.executorId;
+    const shouldDispatch = Boolean(targetExecutorId && decision.autoDispatch !== false);
+    const executorAgent = targetExecutorId ? agentsRef.current.find((a) => a.id === targetExecutorId) : undefined;
 
-      const activeMod = currentTopic.gameTheoreticState?.modularState?.modules.find(
-        (m) => m.moduleId === currentTopic.gameTheoreticState?.modularState?.activeModuleId
-      );
+    const currentMinorityReport = decision.rulingRecord?.minorityReport || activeTopicData?.gameTheoreticState?.minorityReport;
 
-      const execKey = `${topicId}:${proposerAgent.id}`;
-      setIsGenerating(true);
-      setActiveExecutions((prev) => ({
-        ...prev,
-        [execKey]: {
-          agentId: proposerAgent.id,
-          agentName: proposerAgent.name,
-          agentAvatar: proposerAgent.avatar,
-          threadId: topicId,
-          topicId,
-          status: 'thinking',
-          currentActionDetail: `正在针对模块 [${activeMod?.title || '新模块'}] 进行沙箱独立提案立论 (Stage: 🏛️ 模块提案)...`,
-          startedAt: Date.now(),
-          cascadeHop: 1,
-        },
-      }));
+    const rulingRecordWithExecutor: RulingRecord | undefined = decision.rulingRecord ? {
+      ...decision.rulingRecord,
+      executorId: targetExecutorId,
+      minorityReport: decision.rulingRecord.minorityReport || currentMinorityReport,
+    } : undefined;
 
-      setAgents((prev) =>
-        prev.map((a) => (a.id === proposerAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
-      );
+    const decisionRecord: DecisionRecord = {
+      summary: decision.rulingRecord ? decision.rulingRecord.summary : '架构方案达成一致并收敛',
+      solution: decision.solution,
+      impactedFiles: decision.impactedFiles,
+      approvers: decision.approvers,
+      resolvedAt,
+      executorId: targetExecutorId,
+      executorName: executorAgent?.name,
+      minorityReport: currentMinorityReport,
+    };
 
-      const proposalPendingId = `topic-pending-${Date.now()}-${proposerAgent.id}`;
-      const proposalPendingMsg: Message = {
-        id: proposalPendingId,
-        threadId: topicId,
-        channelId: topicChannel?.id,
-        authorId: proposerAgent.id,
-        authorName: proposerAgent.name,
-        authorHandle: proposerAgent.handle,
-        authorAvatar: proposerAgent.avatar,
-        isAgent: true,
-        isPending: true,
-        startedAt: Date.now(),
-        pendingHint: `正在针对模块 [${activeMod?.title || '新模块'}] 进行沙箱独立提案立论 (Stage: 🏛️ 模块提案)...`,
-        agentBadge: `${proposerAgent.modelBadge?.split(' ')[0] || 'Local'} · 🏛️ 模块提案 (推演中...)`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: '',
-        gameStage: 'proposal',
-        gameRole: 'proposer',
-      };
-
-      setMessages((prev) => ({
-        ...prev,
-        [topicId]: [...(prev[topicId] || []), proposalPendingMsg],
-      }));
-
-      const latestTopicForProposal = getTopicData(topicId) || currentTopic;
-      const topicContext: TopicPromptContext = {
-        topicId,
-        title: currentTopic.title,
-        description: currentTopic.description,
-        channelName: topicChannel?.name || 'chat',
-        status: currentTopic.status,
-        discussionMode: 'game_theoretic',
-        gameRoles: currentTopic.gameRoles,
-        gameStage: 'proposal',
-        modularState: latestTopicForProposal.gameTheoreticState?.modularState,
-        participatingAgents: candidateAgents,
-      };
-
-      const proposalPrompt = buildTopicPrompt({
-        topic: topicContext,
-        userContent: currentTopic.description || currentTopic.title,
-        targetAgent: proposerAgent,
-        availableAgents: candidateAgents,
-      });
-
-      try {
-        const acpResp = await sendPromptToAcpAgent({
-          agent: proposerAgent,
-          roomId: topicId,
-          prompt: proposalPrompt,
-          channelId: topicChannel?.id,
-          workspaceBindingId: currentTopic.workspaceBindingId,
-          workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
-          scopeType: 'topic',
-          systemPrompt: buildCompositeSystemPrompt({
-            agent: proposerAgent,
-            availableAgents: candidateAgents,
-            includeRoster: true,
-          }),
-          discussionMode: 'game_theoretic',
-        });
-
-        setActiveExecutions((prev) => {
-          const next = { ...prev };
-          delete next[execKey];
-          if (Object.keys(next).length === 0) setIsGenerating(false);
-          return next;
-        });
-
-        if (isTurnStale(turnSnapshot)) {
-          inFlightHandoverRef.current.delete(handoverKey);
-          console.log('[App] Dropping modular proposal reply because turn was aborted or invalidated');
-          return;
+    setMessages((prev) => {
+      let parentThreadId: string | null = null;
+      for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
+        if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+          parentThreadId = tId;
+          break;
         }
-
-        if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
-          console.warn('Proposer returned empty/error turn in modular proposal, pausing handover.');
-          setMessages((prev) => ({
-            ...prev,
-            [topicId]: (prev[topicId] || []).filter((m) => m.id !== proposalPendingId),
-          }));
-          inFlightHandoverRef.current.delete(handoverKey);
-          return;
-        }
-
-        const proposalReply: Message = {
-          id: `msg-prop-${Date.now()}-${proposerAgent.id}`,
-          threadId: topicId,
-          channelId: topicChannel?.id,
-          authorId: proposerAgent.id,
-          authorName: proposerAgent.name,
-          authorHandle: proposerAgent.handle,
-          authorAvatar: proposerAgent.avatar,
-          isAgent: true,
-          agentBadge: `${proposerAgent.modelBadge?.split(' ')[0] || 'Local'} · 🏛️ 模块提案`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: acpResp.textResponse,
-          thinkingProcess: buildThinkingProcessFromAcp(acpResp, `已基于《公共接口契约》完成模块 [${activeMod?.title || '新模块'}] 独立设计`),
-          diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
-          cartridgeCitation: acpResp.cartridgeCitation,
-          gameStage: 'proposal',
-          gameRole: 'proposer',
-        };
-
-        setMessages((prev) => ({
-          ...prev,
-          [topicId]: (prev[topicId] || []).map((m) => (m.id === proposalPendingId ? proposalReply : m)),
-        }));
-
-        // 推进模块状态机进入该模块的验证 (fast_track) 或挑战 (deep_debate) (N8, N9, N10, N12)
-        const latestTopicBeforeNext = getTopicData(topicId) || currentTopic;
-        const curModular = latestTopicBeforeNext.gameTheoreticState?.modularState;
-        let nextModStage: 'challenge' | 'verification' = 'challenge';
-        let updatedModularState = curModular;
-        let fastTrackNoticeMsg: Message | null = null;
-        let isFastTrackBypassed = false;
-
-        // 校验接地验证官可用性，防止 fast_track 无验证官时静默空转至答辩 (N10)
-        const hasVerifiers = (currentTopic.gameRoles?.verifiers || []).length > 0;
-
-        if (curModular?.enabled && curModular.activeModuleId) {
-          const modStep = stepModularStageTransition({
-            state: curModular,
-            currentStage: 'proposal',
-            feedbackDelta: {},
-            proposalOrDefenseSnippet: acpResp.textResponse,
-            hasVerifiers,
-          });
-          nextModStage = modStep.nextGameStage === 'verification' ? 'verification' : 'challenge';
-          updatedModularState = {
-            ...modStep.nextState,
-            modules: modStep.nextState.modules.map((m) =>
-              m.moduleId === curModular.activeModuleId
-                ? {
-                    ...m,
-                    scopedMessageIds: [...m.scopedMessageIds, proposalReply.id],
-                  }
-                : m
-            ),
-          };
-
-          const activeCurMod = updatedModularState.modules.find(
-            (m) => m.moduleId === curModular.activeModuleId
-          );
-          if (modStep.posteriorAction === 'ESCALATE_TO_RED_TEAM' && activeCurMod) {
-            fastTrackNoticeMsg = {
-              id: `msg-fast-track-downgrade-${Date.now()}`,
-              threadId: topicId,
-              channelId: topicChannel?.id,
-              authorId: 'system',
-              authorName: '贝叶斯快速通道调控器',
-              authorHandle: '@bayesian-fast-track',
-              authorAvatar: '⚠️',
-              isAgent: true,
-              agentBadge: 'Fast Track Downgraded',
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `⚠️ **快速通道降级告警 (Fast-Track Downgraded)**：模块「${activeCurMod.title}」先验虽符合快速通道标准，但当前议题未指派接地验证官 (Verifier)，无法执行物理接地与静态契约校验。自动降级为标准深度博弈 (deep_debate)，流转至【阶段 2: ⚔️ 反例压测】！`,
-              gameStage: 'challenge',
-            };
-          } else if (nextModStage === 'verification' && activeCurMod) {
-            isFastTrackBypassed = true;
-            fastTrackNoticeMsg = {
-              id: `msg-fast-track-${Date.now()}`,
-              threadId: topicId,
-              channelId: topicChannel?.id,
-              authorId: 'system',
-              authorName: '贝叶斯快速通道调控器',
-              authorHandle: '@bayesian-fast-track',
-              authorAvatar: '⚡',
-              isAgent: true,
-              agentBadge: 'Fast Track',
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `⚡ **贝叶斯快速通道 (fast_track)**：模块「${activeCurMod.title}」先验风险为 ${(activeCurMod.belief.priorRisk * 100).toFixed(0)}% (< 45%)，符合低熵确定性模块标准。跳过红队对抗，直接流转至接地验证与契约对齐！`,
-              gameStage: 'verification',
-            };
-          }
-        }
-
-        updateTopicDataInState(topicId, (old) => ({
-          ...old,
-          gameStage: nextModStage,
-          gameTheoreticState: {
-            ...old.gameTheoreticState,
-            currentStage: nextModStage,
-            targetProposalContent: acpResp.textResponse,
-            isChallengerResponded: false,
-            isChallengerBypassed: isFastTrackBypassed || old.gameTheoreticState?.isChallengerBypassed,
-            challengerBypassedReason: isFastTrackBypassed
-              ? 'Bayesian Fast-Track: 模块先验风险低于阈值，依博弈规约旁路红队对抗直接进入接地验证。'
-              : old.gameTheoreticState?.challengerBypassedReason,
-            isVerifierResponded: false,
-            isDefenseResponded: false,
-            modularState: updatedModularState,
-            cognoNexus: {
-              ...old.gameTheoreticState?.cognoNexus,
-              committedStates: old.gameTheoreticState?.cognoNexus?.committedStates ?? [],
-              modularState: updatedModularState,
-            },
-          },
-        }));
-
-        if (fastTrackNoticeMsg) {
-          const notice = fastTrackNoticeMsg;
-          setMessages((prev) => ({
-            ...prev,
-            [topicId]: [...(prev[topicId] || []), notice],
-          }));
-        }
-
-        inFlightHandoverRef.current.delete(handoverKey);
-        triggerGameTheoreticStageHandover({
-          topicId,
-          nextStage: nextModStage,
-          targetProposalText: acpResp.textResponse,
-        });
-        return;
-      } catch (err) {
-        setActiveExecutions((prev) => {
-          const next = { ...prev };
-          delete next[execKey];
-          if (Object.keys(next).length === 0) setIsGenerating(false);
-          return next;
-        });
-        if (isTurnStale(turnSnapshot)) {
-          inFlightHandoverRef.current.delete(handoverKey);
-          return;
-        }
-        console.error('Modular proposal execution failed:', err);
-        setMessages((prev) => ({
-          ...prev,
-          [topicId]: (prev[topicId] || []).filter((m) => m.id !== proposalPendingId),
-        }));
-        inFlightHandoverRef.current.delete(handoverKey);
-        return;
       }
-    }
+      if (!parentThreadId) return prev;
 
-    if (nextStage === 'challenge') {
-      const challengerIds = currentTopic.gameRoles?.challengers || [];
-      const challengerAgent = candidateAgents.find((a) => challengerIds.includes(a.id));
-
-      if (!challengerAgent) {
-        inFlightHandoverRef.current.delete(handoverKey);
-        updateTopicDataInState(topicId, (old) => ({
-          ...old,
-          gameStage: 'arbitration',
-          gameTheoreticState: {
-            ...old.gameTheoreticState,
-            currentStage: 'arbitration',
-            targetProposalContent: targetProposalText,
-            isChallengerResponded: false,
-            quorumAlert: '当前议题未指定或未找到可用的挑战者 (Challenger)。法定推演缺席 (Quorum Not Met)。',
-          },
-        }));
-
-        const quorumNotice: Message = {
-          id: `msg-quorum-alert-${Date.now()}`,
-          threadId: topicId,
-          channelId: topicChannel?.id,
-          authorId: 'system',
-          authorName: 'Shinobi 仲裁法定人数守护',
-          authorHandle: '@quorum-guard',
-          authorAvatar: '⚖️',
-          isAgent: true,
-          agentBadge: 'Quorum Alert',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `⚠️ **法定推演人数告警 (Quorum Alert)**：未指派或未匹配到制衡方 (Challenger)，法定对抗缺席。\n\n根据三元博弈规约，若无挑战者反例压测，人类首席仲裁官在终局定案时必须执行【具名豁免制衡方缺席 (Exemption)】方可敲响法槌。`,
-        };
-
-        setMessages((prev) => ({
-          ...prev,
-          [topicId]: [...(prev[topicId] || []), quorumNotice],
-        }));
-        return;
-      }
-
-      if (isAgentOffline(challengerAgent)) {
-        inFlightHandoverRef.current.delete(handoverKey);
-        updateTopicDataInState(topicId, (old) => ({
-          ...old,
-          gameStage: 'arbitration',
-          gameTheoreticState: {
-            ...old.gameTheoreticState,
-            currentStage: 'arbitration',
-            targetProposalContent: targetProposalText,
-            isChallengerResponded: false,
-            quorumAlert: `挑战者 ${challengerAgent.name} 处于离线/未连接状态。`,
-          },
-        }));
-
-        const offlineNotice: Message = {
-          id: `msg-offline-challenger-${Date.now()}`,
-          threadId: topicId,
-          channelId: topicChannel?.id,
-          authorId: 'system',
-          authorName: 'Shinobi 仲裁法定人数守护',
-          authorHandle: '@connection-guard',
-          authorAvatar: '🔌',
-          isAgent: true,
-          agentBadge: 'Communication Required',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `🔌 **制衡方通信尚未开启**：挑战者 **${challengerAgent.name}** 处于离线/未连接状态，无法接力反例压测。\n\n如需其完成对抗，请先在左侧面板点击【Start】开启 ACP 通信；或由人类首席仲裁官执行具名豁免后直接落槌。`,
-        };
-
-        setMessages((prev) => ({
-          ...prev,
-          [topicId]: [...(prev[topicId] || []), offlineNotice],
-        }));
-        return;
-      }
-
-      const execKey = `${topicId}:${challengerAgent.id}`;
-      setIsGenerating(true);
-      setActiveExecutions((prev) => ({
-        ...prev,
-        [execKey]: {
-          agentId: challengerAgent.id,
-          agentName: challengerAgent.name,
-          agentAvatar: challengerAgent.avatar,
-          threadId: topicId,
-          topicId,
-          status: 'thinking',
-          currentActionDetail: `正在对立论方案进行反例压测与边界证伪 (Stage: ⚔️ 反例压测)...`,
-          startedAt: Date.now(),
-          cascadeHop: 2,
-        },
-      }));
-
-      setAgents((prev) =>
-        prev.map((a) => (a.id === challengerAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
-      );
-
-      const challengerPendingId = `topic-pending-${Date.now()}-${challengerAgent.id}`;
-      const challengerPendingMsg: Message = {
-        id: challengerPendingId,
-        threadId: topicId,
-        channelId: topicChannel?.id,
-        authorId: challengerAgent.id,
-        authorName: challengerAgent.name,
-        authorHandle: challengerAgent.handle,
-        authorAvatar: challengerAgent.avatar,
-        isAgent: true,
-        isPending: true,
-        startedAt: Date.now(),
-        pendingHint: '正在检索私有记忆并对立论方案进行反例压测与边界证伪 (Stage: ⚔️ 反例压测)...',
-        agentBadge: `${challengerAgent.modelBadge?.split(' ')[0] || 'Local'} · ⚔️ 反例压测 (推演中...)`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: '',
-        gameStage: 'challenge',
-        gameRole: 'challenger',
-      };
-
-      setMessages((prev) => ({
-        ...prev,
-        [topicId]: [...(prev[topicId] || []), challengerPendingMsg],
-      }));
-
-      const latestTopicForChallenge = getTopicData(topicId) || currentTopic;
-      const topicContext: TopicPromptContext = {
-        topicId,
-        title: currentTopic.title,
-        description: currentTopic.description,
-        channelName: topicChannel?.name || 'chat',
-        status: currentTopic.status,
-        discussionMode: 'game_theoretic',
-        gameRoles: currentTopic.gameRoles,
-        gameStage: 'challenge',
-        targetProposalText,
-        modularState: latestTopicForChallenge.gameTheoreticState?.modularState,
-        participatingAgents: candidateAgents,
-      };
-
-      const challengePrompt = buildTopicPrompt({
-        topic: topicContext,
-        userContent: targetProposalText || currentTopic.description || currentTopic.title,
-        targetAgent: challengerAgent,
-        availableAgents: candidateAgents,
-      });
-
-      try {
-        const acpResp = await sendPromptToAcpAgent({
-          agent: challengerAgent,
-          roomId: topicId,
-          prompt: challengePrompt,
-          channelId: topicChannel?.id,
-          workspaceBindingId: currentTopic.workspaceBindingId,
-          workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
-          scopeType: 'topic',
-          systemPrompt: buildCompositeSystemPrompt({
-            agent: challengerAgent,
-            availableAgents: candidateAgents,
-            includeRoster: true,
-          }),
-          discussionMode: 'game_theoretic',
-        });
-
-        setActiveExecutions((prev) => {
-          const next = { ...prev };
-          delete next[execKey];
-          if (Object.keys(next).length === 0) setIsGenerating(false);
-          return next;
-        });
-
-        if (isTurnStale(turnSnapshot)) {
-          inFlightHandoverRef.current.delete(handoverKey);
-          console.log('[App] Dropping modular proposal reply because turn was aborted or invalidated');
-          return;
-        }
-
-        if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
-          throw new Error(acpResp.isError ? acpResp.textResponse : '制衡方返回空响应，未生成有效反例压测。');
-        }
-
-        const challengerReply: Message = {
-          id: `topic-reply-${Date.now()}-${challengerAgent.id}`,
-          threadId: topicId,
-          channelId: topicChannel?.id,
-          authorId: challengerAgent.id,
-          authorName: challengerAgent.name,
-          authorHandle: challengerAgent.handle,
-          authorAvatar: challengerAgent.avatar,
-          isAgent: true,
-          isPending: false,
-          agentBadge: `${challengerAgent.modelBadge?.split(' ')[0] || 'Local'} · ⚔️ 反例压测`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: acpResp.textResponse,
-          gameStage: 'challenge',
-          gameRole: 'challenger',
-          thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成反例边界与架构证伪推演'),
-          diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
-          cartridgeCitation: acpResp.cartridgeCitation,
-        };
-
-        setMessages((prev) => {
-          const existing = prev[topicId] || [];
-          const hasPending = existing.some((m) => m.id === challengerPendingId);
-          const nextTopicMsgs = hasPending
-            ? existing.map((m) => (m.id === challengerPendingId ? challengerReply : m))
-            : [...existing, challengerReply];
-          let parentThreadId: string | null = null;
-          for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
-            if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
-              parentThreadId = tId;
-              break;
-            }
-          }
-          const updatedChannelMsgs = parentThreadId
-            ? (prev[parentThreadId] || []).map((m) => {
-                if (m.type === 'topic' && m.topicData?.id === topicId) {
-                  return {
-                    ...m,
-                    topicData: {
-                      ...m.topicData,
-                      repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
-                      latestReplyPreview: challengerReply.content.slice(0, 60),
-                    },
-                  };
-                }
-                return m;
-              })
-            : [];
+      const updatedChannelMsgs = (prev[parentThreadId] || []).map((m) => {
+        if (m.type === 'topic' && m.topicData?.id === topicId) {
           return {
-            ...prev,
-            [topicId]: nextTopicMsgs,
-            ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
-          };
-        });
-
-        // CognoNexus 阶段 2: 阶段契约门禁强校验 (R-1 / M4)
-        const contractValidation = validateStageContract('challenge', acpResp.textResponse, challengerAgent.name);
-        logGameTheoreticTelemetry('stage_contract_validation', topicId, {
-          stage: 'challenge',
-          agentId: challengerAgent.id,
-          isValid: contractValidation.isValid,
-          missingRequirements: contractValidation.missingRequirements,
-        });
-
-        if (!contractValidation.isValid) {
-          const refineKey = `${topicId}:challenge`;
-          const retryLimit = resolveCorrectionRetryLimit(challengerAgent);
-          const currentRetries = stageRefineRetriesRef.current[refineKey] || 0;
-          if (currentRetries < retryLimit) {
-            stageRefineRetriesRef.current[refineKey] = currentRetries + 1;
-            const refineNotice: Message = {
-              id: `msg-refine-notice-${Date.now()}`,
-              threadId: topicId,
-              channelId: topicChannel?.id,
-              authorId: 'system',
-              authorName: '阶段契约质检官',
-              authorHandle: '@contract-guard',
-              authorAvatar: '🛡️',
-              isAgent: true,
-              agentBadge: `Self-Refine (${currentRetries + 1}/${retryLimit})`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: contractValidation.refinePrompt || '阶段契约未达标，触发 Self-Refine',
-              gameStage: 'challenge',
-              gameRole: 'challenger',
-            };
-            setMessages((prev) => ({
-              ...prev,
-              [topicId]: [...(prev[topicId] || []), refineNotice],
-            }));
-            triggerGameTheoreticStageHandover({
-              topicId,
-              nextStage: 'challenge',
-              targetProposalText,
-            });
-            return;
-          } else {
-            // 超过最大重试次数，进入 stageFailed 熔断交人类
-            delete stageRefineRetriesRef.current[refineKey];
-            updateTopicDataInState(topicId, (old) => ({
-              ...old,
-              gameStage: 'stageFailed',
+            ...m,
+            topicData: {
+              ...m.topicData,
+              status: 'resolved' as TopicStatus,
+              gameStage: m.topicData.discussionMode === 'game_theoretic' ? 'concluded' : m.topicData.gameStage,
               gameTheoreticState: {
-                ...old.gameTheoreticState,
-                currentStage: 'stageFailed',
-                quorumAlert: `红队挑战者 (${challengerAgent.name}) 经 ${retryLimit} 轮 Self-Refine 仍未满足契约规范，推演阻断转人工`,
+                ...(m.topicData.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
+                currentStage: 'concluded' as GameTheoreticStage,
+                isArbiterExempted: Boolean(decision.rulingRecord?.exemptionReason),
+                exemptionReason: decision.rulingRecord?.exemptionReason,
+                assignedExecutorId: targetExecutorId,
+                executionStatus: shouldDispatch ? 'running' : (m.topicData.gameTheoreticState?.executionStatus || 'idle'),
+                minorityReport: currentMinorityReport,
               },
-            }));
-            logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
-              stage: 'challenge',
-              reason: 'stage_contract_failure_max_retries',
-            });
-            const failMsg: Message = {
-              id: `msg-stage-failed-${Date.now()}`,
-              threadId: topicId,
-              channelId: topicChannel?.id,
-              authorId: 'system',
-              authorName: 'Shinobi 契约熔断中枢',
-              authorHandle: '@contract-guard',
-              authorAvatar: '⚠️',
-              isAgent: true,
-              agentBadge: 'Stage Failed',
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：挑战官 ${challengerAgent.name} 经 ${retryLimit} 次 Self-Refine 仍未满足结构化批判规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
-              gameStage: 'stageFailed',
-              gameRole: 'challenger',
-            };
-            setMessages((prev) => ({
-              ...prev,
-              [topicId]: [...(prev[topicId] || []), failMsg],
-            }));
-            return;
-          }
-        }
-        delete stageRefineRetriesRef.current[`${topicId}:challenge`];
-
-        // 提取论点因果节点、升级为 Claim DAG 与图差分冲突定位 (Wave 3 P1-1)
-        // 缺失主导方案正文时以空串进入分析器（分析器会显式返回空节点），而不是让整个交接流程崩溃。
-        const proposalTextForAnalysis = targetProposalText ?? '';
-        const argumentNodes = extractArgumentNodes(proposalTextForAnalysis);
-        const disputePacket = localizeGraphDiffDispute(argumentNodes, acpResp.textResponse);
-        const committedStates = dehydrateContextToCommittedStates(proposalTextForAnalysis, acpResp.textResponse, argumentNodes);
-
-        // 提炼并保留伴生少数派异议报告 (P0-2 Disagreement-Aware Deliberation)
-        const minorityReport = compileMinorityReport({
-          dissentingAgentId: challengerAgent.id,
-          dissentingAgentName: challengerAgent.name,
-          dissentingAgentModel: challengerAgent.modelBadge || challengerAgent.modelConfig?.modelId || challengerAgent.modelConfig?.modelName || 'Heterogeneous-LLM',
-          critiqueText: acpResp.textResponse,
-          proposalText: targetProposalText,
-        });
-
-        const sprtScore = estimateRoundAlignmentScore({
-          proposalText: targetProposalText,
-          critiqueText: acpResp.textResponse,
-        });
-        // 关键门禁：若存在未验证核心冲突切片，拦截 early_exit (P1-2 / P0-1)
-        const hasUnverifiedDispute = Boolean(disputePacket && disputePacket.groundingStatus === 'unverified');
-        const sprtState = stepSprtGovernor({
-          currentRound: 2,
-          alignmentScore: sprtScore,
-          hasUnverifiedCriticalDispute: hasUnverifiedDispute,
-        });
-
-        // 记录 SPRT 似然比迁移打点 (R-1)
-        logGameTheoreticTelemetry('decisionState_transition', topicId, {
-          stage: 'challenge',
-          decisionState: sprtState.decisionState,
-          round: 2,
-          logLikelihoodRatio: sprtState.logLikelihoodRatio,
-          alignmentScore: sprtScore,
-        });
-
-        // 关键接线：非 UI 控制流消费 decisionState (R-1)
-        if (sprtState.decisionState === 'deadlock_escalation') {
-          // SPRT 死锁熔断：攻防严重分歧，阻断自动流转，上报人类
-          updateTopicDataInState(topicId, (old) => ({
-            ...old,
-            gameStage: 'arbitration',
-            gameTheoreticState: {
-              ...old.gameTheoreticState,
-              currentStage: 'arbitration',
-              targetProposalContent: targetProposalText,
-              targetChallengeContent: acpResp.textResponse,
-              isChallengerResponded: true,
-              quorumAlert: '⚠️ SPRT 似然比跌破死锁下界 (Deadlock Escalation)，攻防陷入深层价值对立，已熔断自动推演',
-              sprtState,
-              minorityReport,
-              cognoNexus: {
-                committedStates,
-                currentDispute: disputePacket,
-                sprtState,
-                minorityReport,
-              },
-            },
-          }));
-
-          logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
-            stage: 'challenge',
-            reason: 'sprt_deadlock_escalation',
-          });
-
-          const deadlockMsg: Message = {
-            id: `msg-deadlock-alert-${Date.now()}`,
-            threadId: topicId,
-            channelId: topicChannel?.id,
-            authorId: 'system',
-            authorName: 'SPRT 序贯计算调控器',
-            authorHandle: '@sprt-governor',
-            authorAvatar: '⚡',
-            isAgent: true,
-            agentBadge: 'Deadlock Escalation',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `⚠️ **SPRT 死锁熔断告警 (Deadlock Escalation)**：攻防分歧已突破置信区间下界 ($LHR \\le B$)，系统判定两造陷入不可调和死锁。自动推演已阻断，请人类首席仲裁官查阅上方交锋点，在下方控制台敲响法槌直接裁决。`,
-          };
-
-          setMessages((prev) => ({
-            ...prev,
-            [topicId]: [...(prev[topicId] || []), deadlockMsg],
-          }));
-          return;
-        }
-
-        const latestTopicAfterChallenge = getTopicData(topicId) || currentTopic;
-        const activeModularInChallenge = latestTopicAfterChallenge.gameTheoreticState?.modularState;
-        const hasUnfrozenModules = Boolean(
-          activeModularInChallenge?.enabled &&
-            activeModularInChallenge.modules.some((m) => m.status !== 'frozen')
-        );
-
-        const hasVerifiers = (currentTopic.gameRoles?.verifiers || []).length > 0;
-        // 若启用 G-Frame 模块化分治且尚有未冻结模块，必须经由验证/答辩完成各模块冻结，严禁提前跳入仲裁弃置后续模块 (E2E-03)
-        const nextStageTarget =
-          sprtState.decisionState === 'early_exit' && !hasUnfrozenModules
-            ? 'arbitration'
-            : hasVerifiers
-            ? 'verification'
-            : 'defense';
-
-        if (sprtState.decisionState === 'early_exit' && !hasUnfrozenModules) {
-          const earlyExitMsg: Message = {
-            id: `msg-early-exit-${Date.now()}`,
-            threadId: topicId,
-            channelId: topicChannel?.id,
-            authorId: 'system',
-            authorName: 'SPRT 序贯计算调控器',
-            authorHandle: '@sprt-governor',
-            authorAvatar: '⚡',
-            isAgent: true,
-            agentBadge: 'Early Exit',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `⚡ **SPRT 序贯检验早停 (Early Exit)**：攻防两造论据已突破置信上限 ($LHR \\ge A$)，达成高质对齐。系统自动短路后续冗余轮次，直接流转至终局仲裁！`,
-          };
-          setMessages((prev) => ({
-            ...prev,
-            [topicId]: [...(prev[topicId] || []), earlyExitMsg],
-          }));
-        }
-
-        // 阶段 2 反例压测完成后，转入【阶段 3: 接地验证 (Verification)】或【阶段 4: 答辩修正 (Defense)】或【阶段 5: 仲裁】
-        updateTopicDataInState(topicId, (old) => {
-          const prevModular = old.gameTheoreticState?.modularState;
-          let nextModular = prevModular;
-          if (prevModular?.enabled && prevModular.activeModuleId) {
-            const challengeStep = stepModularStageTransition({
-              state: prevModular,
-              currentStage: 'challenge',
-              feedbackDelta: {
-                edgeCaseCount: Math.min(
-                  2,
-                  committedStates.filter((c) => c.status === 'disputed' || c.status === 'refuted').length || (disputePacket ? 1 : 0)
-                ),
-              },
-            });
-            nextModular = {
-              ...challengeStep.nextState,
-              modules: challengeStep.nextState.modules.map((m) =>
-                m.moduleId === prevModular.activeModuleId
-                  ? { ...m, scopedMessageIds: [...m.scopedMessageIds, challengerReply.id] }
-                  : m
-              ),
-            };
-          }
-          return {
-            ...old,
-            gameStage: nextStageTarget,
-            gameTheoreticState: {
-              ...old.gameTheoreticState,
-              currentStage: nextStageTarget,
-              targetProposalContent: targetProposalText,
-              targetChallengeContent: acpResp.textResponse,
-              isChallengerResponded: true,
-              quorumAlert: undefined,
-              sprtState,
-              minorityReport,
-              modularState: nextModular,
-              cognoNexus: {
-                ...old.gameTheoreticState?.cognoNexus,
-                committedStates,
-                currentDispute: disputePacket,
-                sprtState,
-                minorityReport,
-                modularState: nextModular,
-              },
+              decisionRecord,
+              rulingRecord: rulingRecordWithExecutor,
             },
           };
-        });
-
-        inFlightHandoverRef.current.delete(handoverKey);
-        triggerGameTheoreticStageHandover({
-          topicId,
-          nextStage: nextStageTarget,
-          targetProposalText,
-          targetChallengeText: acpResp.textResponse,
-        });
-      } catch (err) {
-        setActiveExecutions((prev) => {
-          const next = { ...prev };
-          delete next[execKey];
-          if (Object.keys(next).length === 0) setIsGenerating(false);
-          return next;
-        });
-
-        if (isTurnStale(turnSnapshot)) {
-          console.log('[App] Dropping challenge error because turn was aborted or invalidated');
-          return;
         }
-
-        console.error('Challenger execution failed:', err);
-        const errorMsg: Message = {
-          id: `topic-reply-err-${Date.now()}-${challengerAgent.id}`,
-          threadId: topicId,
-          channelId: topicChannel?.id,
-          authorId: challengerAgent.id,
-          authorName: challengerAgent.name,
-          authorHandle: challengerAgent.handle,
-          authorAvatar: challengerAgent.avatar,
-          isAgent: true,
-          agentBadge: 'ACP Error',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `⚠️ **制衡方压测异常**：${err instanceof Error ? err.message : String(err)}`,
-          gameStage: 'challenge',
-          gameRole: 'challenger',
-        };
-
-        const quorumNotice: Message = {
-          id: `msg-quorum-alert-${Date.now()}`,
-          threadId: topicId,
-          channelId: topicChannel?.id,
-          authorId: 'system',
-          authorName: 'Shinobi 仲裁法定人数守护',
-          authorHandle: '@quorum-guard',
-          authorAvatar: '⚖️',
-          isAgent: true,
-          agentBadge: 'Quorum Alert',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `⚠️ **法定推演人数告警 (Quorum Alert)**：制衡方 ${challengerAgent.name} 发生异常未能完成反例压测。法定推演人数未达标 (Quorum Not Met)。\n\n根据三元博弈规约，进入仲裁定案前须由人类首席仲裁官签署「具名豁免」方可落槌定案。`,
-        };
-
-        setMessages((prev) => {
-          const existing = prev[topicId] || [];
-          const filtered = existing.filter((m) => m.id !== challengerPendingId);
-          return {
-            ...prev,
-            [topicId]: [...filtered, errorMsg, quorumNotice],
-          };
-        });
-
-        updateTopicDataInState(topicId, (old) => ({
-          ...old,
-          gameStage: 'arbitration',
-          gameTheoreticState: {
-            ...old.gameTheoreticState,
-            currentStage: 'arbitration',
-            targetProposalContent: targetProposalText,
-            isChallengerResponded: false,
-            quorumAlert: `制衡方 (${challengerAgent.name}) 反例压测异常：${err instanceof Error ? err.message : String(err)}`,
-          },
-        }));
-      } finally {
-        inFlightHandoverRef.current.delete(handoverKey);
-      }
-      return;
-    }
-
-    if (nextStage === 'verification') {
-      const verifierIds = currentTopic.gameRoles?.verifiers || [];
-      const verifierAgent = candidateAgents.find((a) => verifierIds.includes(a.id));
-
-      if (!verifierAgent || isAgentOffline(verifierAgent)) {
-        inFlightHandoverRef.current.delete(handoverKey);
-
-        const offlineReason = !verifierAgent
-          ? '未指派或未匹配到接地验证者 (Verifier)'
-          : `接地验证者 ${verifierAgent.name} 处于离线/未连接状态`;
-
-        updateTopicDataInState(topicId, (old) => ({
-          ...old,
-          gameStage: 'defense',
-          gameTheoreticState: {
-            ...old.gameTheoreticState,
-            currentStage: 'defense',
-            targetProposalContent: targetProposalText,
-            targetChallengeContent: targetChallengeText,
-            isVerifierResponded: false,
-          },
-        }));
-
-        const verifierSkipNotice: Message = {
-          id: `msg-verifier-skip-${Date.now()}`,
-          threadId: topicId,
-          channelId: topicChannel?.id,
-          authorId: 'system',
-          authorName: 'Shinobi 仲裁法定人数守护',
-          authorHandle: '@verifier-guard',
-          authorAvatar: '🔍',
-          isAgent: true,
-          agentBadge: 'Verification Skipped',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `🔍 **接地验证跳过**：${offlineReason}。根据 4+1 博弈调度协议，工具接地与真实性校验缺席，自动流转至【阶段: 🛡️ 答辩修正】。`,
-        };
-
-        setMessages((prev) => ({
-          ...prev,
-          [topicId]: [...(prev[topicId] || []), verifierSkipNotice],
-        }));
-
-        triggerGameTheoreticStageHandover({
-          topicId,
-          nextStage: 'defense',
-          targetProposalText,
-          targetChallengeText,
-        });
-        return;
-      }
-
-      const execKey = `${topicId}:${verifierAgent.id}`;
-      setIsGenerating(true);
-      setActiveExecutions((prev) => ({
-        ...prev,
-        [execKey]: {
-          agentId: verifierAgent.id,
-          agentName: verifierAgent.name,
-          agentAvatar: verifierAgent.avatar,
-          threadId: topicId,
-          topicId,
-          status: 'thinking',
-          currentActionDetail: `正在执行客观事实与物理逻辑接地验证 (Stage: 🔍 接地验证)...`,
-          startedAt: Date.now(),
-          cascadeHop: 3,
-        },
-      }));
-
-      setAgents((prev) =>
-        prev.map((a) => (a.id === verifierAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
-      );
-
-      const verifierPendingId = `topic-pending-${Date.now()}-${verifierAgent.id}`;
-      const verifierPendingMsg: Message = {
-        id: verifierPendingId,
-        threadId: topicId,
-        channelId: topicChannel?.id,
-        authorId: verifierAgent.id,
-        authorName: verifierAgent.name,
-        authorHandle: verifierAgent.handle,
-        authorAvatar: verifierAgent.avatar,
-        isAgent: true,
-        isPending: true,
-        startedAt: Date.now(),
-        pendingHint: '正在调取外部工具、代码解释器沙箱与事实基准进行真实性接地校验 (Stage: 🔍 接地验证)...',
-        agentBadge: `${verifierAgent.modelBadge?.split(' ')[0] || 'Local'} · 🔍 接地验证 (执行中...)`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: '',
-        gameStage: 'verification',
-        gameRole: 'verifier',
-      };
-
-      setMessages((prev) => ({
-        ...prev,
-        [topicId]: [...(prev[topicId] || []), verifierPendingMsg],
-      }));
-
-      const latestTopicForVerification = getTopicData(topicId) || currentTopic;
-      const topicContext: TopicPromptContext = {
-        topicId,
-        title: currentTopic.title,
-        description: currentTopic.description,
-        channelName: topicChannel?.name || 'chat',
-        status: currentTopic.status,
-        discussionMode: 'game_theoretic',
-        gameRoles: currentTopic.gameRoles,
-        gameStage: 'verification',
-        targetProposalText,
-        targetChallengeText,
-        modularState: latestTopicForVerification.gameTheoreticState?.modularState,
-        participatingAgents: candidateAgents,
-      };
-
-      const verifierPrompt = buildTopicPrompt({
-        topic: topicContext,
-        userContent: `争议切片与立论反例已就绪，请调取工具、代码沙箱或事实基准，对核心分歧断言进行接地验证，输出布尔真值与反事实压测证据。`,
-        targetAgent: verifierAgent,
-        availableAgents: candidateAgents,
+        return m;
       });
 
-      try {
-        const acpResp = await sendPromptToAcpAgent({
-          agent: verifierAgent,
-          roomId: topicId,
-          prompt: verifierPrompt,
-          channelId: topicChannel?.id,
-          workspaceBindingId: currentTopic.workspaceBindingId,
-          workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
-          scopeType: 'topic',
-          systemPrompt: buildCompositeSystemPrompt({
-            agent: verifierAgent,
-            availableAgents: candidateAgents,
-            includeRoster: true,
-          }),
-          discussionMode: 'game_theoretic',
-        });
+      let rollupContent = `⚖️ **议题已达成共识并定案 (Resolved & Merged)**\n\n**决策方案**：${decision.solution}\n${executorAgent ? `**指派落地执行**：🛠️ ${executorAgent.name} (${executorAgent.handle} · ${executorAgent.role})\n` : ''}**影响文件**：${decision.impactedFiles.join('、') || '无'}\n**签署人**：${decision.approvers.join('、')}\n\n*详细推演过程已在议题抽屉归档保存。*`;
 
-        setActiveExecutions((prev) => {
-          const next = { ...prev };
-          delete next[execKey];
-          if (Object.keys(next).length === 0) setIsGenerating(false);
-          return next;
-        });
-
-        if (isTurnStale(turnSnapshot)) {
-          inFlightHandoverRef.current.delete(handoverKey);
-          console.log('[App] Dropping modular proposal reply because turn was aborted or invalidated');
-          return;
-        }
-
-        if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
-          throw new Error(acpResp.isError ? acpResp.textResponse : '接地验证者返回空响应，未生成有效验证证据。');
-        }
-
-        const verifierReply: Message = {
-          id: `topic-reply-${Date.now()}-${verifierAgent.id}`,
-          threadId: topicId,
-          channelId: topicChannel?.id,
-          authorId: verifierAgent.id,
-          authorName: verifierAgent.name,
-          authorHandle: verifierAgent.handle,
-          authorAvatar: verifierAgent.avatar,
-          isAgent: true,
-          isPending: false,
-          agentBadge: `${verifierAgent.modelBadge?.split(' ')[0] || 'Local'} · 🔍 接地验证`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: acpResp.textResponse,
-          gameStage: 'verification',
-          gameRole: 'verifier',
-          thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成工具执行与物理事实接地验证'),
-          diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
-          cartridgeCitation: acpResp.cartridgeCitation,
-        };
-
-        setMessages((prev) => {
-          const existing = prev[topicId] || [];
-          const hasPending = existing.some((m) => m.id === verifierPendingId);
-          const nextTopicMsgs = hasPending
-            ? existing.map((m) => (m.id === verifierPendingId ? verifierReply : m))
-            : [...existing, verifierReply];
-          let parentThreadId: string | null = null;
-          for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
-            if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
-              parentThreadId = tId;
-              break;
-            }
-          }
-          const updatedChannelMsgs = parentThreadId
-            ? (prev[parentThreadId] || []).map((m) => {
-                if (m.type === 'topic' && m.topicData?.id === topicId) {
-                  return {
-                    ...m,
-                    topicData: {
-                      ...m.topicData,
-                      repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
-                      latestReplyPreview: verifierReply.content.slice(0, 60),
-                    },
-                  };
-                }
-                return m;
-              })
-            : [];
-          return {
-            ...prev,
-            [topicId]: nextTopicMsgs,
-            ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
-          };
-        });
-
-        // 阶段契约门禁强校验 (R-1 / M4)
-        const contractValidation = validateStageContract('verification', acpResp.textResponse, verifierAgent.name);
-        logGameTheoreticTelemetry('stage_contract_validation', topicId, {
-          stage: 'verification',
-          agentId: verifierAgent.id,
-          isValid: contractValidation.isValid,
-          missingRequirements: contractValidation.missingRequirements,
-        });
-
-        if (!contractValidation.isValid) {
-          const refineKey = `${topicId}:verification`;
-          const retryLimit = resolveCorrectionRetryLimit(verifierAgent);
-          const currentRetries = stageRefineRetriesRef.current[refineKey] || 0;
-          if (currentRetries < retryLimit) {
-            stageRefineRetriesRef.current[refineKey] = currentRetries + 1;
-            const refineNotice: Message = {
-              id: `msg-refine-notice-${Date.now()}`,
-              threadId: topicId,
-              channelId: topicChannel?.id,
-              authorId: 'system',
-              authorName: '阶段契约质检官',
-              authorHandle: '@contract-guard',
-              authorAvatar: '🛡️',
-              isAgent: true,
-              agentBadge: `Self-Refine (${currentRetries + 1}/${retryLimit})`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: contractValidation.refinePrompt || '验证契约未达标，触发 Self-Refine',
-              gameStage: 'verification',
-              gameRole: 'verifier',
-            };
-            setMessages((prev) => ({
-              ...prev,
-              [topicId]: [...(prev[topicId] || []), refineNotice],
-            }));
-            inFlightHandoverRef.current.delete(handoverKey);
-            triggerGameTheoreticStageHandover({
-              topicId,
-              nextStage: 'verification',
-              targetProposalText,
-              targetChallengeText,
-            });
-            return;
-          } else {
-            delete stageRefineRetriesRef.current[refineKey];
-            updateTopicDataInState(topicId, (old) => ({
-              ...old,
-              gameStage: 'stageFailed',
-              gameTheoreticState: {
-                ...old.gameTheoreticState,
-                currentStage: 'stageFailed',
-                quorumAlert: `接地验证官 (${verifierAgent.name}) 经 ${retryLimit} 轮 Self-Refine 仍未满足实证规范，推演阻断转人工`,
-              },
-            }));
-            logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
-              stage: 'verification',
-              reason: 'stage_contract_failure_max_retries',
-            });
-            const failMsg: Message = {
-              id: `msg-stage-failed-${Date.now()}`,
-              threadId: topicId,
-              channelId: topicChannel?.id,
-              authorId: 'system',
-              authorName: 'Shinobi 契约熔断中枢',
-              authorHandle: '@contract-guard',
-              authorAvatar: '⚠️',
-              isAgent: true,
-              agentBadge: 'Stage Failed',
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：接地验证官 ${verifierAgent.name} 经 ${retryLimit} 次 Self-Refine 仍未满足实证真值规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
-              gameStage: 'stageFailed',
-              gameRole: 'verifier',
-            };
-            setMessages((prev) => ({
-              ...prev,
-              [topicId]: [...(prev[topicId] || []), failMsg],
-            }));
-            return;
-          }
-        }
-        delete stageRefineRetriesRef.current[`${topicId}:verification`];
-
-        // 全量调度分级取证执行器并计算确定性加权真值率 (P0-1 / R-3 DIANOIA)
-        const { evidences, weightedTrueRatio, updatedDispute, updatedCommittedStates } = processVerifierEvidenceChain({
-          topicId,
-          verifierText: acpResp.textResponse,
-          isSafetyCharterSigned: currentTopic.gameTheoreticState?.isSafetyCharterSigned,
-          disputePacket: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute,
-          committedStates: currentTopic.gameTheoreticState?.cognoNexus?.committedStates,
-        });
-        const groundedTrueRatio = weightedTrueRatio;
-
-        logGameTheoreticTelemetry('grounded_ratio_injected', topicId, {
-          stage: 'verification',
-          groundedTrueRatio,
-          verifierId: verifierAgent.id,
-          evidenceCount: evidences.length,
-        });
-
-        // 阶段 3 验证完成后，基于实证计数与 fast_track/deep_debate 模式推进模块状态机 (N8 & E2E-03)
-        // - fast_track 模块若验证无违规且有实证支持，直接进入 FREEZE_MODULE 闭环，跳过 defense；
-        // - fast_track 模块若捕获违规或证伪反例，触发 ESCALATE_TO_RED_TEAM 动态拉起红队进入 challenge；
-        // - deep_debate 模块按规约正常推进至 defense 阶段答辩。
-        const latestTopicBeforeVerUpdate = getTopicData(topicId) || currentTopic;
-        const prevModular = latestTopicBeforeVerUpdate.gameTheoreticState?.modularState;
-        let nextModular = prevModular;
-        let resolvedVerNextStage: GameTheoreticStage = 'defense';
-        let verNoticeMsg: Message | null = null;
-        let verContractViolations = 0;
-
-        if (prevModular?.enabled && prevModular.activeModuleId) {
-          const verifiedCount = evidences.filter((e) => e.truthValue).length;
-          const refutedCount = evidences.filter((e) => !e.truthValue).length;
-          const activeMod = prevModular.modules.find((m) => m.moduleId === prevModular.activeModuleId);
-          const scopeCheck = activeMod
-            ? validateModuleScopeContract(
-                acpResp.textResponse,
-                activeMod,
-                prevModular.modules,
-                prevModular.sharedContract
-              )
-            : { isScopeValid: true, contractViolations: 0, violatedFiles: [], violationDetails: [] };
-          verContractViolations = scopeCheck.contractViolations;
-
-          const modRefineKey = `${topicId}:mod-refine:${prevModular.activeModuleId}`;
-          const currentModRefines = stageRefineRetriesRef.current[modRefineKey] || 0;
-          const verStep = stepModularStageTransition({
-            state: prevModular,
-            currentStage: 'verification',
-            feedbackDelta: {
-              verifiedClaims: verifiedCount,
-              refutedClaims: refutedCount,
-              contractViolations: scopeCheck.contractViolations,
-            },
-            currentModuleRefineCount: currentModRefines,
-          });
-
-          nextModular = {
-            ...verStep.nextState,
-            modules: verStep.nextState.modules.map((m) =>
-              m.moduleId === prevModular.activeModuleId
-                ? { ...m, scopedMessageIds: [...m.scopedMessageIds, verifierReply.id] }
-                : m
-            ),
-          };
-
-          resolvedVerNextStage = verStep.nextGameStage;
-
-          if (verStep.posteriorAction === 'ESCALATE_TO_RED_TEAM') {
-            verNoticeMsg = {
-              id: `msg-fast-track-escalate-${Date.now()}`,
-              threadId: topicId,
-              channelId: topicChannel?.id,
-              authorId: 'system',
-              authorName: '贝叶斯后验升降级调控器',
-              authorHandle: '@bayesian-governor',
-              authorAvatar: '⚔️',
-              isAgent: true,
-              agentBadge: 'Escalate to Red Team',
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `⚔️ **贝叶斯后验动态升级 (ESCALATE_TO_RED_TEAM)**：模块「${activeMod?.title || prevModular.activeModuleId}」在接地验证中捕获异常反馈 (${verStep.reason})。快速通道自动熔断，已紧急拉起 ⚔️ **红队对抗官** 进行深度反例压测！`,
-              gameStage: 'challenge',
-            };
-          } else if (verStep.posteriorAction === 'FREEZE_MODULE') {
-            if (!nextModular) {
-              throw new Error('模块状态机在 FREEZE_MODULE 分支缺少 nextState，拒绝以空状态推进');
-            }
-            const frozenModular = nextModular;
-            const frozenCount = frozenModular.modules.filter((m) => m.status === 'frozen').length;
-            const nextActiveMod = frozenModular.modules.find(
-              (m) => m.moduleId === frozenModular.activeModuleId
-            );
-            verNoticeMsg = {
-              id: `msg-fast-track-freeze-${Date.now()}`,
-              threadId: topicId,
-              channelId: topicChannel?.id,
-              authorId: 'system',
-              authorName: '贝叶斯快速通道调控器',
-              authorHandle: '@bayesian-governor',
-              authorAvatar: '🧊',
-              isAgent: true,
-              agentBadge: `Fast Track Frozen (${frozenCount}/${nextModular.modules.length})`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `🧊 **快速通道实证直通硬冻结**：模块「${activeMod?.title || prevModular.activeModuleId}」通过静态契约与接地校验，零反例零违规，已在快速通道直接锁定为 Frozen。\n\n${
-                verStep.allModulesFrozen
-                  ? '全部模块已完成实证收敛，正在转入终局仲裁！'
-                  : `正在按 DAG 拓扑序激活下一模块「**${nextActiveMod?.title || nextModular.activeModuleId}**」进入独立沙箱提案立论...`
-              }`,
-              gameStage: resolvedVerNextStage,
-            };
-          }
-        }
-
-        updateTopicDataInState(topicId, (old) => {
-          const isAllFrozenOrArbitration = resolvedVerNextStage === 'arbitration';
-          const isFastTrackBypassed =
-            Boolean(old.gameTheoreticState?.isChallengerBypassed) ||
-            Boolean(nextModular?.enabled && nextModular.modules.every((m) => m.belief.routingMode === 'fast_track'));
-
-          // 快速通道实证直通收敛证据与 SPRT 等价状态 (N13)
-          const sprtState: SprtGovernorState = {
-            currentRound: 1,
-            maxRounds: 4,
-            logLikelihoodRatio: 3.2,
-            upperThresholdA: 2.94,
-            lowerThresholdB: -2.94,
-            latestAlignmentScore: 1.0,
-            decisionState: 'early_exit',
-            statusDescription: '快速通道实证直通收敛：静态契约对齐与物理接地 100% 通过，零反例零违规，依据博弈规约达成高置信等价收敛。',
-            groundedTrueRatio: 1.0,
-            calibrationStatus: 'calibrated',
-            observationVector: {
-              groundedRatio: 1.0,
-              semanticScore: 1.0,
-              dssScore: 0.0,
-              combinedScore: 1.0,
-            },
-          };
-
-          const fastTrackConvergenceEvidence: FastTrackConvergenceEvidence = {
-            mode: 'static_empirical_fast_track',
-            totalModulesCount: nextModular?.modules.length || 1,
-            frozenModulesCount: nextModular?.modules.filter((m) => m.status === 'frozen').length || 1,
-            verifiedClaimsCount: evidences.filter((e) => e.truthValue).length,
-            contractViolationsCount: verContractViolations,
-            refutedClaimsCount: evidences.filter((e) => !e.truthValue).length,
-            achievedAt: new Date().toISOString(),
-            summary: `快速通道 ${nextModular?.modules.length || 1}/${nextModular?.modules.length || 1} 模块全硬冻结，物理接地真值率 100%，契约违规 0 项，达成静态实证直通收敛。`,
-          };
-
-          const effectiveSprtState =
-            old.gameTheoreticState?.sprtState ||
-            (isAllFrozenOrArbitration && isFastTrackBypassed ? sprtState : undefined);
-          const effectiveFastTrackConv =
-            isFastTrackBypassed ? fastTrackConvergenceEvidence : old.gameTheoreticState?.fastTrackConvergence;
-
-          return {
-            ...old,
-            gameStage: resolvedVerNextStage,
-            gameTheoreticState: {
-              ...old.gameTheoreticState,
-              currentStage: resolvedVerNextStage,
-              targetProposalContent: targetProposalText,
-              targetChallengeContent: targetChallengeText,
-              targetVerificationContent: acpResp.textResponse,
-              isVerifierResponded: true,
-              // 回填制衡方响应标记与旁路审计留痕：在全 fast_track 或模块旁路下保障法定门禁不误报 (N11)
-              isChallengerResponded: isAllFrozenOrArbitration
-                ? (isFastTrackBypassed ? true : old.gameTheoreticState?.isChallengerResponded ?? false)
-                : old.gameTheoreticState?.isChallengerResponded,
-              isChallengerBypassed: isFastTrackBypassed || old.gameTheoreticState?.isChallengerBypassed,
-              challengerBypassedReason: isFastTrackBypassed
-                ? 'Bayesian Fast-Track: 模块经贝叶斯先验评定为低风险确定性模块，依博弈规约旁路红队对抗直接进入接地验证。'
-                : old.gameTheoreticState?.challengerBypassedReason,
-              sprtState: effectiveSprtState,
-              fastTrackConvergence: effectiveFastTrackConv,
-              minorityReport: old.gameTheoreticState?.minorityReport,
-              modularState: nextModular,
-              cognoNexus: {
-                ...old.gameTheoreticState?.cognoNexus,
-                sprtState: effectiveSprtState,
-                fastTrackConvergence: effectiveFastTrackConv,
-                currentDispute: updatedDispute || old.gameTheoreticState?.cognoNexus?.currentDispute,
-                committedStates: updatedCommittedStates || old.gameTheoreticState?.cognoNexus?.committedStates || [],
-                minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
-                modularState: nextModular,
-              },
-            },
-          };
-        });
-
-        if (verNoticeMsg) {
-          const notice = verNoticeMsg;
-          setMessages((prev) => ({
-            ...prev,
-            [topicId]: [...(prev[topicId] || []), notice],
-          }));
-        }
-
-        inFlightHandoverRef.current.delete(handoverKey);
-        triggerGameTheoreticStageHandover({
-          topicId,
-          nextStage: resolvedVerNextStage,
-          targetProposalText,
-          targetChallengeText,
-          targetVerificationText: acpResp.textResponse,
-        });
-      } catch (err) {
-        setActiveExecutions((prev) => {
-          const next = { ...prev };
-          delete next[execKey];
-          if (Object.keys(next).length === 0) setIsGenerating(false);
-          return next;
-        });
-
-        if (isTurnStale(turnSnapshot)) {
-          console.log('[App] Dropping verification error because turn was aborted or invalidated');
-          return;
-        }
-
-        console.error('Verifier execution failed:', err);
-        const errorMsg: Message = {
-          id: `topic-reply-err-${Date.now()}-${verifierAgent.id}`,
-          threadId: topicId,
-          channelId: topicChannel?.id,
-          authorId: verifierAgent.id,
-          authorName: verifierAgent.name,
-          authorHandle: verifierAgent.handle,
-          authorAvatar: verifierAgent.avatar,
-          isAgent: true,
-          agentBadge: 'ACP Error',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `⚠️ **接地验证执行异常**：${err instanceof Error ? err.message : String(err)}。自动流转至答辩修正。`,
-          gameStage: 'verification',
-          gameRole: 'verifier',
-        };
-
-        setMessages((prev) => {
-          const existing = prev[topicId] || [];
-          const filtered = existing.filter((m) => m.id !== verifierPendingId);
-          return {
-            ...prev,
-            [topicId]: [...filtered, errorMsg],
-          };
-        });
-
-        updateTopicDataInState(topicId, (old) => ({
-          ...old,
-          gameStage: 'defense',
-          gameTheoreticState: {
-            ...old.gameTheoreticState,
-            currentStage: 'defense',
-            targetProposalContent: targetProposalText,
-            targetChallengeContent: targetChallengeText,
-            isVerifierResponded: false,
-          },
-        }));
-
-        triggerGameTheoreticStageHandover({
-          topicId,
-          nextStage: 'defense',
-          targetProposalText,
-          targetChallengeText,
-        });
-      } finally {
-        inFlightHandoverRef.current.delete(handoverKey);
-      }
-      return;
-    }
-
-    if (nextStage === 'defense') {
-      const proposerIds = currentTopic.gameRoles?.proposers || [];
-      const proposerAgent = candidateAgents.find((a) => proposerIds.includes(a.id));
-
-      if (!proposerAgent || isAgentOffline(proposerAgent)) {
-        inFlightHandoverRef.current.delete(handoverKey);
-
-        const offlineReason = !proposerAgent
-          ? '未指派或未匹配到主导者 (Proposer)'
-          : `主导者 ${proposerAgent.name} 处于离线/未连接状态`;
-
-        updateTopicDataInState(topicId, (old) => ({
-          ...old,
-          gameStage: 'arbitration',
-          gameTheoreticState: {
-            ...old.gameTheoreticState,
-            currentStage: 'arbitration',
-            targetProposalContent: targetProposalText,
-            targetChallengeContent: targetChallengeText,
-            isDefenseResponded: false,
-          },
-        }));
-
-        const defenseSkipNotice: Message = {
-          id: `msg-defense-skip-${Date.now()}`,
-          threadId: topicId,
-          channelId: topicChannel?.id,
-          authorId: 'system',
-          authorName: 'Shinobi 仲裁法定人数守护',
-          authorHandle: '@defense-guard',
-          authorAvatar: '🛡️',
-          isAgent: true,
-          agentBadge: 'Defense Skipped',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `🛡️ **主导者答辩跳过**：${offlineReason}。根据博弈调度协议，主导方答辩与修正缺席，自动流转至【阶段 4: 中立仲裁】。`,
-        };
-
-        setMessages((prev) => ({
-          ...prev,
-          [topicId]: [...(prev[topicId] || []), defenseSkipNotice],
-        }));
-
-        triggerGameTheoreticStageHandover({
-          topicId,
-          nextStage: 'arbitration',
-          targetProposalText,
-          targetChallengeText,
-          targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
-        });
-        return;
+      if (decision.rulingRecord) {
+        const typeText = decision.rulingRecord.decisionType === 'adopt_proposer'
+          ? '⚖️ 采纳主导方案'
+          : decision.rulingRecord.decisionType === 'reject_rebuild'
+          ? '🔄 采纳挑战驳回重构'
+          : '📊 达成架构权衡矩阵';
+        const minoritySection = currentMinorityReport
+          ? `\n\n📌 **伴生少数派异议备案 (Minority Dissent)**：\n- **异议代表**：${currentMinorityReport.dissentingAgentName}\n- **保留意见**：${currentMinorityReport.coreDissentThesis}\n- **自洽逻辑**：${currentMinorityReport.rationalityBasis}\n- **黑天鹅重启条件**：\n${currentMinorityReport.reopeningTriggers.map((t) => `  • ${t}`).join('\n')}`
+          : '';
+        rollupContent = `⚖️ **博弈讨论仲裁定案 (${typeText})**\n\n**仲裁裁决官**：${decision.rulingRecord.arbiterName}\n**裁决结论**：${decision.rulingRecord.summary}\n${decision.solution ? `**实施/重构方案**：${decision.solution}\n` : ''}${decision.rulingRecord.tradeOffPoints && decision.rulingRecord.tradeOffPoints.length > 0 ? `**关键权衡要点**：\n${decision.rulingRecord.tradeOffPoints.map((p) => `- ${p}`).join('\n')}\n` : ''}${minoritySection}${decision.rulingRecord.exemptionReason ? `\n**特权豁免记录**：⚠️ 已执行人类首席仲裁官具名豁免 (${decision.rulingRecord.exemptionReason})\n` : ''}${executorAgent ? `\n**指派落地执行**：🛠️ ${executorAgent.name} (${executorAgent.handle} · ${executorAgent.role})\n` : ''}**影响文件**：${decision.impactedFiles.join('、') || '无'}\n**签署裁决**：${decision.approvers.join('、')}\n\n*博弈论证与仲裁全过程已归档。*`;
       }
 
-      const execKey = `${topicId}:${proposerAgent.id}`;
-      setIsGenerating(true);
-      setActiveExecutions((prev) => ({
-        ...prev,
-        [execKey]: {
-          agentId: proposerAgent.id,
-          agentName: proposerAgent.name,
-          agentAvatar: proposerAgent.avatar,
-          threadId: topicId,
-          topicId,
-          status: 'thinking',
-          currentActionDetail: `正在针对挑战反例进行技术抗辩与防御修正 (Stage: 🛡️ 答辩修正)...`,
-          startedAt: Date.now(),
-          cascadeHop: 3,
-        },
-      }));
-
-      setAgents((prev) =>
-        prev.map((a) => (a.id === proposerAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
-      );
-
-      const defensePendingId = `topic-pending-${Date.now()}-${proposerAgent.id}`;
-      const defensePendingMsg: Message = {
-        id: defensePendingId,
-        threadId: topicId,
-        channelId: topicChannel?.id,
-        authorId: proposerAgent.id,
-        authorName: proposerAgent.name,
-        authorHandle: proposerAgent.handle,
-        authorAvatar: proposerAgent.avatar,
+      const rollupNotice: Message = {
+        id: `msg-rollup-${topicId}`,
+        threadId: parentThreadId,
+        channelId: activeTopicData?.channelId || activeChannel?.id,
+        authorId: 'system',
+        authorName: decision.rulingRecord ? 'Shadow Crew 仲裁法槌' : 'Shadow Crew 共识引擎',
+        authorHandle: decision.rulingRecord ? '@arbiter-gavel' : '@consensus-engine',
+        authorAvatar: '⚖️',
         isAgent: true,
-        isPending: true,
-        startedAt: Date.now(),
-        pendingHint: '正在审视挑战者反例质询，设计架构防御补丁与修正方案 (Stage: 🛡️ 答辩修正)...',
-        agentBadge: `${proposerAgent.modelBadge?.split(' ')[0] || 'Local'} · 🛡️ 答辩修正 (推演中...)`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: '',
-        gameStage: 'defense',
-        gameRole: 'proposer',
+        kind: 'rollup',
+        agentBadge: decision.rulingRecord ? 'Arbiter Ruling' : 'Consensus Rollup',
+        timestamp: resolvedAt,
+        relatedTopicId: topicId,
+        content: rollupContent,
       };
 
-      setMessages((prev) => ({
+      const hasExistingRollup = updatedChannelMsgs.some(
+        (m) => m.relatedTopicId === topicId && (m.kind === 'rollup' || m.id.startsWith('msg-rollup-'))
+      );
+      const finalChannelMsgs = hasExistingRollup
+        ? updatedChannelMsgs.map((m) =>
+            m.relatedTopicId === topicId && m.id.startsWith('msg-rollup-') ? rollupNotice : m
+          )
+        : [...updatedChannelMsgs, rollupNotice];
+
+      return {
         ...prev,
-        [topicId]: [...(prev[topicId] || []), defensePendingMsg],
-      }));
-
-      const latestTopicForDefense = getTopicData(topicId) || currentTopic;
-      const topicContext: TopicPromptContext = {
-        topicId,
-        title: currentTopic.title,
-        description: currentTopic.description,
-        channelName: topicChannel?.name || 'chat',
-        status: currentTopic.status,
-        discussionMode: 'game_theoretic',
-        gameRoles: currentTopic.gameRoles,
-        gameStage: 'defense',
-        targetProposalText,
-        targetChallengeText,
-        targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
-        modularState: latestTopicForDefense.gameTheoreticState?.modularState,
-        participatingAgents: candidateAgents,
+        [parentThreadId]: finalChannelMsgs,
       };
+    });
 
-      const defenseUserPrompt = (targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent)
-        ? `挑战者反例质询与接地验证官工具证据已送达，请针对极端场景、并发边界与实测数据给出架构防御补丁与技术抗辩。`
-        : `挑战者反例质询已送达，请针对极端场景与并发边界给出架构防御补丁与技术抗辩。`;
-
-      const defensePrompt = buildTopicPrompt({
-        topic: topicContext,
-        userContent: defenseUserPrompt,
-        targetAgent: proposerAgent,
-        availableAgents: candidateAgents,
-      });
-
-      try {
-        const acpResp = await sendPromptToAcpAgent({
-          agent: proposerAgent,
-          roomId: topicId,
-          prompt: defensePrompt,
-          channelId: topicChannel?.id,
-          workspaceBindingId: currentTopic.workspaceBindingId,
-          workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
-          scopeType: 'topic',
-          systemPrompt: buildCompositeSystemPrompt({
-            agent: proposerAgent,
-            availableAgents: candidateAgents,
-            includeRoster: true,
-          }),
-          discussionMode: 'game_theoretic',
-        });
-
-        setActiveExecutions((prev) => {
-          const next = { ...prev };
-          delete next[execKey];
-          if (Object.keys(next).length === 0) setIsGenerating(false);
-          return next;
-        });
-
-        if (isTurnStale(turnSnapshot)) {
-          inFlightHandoverRef.current.delete(handoverKey);
-          console.log('[App] Dropping modular proposal reply because turn was aborted or invalidated');
-          return;
-        }
-
-        if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
-          throw new Error(acpResp.isError ? acpResp.textResponse : '主导者返回空响应，未生成有效答辩修正。');
-        }
-
-        const defenseReply: Message = {
-          id: `topic-reply-${Date.now()}-${proposerAgent.id}`,
-          threadId: topicId,
-          channelId: topicChannel?.id,
-          authorId: proposerAgent.id,
-          authorName: proposerAgent.name,
-          authorHandle: proposerAgent.handle,
-          authorAvatar: proposerAgent.avatar,
-          isAgent: true,
-          isPending: false,
-          agentBadge: `${proposerAgent.modelBadge?.split(' ')[0] || 'Local'} · 🛡️ 答辩修正`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: acpResp.textResponse,
-          gameStage: 'defense',
-          gameRole: 'proposer',
-          thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成反例答辩与架构防御补丁构建'),
-          diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
-          cartridgeCitation: acpResp.cartridgeCitation,
-        };
-
-        setMessages((prev) => {
-          const existing = prev[topicId] || [];
-          const hasPending = existing.some((m) => m.id === defensePendingId);
-          const nextTopicMsgs = hasPending
-            ? existing.map((m) => (m.id === defensePendingId ? defenseReply : m))
-            : [...existing, defenseReply];
-          let parentThreadId: string | null = null;
-          for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
-            if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
-              parentThreadId = tId;
-              break;
-            }
-          }
-          const updatedChannelMsgs = parentThreadId
-            ? (prev[parentThreadId] || []).map((m) => {
-                if (m.type === 'topic' && m.topicData?.id === topicId) {
-                  return {
-                    ...m,
-                    topicData: {
-                      ...m.topicData,
-                      repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
-                      latestReplyPreview: defenseReply.content.slice(0, 60),
-                    },
-                  };
-                }
-                return m;
-              })
-            : [];
-          return {
-            ...prev,
-            [topicId]: nextTopicMsgs,
-            ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
-          };
-        });
-
-        // 阶段契约门禁强校验 (R-1 / M4)
-        const contractValidation = validateStageContract('defense', acpResp.textResponse, proposerAgent.name);
-        logGameTheoreticTelemetry('stage_contract_validation', topicId, {
-          stage: 'defense',
-          agentId: proposerAgent.id,
-          isValid: contractValidation.isValid,
-          missingRequirements: contractValidation.missingRequirements,
-        });
-
-        if (!contractValidation.isValid) {
-          const refineKey = `${topicId}:defense`;
-          const retryLimit = resolveCorrectionRetryLimit(proposerAgent);
-          const currentRetries = stageRefineRetriesRef.current[refineKey] || 0;
-          if (currentRetries < retryLimit) {
-            stageRefineRetriesRef.current[refineKey] = currentRetries + 1;
-            const refineNotice: Message = {
-              id: `msg-refine-notice-${Date.now()}`,
-              threadId: topicId,
-              channelId: topicChannel?.id,
-              authorId: 'system',
-              authorName: '阶段契约质检官',
-              authorHandle: '@contract-guard',
-              authorAvatar: '🛡️',
-              isAgent: true,
-              agentBadge: `Self-Refine (${currentRetries + 1}/${retryLimit})`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: contractValidation.refinePrompt || '答辩补丁契约未达标，触发 Self-Refine',
-              gameStage: 'defense',
-              gameRole: 'proposer',
-            };
-            setMessages((prev) => ({
-              ...prev,
-              [topicId]: [...(prev[topicId] || []), refineNotice],
-            }));
-            triggerGameTheoreticStageHandover({
-              topicId,
-              nextStage: 'defense',
-              targetProposalText,
-              targetChallengeText,
-              targetVerificationText,
-            });
-            return;
-          } else {
-            delete stageRefineRetriesRef.current[refineKey];
-            updateTopicDataInState(topicId, (old) => ({
-              ...old,
-              gameStage: 'stageFailed',
-              gameTheoreticState: {
-                ...old.gameTheoreticState,
-                currentStage: 'stageFailed',
-                quorumAlert: `提案官 (${proposerAgent.name}) 经 ${retryLimit} 轮 Self-Refine 仍未满足答辩补丁契约规范，推演阻断转人工`,
-              },
-            }));
-            logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
-              stage: 'defense',
-              reason: 'stage_contract_failure_max_retries',
-            });
-            const failMsg: Message = {
-              id: `msg-stage-failed-${Date.now()}`,
-              threadId: topicId,
-              channelId: topicChannel?.id,
-              authorId: 'system',
-              authorName: 'Shinobi 契约熔断中枢',
-              authorHandle: '@contract-guard',
-              authorAvatar: '⚠️',
-              isAgent: true,
-              agentBadge: 'Stage Failed',
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `⚠️ **阶段契约校验熔断 (Stage Contract Failed)**：提案官 ${proposerAgent.name} 经 ${retryLimit} 次 Self-Refine 仍未满足答辩补丁契约规范。系统已硬阻断状态机自动推进，请人类首席仲裁官介入处理。`,
-              gameStage: 'stageFailed',
-              gameRole: 'proposer',
-            };
-            setMessages((prev) => ({
-              ...prev,
-              [topicId]: [...(prev[topicId] || []), failMsg],
-            }));
-            return;
-          }
-        }
-        delete stageRefineRetriesRef.current[`${topicId}:defense`];
-
-        // Wave 2 P0-4: 评估答辩者的动态谄媚度 (Dynamic Sycophancy Score, DSS)
-        const sycophancyEval = evaluateDynamicSycophancyScore(proposerAgent, acpResp.textResponse);
-        logGameTheoreticTelemetry('sycophancy_evaluated', topicId, {
-          stage: 'defense',
-          agentId: proposerAgent.id,
-          dssScore: sycophancyEval.dss,
-          bssScore: sycophancyEval.bss,
-          gamma: sycophancyEval.discountFactorGamma,
-          surrenderDetected: sycophancyEval.surrenderDetected,
-        });
-
-        // 显式提取接地实证真值率并显式注入 SPRT (R-1 接线三件套)
-        const verificationText = targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent || '';
-        const groundedTrueRatio = extractGroundedTrueRatio(verificationText);
-        logGameTheoreticTelemetry('grounded_ratio_injected', topicId, {
-          stage: 'defense',
-          groundedTrueRatio,
-        });
-
-        // CognoNexus 阶段 3: 评估答辩修正后的对齐分数与似然比 (Wave 3 P1-2: 多维观测联合向量)
-        const rawSprtScoreAfterDefense = estimateRoundAlignmentScore({
-          proposalText: targetProposalText,
-          critiqueText: targetChallengeText,
-          defenseText: acpResp.textResponse,
-          groundedTrueRatio,
-          dssScore: sycophancyEval.dss,
-        });
-
-        // 施加谄媚折减后的真实对齐分数 (Sharma et al. 2023)
-        const sprtScoreAfterDefense = applySycophancyDiscountToSprt(rawSprtScoreAfterDefense, sycophancyEval);
-
-        const hasUnverifiedDisputeAfterDefense = Boolean(
-          currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.groundingStatus === 'unverified'
-        );
-
-        const sprtStateAfterDefense = stepSprtGovernor({
-          priorState: currentTopic.gameTheoreticState?.sprtState,
-          currentRound: (currentTopic.gameTheoreticState?.roundCount || 1) + 2,
-          alignmentScore: sprtScoreAfterDefense,
-          groundedTrueRatio,
-          dssScore: sycophancyEval.dss,
-          hasUnverifiedCriticalDispute: hasUnverifiedDisputeAfterDefense,
-        });
-
-        logGameTheoreticTelemetry('decisionState_transition', topicId, {
-          stage: 'defense',
-          decisionState: sprtStateAfterDefense.decisionState,
-          round: sprtStateAfterDefense.currentRound,
-          logLikelihoodRatio: sprtStateAfterDefense.logLikelihoodRatio,
-          alignmentScore: sprtScoreAfterDefense,
-          groundedTrueRatio,
-        });
-
-        // 关键接线：消费 decisionState (R-1)
-        if (sprtStateAfterDefense.decisionState === 'deadlock_escalation') {
-          updateTopicDataInState(topicId, (old) => ({
-            ...old,
-            gameStage: 'arbitration',
-            gameTheoreticState: {
-              ...old.gameTheoreticState,
-              currentStage: 'arbitration',
-              targetProposalContent: targetProposalText,
-              targetChallengeContent: targetChallengeText,
-              targetDefenseContent: acpResp.textResponse,
-              isDefenseResponded: true,
-              quorumAlert: '⚠️ SPRT 似然比跌破死锁下界 (Deadlock Escalation)，答辩未能化解分歧，已熔断流转',
-              sprtState: sprtStateAfterDefense,
-              minorityReport: old.gameTheoreticState?.minorityReport,
-              latestSycophancy: sycophancyEval,
-              cognoNexus: {
-                ...old.gameTheoreticState?.cognoNexus,
-                committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
-                sprtState: sprtStateAfterDefense,
-                minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
-                latestSycophancy: sycophancyEval,
-              },
-            },
-          }));
-
-          logGameTheoreticTelemetry('human_intervention_triggered', topicId, {
-            stage: 'defense',
-            reason: 'sprt_deadlock_escalation',
-          });
-
-          const deadlockMsg: Message = {
-            id: `msg-deadlock-alert-${Date.now()}`,
-            threadId: topicId,
-            channelId: topicChannel?.id,
-            authorId: 'system',
-            authorName: 'SPRT 序贯计算调控器',
-            authorHandle: '@sprt-governor',
-            authorAvatar: '⚡',
-            isAgent: true,
-            agentBadge: 'Deadlock Escalation',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `⚠️ **SPRT 死锁熔断告警 (Deadlock Escalation)**：答辩后攻防对齐度依然处于死锁区间 ($LHR \\le B$)。系统已阻断纯 AI 自动推演，请人类首席仲裁官在下方控制台敲响法槌定案。`,
-          };
-
-          setMessages((prev) => ({
-            ...prev,
-            [topicId]: [...(prev[topicId] || []), deadlockMsg],
-          }));
-          return;
-        }
-
-        // P2 二次对抗回边判定 (4 项硬条件守卫，不满足 4 条件不得回退，防止死循环) (R-4/R-6)
-        const currentRoundCount = currentTopic.gameTheoreticState?.roundCount || 1;
-        const originalClaims = extractArgumentNodes(targetProposalText ?? '');
-        const defenseClaims = extractArgumentNodes(acpResp.textResponse);
-        const hasNewUnverifiedClaims = defenseClaims.some(
-          (dc) => !originalClaims.some((oc) => oc.claim === dc.claim || (oc.claim && dc.claim && (oc.claim.includes(dc.claim) || dc.claim.includes(oc.claim))))
-        ) || (defenseClaims.length > 0 && defenseClaims.some((dc) => dc.status === 'disputed' || dc.status === 'refuted'));
-
-        const shouldTriggerP2Loopback =
-          sprtScoreAfterDefense < 0.45 &&
-          currentRoundCount < 2 &&
-          hasNewUnverifiedClaims &&
-          groundedTrueRatio < 0.5;
-
-        if (shouldTriggerP2Loopback) {
-          const nextRound = currentRoundCount + 1;
-          logGameTheoreticTelemetry('p2_loopback_triggered', topicId, {
-            nextRound,
-            sprtScoreAfterDefense,
-            currentRoundCount,
-            hasNewUnverifiedClaims,
-            groundedTrueRatio,
-          });
-
-          updateTopicDataInState(topicId, (old) => ({
-            ...old,
-            gameStage: 'challenge',
-            gameTheoreticState: {
-              ...old.gameTheoreticState,
-              currentStage: 'challenge',
-              roundCount: nextRound,
-              targetProposalContent: targetProposalText,
-              targetChallengeContent: targetChallengeText,
-              targetDefenseContent: acpResp.textResponse,
-              isChallengerResponded: false,
-              isVerifierResponded: false,
-              isDefenseResponded: false,
-              sprtState: sprtStateAfterDefense,
-              minorityReport: old.gameTheoreticState?.minorityReport,
-              latestSycophancy: sycophancyEval,
-              cognoNexus: {
-                ...old.gameTheoreticState?.cognoNexus,
-                committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
-                sprtState: sprtStateAfterDefense,
-                minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
-                latestSycophancy: sycophancyEval,
-              },
-            },
-          }));
-
-          const loopbackNotice: Message = {
-            id: `msg-p2-loopback-${Date.now()}`,
-            threadId: topicId,
-            channelId: topicChannel?.id,
-            authorId: 'system',
-            authorName: 'CognoNexus 博弈引擎',
-            authorHandle: '@p2-loopback-guard',
-            authorAvatar: '🔄',
-            isAgent: true,
-            agentBadge: `P2 回边 (第 ${nextRound} 轮对抗)`,
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `🔄 **触发 P2 二次对抗回边 (Round ${nextRound})**：
-系统完成 4 项二次对抗硬性条件准入校验（满足全部 4 项）：
-1. ✓ **对齐度未收敛**：当前综合对齐分 ${(sprtScoreAfterDefense * 100).toFixed(0)}% (< 45%)
-2. ✓ **安全轮次下界**：当前处于第 ${currentRoundCount} 轮 (< 2 轮)
-3. ✓ **引入未核验新断言**：答辩提出新补丁设计，需受二次深度质询
-4. ✓ **实证存在冲突反例**：客观真值率 ${(groundedTrueRatio * 100).toFixed(0)}% (< 50%)
-
-正在将答辩补丁移交 ⚔️ **红队对抗官** 发起第 ${nextRound} 轮反向质询...`,
-            gameStage: 'challenge',
-          };
-
-          setMessages((prev) => ({
-            ...prev,
-            [topicId]: [...(prev[topicId] || []), loopbackNotice],
-          }));
-
-          triggerGameTheoreticStageHandover({
-            topicId,
-            nextStage: 'challenge',
-            targetProposalText: acpResp.textResponse, // 答辩补丁作为第 2 轮审查标的
-            targetChallengeText,
-            targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
-            targetDefenseText: acpResp.textResponse,
-          });
-          return;
-        }
-
-        // 阶段 4 答辩修正完成后，基于真实实证与越界计数推进 G-Frame 模块状态机 (E2E-03 & EDGE-06)
-        // - 若触发 SCOPED_DEFENSE_REFINE，回环至当前模块 challenge 阶段进行有界局部重修；
-        // - 若当前模块 FREEZE_MODULE 但尚有后续模块未冻结 (!allModulesFrozen)，激活下一拓扑模块并回环至 challenge；
-        // - 仅当全部模块 (N/N) 均已 Frozen 时，才流转至终局仲裁 (arbitration)。
-        // 关键修复 (N1)：在调用 setState / updateTopicDataInState 前同步完成模块状态机演算与 resolvedNextStage 判定，
-        // 严禁在异步批处理的 setState 更新器闭包内才对外部流转变量赋值。
-        const latestTopicBeforeDefenseUpdate = getTopicData(topicId) || currentTopic;
-        const prevModular = latestTopicBeforeDefenseUpdate.gameTheoreticState?.modularState;
-        let nextModular = prevModular;
-        let resolvedNextStage: 'proposal' | 'challenge' | 'arbitration' = 'arbitration';
-        let transitionNoticeMsg: Message | null = null;
-
-        if (prevModular?.enabled && prevModular.activeModuleId) {
-          const activeMod = prevModular.modules.find(
-            (m) => m.moduleId === prevModular.activeModuleId
-          );
-          const scopeCheck = activeMod
-            ? validateModuleScopeContract(
-                acpResp.textResponse,
-                activeMod,
-                prevModular.modules,
-                prevModular.sharedContract
-              )
-            : { isScopeValid: true, contractViolations: 0, violatedFiles: [], violationDetails: [] };
-
-          const parsedVerEvidences = parseVerifierOutput(verificationText);
-          const refutedInVerCount = parsedVerEvidences.filter((e) => !e.truthValue).length;
-          const refutedDefenseCount =
-            (sycophancyEval.surrenderDetected ? 1 : 0) +
-            defenseClaims.filter((c) => c.status === 'refuted').length;
-          const verifiedDefenseCount =
-            !sycophancyEval.surrenderDetected &&
-            scopeCheck.contractViolations === 0 &&
-            refutedDefenseCount === 0 &&
-            (refutedInVerCount === 0 || groundedTrueRatio >= 0.5)
-              ? Math.max(1, defenseClaims.filter((c) => c.status !== 'refuted').length)
-              : 0;
-
-          const modRefineKey = `${topicId}:mod-refine:${prevModular.activeModuleId}`;
-          const currentModRefines = stageRefineRetriesRef.current[modRefineKey] || 0;
-
-          const modStep = stepModularStageTransition({
-            state: prevModular,
-            currentStage: 'defense',
-            feedbackDelta: {
-              verifiedClaims: verifiedDefenseCount,
-              refutedClaims: refutedDefenseCount,
-              contractViolations: scopeCheck.contractViolations,
-              dssScore: sycophancyEval.dss,
-            },
-            proposalOrDefenseSnippet: acpResp.textResponse,
-            currentModuleRefineCount: currentModRefines,
-          });
-
-          nextModular = {
-            ...modStep.nextState,
-            modules: modStep.nextState.modules.map((m) =>
-              m.moduleId === prevModular.activeModuleId
-                ? { ...m, scopedMessageIds: [...m.scopedMessageIds, defenseReply.id] }
-                : m
-            ),
-          };
-
-          if (modStep.triggeredScopedRefine && activeMod) {
-            stageRefineRetriesRef.current[modRefineKey] = currentModRefines + 1;
-            resolvedNextStage = 'challenge';
-            transitionNoticeMsg = {
-              id: `msg-mod-refine-${Date.now()}`,
-              threadId: topicId,
-              channelId: topicChannel?.id,
-              authorId: 'system',
-              authorName: 'G-Frame 贝叶斯模块总控',
-              authorHandle: '@gframe-governor',
-              authorAvatar: '🧭',
-              isAgent: true,
-              agentBadge: `SCOPED_DEFENSE_REFINE (${currentModRefines + 1}/1)`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `🔄 **触发模块沙箱局部重修 (SCOPED_DEFENSE_REFINE)**：${modStep.reason}。已锁定当前模块「${activeMod.title}」发起有界二次核验，已冻结上游模块不受波及。`,
-              gameStage: 'challenge',
-            };
-          } else if (!modStep.allModulesFrozen) {
-            delete stageRefineRetriesRef.current[modRefineKey];
-            resolvedNextStage = 'proposal';
-            const nextActiveMod = nextModular.modules.find(
-              (m) => m.moduleId === nextModular?.activeModuleId
-            );
-            const frozenCount = nextModular.modules.filter((m) => m.status === 'frozen').length;
-            transitionNoticeMsg = {
-              id: `msg-mod-advance-${Date.now()}`,
-              threadId: topicId,
-              channelId: topicChannel?.id,
-              authorId: 'system',
-              authorName: 'G-Frame 贝叶斯模块总控',
-              authorHandle: '@gframe-governor',
-              authorAvatar: '🧊',
-              isAgent: true,
-              agentBadge: `Module Frozen (${frozenCount}/${nextModular.modules.length})`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              content: `🧊 **模块收敛硬冻结 & 拓扑切换**：模块「${activeMod?.title || prevModular.activeModuleId}」已完成实证收敛并锁定为 Frozen（当前已冻结 ${frozenCount}/${nextModular.modules.length}）。\n\n正在按 DAG 拓扑序激活下一模块「**${nextActiveMod?.title || nextModular.activeModuleId}**」进入独立沙箱提案立论...`,
-              gameStage: 'proposal',
-            };
-          } else {
-            delete stageRefineRetriesRef.current[modRefineKey];
-            resolvedNextStage = 'arbitration';
-          }
-        }
-
-        updateTopicDataInState(topicId, (old) => ({
-          ...old,
-          gameStage: resolvedNextStage,
-          gameTheoreticState: {
-            ...old.gameTheoreticState,
-            currentStage: resolvedNextStage,
-            targetProposalContent: targetProposalText,
-            targetChallengeContent: targetChallengeText,
-            targetDefenseContent: acpResp.textResponse,
-            isChallengerResponded: resolvedNextStage === 'arbitration',
-            isVerifierResponded: resolvedNextStage === 'arbitration',
-            isDefenseResponded: resolvedNextStage === 'arbitration',
-            sprtState: sprtStateAfterDefense,
-            minorityReport: old.gameTheoreticState?.minorityReport,
-            latestSycophancy: sycophancyEval,
-            modularState: nextModular,
-            cognoNexus: {
-              ...old.gameTheoreticState?.cognoNexus,
-              committedStates: old.gameTheoreticState?.cognoNexus?.committedStates || [],
-              sprtState: sprtStateAfterDefense,
-              minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
-              latestSycophancy: sycophancyEval,
-              modularState: nextModular,
-            },
-          },
-        }));
-
-        if (transitionNoticeMsg) {
-          const noticeToPost = transitionNoticeMsg;
-          setMessages((prev) => ({
-            ...prev,
-            [topicId]: [...(prev[topicId] || []), noticeToPost],
-          }));
-        }
-
-        inFlightHandoverRef.current.delete(handoverKey);
-        triggerGameTheoreticStageHandover({
+    if (shouldDispatch && targetExecutorId) {
+      setTimeout(() => {
+        dispatchTopicExecution({
           topicId,
-          nextStage: resolvedNextStage,
-          targetProposalText,
-          targetChallengeText,
-          targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
-          targetDefenseText: acpResp.textResponse,
-        });
-      } catch (err) {
-        setActiveExecutions((prev) => {
-          const next = { ...prev };
-          delete next[execKey];
-          if (Object.keys(next).length === 0) setIsGenerating(false);
-          return next;
-        });
-
-        if (isTurnStale(turnSnapshot)) {
-          console.log('[App] Dropping defense error because turn was aborted or invalidated');
-          return;
-        }
-
-        console.error('Defense execution failed:', err);
-        const errorMsg: Message = {
-          id: `topic-reply-err-${Date.now()}-${proposerAgent.id}`,
-          threadId: topicId,
-          channelId: topicChannel?.id,
-          authorId: proposerAgent.id,
-          authorName: proposerAgent.name,
-          authorHandle: proposerAgent.handle,
-          authorAvatar: proposerAgent.avatar,
-          isAgent: true,
-          agentBadge: 'ACP Error',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `⚠️ **主导者答辩异常**：${err instanceof Error ? err.message : String(err)}。自动流转至仲裁定案。`,
-          gameStage: 'defense',
-          gameRole: 'proposer',
-        };
-
-        setMessages((prev) => {
-          const existing = prev[topicId] || [];
-          const filtered = existing.filter((m) => m.id !== defensePendingId);
-          return {
-            ...prev,
-            [topicId]: [...filtered, errorMsg],
-          };
-        });
-
-        updateTopicDataInState(topicId, (old) => ({
-          ...old,
-          gameStage: 'arbitration',
-          gameTheoreticState: {
-            ...old.gameTheoreticState,
-            currentStage: 'arbitration',
-            targetProposalContent: targetProposalText,
-            targetChallengeContent: targetChallengeText,
-            isDefenseResponded: false,
+          executorId: targetExecutorId,
+          decision: {
+            ...decision,
+            rulingRecord: rulingRecordWithExecutor,
           },
-        }));
-
-        triggerGameTheoreticStageHandover({
-          topicId,
-          nextStage: 'arbitration',
-          targetProposalText,
-          targetChallengeText,
-          targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
         });
-      } finally {
-        inFlightHandoverRef.current.delete(handoverKey);
-      }
-      return;
+      }, 300);
     }
+  }, [agentsRef, activeTopicData, activeChannel, setMessages, updateTopicDataInState, dispatchTopicExecution]);
 
-    if (nextStage === 'arbitration') {
-      const arbiterIds = currentTopic.gameRoles?.arbiters || [];
-      const arbiterAgent = candidateAgents.find((a) => arbiterIds.includes(a.id));
+  // 3. 仲裁合流与无异议征询 Hook
+  const { processArbitrationConcurrence } = useArbitrationConcurrence({
+    getTopicData,
+    activeTopicData,
+    updateTopicDataInState,
+    setMessages,
+    setIsGenerating,
+    setActiveExecutions,
+    setAgents,
+    agentsRef,
+    inFlightHandoverRef,
+    isTurnStale,
+    getTopicWorkspaceBinding,
+    handleResolveTopic,
+  });
 
-      if (!arbiterAgent || isAgentOffline(arbiterAgent)) {
-        inFlightHandoverRef.current.delete(handoverKey);
-      }
-
-      if (arbiterAgent && isAgentOnline(arbiterAgent)) {
-        const execKey = `${topicId}:${arbiterAgent.id}`;
-        setIsGenerating(true);
-        setActiveExecutions((prev) => ({
-          ...prev,
-          [execKey]: {
-            agentId: arbiterAgent.id,
-            agentName: arbiterAgent.name,
-            agentAvatar: arbiterAgent.avatar,
-            threadId: topicId,
-            topicId,
-            status: 'thinking',
-            currentActionDetail: `正在全面权衡方案、反例与答辩补丁，起草终局仲裁建议 (Stage: ⚖️ 仲裁定案)...`,
-            startedAt: Date.now(),
-            cascadeHop: 4,
-          },
-        }));
-
-        setAgents((prev) =>
-          prev.map((a) => (a.id === arbiterAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
-        );
-
-        const arbiterPendingId = `topic-pending-${Date.now()}-${arbiterAgent.id}`;
-        const arbiterPendingMsg: Message = {
-          id: arbiterPendingId,
-          threadId: topicId,
-          channelId: topicChannel?.id,
-          authorId: arbiterAgent.id,
-          authorName: arbiterAgent.name,
-          authorHandle: arbiterAgent.handle,
-          authorAvatar: arbiterAgent.avatar,
-          isAgent: true,
-          isPending: true,
-          startedAt: Date.now(),
-          pendingHint: '正在审阅立论方案、反例质疑与防御答辩补丁，起草仲裁权衡矩阵 (Stage: ⚖️ 仲裁定案)...',
-          agentBadge: `${arbiterAgent.modelBadge?.split(' ')[0] || 'Local'} · ⚖️ 仲裁建言 (审议中...)`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: '',
-          gameStage: 'arbitration',
-          gameRole: 'arbiter',
-        };
-
-        setMessages((prev) => ({
-          ...prev,
-          [topicId]: [...(prev[topicId] || []), arbiterPendingMsg],
-        }));
-
-        const latestTopicForArbitration = getTopicData(topicId) || currentTopic;
-        const topicContext: TopicPromptContext = {
-          topicId,
-          title: currentTopic.title,
-          description: currentTopic.description,
-          channelName: topicChannel?.name || 'chat',
-          status: currentTopic.status,
-          discussionMode: 'game_theoretic',
-          gameRoles: currentTopic.gameRoles,
-          gameStage: 'arbitration',
-          targetProposalText,
-          targetChallengeText,
-          targetVerificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
-          targetDefenseText,
-          modularState: latestTopicForArbitration.gameTheoreticState?.modularState,
-          participatingAgents: candidateAgents,
-        };
-
-        const arbiterPrompt = buildTopicPrompt({
-          topic: topicContext,
-          userContent: targetDefenseText
-            ? `主导提案、反例压测、接地验证证据与答辩补丁已就绪，请给出客观中立的仲裁权衡矩阵与终局裁决建言。`
-            : `主导方案、反例压测与接地验证证据已就绪，请给出客观中立的仲裁权衡矩阵与裁决建言。`,
-          targetAgent: arbiterAgent,
-          availableAgents: candidateAgents,
-        });
-
-        try {
-          const acpResp = await sendPromptToAcpAgent({
-            agent: arbiterAgent,
-            roomId: topicId,
-            prompt: arbiterPrompt,
-            channelId: topicChannel?.id,
-            workspaceBindingId: currentTopic.workspaceBindingId,
-            workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
-            scopeType: 'topic',
-            systemPrompt: buildCompositeSystemPrompt({
-              agent: arbiterAgent,
-              availableAgents: candidateAgents,
-              includeRoster: true,
-            }),
-            discussionMode: 'game_theoretic',
-          });
-
-          setActiveExecutions((prev) => {
-            const next = { ...prev };
-            delete next[execKey];
-            if (Object.keys(next).length === 0) setIsGenerating(false);
-            return next;
-          });
-
-          if (isTurnStale(turnSnapshot)) {
-            console.log('[App] Dropping arbitration reply because turn was aborted or invalidated');
-            return;
-          }
-
-          if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
-            throw new Error(acpResp.isError ? acpResp.textResponse : '仲裁者返回空响应，未生成有效仲裁建言。');
-          }
-
-          const arbiterReply: Message = {
-            id: `topic-reply-${Date.now()}-${arbiterAgent.id}`,
-            threadId: topicId,
-            channelId: topicChannel?.id,
-            authorId: arbiterAgent.id,
-            authorName: arbiterAgent.name,
-            authorHandle: arbiterAgent.handle,
-            authorAvatar: arbiterAgent.avatar,
-            isAgent: true,
-            isPending: false,
-            agentBadge: `${arbiterAgent.modelBadge?.split(' ')[0] || 'Local'} · ⚖️ 仲裁建言`,
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: acpResp.textResponse,
-            gameStage: 'arbitration',
-            gameRole: 'arbiter',
-            thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成立论、反例与答辩补丁的综合仲裁审查'),
-            diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
-            cartridgeCitation: acpResp.cartridgeCitation,
-          };
-
-          // 契约门禁校验
-          const contractValidation = validateStageContract('arbitration', acpResp.textResponse, arbiterAgent.name);
-          logGameTheoreticTelemetry('stage_contract_validation', topicId, {
-            stage: 'arbitration',
-            agentId: arbiterAgent.id,
-            isValid: contractValidation.isValid,
-            missingRequirements: contractValidation.missingRequirements,
-          });
-
-          // 求解确定性运筹决策矩阵并进行一致性硬门禁检验 (R-1 / P0-3 / P0-5 ReConcile 置信度加权)
-          const mcdaPayload = generateDeterministicMcdaPayload({
-            arbiterText: acpResp.textResponse,
-            proposalText: targetProposalText,
-            critiqueText: targetChallengeText,
-            defenseText: targetDefenseText,
-            topicTitle: currentTopic.title,
-            topicDescription: currentTopic.description,
-            argumentNodes: currentTopic.gameTheoreticState?.cognoNexus?.committedStates,
-            evidences: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain,
-            sycophancy: currentTopic.gameTheoreticState?.latestSycophancy,
-            modelDiversity: currentTopic.gameTheoreticState?.modelDiversity,
-          });
-
-          logGameTheoreticTelemetry('consistency_gate_evaluation', topicId, {
-            passed: mcdaPayload.consistencyPassed,
-            consistencyIndex: mcdaPayload.consistencyIndex,
-            solverType: mcdaPayload.solverType,
-          });
-
-          // 计算 ColMAD 非零和协同事实贡献报表 (Wave 3 P1-3)
-          const colMadReport = calculateColMadContributions({
-            topicId,
-            agents,
-            proposalText: targetProposalText,
-            critiqueText: targetChallengeText,
-            verificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
-            defenseText: targetDefenseText,
-            argumentNodes: currentTopic.gameTheoreticState?.cognoNexus?.committedStates,
-            evidences: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain,
-          });
-
-          // 提取由 Arbiter Agent 通过 submit_arbitration_ruling 工具或结构化契约提交的裁决书草案
-          const extractedRulingDraft = acpResp.rulingDraft || extractArbitrationRulingFromAcpResponse(acpResp, arbiterAgent.name);
-          const concurrenceSolutionDigest = await computeRoleConcurrenceSolutionDigest({
-            topic: latestTopicForArbitration,
-            arbiterDraft: extractedRulingDraft,
-            arbiterReplyText: acpResp.textResponse,
-          });
-
-          // 初始化参研角色的全员无异议审视征询状态
-          const initialConcurrence = prepareConcurrenceState({
-            topic: latestTopicForArbitration,
-            candidateAgents,
-            arbiterDraft: extractedRulingDraft,
-            arbiterReplyText: acpResp.textResponse,
-            solutionDigest: concurrenceSolutionDigest,
-          });
-
-          // 将求解出的 MCDA 矩阵、ColMAD 报表、裁决草案与全员无异议征询状态持久化至议题博弈状态中
-          updateTopicDataInState(topicId, (old) => ({
-            ...old,
-            gameTheoreticState: {
-              ...old.gameTheoreticState,
-              currentStage: old.gameTheoreticState?.currentStage ?? 'arbitration',
-              minorityReport: old.gameTheoreticState?.minorityReport,
-              mcdaPayload,
-              colMadReport,
-              rulingDraft: extractedRulingDraft || old.gameTheoreticState?.rulingDraft,
-              concurrenceState: initialConcurrence,
-              cognoNexus: {
-                ...old.gameTheoreticState?.cognoNexus,
-                committedStates: old.gameTheoreticState?.cognoNexus?.committedStates ?? [],
-                minorityReport: old.gameTheoreticState?.cognoNexus?.minorityReport || old.gameTheoreticState?.minorityReport,
-                mcdaPayload,
-                colMadReport,
-              },
-            },
-          }));
-
-          const humanNotice: Message = {
-            id: `msg-concurrence-notice-${Date.now()}`,
-            threadId: topicId,
-            channelId: topicChannel?.id,
-            authorId: 'system',
-            authorName: 'Shinobi 综合裁定引擎',
-            authorHandle: '@arbiter-gavel',
-            authorAvatar: '⚖️',
-            isAgent: true,
-            agentBadge: 'Concurrence Verification',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `🤝 **[全员无异议审视征询已启动]** 综合裁定官已就终局架构方案完成综合权衡并 @ 参研关键角色（提案方、红队对抗方、接地实证方）。平台正在自动调度各角色进行独立专业审视，保证回复无异议后，由综合裁定官正式敲定方案并出具最后的活体决策看板 (Living ADR Canvas)。`,
-          };
-
-          setMessages((prev) => {
-            const existing = prev[topicId] || [];
-            const hasPending = existing.some((m) => m.id === arbiterPendingId);
-            const baseMsgs = hasPending
-              ? existing.map((m) => (m.id === arbiterPendingId ? arbiterReply : m))
-              : [...existing, arbiterReply];
-            const nextTopicMsgs = [...baseMsgs, humanNotice];
-            let parentThreadId: string | null = null;
-            for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
-              if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
-                parentThreadId = tId;
-                break;
-              }
-            }
-            const updatedChannelMsgs = parentThreadId
-              ? (prev[parentThreadId] || []).map((m) => {
-                  if (m.type === 'topic' && m.topicData?.id === topicId) {
-                    return {
-                      ...m,
-                      topicData: {
-                        ...m.topicData,
-                        repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
-                        latestReplyPreview: arbiterReply.content.slice(0, 60),
-                      },
-                    };
-                  }
-                  return m;
-                })
-              : [];
-            return {
-              ...prev,
-              [topicId]: nextTopicMsgs,
-              ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
-            };
-          });
-
-          // 启动各参研角色的无异议复核确认与终局敲定出具活体看板流程 (同步 await 保持交接锁互斥完整覆盖)
-          if (initialConcurrence.items.length > 0) {
-            await new Promise((r) => setTimeout(r, 600));
-            if (isTurnStale(turnSnapshot)) {
-              return;
-            }
-            let currentConcurrence = initialConcurrence;
-
-            for (const item of initialConcurrence.items) {
-              if (isTurnStale(turnSnapshot)) break;
-              const roleAgent = candidateAgents.find((a) => a.id === item.agentId);
-              if (!roleAgent) continue;
-
-              const rolePendingId = `topic-pending-concurrence-${Date.now()}-${roleAgent.id}`;
-              const roleRoleLabel = item.role === 'proposer' ? '提案方' : item.role === 'challenger' ? '红队对抗方' : '接地实证方';
-              const roleExecKey = `${topicId}:${roleAgent.id}`;
-
-              setIsGenerating(true);
-              setActiveExecutions((prev) => ({
-                ...prev,
-                [roleExecKey]: {
-                  agentId: roleAgent.id,
-                  agentName: roleAgent.name,
-                  agentAvatar: roleAgent.avatar,
-                  threadId: topicId,
-                  topicId,
-                  status: 'thinking',
-                  currentActionDetail: `正在审视综合裁定官终局方案并核验是否无异议 (Role: ${roleRoleLabel})...`,
-                  startedAt: Date.now(),
-                  cascadeHop: 5,
-                },
-              }));
-
-              setAgents((prev) =>
-                prev.map((a) => (a.id === roleAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
-              );
-
-              setMessages((prev) => ({
-                ...prev,
-                [topicId]: [
-                  ...(prev[topicId] || []),
-                  {
-                    id: rolePendingId,
-                    threadId: topicId,
-                    channelId: topicChannel?.id,
-                    authorId: roleAgent.id,
-                    authorName: roleAgent.name,
-                    authorHandle: roleAgent.handle,
-                    authorAvatar: roleAgent.avatar,
-                    isAgent: true,
-                    isPending: true,
-                    startedAt: Date.now(),
-                    pendingHint: `正在审视综合裁定官终局方案，核验是否无异议 (Role: ${roleRoleLabel})...`,
-                    agentBadge: `${roleAgent.modelBadge?.split(' ')[0] || 'Local'} · 🤝 无异议核验中...`,
-                    timestamp: formatFullDateTime(),
-                    content: '',
-                    gameStage: 'arbitration',
-                    gameRole: item.role,
-                  },
-                ],
-              }));
-
-              let roleReplyText = '';
-              let roleSubmission: RoleConcurrenceSubmission | undefined;
-              let roleValidationError = '';
-              let roleUnavailableReason = '';
-              const roleNameForVote = (item.role === 'arbiter' ? 'verifier' : item.role) as
-                'proposer' | 'challenger' | 'verifier';
-
-              if (!isAgentOnline(roleAgent)) {
-                roleUnavailableReason = `智能体 ${roleAgent.name} 当前处于离线状态，无法完成独立结构化投票。`;
-                roleReplyText = `⚠️ 【角色不可用 / Agent 离线】${roleUnavailableReason}`;
-              } else {
-                for (let attempt = 0; attempt < 2; attempt++) {
-                  try {
-                    const rolePrompt = buildTopicPrompt({
-                      topic: {
-                        ...topicContext,
-                        concurrenceVerificationContext: {
-                          arbiterName: arbiterAgent.name,
-                          arbiterText: acpResp.textResponse,
-                          solutionDigest: concurrenceSolutionDigest,
-                          validationError: roleValidationError || undefined,
-                          roleName: roleNameForVote,
-                        },
-                      },
-                      userContent: '请严格按本轮 ROLE_CONCURRENCE 契约提交结构化票据；自然语言不能替代结构化结果。',
-                      targetAgent: roleAgent,
-                      availableAgents: candidateAgents,
-                    });
-
-                    const roleResp = await sendPromptToAcpAgent({
-                      agent: roleAgent,
-                      roomId: topicId,
-                      prompt: rolePrompt,
-                      channelId: topicChannel?.id,
-                      workspaceBindingId: currentTopic.workspaceBindingId,
-                      workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
-                      scopeType: 'topic',
-                      systemPrompt: buildCompositeSystemPrompt({
-                        agent: roleAgent,
-                        availableAgents: candidateAgents,
-                        includeRoster: true,
-                      }),
-                      discussionMode: 'game_theoretic',
-                    });
-
-                    const extraction = extractRoleConcurrenceFromAcpResponse(roleResp);
-                    roleReplyText = extraction.cleanedText;
-
-                    if (roleResp.isError) {
-                      roleUnavailableReason = `ACP 返回错误：${roleResp.textResponse || '未知错误'}`;
-                      break;
-                    }
-                    if (roleResp.isEmptyTurn) {
-                      roleUnavailableReason = 'ACP 返回空回合，未提供结构化无异议票。';
-                      break;
-                    }
-                    if (extraction.submission) {
-                      roleSubmission = extraction.submission;
-                      roleValidationError = '';
-                      break;
-                    }
-
-                    roleValidationError = extraction.error || '未提交合法结构化无异议票';
-                    if (attempt === 0) {
-                      await new Promise((r) => setTimeout(r, 300));
-                    }
-                  } catch (e) {
-                    roleUnavailableReason = `智能体调用异常：${e instanceof Error ? e.message : String(e)}`;
-                    break;
-                  }
-                }
-              }
-
-              setActiveExecutions((prev) => {
-                const next = { ...prev };
-                delete next[roleExecKey];
-                if (Object.keys(next).length === 0) setIsGenerating(false);
-                return next;
-              });
-
-              setAgents((prev) =>
-                prev.map((a) => (a.id === roleAgent.id ? { ...a, status: 'idle' } : a))
-              );
-
-              currentConcurrence = advanceRoleConcurrenceItem(currentConcurrence, roleAgent.id, {
-                submission: roleSubmission,
-                validationError: roleValidationError || undefined,
-                unavailableReason: roleUnavailableReason || undefined,
-              });
-              const roleStatus = currentConcurrence.items.find((i) => i.agentId === roleAgent.id)?.status;
-              const roleStatusBadge = roleStatus === 'concurred'
-                ? '🤝 无异议确认'
-                : roleStatus === 'conditional'
-                ? '⏸️ 条件保留'
-                : roleStatus === 'objected'
-                ? '❌ 提出异议'
-                : roleStatus === 'unavailable'
-                ? '⚠️ 角色不可用'
-                : '⛔ 结构化票无效';
-              const roleMsgBadge = `${roleAgent.modelBadge?.split(' ')[0] || 'Local'} · ${roleStatusBadge}`;
-              const roleDisplayContent = [
-                roleReplyText || roleSubmission?.rationale || '未收到角色有效回复。',
-                roleValidationError ? `\n\n> ⛔ **结构化票无效**：${roleValidationError}` : '',
-                roleUnavailableReason ? `\n\n> ⚠️ **角色不可用**：${roleUnavailableReason}` : '',
-              ].join('');
-
-              const roleMsg: Message = {
-                id: `topic-reply-concurrence-${Date.now()}-${roleAgent.id}`,
-                threadId: topicId,
-                channelId: topicChannel?.id,
-                authorId: roleAgent.id,
-                authorName: roleAgent.name,
-                authorHandle: roleAgent.handle,
-                authorAvatar: roleAgent.avatar,
-                isAgent: true,
-                isPending: false,
-                agentBadge: roleMsgBadge,
-                timestamp: formatFullDateTime(),
-                content: roleDisplayContent,
-                gameStage: 'arbitration',
-                gameRole: item.role,
-              };
-
-              updateTopicDataInState(topicId, (old) => ({
-                ...old,
-                gameTheoreticState: {
-                  ...old.gameTheoreticState,
-                  currentStage: old.gameTheoreticState?.currentStage ?? 'arbitration',
-                  concurrenceState: currentConcurrence,
-                },
-              }));
-
-              setMessages((prev) => {
-                const existing = prev[topicId] || [];
-                return {
-                  ...prev,
-                  [topicId]: existing.map((m) => (m.id === rolePendingId ? roleMsg : m)),
-                };
-              });
-
-              // 轻量延时保障讨论流真实呈现节奏
-              await new Promise((r) => setTimeout(r, 400));
-            }
-
-            if (isTurnStale(turnSnapshot)) return;
-            const freshTopic = getTopicData(topicId) || latestTopicForArbitration;
-            if (freshTopic.status === 'resolved') {
-              console.log('[GameTheoretic] Topic is already resolved, skipping auto conclusion.');
-              return;
-            }
-
-            // 当所有角色回复保证无异议后，复核运筹一致性硬门禁与法定人数
-            if (checkAllRolesConcurred(currentConcurrence)) {
-              const gateEvaluation = evaluateRulingGates(freshTopic, mcdaPayload);
-
-              if (!gateEvaluation.allGatesPassed) {
-                const gateNotice: Message = {
-                  id: `msg-gate-blocked-${Date.now()}`,
-                  threadId: topicId,
-                  channelId: topicChannel?.id,
-                  authorId: 'system',
-                  authorName: 'Shinobi 裁决一致性硬门禁',
-                  authorHandle: '@arbiter-gavel',
-                  authorAvatar: '⚖️',
-                  isAgent: true,
-                  agentBadge: 'Gate Blocked',
-                  timestamp: formatFullDateTime(),
-                  content: `⚖️ **[全员虽达成无异议，但门禁拦截 (${gateEvaluation.reason || `ξ* = ${mcdaPayload?.consistencyIndex}`})]**\n\n各参研角色已完成无异议审视，但未能通过硬门禁规则（${gateEvaluation.reason}）。根据安全宪章，系统已硬锁定自动定案，请人类首席仲裁官在下方控制台审阅后具名豁免定案。`,
-                };
-                setMessages((prev) => ({
-                  ...prev,
-                  [topicId]: [...(prev[topicId] || []), gateNotice],
-                }));
-                return;
-              }
-
-              const finalRuling = buildFinalRulingFromConcurrence({
-                topic: freshTopic,
-                arbiterAgent,
-                concurrenceState: currentConcurrence,
-                extractedDraft: extractedRulingDraft,
-                candidateAgents,
-              });
-
-              const finalConcludeMsg: Message = {
-                id: `msg-concluded-${Date.now()}-${arbiterAgent.id}`,
-                threadId: topicId,
-                channelId: topicChannel?.id,
-                authorId: arbiterAgent.id,
-                authorName: arbiterAgent.name,
-                authorHandle: arbiterAgent.handle,
-                authorAvatar: arbiterAgent.avatar,
-                isAgent: true,
-                agentBadge: '⚖️ 终局敲定 · 活体看板已生成',
-                timestamp: formatFullDateTime(),
-                content: `🏛️ **【综合裁定官终局方案敲定与活体看板生成 (Living ADR Canvas Concluded)】**\n\n参研关键角色（${currentConcurrence.items.map((i) => `**${i.agentName}**`).join('、')}）已全部完成独立专业审视，并一致明确保证**无异议签署通过**！\n\n综合裁定官正式敲定本议题终局架构方案：\n\n> 💡 **核心决议**: ${finalRuling.summary}\n\n${finalRuling.solution ? `**落地实施要旨**: ${finalRuling.solution}\n\n` : ''}📄 **活体决策看板 (Living ADR Canvas) 已正式出具并固化生成**，包含完整的全员签署链、权衡防线清单与工程落地清单。请查阅抽屉右侧活体看板，系统已就绪，可在看板中人工批准派发落地实施。`,
-                gameStage: 'concluded',
-                gameRole: 'arbiter',
-              };
-
-              setMessages((prev) => ({
-                ...prev,
-                [topicId]: [...(prev[topicId] || []), finalConcludeMsg],
-              }));
-
-              // 自动闭环敲定定案（显式指定 autoDispatch: false，严禁未经人类授权自动派发执行代码，责任人由人类在看板显式点击批准指派）
-              handleResolveTopic(topicId, {
-                solution: finalRuling.solution || finalRuling.summary,
-                impactedFiles: finalRuling.impactedFiles || [],
-                approvers: [arbiterAgent.name, ...currentConcurrence.items.map((i) => i.agentName)],
-                rulingRecord: finalRuling,
-                autoDispatch: false,
-              });
-            } else {
-              // 若存在角色阻断异议或角色不可用，挂起定案并发出警示通知
-              const pendingOrObjected = currentConcurrence.items.find((i) => i.status !== 'concurred');
-              const blockedStatus = pendingOrObjected?.status;
-              const isUnavail = blockedStatus === 'unavailable';
-              const isConditional = blockedStatus === 'conditional';
-              const isInvalid = blockedStatus === 'invalid';
-              const blockedBadge = isUnavail
-                ? 'Agent Unavailable'
-                : isConditional
-                ? 'Concurrence Conditional'
-                : isInvalid
-                ? 'Concurrence Invalid'
-                : 'Objection Suspended';
-              const blockedContent = isUnavail
-                ? `⚠️ **[终局方案敲定已挂起：存在参研角色离线或不可用]**\n\n参研角色 **${pendingOrObjected?.agentName || '参研角色'}** 未能完成实质审视。根据治理契约，严格禁止伪造无异议签署，终局敲定已安全挂起。请恢复 Agent 在线状态后重新复核，或由人类首席仲裁官介入接管。`
-                : isConditional
-                ? `⏸️ **[终局方案敲定已挂起：存在条件保留票]**\n\n参研角色 **${pendingOrObjected?.agentName || '参研角色'}** 已提交 \`conditional\` 票，前置条件：\n${(pendingOrObjected?.conditions || []).map((condition) => `> • ${condition}`).join('\n') || '> • 未列明条件'}\n\n条件票不计入无异议，系统暂不出具终局活体看板。`
-                : isInvalid
-                ? `⛔ **[终局方案敲定已挂起：结构化票无效]**\n\n参研角色 **${pendingOrObjected?.agentName || '参研角色'}** 未提交合法结构化票据：\n> ${pendingOrObjected?.validationError || '未提供有效工具载荷或 ROLE_CONCURRENCE 契约块'}\n\n自然语言正文不能替代结构化授权，终局敲定已失败关闭。`
-                : `❌ **[终局方案敲定已挂起：未达成全员无异议]**\n\n参研角色 **${pendingOrObjected?.agentName || '参研角色'}** 提出阻断性异议：\n> “${pendingOrObjected?.statement || '存在未解决的关键架构缺陷'}”\n\n综合裁定官已暂停敲定并暂不出具终局活体看板。请围绕异议焦点进一步推演，或由人类首席仲裁官在下方控制台行使特权裁决。`;
-              const objectionNotice: Message = {
-                id: `msg-objection-notice-${Date.now()}`,
-                threadId: topicId,
-                channelId: topicChannel?.id,
-                authorId: 'system',
-                authorName: isUnavail ? 'Shinobi 角色可用性告警' : 'Shinobi 裁决异议挂起提示',
-                authorHandle: '@arbiter-gavel',
-                authorAvatar: isUnavail ? '⚠️' : '❌',
-                isAgent: true,
-                agentBadge: blockedBadge,
-                timestamp: formatFullDateTime(),
-                content: blockedContent,
-              };
-
-              setMessages((prev) => ({
-                ...prev,
-                [topicId]: [...(prev[topicId] || []), objectionNotice],
-              }));
-            }
-          } else {
-            // 零参研角色时给出系统提示并释放锁
-            const noPeerNotice: Message = {
-              id: `msg-no-peer-notice-${Date.now()}`,
-              threadId: topicId,
-              channelId: topicChannel?.id,
-              authorId: 'system',
-              authorName: 'Shinobi 仲裁征询提示',
-              authorHandle: '@arbiter-gavel',
-              authorAvatar: 'ℹ️',
-              isAgent: true,
-              agentBadge: 'No Peers Configured',
-              timestamp: formatFullDateTime(),
-              content: `ℹ️ **[未检测到需征询的参研角色]**：当前议题未指派提案方、红队对抗方或实证方智能体。请人类首席仲裁官在下方控制台行使法定裁决权定案。`,
-            };
-            setMessages((prev) => ({
-              ...prev,
-              [topicId]: [...(prev[topicId] || []), noPeerNotice],
-            }));
-            inFlightHandoverRef.current.delete(handoverKey);
-          }
-        } catch (err) {
-          setActiveExecutions((prev) => {
-            const next = { ...prev };
-            delete next[execKey];
-            if (Object.keys(next).length === 0) setIsGenerating(false);
-            return next;
-          });
-          if (isTurnStale(turnSnapshot)) {
-            console.log('[App] Dropping arbitration error because turn was aborted or invalidated');
-            return;
-          }
-          console.error('AI Arbiter execution failed:', err);
-
-          const errorMsg: Message = {
-            id: `topic-reply-err-${Date.now()}-${arbiterAgent.id}`,
-            threadId: topicId,
-            channelId: topicChannel?.id,
-            authorId: arbiterAgent.id,
-            authorName: arbiterAgent.name,
-            authorHandle: arbiterAgent.handle,
-            authorAvatar: arbiterAgent.avatar,
-            isAgent: true,
-            agentBadge: 'Arbiter Error',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `⚠️ **仲裁推演异常**：${err instanceof Error ? err.message : String(err)}\n\n人类首席仲裁官可查看上方交锋内容，执行具名豁免后直接落槌。`,
-            gameStage: 'arbitration',
-            gameRole: 'arbiter',
-          };
-
-          const humanNotice: Message = {
-            id: `msg-human-gavel-notice-${Date.now()}`,
-            threadId: topicId,
-            channelId: topicChannel?.id,
-            authorId: 'system',
-            authorName: 'Shinobi 仲裁法槌提示',
-            authorHandle: '@arbiter-gavel',
-            authorAvatar: '⚖️',
-            isAgent: true,
-            agentBadge: 'Gavel Ready',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `⚖️ **仲裁阶段异常提示**：AI 仲裁推演中断。双方立论与反例要点已就绪，人类首席仲裁官可在下方【仲裁法槌控制台】敲响法槌签署终局裁决。`,
-          };
-
-          setMessages((prev) => {
-            const existing = prev[topicId] || [];
-            const filtered = existing.filter((m) => m.id !== arbiterPendingId);
-            return {
-              ...prev,
-              [topicId]: [...filtered, errorMsg, humanNotice],
-            };
-          });
-        } finally {
-          inFlightHandoverRef.current.delete(handoverKey);
-        }
-      } else {
-        if (currentTopic.gameRoles?.humanIsArbiter) {
-          const humanNotice: Message = {
-            id: `msg-human-gavel-notice-${Date.now()}`,
-            threadId: topicId,
-            channelId: topicChannel?.id,
-            authorId: 'system',
-            authorName: 'Shinobi 仲裁法槌提示',
-            authorHandle: '@arbiter-gavel',
-            authorAvatar: '⚖️',
-            isAgent: true,
-            agentBadge: 'Gavel Ready',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `⚖️ **博弈推演已进入仲裁裁决阶段**：立论方案与反例压测已就绪。请人类首席仲裁官在下方【仲裁法槌控制台】选择【采纳主导】、【采纳挑战】或【权衡矩阵】敲响法槌签署仲裁裁决书。`,
-          };
-
-          setMessages((prev) => ({
-            ...prev,
-            [topicId]: [...(prev[topicId] || []), humanNotice],
-          }));
-        }
-      }
-    }
-  };
+  // 4. 博弈状态机控制器 Hook (DIANOIA 4+1 状态流转控制器)
+  const { triggerGameTheoreticStageHandover } = useGameTheoreticFsm({
+    getTopicData,
+    channels,
+    activeChannel,
+    captureTurnEpoch,
+    isTurnStale,
+    inFlightHandoverRef,
+    agentsRef,
+    stageRefineRetriesRef,
+    setIsGenerating,
+    setActiveExecutions,
+    setAgents,
+    setMessages,
+    updateTopicDataInState,
+    getTopicWorkspaceBinding,
+    processArbitrationConcurrence,
+  });
 
   const handleSendTopicMessage = async (
     topicId: string,
@@ -6280,55 +3659,141 @@ export default function App() {
       }
     }
 
-    const isGameTheoretic = activeTopicData?.discussionMode === 'game_theoretic';
-    const currentTopicStage: GameTheoreticStage = activeTopicData?.gameStage || activeTopicData?.gameTheoreticState?.currentStage || 'proposal';
+    const existingTopicMsgs = messagesRef.current[topicId] || [];
+    const currentTopicObj = getTopicData(topicId) || activeTopicData;
+    const isGameTheoretic = currentTopicObj?.discussionMode === 'game_theoretic';
+    const currentTopicStage: GameTheoreticStage = currentTopicObj?.gameStage || currentTopicObj?.gameTheoreticState?.currentStage || 'proposal';
     let executionStage: GameTheoreticStage = currentTopicStage;
     let targetRoleType: GameRoleType = 'proposer';
+
+    const fallbackProposalText = (
+      currentTopicObj?.gameTheoreticState?.targetProposalContent ||
+      existingTopicMsgs
+        .slice()
+        .reverse()
+        .find((m) => !m.isPending && (m.gameStage === 'proposal' || m.gameRole === 'proposer') && m.content?.trim())?.content
+    );
+    const fallbackChallengeText = (
+      currentTopicObj?.gameTheoreticState?.targetChallengeContent ||
+      existingTopicMsgs
+        .slice()
+        .reverse()
+        .find((m) => !m.isPending && (m.gameStage === 'challenge' || m.gameRole === 'challenger') && m.content?.trim())?.content
+    );
+    const fallbackVerificationText = (
+      currentTopicObj?.gameTheoreticState?.targetVerificationContent ||
+      existingTopicMsgs
+        .slice()
+        .reverse()
+        .find((m) => !m.isPending && (m.gameStage === 'verification' || m.gameRole === 'verifier') && m.content?.trim())?.content
+    );
+    const fallbackDefenseText = (
+      currentTopicObj?.gameTheoreticState?.targetDefenseContent ||
+      existingTopicMsgs
+        .slice()
+        .reverse()
+        .find((m) => !m.isPending && (m.gameStage === 'defense') && m.content?.trim())?.content
+    );
 
     const candidateAgents = topicAssigned.length > 0 ? topicAssigned : channelAssigned;
     let respondingAgents: Agent[] = [];
 
     if (isGameTheoretic) {
-      if (userMentionedAgents.length > 0 && !isAllMention) {
+      if (userMentionedAgents.length > 0 && !isTopicAll) {
         respondingAgents = userMentionedAgents;
-        const id = userMentionedAgents[0].id;
-        if (activeTopicData?.gameRoles?.proposers?.includes(id)) {
-          targetRoleType = 'proposer';
-          executionStage = currentTopicStage === 'defense' ? 'defense' : 'proposal';
-        } else if (activeTopicData?.gameRoles?.challengers?.includes(id)) {
-          targetRoleType = 'challenger';
-          executionStage = 'challenge';
-        } else if (activeTopicData?.gameRoles?.verifiers?.includes(id)) {
-          targetRoleType = 'verifier';
-          executionStage = 'verification';
-        } else if (activeTopicData?.gameRoles?.arbiters?.includes(id)) {
+        const targetAgent = userMentionedAgents[0];
+        const id = targetAgent.id;
+        const gameRoles = currentTopicObj?.gameRoles;
+        const isProposer = Boolean(gameRoles?.proposers?.includes(id));
+        const isChallenger = Boolean(gameRoles?.challengers?.includes(id));
+        const isVerifier = Boolean(gameRoles?.verifiers?.includes(id));
+        const isArbiter = Boolean(gameRoles?.arbiters?.includes(id));
+        const gState = currentTopicObj?.gameTheoreticState;
+        const hasProposal = Boolean(fallbackProposalText?.trim());
+        const isChallengerDone = Boolean(gState?.isChallengerResponded);
+        const isVerifierDone = Boolean(gState?.isVerifierResponded);
+        const isDefenseDone = Boolean(gState?.isDefenseResponded);
+
+        // 1. 优先匹配当前所处阶段（若被点名角色正好能承接当前阶段）
+        if (currentTopicStage === 'arbitration' && isArbiter) {
           targetRoleType = 'arbiter';
           executionStage = 'arbitration';
+        } else if (currentTopicStage === 'defense' && isProposer) {
+          targetRoleType = 'proposer';
+          executionStage = 'defense';
+        } else if (currentTopicStage === 'verification' && isVerifier) {
+          targetRoleType = 'verifier';
+          executionStage = 'verification';
+        } else if (currentTopicStage === 'challenge' && isChallenger) {
+          targetRoleType = 'challenger';
+          executionStage = 'challenge';
+        } else if (currentTopicStage === 'proposal' && isProposer && !hasProposal) {
+          targetRoleType = 'proposer';
+          executionStage = 'proposal';
+        // 2. 否则按协同状态机未竟进度断点续推（如因通信中断挂起跳过，用户重新点名恢复该角色继续接力）
+        } else if (isChallenger && (!isChallengerDone || currentTopicStage === 'proposal')) {
+          targetRoleType = 'challenger';
+          executionStage = 'challenge';
+        } else if (isVerifier && (!isVerifierDone || currentTopicStage === 'challenge')) {
+          targetRoleType = 'verifier';
+          executionStage = 'verification';
+        } else if (isProposer && hasProposal && (!isDefenseDone || currentTopicStage === 'challenge' || currentTopicStage === 'verification')) {
+          targetRoleType = 'proposer';
+          executionStage = 'defense';
+        } else if (isArbiter && (isDefenseDone || currentTopicStage === 'defense' || currentTopicStage === 'arbitration')) {
+          targetRoleType = 'arbiter';
+          executionStage = 'arbitration';
+        // 3. 兜底角色映射
+        } else if (isChallenger) {
+          targetRoleType = 'challenger';
+          executionStage = 'challenge';
+        } else if (isVerifier) {
+          targetRoleType = 'verifier';
+          executionStage = 'verification';
+        } else if (isArbiter) {
+          targetRoleType = 'arbiter';
+          executionStage = 'arbitration';
+        } else if (isProposer) {
+          targetRoleType = 'proposer';
+          executionStage = hasProposal ? 'defense' : 'proposal';
+        }
+
+        // 同步更新议题阶段至最新执行阶段，并清理此前因 Agent 离线产生的法定人数警告
+        if (executionStage !== currentTopicStage || gState?.quorumAlert) {
+          updateTopicDataInState(topicId, (old) => ({
+            ...old,
+            gameStage: executionStage,
+            gameTheoreticState: {
+              ...old.gameTheoreticState,
+              currentStage: executionStage,
+              quorumAlert: undefined,
+            },
+          }));
         }
       } else {
         // 根据三元/4+1博弈当前所处阶段分配角色，绝不并发广播给全员
         if (currentTopicStage === 'proposal') {
-          const proposerIds = activeTopicData?.gameRoles?.proposers || [];
+          const proposerIds = currentTopicObj?.gameRoles?.proposers || [];
           respondingAgents = candidateAgents.filter((a) => proposerIds.includes(a.id));
           targetRoleType = 'proposer';
           executionStage = 'proposal';
         } else if (currentTopicStage === 'challenge') {
-          const challengerIds = activeTopicData?.gameRoles?.challengers || [];
+          const challengerIds = currentTopicObj?.gameRoles?.challengers || [];
           respondingAgents = candidateAgents.filter((a) => challengerIds.includes(a.id));
           targetRoleType = 'challenger';
           executionStage = 'challenge';
         } else if (currentTopicStage === 'verification') {
-          const verifierIds = activeTopicData?.gameRoles?.verifiers || [];
+          const verifierIds = currentTopicObj?.gameRoles?.verifiers || [];
           respondingAgents = candidateAgents.filter((a) => verifierIds.includes(a.id));
           targetRoleType = 'verifier';
           executionStage = 'verification';
         } else if (currentTopicStage === 'defense') {
-          const proposerIds = activeTopicData?.gameRoles?.proposers || [];
+          const proposerIds = currentTopicObj?.gameRoles?.proposers || [];
           respondingAgents = candidateAgents.filter((a) => proposerIds.includes(a.id));
           targetRoleType = 'proposer';
           executionStage = 'defense';
         } else if (currentTopicStage === 'arbitration') {
-          const arbiterIds = activeTopicData?.gameRoles?.arbiters || [];
+          const arbiterIds = currentTopicObj?.gameRoles?.arbiters || [];
           respondingAgents = candidateAgents.filter((a) => arbiterIds.includes(a.id));
           targetRoleType = 'arbiter';
           executionStage = 'arbitration';
@@ -6434,8 +3899,7 @@ export default function App() {
     );
 
     // 提取议题前序研讨记录（若启用 G-Frame 模块化隔离且当前模块已有专属消息，则仅注入本模块沙箱内的历史）
-    const existingTopicMsgs = messagesRef.current[topicId] || [];
-    const activeModState = activeTopicData?.gameTheoreticState?.modularState;
+    const activeModState = currentTopicObj?.gameTheoreticState?.modularState;
     const activeModSlice =
       activeModState?.enabled && activeModState.activeModuleId
         ? activeModState.modules.find((m) => m.moduleId === activeModState.activeModuleId)
@@ -6464,24 +3928,24 @@ export default function App() {
 
     const topicContext: TopicPromptContext = {
       topicId,
-      title: activeTopicData?.title || '议题方案推演',
-      description: activeTopicData?.description,
+      title: currentTopicObj?.title || '议题方案推演',
+      description: currentTopicObj?.description,
       channelName: topicChannel?.name || 'chat',
-      status: activeTopicData?.status || 'open',
-      discussionMode: activeTopicData?.discussionMode,
-      gameRoles: activeTopicData?.gameRoles,
+      status: currentTopicObj?.status || 'open',
+      discussionMode: currentTopicObj?.discussionMode,
+      gameRoles: currentTopicObj?.gameRoles,
       gameStage: isGameTheoretic ? executionStage : undefined,
       targetProposalText: isGameTheoretic && (executionStage === 'challenge' || executionStage === 'verification' || executionStage === 'defense' || executionStage === 'arbitration')
-        ? activeTopicData?.gameTheoreticState?.targetProposalContent
+        ? fallbackProposalText
         : undefined,
       targetChallengeText: isGameTheoretic && (executionStage === 'verification' || executionStage === 'defense' || executionStage === 'arbitration')
-        ? activeTopicData?.gameTheoreticState?.targetChallengeContent
+        ? fallbackChallengeText
         : undefined,
       targetVerificationText: isGameTheoretic && (executionStage === 'defense' || executionStage === 'arbitration')
-        ? activeTopicData?.gameTheoreticState?.targetVerificationContent
+        ? fallbackVerificationText
         : undefined,
       targetDefenseText: isGameTheoretic && executionStage === 'arbitration'
-        ? activeTopicData?.gameTheoreticState?.targetDefenseContent
+        ? fallbackDefenseText
         : undefined,
       modularState: activeModState,
       participatingAgents: candidateAgents,
@@ -6768,7 +4232,7 @@ export default function App() {
         discussionMode: activeTopicData?.discussionMode,
         attachments: savedAttachments,
       })
-        .then((acpResp) => {
+        .then(async (acpResp) => {
           setActiveExecutions((prev) => {
             const next = { ...prev };
             delete next[execKey];
@@ -7021,7 +4485,8 @@ export default function App() {
               if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
                 console.warn('Challenger returned empty/error turn, pausing handover.');
               } else {
-                const hasVerifiers = (activeTopicData?.gameRoles?.verifiers || []).length > 0;
+                const freshTopic = getTopicData(topicId) || activeTopicData;
+                const hasVerifiers = (freshTopic?.gameRoles?.verifiers || []).length > 0;
                 const nextStageTarget = hasVerifiers ? 'verification' : 'defense';
                 updateTopicDataInState(topicId, (old) => ({
                   ...old,
@@ -7031,12 +4496,13 @@ export default function App() {
                     currentStage: nextStageTarget,
                     targetChallengeContent: acpResp.textResponse,
                     isChallengerResponded: true,
+                    quorumAlert: undefined,
                   },
                 }));
                 triggerGameTheoreticStageHandover({
                   topicId,
                   nextStage: nextStageTarget,
-                  targetProposalText: activeTopicData?.gameTheoreticState?.targetProposalContent,
+                  targetProposalText: fallbackProposalText || freshTopic?.gameTheoreticState?.targetProposalContent,
                   targetChallengeText: acpResp.textResponse,
                 });
               }
@@ -7044,6 +4510,7 @@ export default function App() {
               if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
                 console.warn('Verifier returned empty/error turn, pausing handover.');
               } else {
+                const freshTopic = getTopicData(topicId) || activeTopicData;
                 updateTopicDataInState(topicId, (old) => ({
                   ...old,
                   gameStage: 'defense',
@@ -7052,13 +4519,14 @@ export default function App() {
                     currentStage: 'defense',
                     targetVerificationContent: acpResp.textResponse,
                     isVerifierResponded: true,
+                    quorumAlert: undefined,
                   },
                 }));
                 triggerGameTheoreticStageHandover({
                   topicId,
                   nextStage: 'defense',
-                  targetProposalText: activeTopicData?.gameTheoreticState?.targetProposalContent,
-                  targetChallengeText: activeTopicData?.gameTheoreticState?.targetChallengeContent,
+                  targetProposalText: fallbackProposalText || freshTopic?.gameTheoreticState?.targetProposalContent,
+                  targetChallengeText: fallbackChallengeText || freshTopic?.gameTheoreticState?.targetChallengeContent,
                   targetVerificationText: acpResp.textResponse,
                 });
               }
@@ -7066,6 +4534,7 @@ export default function App() {
               if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
                 console.warn('Proposer defense returned empty/error turn, pausing handover.');
               } else {
+                const freshTopic = getTopicData(topicId) || activeTopicData;
                 updateTopicDataInState(topicId, (old) => ({
                   ...old,
                   gameStage: 'arbitration',
@@ -7074,15 +4543,36 @@ export default function App() {
                     currentStage: 'arbitration',
                     targetDefenseContent: acpResp.textResponse,
                     isDefenseResponded: true,
+                    quorumAlert: undefined,
                   },
                 }));
                 triggerGameTheoreticStageHandover({
                   topicId,
                   nextStage: 'arbitration',
-                  targetProposalText: activeTopicData?.gameTheoreticState?.targetProposalContent,
-                  targetChallengeText: activeTopicData?.gameTheoreticState?.targetChallengeContent,
-                  targetVerificationText: activeTopicData?.gameTheoreticState?.targetVerificationContent,
+                  targetProposalText: fallbackProposalText || freshTopic?.gameTheoreticState?.targetProposalContent,
+                  targetChallengeText: fallbackChallengeText || freshTopic?.gameTheoreticState?.targetChallengeContent,
+                  targetVerificationText: fallbackVerificationText || freshTopic?.gameTheoreticState?.targetVerificationContent,
                   targetDefenseText: acpResp.textResponse,
+                });
+              }
+            } else if (executionStage === 'arbitration') {
+              if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
+                console.warn('Arbiter returned empty/error turn, pausing concurrence handover.');
+              } else {
+                const currentTopicObj = getTopicData(topicId) || activeTopicData;
+                await processArbitrationConcurrence({
+                  topicId,
+                  arbiterAgent: agent,
+                  acpResp,
+                  turnSnapshot,
+                  targetProposalText: fallbackProposalText || currentTopicObj?.gameTheoreticState?.targetProposalContent,
+                  targetChallengeText: fallbackChallengeText || currentTopicObj?.gameTheoreticState?.targetChallengeContent,
+                  targetVerificationText: fallbackVerificationText || currentTopicObj?.gameTheoreticState?.targetVerificationContent,
+                  targetDefenseText: fallbackDefenseText || currentTopicObj?.gameTheoreticState?.targetDefenseContent,
+                  candidateAgents,
+                  topicChannel,
+                  arbiterPendingId: pendingId,
+                  arbiterReply: agentReply,
                 });
               }
             }
@@ -7169,898 +4659,6 @@ export default function App() {
         }
       });
     }
-  };
-
-  const dispatchTopicExecution = async (options: {
-    topicId: string;
-    executorId: string;
-    decision: {
-      solution: string;
-      impactedFiles: string[];
-      approvers: string[];
-      rulingRecord?: RulingRecord;
-    };
-  }) => {
-    const { topicId, executorId, decision } = options;
-    const currentTopic = getTopicData(topicId);
-    if (!currentTopic) return;
-    const turnSnapshot = captureTurnEpoch(topicId, currentTopic.channelId || activeChannel?.id, executorId);
-
-    const executorAgent = agentsRef.current.find((a) => a.id === executorId);
-    if (!executorAgent) {
-      console.warn(`[Execution] Executor agent ${executorId} not found.`);
-      return;
-    }
-
-    const topicChannel = channels.find((c) => c.id === currentTopic.channelId) || activeChannel;
-
-    if (isAgentOffline(executorAgent)) {
-      const offlineNotice: Message = {
-        id: `msg-offline-exec-${Date.now()}`,
-        threadId: topicId,
-        channelId: topicChannel?.id,
-        authorId: 'system',
-        authorName: 'Shadow Crew 落地执行守护',
-        authorHandle: '@exec-guard',
-        authorAvatar: '🔌',
-        isAgent: true,
-        agentBadge: 'Communication Required',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: `🔌 **执行 Agent 通信尚未开启**：已指派 **${executorAgent.name}** 推进定案决议落地，但该 Agent 当前处于离线状态。\n\n请在左侧面板点击【Start】开启 ACP 通信后重新指派落地。`,
-      };
-      setMessages((prev) => ({
-        ...prev,
-        [topicId]: [...(prev[topicId] || []), offlineNotice],
-      }));
-      updateTopicDataInState(topicId, (old) => ({
-        ...old,
-        gameTheoreticState: {
-          ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
-          assignedExecutorId: executorAgent.id,
-          executionStatus: 'failed',
-          executionSummary: '执行 Agent 处于离线状态，需开启通信后重试',
-        },
-      }));
-      return;
-    }
-
-    // Multi-Topic Concurrency Guard: If this executor agent is currently busy on another topic, queue first
-    const isBusyElsewhere = () =>
-      Object.values(activeExecutionsRef.current).some(
-        (e) => e.agentId === executorAgent.id && e.topicId !== topicId && e.threadId !== topicId
-      );
-
-    if (isBusyElsewhere()) {
-      updateTopicDataInState(topicId, (old) => ({
-        ...old,
-        gameTheoreticState: {
-          ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
-          assignedExecutorId: executorAgent.id,
-          executionStatus: 'queued',
-          executionSummary: `等待 ${executorAgent.name} 完成前序并行任务...`,
-        },
-        decisionRecord: old.decisionRecord
-          ? {
-              ...old.decisionRecord,
-              executorId: executorAgent.id,
-              executorName: executorAgent.name,
-            }
-          : old.decisionRecord,
-        rulingRecord: old.rulingRecord
-          ? {
-              ...old.rulingRecord,
-              executorId: executorAgent.id,
-            }
-          : old.rulingRecord,
-      }));
-
-      let waitLoops = 0;
-      while (isBusyElsewhere() && waitLoops < 150) {
-        if (isTurnStale(turnSnapshot)) return;
-        await new Promise((r) => setTimeout(r, 800));
-        waitLoops++;
-      }
-      if (isTurnStale(turnSnapshot)) return;
-    }
-
-    const startTimeMs = Date.now();
-
-    // Update topic execution state to running
-    updateTopicDataInState(topicId, (old) => ({
-      ...old,
-      gameTheoreticState: {
-        ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
-        assignedExecutorId: executorAgent.id,
-        executionStatus: 'running',
-        executionStartedAt: startTimeMs,
-        executionSummary: `正在由 ${executorAgent.name} 执行定案决议并生成交付成果...`,
-      },
-      decisionRecord: old.decisionRecord
-        ? {
-            ...old.decisionRecord,
-            executorId: executorAgent.id,
-            executorName: executorAgent.name,
-          }
-        : old.decisionRecord,
-      rulingRecord: old.rulingRecord
-        ? {
-            ...old.rulingRecord,
-            executorId: executorAgent.id,
-          }
-        : old.rulingRecord,
-    }));
-
-    // Update the channel rollup notice in-place to reflect live execution start
-    setMessages((prev) => {
-      let parentThreadId: string | null = null;
-      for (const [tId, msgList] of Object.entries(prev) as [string, Message[]][]) {
-        if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
-          parentThreadId = tId;
-          break;
-        }
-      }
-      if (!parentThreadId) return prev;
-      return {
-        ...prev,
-        [parentThreadId]: (prev[parentThreadId] || []).map((m) => {
-          if (m.relatedTopicId === topicId && m.id.startsWith('msg-rollup-')) {
-            const baseContent = m.content.split('\n\n---\n')[0];
-            return {
-              ...m,
-              content: `${baseContent}\n\n---\n⏳ **决议落地进度**：已委派 **${executorAgent.name}** (${executorAgent.handle}) 正在推进定案决议落地...`,
-            };
-          }
-          return m;
-        }),
-      };
-    });
-
-    const execKey = `${topicId}:${executorAgent.id}`;
-    setIsGenerating(true);
-    setActiveExecutions((prev) => ({
-      ...prev,
-      [execKey]: {
-        agentId: executorAgent.id,
-        agentName: executorAgent.name,
-        agentAvatar: executorAgent.avatar,
-        threadId: topicId,
-        topicId,
-        status: 'thinking',
-        currentActionDetail: `正在基于定案决议执行落地任务与交付输出 (Stage: 🛠️ 决议落地)...`,
-        startedAt: startTimeMs,
-        cascadeHop: 5,
-      },
-    }));
-
-    setAgents((prev) =>
-      prev.map((a) => (a.id === executorAgent.id && a.status !== 'running' ? { ...a, status: 'running' } : a))
-    );
-
-    const pendingId = `topic-pending-exec-${Date.now()}-${executorAgent.id}`;
-    const pendingMsg: Message = {
-      id: pendingId,
-      threadId: topicId,
-      channelId: topicChannel?.id,
-      authorId: executorAgent.id,
-      authorName: executorAgent.name,
-      authorHandle: executorAgent.handle,
-      authorAvatar: executorAgent.avatar,
-      isAgent: true,
-      isPending: true,
-      startedAt: startTimeMs,
-      pendingHint: '正在基于定案决议与权衡约束，推进落地执行并整理交付成果 (Stage: 🛠️ 决议落地)...',
-      agentBadge: `${executorAgent.modelBadge?.split(' ')[0] || 'Local'} · 🛠️ 决议落地 (执行中...)`,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      content: '',
-      gameStage: 'concluded',
-      relatedTopicId: topicId,
-    };
-
-    setMessages((prev) => ({
-      ...prev,
-      [topicId]: [...(prev[topicId] || []), pendingMsg],
-    }));
-
-    const topicContext: TopicPromptContext = {
-      topicId,
-      title: currentTopic.title,
-      description: currentTopic.description,
-      channelName: topicChannel?.name || 'chat',
-      status: currentTopic.status,
-      discussionMode: currentTopic.discussionMode,
-      gameRoles: currentTopic.gameRoles,
-      gameStage: 'concluded',
-      targetProposalText: currentTopic.gameTheoreticState?.targetProposalContent,
-      targetChallengeText: currentTopic.gameTheoreticState?.targetChallengeContent,
-      targetDefenseText: currentTopic.gameTheoreticState?.targetDefenseContent,
-    };
-
-    const execPrompt = buildExecutionPrompt({
-      topic: topicContext,
-      executorAgent,
-      decision: {
-        summary: decision.rulingRecord?.summary || decision.solution,
-        solution: decision.solution,
-        tradeOffPoints: decision.rulingRecord?.tradeOffPoints,
-        impactedFiles: decision.impactedFiles,
-      },
-    });
-
-    try {
-      const acpResp = await sendPromptToAcpAgent({
-        agent: executorAgent,
-        roomId: topicId,
-        prompt: execPrompt,
-        channelId: topicChannel?.id,
-        workspaceBindingId: currentTopic.workspaceBindingId,
-        workspaceCwd: getTopicWorkspaceBinding(currentTopic.id)?.cwd,
-        scopeType: 'topic',
-        systemPrompt: buildAgentPersonaPrompt(executorAgent),
-        discussionMode: 'game_theoretic',
-      });
-
-      setActiveExecutions((prev) => {
-        const next = { ...prev };
-        delete next[execKey];
-        if (Object.keys(next).length === 0) setIsGenerating(false);
-        return next;
-      });
-
-      if (isTurnStale(turnSnapshot)) {
-        console.log('[App] Dropping topic execution reply because turn was aborted or invalidated');
-        return;
-      }
-
-      if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
-        throw new Error(acpResp.isError ? acpResp.textResponse : '执行 Agent 返回空响应，未生成有效交付内容。');
-      }
-
-      const extractedDiffs =
-        acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0
-          ? acpResp.workspaceDiffs
-          : extractWorkspaceDiffsFromText(acpResp.textResponse, decision.impactedFiles);
-
-      const execMeta = acpResp.executionMeta;
-      const completedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-      const execReply: Message = {
-        id: `topic-reply-exec-${Date.now()}-${executorAgent.id}`,
-        threadId: topicId,
-        channelId: topicChannel?.id,
-        authorId: executorAgent.id,
-        authorName: executorAgent.name,
-        authorHandle: executorAgent.handle,
-        authorAvatar: executorAgent.avatar,
-        isAgent: true,
-        isPending: false,
-        agentBadge: `${executorAgent.modelBadge?.split(' ')[0] || 'Local'} · ${execMeta?.podTitle || '🛠️ 决议落地交付'}`,
-        timestamp: completedAt,
-        content: acpResp.textResponse,
-        gameStage: 'concluded',
-        thinkingProcess: buildThinkingProcessFromAcp(
-          acpResp,
-          execMeta?.statusSummary || '已完成定案决议落地执行交付'
-        ),
-        diffView: extractedDiffs.length > 0 ? extractedDiffs[0] : undefined,
-        diffViews: extractedDiffs.length > 0 ? extractedDiffs : undefined,
-        relatedTopicId: topicId,
-        cartridgeCitation: acpResp.cartridgeCitation,
-      };
-
-      const totalAdd = extractedDiffs.reduce((s, d) => s + d.additions, 0);
-      const totalDel = extractedDiffs.reduce((s, d) => s + d.deletions, 0);
-
-      setMessages((prev) => {
-        const existing = prev[topicId] || [];
-        const hasPending = existing.some((m) => m.id === pendingId);
-        const nextTopicMsgs = hasPending
-          ? existing.map((m) => (m.id === pendingId ? execReply : m))
-          : [...existing, execReply];
-        let parentThreadId: string | null = null;
-        for (const [tId, msgList] of Object.entries(prev) as [string, Message[]][]) {
-          if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
-            parentThreadId = tId;
-            break;
-          }
-        }
-        const updatedChannelMsgs = parentThreadId
-          ? (prev[parentThreadId] || []).map((m) => {
-              if (m.type === 'topic' && m.topicData?.id === topicId) {
-                return {
-                  ...m,
-                  topicData: {
-                    ...m.topicData,
-                    repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
-                    latestReplyPreview: execReply.content.slice(0, 60),
-                    gameTheoreticState: {
-                      ...(m.topicData.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
-                      assignedExecutorId: executorAgent.id,
-                      executionStatus: 'completed' as const,
-                      executionCompletedAt: completedAt,
-                      executionDiffs: extractedDiffs,
-                      executionUiMeta: execMeta,
-                      executionSummary:
-                        execMeta?.statusSummary ||
-                        (extractedDiffs.length > 0
-                          ? `已生成 ${extractedDiffs.length} 个工作区交付文件 (+${totalAdd}/-${totalDel})`
-                          : '已完成定案决议落地执行报告'),
-                    },
-                  },
-                };
-              }
-              if (m.relatedTopicId === topicId && m.id.startsWith('msg-rollup-')) {
-                const baseContent = m.content.split('\n\n---\n')[0];
-                return {
-                  ...m,
-                  diffView: extractedDiffs.length > 0 ? extractedDiffs[0] : m.diffView,
-                  diffViews: extractedDiffs.length > 0 ? extractedDiffs : m.diffViews,
-                  content:
-                    extractedDiffs.length > 0
-                      ? `${baseContent}\n\n---\n✅ **${execMeta?.podTitle || '决议落地变更已就绪'} (${completedAt})**：由 **${executorAgent.name}** 完成了 **${execMeta?.statusSummary || `${extractedDiffs.length} 个文件变更 (+${totalAdd} / -${totalDel})`}**，可在议题卡片或审查视图中一键核对并合入本地工作区。`
-                      : `${baseContent}\n\n---\n✅ **${execMeta?.podTitle || '决议落地已完成'} (${completedAt})**：**${executorAgent.name}** 已在议题抽屉内完成交付（${execMeta?.statusSummary || '详见抽屉内执行报告'}）。`,
-                };
-              }
-              return m;
-            })
-          : [];
-        return {
-          ...prev,
-          [topicId]: nextTopicMsgs,
-          ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
-        };
-      });
-    } catch (err) {
-      setActiveExecutions((prev) => {
-        const next = { ...prev };
-        delete next[execKey];
-        if (Object.keys(next).length === 0) setIsGenerating(false);
-        return next;
-      });
-
-      if (isTurnStale(turnSnapshot)) {
-        console.log('[App] Dropping topic execution error because turn was aborted or invalidated');
-        return;
-      }
-
-      console.error('Executor execution failed:', err);
-      const errText = err instanceof Error ? err.message : String(err);
-      const errorMsg: Message = {
-        id: `topic-exec-err-${Date.now()}-${executorAgent.id}`,
-        threadId: topicId,
-        channelId: topicChannel?.id,
-        authorId: executorAgent.id,
-        authorName: executorAgent.name,
-        authorHandle: executorAgent.handle,
-        authorAvatar: executorAgent.avatar,
-        isAgent: true,
-        agentBadge: 'ACP Error',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: `⚠️ **决议落地执行异常**：${errText}`,
-        gameStage: 'concluded',
-        relatedTopicId: topicId,
-      };
-
-      setMessages((prev) => {
-        const existing = prev[topicId] || [];
-        const filtered = existing.filter((m) => m.id !== pendingId);
-        return {
-          ...prev,
-          [topicId]: [...filtered, errorMsg],
-        };
-      });
-
-      updateTopicDataInState(topicId, (old) => ({
-        ...old,
-        gameTheoreticState: {
-          ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
-          executionStatus: 'failed',
-          executionSummary: errText.slice(0, 80),
-        },
-      }));
-    }
-  };
-
-  const handleResolveTopic = (
-    topicId: string,
-    decision: {
-      solution: string;
-      impactedFiles: string[];
-      approvers: string[];
-      rulingRecord?: RulingRecord;
-      executorId?: string;
-      autoDispatch?: boolean;
-    }
-  ) => {
-    const resolvedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const targetExecutorId = decision.executorId || decision.rulingRecord?.executorId;
-    const shouldDispatch = Boolean(targetExecutorId && decision.autoDispatch !== false);
-    const executorAgent = targetExecutorId ? agentsRef.current.find((a) => a.id === targetExecutorId) : undefined;
-
-    const currentMinorityReport = decision.rulingRecord?.minorityReport || activeTopicData?.gameTheoreticState?.minorityReport;
-
-    const rulingRecordWithExecutor: RulingRecord | undefined = decision.rulingRecord ? {
-      ...decision.rulingRecord,
-      executorId: targetExecutorId,
-      minorityReport: decision.rulingRecord.minorityReport || currentMinorityReport,
-    } : undefined;
-
-    const decisionRecord: DecisionRecord = {
-      summary: decision.rulingRecord ? decision.rulingRecord.summary : '架构方案达成一致并收敛',
-      solution: decision.solution,
-      impactedFiles: decision.impactedFiles,
-      approvers: decision.approvers,
-      resolvedAt,
-      executorId: targetExecutorId,
-      executorName: executorAgent?.name,
-      minorityReport: currentMinorityReport,
-    };
-
-    setMessages((prev) => {
-      let parentThreadId: string | null = null;
-      for (const [tId, msgList] of (Object.entries(prev) as [string, Message[]][])) {
-        if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
-          parentThreadId = tId;
-          break;
-        }
-      }
-      if (!parentThreadId) return prev;
-
-      const updatedChannelMsgs = (prev[parentThreadId] || []).map((m) => {
-        if (m.type === 'topic' && m.topicData?.id === topicId) {
-          return {
-            ...m,
-            topicData: {
-              ...m.topicData,
-              status: 'resolved' as TopicStatus,
-              gameStage: m.topicData.discussionMode === 'game_theoretic' ? 'concluded' : m.topicData.gameStage,
-              gameTheoreticState: {
-                ...(m.topicData.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
-                currentStage: 'concluded' as GameTheoreticStage,
-                isArbiterExempted: Boolean(decision.rulingRecord?.exemptionReason),
-                exemptionReason: decision.rulingRecord?.exemptionReason,
-                assignedExecutorId: targetExecutorId,
-                executionStatus: shouldDispatch ? 'running' : (m.topicData.gameTheoreticState?.executionStatus || 'idle'),
-                minorityReport: currentMinorityReport,
-              },
-              decisionRecord,
-              rulingRecord: rulingRecordWithExecutor,
-            },
-          };
-        }
-        return m;
-      });
-
-      let rollupContent = `⚖️ **议题已达成共识并定案 (Resolved & Merged)**\n\n**决策方案**：${decision.solution}\n${executorAgent ? `**指派落地执行**：🛠️ ${executorAgent.name} (${executorAgent.handle} · ${executorAgent.role})\n` : ''}**影响文件**：${decision.impactedFiles.join('、') || '无'}\n**签署人**：${decision.approvers.join('、')}\n\n*详细推演过程已在议题抽屉归档保存。*`;
-
-      if (decision.rulingRecord) {
-        const typeText = decision.rulingRecord.decisionType === 'adopt_proposer'
-          ? '⚖️ 采纳主导方案'
-          : decision.rulingRecord.decisionType === 'reject_rebuild'
-          ? '🔄 采纳挑战驳回重构'
-          : '📊 达成架构权衡矩阵';
-        const minoritySection = currentMinorityReport
-          ? `\n\n📌 **伴生少数派异议备案 (Minority Dissent)**：\n- **异议代表**：${currentMinorityReport.dissentingAgentName}\n- **保留意见**：${currentMinorityReport.coreDissentThesis}\n- **自洽逻辑**：${currentMinorityReport.rationalityBasis}\n- **黑天鹅重启条件**：\n${currentMinorityReport.reopeningTriggers.map((t) => `  • ${t}`).join('\n')}`
-          : '';
-        rollupContent = `⚖️ **博弈讨论仲裁定案 (${typeText})**\n\n**仲裁裁决官**：${decision.rulingRecord.arbiterName}\n**裁决结论**：${decision.rulingRecord.summary}\n${decision.solution ? `**实施/重构方案**：${decision.solution}\n` : ''}${decision.rulingRecord.tradeOffPoints && decision.rulingRecord.tradeOffPoints.length > 0 ? `**关键权衡要点**：\n${decision.rulingRecord.tradeOffPoints.map((p) => `- ${p}`).join('\n')}\n` : ''}${minoritySection}${decision.rulingRecord.exemptionReason ? `\n**特权豁免记录**：⚠️ 已执行人类首席仲裁官具名豁免 (${decision.rulingRecord.exemptionReason})\n` : ''}${executorAgent ? `\n**指派落地执行**：🛠️ ${executorAgent.name} (${executorAgent.handle} · ${executorAgent.role})\n` : ''}**影响文件**：${decision.impactedFiles.join('、') || '无'}\n**签署裁决**：${decision.approvers.join('、')}\n\n*博弈论证与仲裁全过程已归档。*`;
-      }
-
-      const rollupNotice: Message = {
-        id: `msg-rollup-${topicId}`,
-        threadId: parentThreadId,
-        channelId: activeTopicData?.channelId || activeChannel?.id,
-        authorId: 'system',
-        authorName: decision.rulingRecord ? 'Shadow Crew 仲裁法槌' : 'Shadow Crew 共识引擎',
-        authorHandle: decision.rulingRecord ? '@arbiter-gavel' : '@consensus-engine',
-        authorAvatar: '⚖️',
-        isAgent: true,
-        kind: 'rollup',
-        agentBadge: decision.rulingRecord ? 'Arbiter Ruling' : 'Consensus Rollup',
-        timestamp: resolvedAt,
-        relatedTopicId: topicId,
-        content: rollupContent,
-      };
-
-      const hasExistingRollup = updatedChannelMsgs.some(
-        (m) => m.relatedTopicId === topicId && (m.kind === 'rollup' || m.id.startsWith('msg-rollup-'))
-      );
-      const finalChannelMsgs = hasExistingRollup
-        ? updatedChannelMsgs.map((m) =>
-            m.relatedTopicId === topicId && m.id.startsWith('msg-rollup-') ? rollupNotice : m
-          )
-        : [...updatedChannelMsgs, rollupNotice];
-
-      return {
-        ...prev,
-        [parentThreadId]: finalChannelMsgs,
-      };
-    });
-
-    if (shouldDispatch && targetExecutorId) {
-      setTimeout(() => {
-        dispatchTopicExecution({
-          topicId,
-          executorId: targetExecutorId,
-          decision: {
-            ...decision,
-            rulingRecord: rulingRecordWithExecutor,
-          },
-        });
-      }, 300);
-    }
-  };
-
-  const handleExecuteTopicPatch = (topicId: string, executorId: string) => {
-    const currentTopic = getTopicData(topicId);
-    if (!currentTopic) return;
-    updateTopicDataInState(topicId, (old) => ({
-      ...old,
-      gameTheoreticState: {
-        ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
-        executionVerificationRepairAttempts: 0,
-      },
-    }));
-    dispatchTopicExecution({
-      topicId,
-      executorId,
-      decision: {
-        solution: currentTopic.decisionRecord?.solution || currentTopic.rulingRecord?.solution || currentTopic.description || currentTopic.title,
-        impactedFiles: currentTopic.decisionRecord?.impactedFiles || currentTopic.rulingRecord?.impactedFiles || [],
-        approvers: currentTopic.decisionRecord?.approvers || [],
-        rulingRecord: currentTopic.rulingRecord,
-      },
-    });
-  };
-
-  const appendTopicSystemMessage = (
-    topicId: string,
-    _channelId: string | undefined,
-    message: Message
-  ) => {
-    setMessages((prev) => ({
-      ...prev,
-      [topicId]: [...(prev[topicId] || []), message],
-    }));
-  };
-
-  const handleApplyTopicPatch = async (topicId?: string, customDiffs?: TopicPatchDiffItem[]) => {
-    const targetTopicId = topicId || activeDiff?.topicId || activeTopicId;
-    const currentTopic = targetTopicId ? getTopicData(targetTopicId) : null;
-    const requestedDiffs: TopicPatchDiffItem[] =
-      customDiffs && customDiffs.length > 0
-        ? customDiffs
-        : currentTopic?.gameTheoreticState?.executionDiffs ||
-          (activeDiff?.allDiffs && activeDiff.allDiffs.length > 0 ? activeDiff.allDiffs : activeDiff ? [activeDiff] : []);
-
-    // 已经真实落盘的文件不再重复应用，避免二次合入制造冲突。
-    const diffsToApply = requestedDiffs.filter((diff) => diff.applyStatus !== 'applied');
-    if (diffsToApply.length === 0) return;
-
-    const topicChannel =
-      (currentTopic?.channelId ? channels.find((c) => c.id === currentTopic.channelId) : null) ||
-      activeChannel;
-    const effectiveChanId = topicChannel?.id || 'general';
-    const topicBinding = getTopicWorkspaceBinding(targetTopicId || currentTopic?.id);
-    if (!topicBinding) {
-      throw new Error(`议题 ${targetTopicId || currentTopic?.id || 'unknown'} 缺少 Workspace Binding`);
-    }
-
-    const res = await applyTopicPatchToWorkspace({
-      workspaceBindingId: topicBinding.id,
-      workspaceRoot: topicBinding.cwd,
-      artifactRoot: topicBinding.artifactRoot,
-      channelId: effectiveChanId,
-      topicId: targetTopicId || 'adhoc-patch',
-      patches: diffsToApply,
-    });
-
-    const appliedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const updatedDiffs: TopicPatchDiffItem[] = diffsToApply.map((diff, index) => {
-      // Rust 按输入顺序逐项返回状态；索引映射可避免路径前缀归一化造成的匹配失败。
-      const match =
-        res.appliedFiles[index] ||
-        res.appliedFiles.find((file) => file.filename === diff.filename);
-      return {
-        ...diff,
-        applied: match?.status === 'applied',
-        appliedMode: match?.mode || 'failed',
-        applyStatus: match?.status || 'failed',
-        applyError: match?.error,
-        backupPath: match?.backupPath,
-        targetPath: match?.targetPath,
-      };
-    });
-    const realAppliedCount = updatedDiffs.filter((diff) => diff.applied).length;
-    const allApplied = realAppliedCount === diffsToApply.length;
-    const execMeta = currentTopic?.gameTheoreticState?.executionUiMeta;
-    const mergedDiffs = [
-      ...(currentTopic?.gameTheoreticState?.executionDiffs || []).map(
-        (existing) => updatedDiffs.find((updated) => updated.filename === existing.filename) || existing
-      ),
-      ...updatedDiffs.filter(
-        (updated) =>
-          !(currentTopic?.gameTheoreticState?.executionDiffs || []).some(
-            (existing) => existing.filename === updated.filename
-          )
-      ),
-    ];
-
-    if (targetTopicId) {
-      updateTopicDataInState(targetTopicId, (old) => ({
-        ...old,
-        gameTheoreticState: {
-          ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
-          executionStatus: allApplied ? 'applied' : 'failed',
-          executionAppliedAt: realAppliedCount > 0 ? appliedAt : old.gameTheoreticState?.executionAppliedAt,
-          executionArtifactsDir: res.artifactsDir || old.gameTheoreticState?.executionArtifactsDir,
-          executionSummary: res.summary,
-          executionDiffs: mergedDiffs,
-          executionPatchHistoryPath: res.historyPath || old.gameTheoreticState?.executionPatchHistoryPath,
-          executionVerification:
-            realAppliedCount > 0
-              ? {
-                  status: 'running',
-                  checkedAt: new Date().toISOString(),
-                  commands: [],
-                  summary: '补丁已落盘，正在执行宿主验证命令...',
-                }
-              : undefined,
-        },
-      }));
-
-      const detailLines = res.appliedFiles
-        .map((file) => {
-          const statusLabel =
-            file.status === 'applied'
-              ? `已合入 (${file.mode})`
-              : file.status === 'conflict'
-              ? '冲突，已拒绝覆盖'
-              : file.status === 'archived_only'
-              ? '仅归档，未写入工作区'
-              : '失败';
-          return `  • \`${file.filename}\` → ${statusLabel}${file.error ? `：${file.error}` : ''}`;
-        })
-        .join('\n');
-      const applyConfirmMsg: Message = {
-        id: `topic-patch-applied-${Date.now()}`,
-        threadId: targetTopicId,
-        channelId: topicChannel?.id,
-        authorId: 'system',
-        authorName: 'Shadow Crew 工作区合入引擎',
-        authorHandle: '@workspace-patcher',
-        authorAvatar: realAppliedCount > 0 ? '⚖️' : '⚠️',
-        isAgent: true,
-        agentBadge: allApplied ? 'Workspace Applied' : 'Workspace Patch Conflict',
-        timestamp: appliedAt,
-        relatedTopicId: targetTopicId,
-        content: `${realAppliedCount > 0 ? '✅' : '❌'} **${execMeta?.podTitle || '决议交付文件'}合入结果**\n\n- **合入摘要**：${res.summary}\n- **归档目录**：\`${res.artifactsDir || '未生成'}\`\n- **变更文件明细**：\n${detailLines || '  • 无'}`,
-      };
-
-      setMessages((prev) => {
-        const existingTopicMsgs = prev[targetTopicId] || [];
-        let parentThreadId: string | null = null;
-        for (const [tId, msgList] of Object.entries(prev) as [string, Message[]][]) {
-          if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === targetTopicId)) {
-            parentThreadId = tId;
-            break;
-          }
-        }
-        const updatedParentMsgs = parentThreadId
-          ? (prev[parentThreadId] || []).map((m) => {
-              if (m.relatedTopicId === targetTopicId && m.id.startsWith('msg-rollup-')) {
-                const baseContent = m.content.split('\n\n---\n')[0];
-                return {
-                  ...m,
-                  content: `${baseContent}\n\n---\n${realAppliedCount > 0 ? '🎉' : '⚠️'} **${execMeta?.podTitle || '决议交付'}合入结果 (${appliedAt})**：${res.summary}（归档于 \`${res.artifactsDir || '未生成'}\`）`,
-                };
-              }
-              return m;
-            })
-          : [];
-
-        return {
-          ...prev,
-          [targetTopicId]: [...existingTopicMsgs, applyConfirmMsg],
-          ...(parentThreadId ? { [parentThreadId]: updatedParentMsgs } : {}),
-        };
-      });
-    }
-
-    setActiveDiff((prev: any) =>
-      prev
-        ? {
-            ...prev,
-            executionStatus: allApplied ? 'applied' : 'failed',
-            artifactsDir: res.artifactsDir,
-            allDiffs: mergedDiffs,
-          }
-        : prev
-    );
-
-    if (realAppliedCount === 0) return;
-
-    // P0-2：补丁真实落盘后，执行宿主验证并记录证据。
-    const verification = await verifyWorkspaceAfterPatch({
-      workspaceBindingId: topicBinding.id,
-      workspaceRoot: topicBinding.cwd,
-      channelId: effectiveChanId,
-      topicId: targetTopicId || 'adhoc-patch',
-    });
-
-    const executorId =
-      currentTopic?.gameTheoreticState?.assignedExecutorId ||
-      currentTopic?.decisionRecord?.executorId ||
-      currentTopic?.rulingRecord?.executorId;
-    const executorAgent = executorId ? agentsRef.current.find((agent) => agent.id === executorId) : undefined;
-    const previousAttempts = currentTopic?.gameTheoreticState?.executionVerificationRepairAttempts || 0;
-    const repairLimit = resolveCorrectionRetryLimit(executorAgent);
-
-    if (targetTopicId) {
-      updateTopicDataInState(targetTopicId, (old) => ({
-        ...old,
-        gameTheoreticState: {
-          ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
-          executionVerification: verification,
-          executionVerificationRepairAttempts:
-            verification.status === 'passed' ? 0 : old.gameTheoreticState?.executionVerificationRepairAttempts || 0,
-        },
-      }));
-
-      const verificationMsg: Message = {
-        id: `topic-patch-verification-${Date.now()}`,
-        threadId: targetTopicId,
-        channelId: topicChannel?.id,
-        authorId: 'system',
-        authorName: 'Shadow Crew 验证门禁',
-        authorHandle: '@verification-gate',
-        authorAvatar: verification.status === 'passed' ? '🛡️' : verification.status === 'failed' ? '🚫' : '⏭️',
-        isAgent: true,
-        agentBadge: 'Host Verification',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        relatedTopicId: targetTopicId,
-        content: formatVerificationReport(verification),
-      };
-      appendTopicSystemMessage(targetTopicId, topicChannel?.id, verificationMsg);
-
-      if (verification.status === 'failed') {
-        const digest = extractVerificationFailureDigest(verification);
-        if (executorId && executorAgent && previousAttempts < repairLimit) {
-          const nextAttempt = previousAttempts + 1;
-          updateTopicDataInState(targetTopicId, (old) => ({
-            ...old,
-            gameTheoreticState: {
-              ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
-              executionVerificationRepairAttempts: nextAttempt,
-            },
-          }));
-          const repairNotice: Message = {
-            id: `topic-patch-repair-${Date.now()}`,
-            threadId: targetTopicId,
-            channelId: topicChannel?.id,
-            authorId: 'system',
-            authorName: 'Shadow Crew 验证门禁',
-            authorHandle: '@verification-gate',
-            authorAvatar: '🔁',
-            isAgent: true,
-            agentBadge: 'Auto Repair',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            relatedTopicId: targetTopicId,
-            content: `🔁 **验证失败，已自动回派执行 Agent 修复（${nextAttempt}/${repairLimit}）**\n\n\`\`\`\n${digest.slice(0, 1800)}\n\`\`\``,
-          };
-          appendTopicSystemMessage(targetTopicId, topicChannel?.id, repairNotice);
-
-          const baseSolution =
-            currentTopic?.decisionRecord?.solution ||
-            currentTopic?.rulingRecord?.solution ||
-            currentTopic?.description ||
-            currentTopic?.title ||
-            '';
-          setTimeout(() => {
-            dispatchTopicExecution({
-              topicId: targetTopicId,
-              executorId,
-              decision: {
-                solution: `${baseSolution}\n\n【宿主验证失败证据（自动修复第 ${nextAttempt}/${repairLimit} 次）】\n${digest}\n\n请只针对上述真实报错输出最小修正补丁；不要复述方案，不要修改未报错的文件。`,
-                impactedFiles:
-                  currentTopic?.decisionRecord?.impactedFiles ||
-                  currentTopic?.rulingRecord?.impactedFiles ||
-                  updatedDiffs.map((diff) => diff.filename),
-                approvers: currentTopic?.decisionRecord?.approvers || [],
-                rulingRecord: currentTopic?.rulingRecord,
-              },
-            });
-          }, 600);
-        } else {
-          const exhaustedMsg: Message = {
-            id: `topic-patch-repair-exhausted-${Date.now()}`,
-            threadId: targetTopicId,
-            channelId: topicChannel?.id,
-            authorId: 'system',
-            authorName: 'Shadow Crew 验证门禁',
-            authorHandle: '@verification-gate',
-            authorAvatar: '🛑',
-            isAgent: true,
-            agentBadge: 'Manual Required',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            relatedTopicId: targetTopicId,
-            content: `🛑 **验证失败且自动修复次数已用尽**（上限 ${repairLimit} 次）。请人工检查验证输出，或使用「回退本次合入」撤销本地改动。\n\n\`\`\`\n${digest.slice(0, 1800)}\n\`\`\``,
-          };
-          appendTopicSystemMessage(targetTopicId, topicChannel?.id, exhaustedMsg);
-        }
-      }
-    }
-  };
-
-  const handleRollbackTopicPatch = async (topicId?: string) => {
-    const targetTopicId = topicId || activeTopicId;
-    const currentTopic = targetTopicId ? getTopicData(targetTopicId) : null;
-    if (!targetTopicId || !currentTopic) return;
-    const historyPath = currentTopic.gameTheoreticState?.executionPatchHistoryPath;
-    if (!historyPath) {
-      throw new Error('当前议题没有可用的补丁历史快照，无法回退');
-    }
-    const topicBinding = getTopicWorkspaceBinding(targetTopicId);
-    if (!topicBinding) {
-      throw new Error(`议题 ${targetTopicId} 缺少 Workspace Binding`);
-    }
-    const topicChannel =
-      (currentTopic.channelId ? channels.find((c) => c.id === currentTopic.channelId) : null) ||
-      activeChannel;
-
-    const res = await rollbackTopicPatchFromWorkspace({
-      workspaceBindingId: topicBinding.id,
-      channelId: topicChannel?.id || 'general',
-      topicId: targetTopicId,
-      historyPath,
-    });
-
-    const rolledBackAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const rolledBackFiles = new Set(
-      res.files
-        .filter((file) => file.status === 'restored' || file.status === 'deleted_created_file')
-        .map((file) => file.filename)
-    );
-    updateTopicDataInState(targetTopicId, (old) => ({
-      ...old,
-      gameTheoreticState: {
-        ...(old.gameTheoreticState || { currentStage: 'concluded' as GameTheoreticStage }),
-        executionStatus: res.restoredCount > 0 ? 'completed' : old.gameTheoreticState?.executionStatus,
-        executionAppliedAt: res.restoredCount > 0 ? undefined : old.gameTheoreticState?.executionAppliedAt,
-        executionRolledBackAt: res.restoredCount > 0 ? rolledBackAt : old.gameTheoreticState?.executionRolledBackAt,
-        executionPatchHistoryPath: res.ok ? undefined : old.gameTheoreticState?.executionPatchHistoryPath,
-        executionVerification: undefined,
-        executionDiffs: (old.gameTheoreticState?.executionDiffs || []).map((diff) =>
-          rolledBackFiles.has(diff.filename)
-            ? {
-                ...diff,
-                applied: false,
-                applyStatus: undefined,
-                appliedMode: undefined,
-                applyError: undefined,
-                backupPath: undefined,
-                targetPath: undefined,
-              }
-            : diff
-        ),
-      },
-    }));
-
-    const detailLines = res.files
-      .map((file) => `  • \`${file.filename}\` → ${file.status}${file.message ? `：${file.message}` : ''}`)
-      .join('\n');
-    appendTopicSystemMessage(targetTopicId, topicChannel?.id, {
-      id: `topic-patch-rollback-${Date.now()}`,
-      threadId: targetTopicId,
-      channelId: topicChannel?.id,
-      authorId: 'system',
-      authorName: 'Shadow Crew 工作区回退引擎',
-      authorHandle: '@workspace-rollback',
-      authorAvatar: res.ok ? '↩️' : '⚠️',
-      isAgent: true,
-      agentBadge: res.ok ? 'Workspace Rolled Back' : 'Rollback Partial',
-      timestamp: rolledBackAt,
-      relatedTopicId: targetTopicId,
-      content: `${res.ok ? '↩️' : '⚠️'} **补丁回退结果**\n\n- **回退摘要**：${res.summary}\n- **文件明细**：\n${detailLines || '  • 无可回退文件'}`,
-    });
   };
 
   const handleReopenTopic = (topicId: string) => {
@@ -8784,6 +5382,280 @@ export default function App() {
     );
   };
 
+  const handleClearAllMessages = useCallback(async () => {
+    generationEpochRef.current++;
+    bumpGlobalEpoch(turnEpochTrackerRef.current);
+    inFlightHandoverRef.current.clear();
+    stageRefineRetriesRef.current = {};
+    handleAbortAll();
+    setMessages({});
+    messagesRef.current = {};
+    resetAllSessionWarmState();
+    clearLlmSessionHistory();
+    try {
+      await clearAcpAgentSessions();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      setSessionCleanupNotice(
+        `⚠️ 清空全部历史消息时底层 ACP 会话重置异常 (${reason})，已启用 Fail-Closed 保护，请检查连接后重试`
+      );
+      throw err;
+    }
+  }, [handleAbortAll, resetAllSessionWarmState]);
+
+  const handleUpdateAgent = useCallback((agentId: string, updatedData: Partial<Agent>) => {
+    cancelRemoteAgentProbe(agentId);
+    const editGeneration = cancelLocalSpawn(
+      localSpawnGenerationRef.current,
+      agentId
+    );
+    resetAllSessionWarmState();
+    void safelyClearAcpSessions(agentId, undefined, '更新 Agent 配置');
+
+    const existingAgent = agents.find((a) => a.id === agentId);
+    const wasOnline =
+      !!existingAgent && existingAgent.status !== 'idle' && existingAgent.status !== 'error';
+    const wasLocalAgent = Boolean(
+      existingAgent &&
+        !existingAgent.isRemote &&
+        existingAgent.acpTransport !== 'websocket'
+    );
+    const isRemoteAgent = Boolean(
+      updatedData.isRemote ??
+        existingAgent?.isRemote ??
+        updatedData.acpTransport === 'websocket'
+    );
+    if (isRemoteAgent && updatedData.status === 'running') {
+      recordRemoteProbeSuccess(remoteProbeRuntimeRef.current, agentId);
+    }
+
+    setAgents((prev) =>
+      prev.map((a) => {
+        if (a.id === agentId) {
+          const nextStatus =
+            updatedData.status !== undefined
+              ? updatedData.status
+              : isRemoteAgent
+                ? a.status || 'idle'
+                : 'idle';
+          const merged: Agent = {
+            ...a,
+            ...updatedData,
+            status: nextStatus,
+            workspace: {
+              ...a.workspace,
+              ...(updatedData.workspace || {}),
+            },
+          };
+          if (nextStatus !== 'running') {
+            return resetAgentHandshakeCapabilities(
+              merged,
+              nextStatus,
+              updatedData.statusDetail
+            );
+          }
+          return merged;
+        }
+        return a;
+      })
+    );
+
+    if (updatedData.name || updatedData.avatar || updatedData.handle) {
+      setThreads((prev) =>
+        prev.map((t) => {
+          if (t.authorId === agentId || t.id === `thread-dm-${agentId}`) {
+            const newName = updatedData.name ?? t.authorName;
+            const newAvatar = updatedData.avatar ?? t.authorAvatar;
+            const newHandle = updatedData.handle ?? t.authorHandle;
+            return {
+              ...t,
+              authorName: newName,
+              authorAvatar: newAvatar,
+              authorHandle: newHandle,
+              ...(t.type === 'dm'
+                ? {
+                    title: `与 ${newName} 的私信会话`,
+                    channelName: `与 ${newName} 私聊`,
+                  }
+                : {}),
+            };
+          }
+          return t;
+        })
+      );
+
+      setMessages((prev) => {
+        let changed = false;
+        const next: Record<string, Message[]> = {};
+        for (const [threadId, msgs] of Object.entries(prev)) {
+          let threadChanged = false;
+          const newMsgs = msgs.map((m) => {
+            const isAuthor = m.authorId === agentId;
+            const isTopicAuthor = m.topicData && m.topicData.authorId === agentId;
+            if (isAuthor || isTopicAuthor) {
+              threadChanged = true;
+              return {
+                ...m,
+                ...(isAuthor && updatedData.name ? { authorName: updatedData.name } : {}),
+                ...(isAuthor && updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
+                ...(isAuthor && updatedData.handle ? { authorHandle: updatedData.handle } : {}),
+                ...(m.topicData ? {
+                  topicData: {
+                    ...m.topicData,
+                    ...(isTopicAuthor && updatedData.name ? { authorName: updatedData.name } : {}),
+                    ...(isTopicAuthor && updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
+                  },
+                } : {}),
+              };
+            }
+            return m;
+          });
+          if (threadChanged) {
+            changed = true;
+            next[threadId] = newMsgs;
+          } else {
+            next[threadId] = msgs;
+          }
+        }
+        return changed ? next : prev;
+      });
+
+      setSubThreads((prev) => {
+        let changed = false;
+        const next: Record<string, SubThread> = {};
+        for (const [subId, sub] of Object.entries(prev)) {
+          let subChanged = false;
+          const newMsgs = sub.messages.map((m) => {
+            if (m.authorId === agentId) {
+              subChanged = true;
+              return {
+                ...m,
+                ...(updatedData.name ? { authorName: updatedData.name } : {}),
+                ...(updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
+                ...(updatedData.handle ? { authorHandle: updatedData.handle } : {}),
+              };
+            }
+            return m;
+          });
+          if (subChanged) {
+            changed = true;
+            next[subId] = { ...sub, messages: newMsgs };
+          } else {
+            next[subId] = sub;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+
+    const tauriInvoke =
+      typeof window !== 'undefined'
+        ? (window as any).__TAURI_INTERNALS__?.invoke || (window as any).__TAURI__?.core?.invoke
+        : undefined;
+    if ((wasLocalAgent || !isRemoteAgent) && tauriInvoke) {
+      tauriInvoke('stop_acp_agent', { agentId })
+        .then(async () => {
+          await syncRunningAgentsWithBackend();
+          if (
+            !isRemoteAgent &&
+            wasOnline &&
+            existingAgent &&
+            updatedData.isModelHealthy !== false &&
+            isCurrentLocalSpawnGeneration(
+              localSpawnGenerationRef.current,
+              agentId,
+              editGeneration
+            )
+          ) {
+            const respawnAgent: Agent = { ...existingAgent, ...updatedData } as Agent;
+            spawnLocalAcpAgent(respawnAgent);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [
+    agents,
+    cancelRemoteAgentProbe,
+    resetAllSessionWarmState,
+    safelyClearAcpSessions,
+    spawnLocalAcpAgent,
+    syncRunningAgentsWithBackend,
+  ]);
+
+  const handleConnectAgent = useCallback((agentData: Partial<Agent>) => {
+    const initialStatus = agentData.status || 'idle';
+    const isOnlineOnCreate = initialStatus === 'running';
+    const baseMemory =
+      agentData.memory || {
+        ...createAgentMemoryBank('native'),
+        nativeCapability: createUnknownNativeMemoryCapability(),
+      };
+    const effectiveMemory = isOnlineOnCreate
+      ? baseMemory
+      : {
+          ...baseMemory,
+          nativeCapability: createUnknownNativeMemoryCapability(),
+        };
+    const rawNewAg: Agent = {
+      id: `agent-${Date.now()}`,
+      name: agentData.name || 'Custom Agent',
+      handle: agentData.handle || `@${(agentData.name || 'agent').toLowerCase()}`,
+      avatar: agentData.avatar || '🥷',
+      role: agentData.role || 'Specialized Agent',
+      description: agentData.description || agentData.role || 'Custom ACP Agent',
+      color: '#06b6d4',
+      status: initialStatus,
+      modelBadge: agentData.modelBadge || (agentData.isRemote ? 'Remote ACP' : 'ACP Stdio'),
+      modelConfig: agentData.modelConfig,
+      runtimePolicy: resolveEffectiveRuntimePolicy({
+        runtimePolicy: agentData.runtimePolicy,
+      }),
+      isModelHealthy: agentData.isModelHealthy,
+      modelLatencyMs: agentData.modelLatencyMs,
+      statusDetail: agentData.statusDetail,
+      localAcpProfile: agentData.localAcpProfile,
+      envVars: agentData.envVars,
+      isManagedByYou: true,
+      isRemote: agentData.isRemote,
+      remoteUrl: agentData.remoteUrl,
+      authToken: agentData.authToken,
+      remoteLatencyMs: agentData.remoteLatencyMs,
+      readOnlyGuard: agentData.readOnlyGuard,
+      acpTransport: agentData.acpTransport || (agentData.isRemote ? 'websocket' : 'stdio'),
+      acpCommandOrUrl: agentData.acpCommandOrUrl || (agentData.isRemote ? (agentData.remoteUrl || 'ws://127.0.0.1:9090/acp') : 'cargo run --bin custom-agent -- --acp'),
+      protocolVersion: '2 (ACP v2.0.0)',
+      capabilities: {
+        canAccessWorkspaceFiles: true,
+        canExecuteSkills: true,
+        canDelegateToSubAgents: true,
+        supportsStreaming: true,
+        ...(agentData.capabilities || {}),
+        canUseInternalMemory:
+          isOnlineOnCreate &&
+          effectiveMemory.mode === 'native' &&
+          effectiveMemory.nativeCapability.status === 'enabled',
+      },
+      workspace: {
+        rootPath: agentData.workspace?.rootPath || '~/.shadow-crew',
+        repoName: 'shadow-crew-workspace',
+        gitBranch: 'main',
+        permissionMode: agentData.readOnlyGuard ? 'read_only' : 'full_read_write',
+        activeFiles: ['~/.shadow-crew/agents'],
+      },
+      skills: [],
+      memory: effectiveMemory,
+    };
+    const newAg = isOnlineOnCreate
+      ? rawNewAg
+      : resetAgentHandshakeCapabilities(
+          rawNewAg,
+          initialStatus,
+          agentData.statusDetail
+        );
+    setAgents((prev) => [...prev, newAg]);
+    setDuplicatingAgent(null);
+  }, []);
+
   const activeWorkspaceCwd = activeChannel
     ? findWorkspaceBinding(workspaceBindings, 'channel', activeChannel.id)?.cwd
     : undefined;
@@ -9190,450 +6062,94 @@ export default function App() {
         />
       )}
 
-      {/* 7. Modals: Agent Teams Management */}
-      {isAgentTeamsModalOpen && (
-        <AgentTeamsModal
-          isOpen={isAgentTeamsModalOpen}
-          onClose={() => setIsAgentTeamsModalOpen(false)}
-          agents={agents}
-          teams={teams}
-          onCreateTeam={(newTeam) => {
-            const created: AgentTeam = { ...newTeam, id: `team-${Date.now()}` };
-            setTeams((prev) => [...prev, created]);
-          }}
-          onOpenConnectModal={() => {
-            setEditingAgent(null);
-            setDuplicatingAgent(null);
-            setIsConnectModalOpen(true);
-          }}
-        />
-      )}
-
-      {/* 7.1 Modal: Create Team Popup */}
-      {isCreateTeamModalOpen && (
-        <CreateTeamModal
-          isOpen={isCreateTeamModalOpen}
-          onClose={() => setIsCreateTeamModalOpen(false)}
-          agents={agents}
-          onCreateTeam={(newTeam) => {
-            const created: AgentTeam = { ...newTeam, id: `team-${Date.now()}` };
-            setTeams((prev) => [...prev, created]);
-          }}
-        />
-      )}
-
-      {/* 7.2 Modal: Agent Defaults */}
-      {isAgentDefaultsModalOpen && (
-        <AgentDefaultsModal
-          isOpen={isAgentDefaultsModalOpen}
-          onClose={() => setIsAgentDefaultsModalOpen(false)}
-          onOpenStorageSettings={() => setIsStorageSettingsModalOpen(true)}
-        />
-      )}
-
-      {pendingAcpPermissions[0] && (
-        <AcpPermissionModal
-          request={pendingAcpPermissions[0]}
-          agent={agents.find((agent) => agent.id === pendingAcpPermissions[0].agentId)}
-          queuedCount={Math.max(0, pendingAcpPermissions.length - 1)}
-          onDecision={handleAcpPermissionDecision}
-        />
-      )}
-
-      <AcpPermissionCenterModal
-        isOpen={isPermissionCenterOpen}
+      {/* 7. App Modals Container */}
+      <AppModalsContainer
+        isAgentTeamsModalOpen={isAgentTeamsModalOpen}
+        onCloseAgentTeamsModal={() => setIsAgentTeamsModalOpen(false)}
         agents={agents}
-        onClose={() => setIsPermissionCenterOpen(false)}
-      />
-
-      {/* 7.3 Modal: Storage Architecture & Cache Management (Option 3: SQLite) */}
-      {isStorageSettingsModalOpen && (
-        <StorageSettingsModal
-          isOpen={isStorageSettingsModalOpen}
-          onClose={() => setIsStorageSettingsModalOpen(false)}
-          messages={Object.values(messages).flat()}
-          onMessagesCleared={async () => {
-            generationEpochRef.current++;
-            bumpGlobalEpoch(turnEpochTrackerRef.current);
-            inFlightHandoverRef.current.clear();
-            stageRefineRetriesRef.current = {};
-            handleAbortAll();
-            setMessages({});
-            messagesRef.current = {};
-            resetAllSessionWarmState();
-            clearLlmSessionHistory();
-            try {
-              await clearAcpAgentSessions();
-            } catch (err) {
-              const reason = err instanceof Error ? err.message : String(err);
-              setSessionCleanupNotice(
-                `⚠️ 清空全部历史消息时底层 ACP 会话重置异常 (${reason})，已启用 Fail-Closed 保护，请检查连接后重试`
-              );
-              throw err;
-            }
-          }}
-        />
-      )}
-
-      {/* 8. Modals: Create Topic / Channel */}
-      {isCreateChannelOpen && (
-        <CreateChannelModal
-          isOpen={isCreateChannelOpen}
-          onClose={() => setIsCreateChannelOpen(false)}
-          currentUserId={currentUserId}
-          teams={teams}
-          agents={agents}
-          onCreateChannel={handleCreateChannel}
-        />
-      )}
-
-      {/* 8.1 Modal: Channel Members & Invites */}
-      {targetModalChannel && isChannelMembersModalOpen && (
-        <ChannelMembersModal
-          isOpen={isChannelMembersModalOpen}
-          onClose={() => {
-            setIsChannelMembersModalOpen(false);
-            setModalChannelId(null);
-          }}
-          channel={targetModalChannel}
-          agents={agents}
-          currentUserId={currentUserId}
-          onUpdateMembers={handleUpdateChannelMembers}
-        />
-      )}
-
-      {/* 8.2 Modal: Delete Channel Confirmation */}
-      {targetModalChannel && isDeleteChannelModalOpen && (
-        <DeleteChannelModal
-          isOpen={isDeleteChannelModalOpen}
-          onClose={() => {
-            setIsDeleteChannelModalOpen(false);
-            setModalChannelId(null);
-          }}
-          channel={targetModalChannel}
-          unresolvedTopicsCount={modalChannelUnresolvedTopics}
-          onConfirmDelete={handleDeleteChannel}
-        />
-      )}
-
-      {/* 9. Connect / Edit ACP Agent Modal */}
-      {isConnectModalOpen && (
-        <ConnectAgentModal
-          isOpen={isConnectModalOpen}
-        onClose={() => {
+        teams={teams}
+        onCreateTeam={(newTeam) => {
+          const created: AgentTeam = { ...newTeam, id: `team-${Date.now()}` };
+          setTeams((prev) => [...prev, created]);
+        }}
+        onOpenConnectModalFromTeams={() => {
+          setEditingAgent(null);
+          setDuplicatingAgent(null);
+          setIsConnectModalOpen(true);
+        }}
+        isCreateTeamModalOpen={isCreateTeamModalOpen}
+        onCloseCreateTeamModal={() => setIsCreateTeamModalOpen(false)}
+        isAgentDefaultsModalOpen={isAgentDefaultsModalOpen}
+        onCloseAgentDefaultsModal={() => setIsAgentDefaultsModalOpen(false)}
+        onOpenStorageSettings={() => setIsStorageSettingsModalOpen(true)}
+        pendingAcpPermissions={pendingAcpPermissions}
+        onAcpPermissionDecision={handleAcpPermissionDecision}
+        isPermissionCenterOpen={isPermissionCenterOpen}
+        onClosePermissionCenter={() => setIsPermissionCenterOpen(false)}
+        isStorageSettingsModalOpen={isStorageSettingsModalOpen}
+        onCloseStorageSettingsModal={() => setIsStorageSettingsModalOpen(false)}
+        allMessages={Object.values(messages).flat()}
+        onMessagesCleared={handleClearAllMessages}
+        isCreateChannelOpen={isCreateChannelOpen}
+        onCloseCreateChannelModal={() => setIsCreateChannelOpen(false)}
+        currentUserId={currentUserId}
+        onCreateChannel={handleCreateChannel}
+        targetModalChannel={targetModalChannel}
+        isChannelMembersModalOpen={isChannelMembersModalOpen}
+        onCloseChannelMembersModal={() => {
+          setIsChannelMembersModalOpen(false);
+          setModalChannelId(null);
+        }}
+        onUpdateChannelMembers={handleUpdateChannelMembers}
+        isDeleteChannelModalOpen={isDeleteChannelModalOpen}
+        onCloseDeleteChannelModal={() => {
+          setIsDeleteChannelModalOpen(false);
+          setModalChannelId(null);
+        }}
+        modalChannelUnresolvedTopics={modalChannelUnresolvedTopics}
+        onDeleteChannel={handleDeleteChannel}
+        isConnectModalOpen={isConnectModalOpen}
+        onCloseConnectModal={() => {
           setIsConnectModalOpen(false);
           setEditingAgent(null);
           setDuplicatingAgent(null);
         }}
-        initialAgent={editingAgent}
-        duplicateAgent={duplicatingAgent}
+        editingAgent={editingAgent}
+        duplicatingAgent={duplicatingAgent}
         defaultWorkspaceRoot="~/.shadow-crew"
-        onUpdateAgent={(agentId, updatedData) => {
-          // Invalidate any in-flight remote probe or local spawn so an edit cannot be
-          // overwritten by an attempt that started with the previous config.
-          cancelRemoteAgentProbe(agentId);
-          const editGeneration = cancelLocalSpawn(
-            localSpawnGenerationRef.current,
-            agentId
-          );
-          // 清空已交付公约、花名册缓存与水位线，确保后续全会话即时重装最新的人设与团队花名册
-          resetAllSessionWarmState();
-          void safelyClearAcpSessions(agentId, undefined, '更新 Agent 配置');
-
-          const existingAgent = agents.find((a) => a.id === agentId);
-          const wasOnline =
-            !!existingAgent && existingAgent.status !== 'idle' && existingAgent.status !== 'error';
-          const wasLocalAgent = Boolean(
-            existingAgent &&
-              !existingAgent.isRemote &&
-              existingAgent.acpTransport !== 'websocket'
-          );
-          const isRemoteAgent = Boolean(
-            updatedData.isRemote ??
-              existingAgent?.isRemote ??
-              updatedData.acpTransport === 'websocket'
-          );
-          if (isRemoteAgent && updatedData.status === 'running') {
-            recordRemoteProbeSuccess(remoteProbeRuntimeRef.current, agentId);
-          }
-
-          setAgents((prev) =>
-            prev.map((a) => {
-              if (a.id === agentId) {
-                const nextStatus =
-                  updatedData.status !== undefined
-                    ? updatedData.status
-                    : isRemoteAgent
-                      ? a.status || 'idle'
-                      : 'idle';
-                const merged: Agent = {
-                  ...a,
-                  ...updatedData,
-                  status: nextStatus,
-                  workspace: {
-                    ...a.workspace,
-                    ...(updatedData.workspace || {}),
-                  },
-                };
-                if (nextStatus !== 'running') {
-                  return resetAgentHandshakeCapabilities(
-                    merged,
-                    nextStatus,
-                    updatedData.statusDetail
-                  );
-                }
-                return merged;
-              }
-              return a;
-            })
-          );
-
-          // 远程 Agent 的 online/dismiss 状态由保存时的 WebSocket 探测结果直接驱动；
-          // 本地 Agent 通过进程重启自证连通性，无需额外轮询
-
-          // 同步全量更新所有线程中由该 Agent 发起或该 Agent 的 DM 会话
-          if (updatedData.name || updatedData.avatar || updatedData.handle) {
-            setThreads((prev) =>
-              prev.map((t) => {
-                if (t.authorId === agentId || t.id === `thread-dm-${agentId}`) {
-                  const newName = updatedData.name ?? t.authorName;
-                  const newAvatar = updatedData.avatar ?? t.authorAvatar;
-                  const newHandle = updatedData.handle ?? t.authorHandle;
-                  return {
-                    ...t,
-                    authorName: newName,
-                    authorAvatar: newAvatar,
-                    authorHandle: newHandle,
-                    ...(t.type === 'dm'
-                      ? {
-                          title: `与 ${newName} 的私信会话`,
-                          channelName: `与 ${newName} 私聊`,
-                        }
-                      : {}),
-                  };
-                }
-                return t;
-              })
-            );
-
-            // 同步更新所有会话/频道中该 Agent 历史与当前发言的头像与昵称（包含议题卡片元数据）
-            setMessages((prev) => {
-              let changed = false;
-              const next: Record<string, Message[]> = {};
-              for (const [threadId, msgs] of Object.entries(prev)) {
-                let threadChanged = false;
-                const newMsgs = msgs.map((m) => {
-                  const isAuthor = m.authorId === agentId;
-                  const isTopicAuthor = m.topicData && m.topicData.authorId === agentId;
-                  if (isAuthor || isTopicAuthor) {
-                    threadChanged = true;
-                    return {
-                      ...m,
-                      ...(isAuthor && updatedData.name ? { authorName: updatedData.name } : {}),
-                      ...(isAuthor && updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
-                      ...(isAuthor && updatedData.handle ? { authorHandle: updatedData.handle } : {}),
-                      ...(m.topicData ? {
-                        topicData: {
-                          ...m.topicData,
-                          ...(isTopicAuthor && updatedData.name ? { authorName: updatedData.name } : {}),
-                          ...(isTopicAuthor && updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
-                        },
-                      } : {}),
-                    };
-                  }
-                  return m;
-                });
-                if (threadChanged) {
-                  changed = true;
-                  next[threadId] = newMsgs;
-                } else {
-                  next[threadId] = msgs;
-                }
-              }
-              return changed ? next : prev;
-            });
-
-            // 同步更新所有子话题 (SubThread) 中该 Agent 的历史与当前回复
-            setSubThreads((prev) => {
-              let changed = false;
-              const next: Record<string, SubThread> = {};
-              for (const [subId, sub] of Object.entries(prev)) {
-                let subChanged = false;
-                const newMsgs = sub.messages.map((m) => {
-                  if (m.authorId === agentId) {
-                    subChanged = true;
-                    return {
-                      ...m,
-                      ...(updatedData.name ? { authorName: updatedData.name } : {}),
-                      ...(updatedData.avatar ? { authorAvatar: updatedData.avatar } : {}),
-                      ...(updatedData.handle ? { authorHandle: updatedData.handle } : {}),
-                    };
-                  }
-                  return m;
-                });
-                if (subChanged) {
-                  changed = true;
-                  next[subId] = { ...sub, messages: newMsgs };
-                } else {
-                  next[subId] = sub;
-                }
-              }
-              return changed ? next : prev;
-            });
-          }
-
-          // 若编辑前是本地 Agent（即便切换为远程模式），必须先终止旧本地子进程防泄漏；
-          // 若编辑后仍为本地 Agent 且编辑前在线，则以新配置自动重启恢复 online
-          const tauriInvoke =
-            typeof window !== 'undefined'
-              ? (window as any).__TAURI_INTERNALS__?.invoke || (window as any).__TAURI__?.core?.invoke
-              : undefined;
-          if ((wasLocalAgent || !isRemoteAgent) && tauriInvoke) {
-            tauriInvoke('stop_acp_agent', { agentId })
-              .then(async () => {
-                await syncRunningAgentsWithBackend();
-                if (
-                  !isRemoteAgent &&
-                  wasOnline &&
-                  existingAgent &&
-                  updatedData.isModelHealthy !== false &&
-                  isCurrentLocalSpawnGeneration(
-                    localSpawnGenerationRef.current,
-                    agentId,
-                    editGeneration
-                  )
-                ) {
-                  const respawnAgent: Agent = { ...existingAgent, ...updatedData } as Agent;
-                  spawnLocalAcpAgent(respawnAgent);
-                }
-              })
-              .catch(() => {});
-          }
-        }}
-        onConnectAgent={(agentData) => {
-          const initialStatus = agentData.status || 'idle';
-          const isOnlineOnCreate = initialStatus === 'running';
-          const baseMemory =
-            agentData.memory || {
-              ...createAgentMemoryBank('native'),
-              nativeCapability: createUnknownNativeMemoryCapability(),
-            };
-          const effectiveMemory = isOnlineOnCreate
-            ? baseMemory
-            : {
-                ...baseMemory,
-                nativeCapability: createUnknownNativeMemoryCapability(),
-              };
-          const rawNewAg: Agent = {
-            id: `agent-${Date.now()}`,
-            name: agentData.name || 'Custom Agent',
-            handle: agentData.handle || `@${(agentData.name || 'agent').toLowerCase()}`,
-            avatar: agentData.avatar || '🥷',
-            role: agentData.role || 'Specialized Agent',
-            description: agentData.description || agentData.role || 'Custom ACP Agent',
-            color: '#06b6d4',
-            status: initialStatus,
-            modelBadge: agentData.modelBadge || (agentData.isRemote ? 'Remote ACP' : 'ACP Stdio'),
-            modelConfig: agentData.modelConfig,
-            runtimePolicy: resolveEffectiveRuntimePolicy({
-              runtimePolicy: agentData.runtimePolicy,
-            }),
-            isModelHealthy: agentData.isModelHealthy,
-            modelLatencyMs: agentData.modelLatencyMs,
-            statusDetail: agentData.statusDetail,
-            localAcpProfile: agentData.localAcpProfile,
-            envVars: agentData.envVars,
-            isManagedByYou: true,
-            isRemote: agentData.isRemote,
-            remoteUrl: agentData.remoteUrl,
-            authToken: agentData.authToken,
-            remoteLatencyMs: agentData.remoteLatencyMs,
-            readOnlyGuard: agentData.readOnlyGuard,
-            acpTransport: agentData.acpTransport || (agentData.isRemote ? 'websocket' : 'stdio'),
-            acpCommandOrUrl: agentData.acpCommandOrUrl || (agentData.isRemote ? (agentData.remoteUrl || 'ws://127.0.0.1:9090/acp') : 'cargo run --bin custom-agent -- --acp'),
-            protocolVersion: '2 (ACP v2.0.0)',
-            capabilities: {
-              canAccessWorkspaceFiles: true,
-              canExecuteSkills: true,
-              canDelegateToSubAgents: true,
-              supportsStreaming: true,
-              ...(agentData.capabilities || {}),
-              canUseInternalMemory:
-                isOnlineOnCreate &&
-                effectiveMemory.mode === 'native' &&
-                effectiveMemory.nativeCapability.status === 'enabled',
-            },
-            workspace: {
-              rootPath: agentData.workspace?.rootPath || '~/.shadow-crew',
-              repoName: 'shadow-crew-workspace',
-              gitBranch: 'main',
-              permissionMode: agentData.readOnlyGuard ? 'read_only' : 'full_read_write',
-              activeFiles: ['~/.shadow-crew/agents'],
-            },
-            skills: [],
-            memory: effectiveMemory,
-          };
-          const newAg = isOnlineOnCreate
-            ? rawNewAg
-            : resetAgentHandshakeCapabilities(
-                rawNewAg,
-                initialStatus,
-                agentData.statusDetail
-              );
-          setAgents((prev) => [...prev, newAg]);
-          setDuplicatingAgent(null);
-        }}
-      />
-      )}
-
-      {/* 9.1 Modal: Create New Topic */}
-      {isNewTopicModalOpen && (
-        <NewTopicModal
-          isOpen={isNewTopicModalOpen}
-          onClose={() => setIsNewTopicModalOpen(false)}
-          scopeType={activeThread?.type === 'dm' ? 'dm' : 'channel'}
-          channel={activeThread?.type === 'dm' ? undefined : activeChannel ?? undefined}
-          dmAgent={
-            activeThread?.type === 'dm'
-              ? agents.find((agent) => agent.id === activeThread.authorId)
+        onUpdateAgent={handleUpdateAgent}
+        onConnectAgent={handleConnectAgent}
+        isNewTopicModalOpen={isNewTopicModalOpen}
+        onCloseNewTopicModal={() => setIsNewTopicModalOpen(false)}
+        newTopicScopeType={activeThread?.type === 'dm' ? 'dm' : 'channel'}
+        newTopicChannel={activeThread?.type === 'dm' ? undefined : activeChannel ?? undefined}
+        newTopicDmAgent={
+          activeThread?.type === 'dm'
+            ? agents.find((agent) => agent.id === activeThread.authorId)
+            : undefined
+        }
+        newTopicDmThreadId={activeThread?.type === 'dm' ? activeThread.id : undefined}
+        newTopicChannelWorkspaceCwd={
+          activeThread?.type === 'dm'
+            ? `~/.shadow-crew/agents/${activeThread.authorId}`
+            : activeChannel
+              ? findWorkspaceBinding(workspaceBindings, 'channel', activeChannel.id)?.cwd
               : undefined
-          }
-          dmThreadId={activeThread?.type === 'dm' ? activeThread.id : undefined}
-          channelWorkspaceCwd={
-            activeThread?.type === 'dm'
-              ? `~/.shadow-crew/agents/${activeThread.authorId}`
-              : activeChannel
-                ? findWorkspaceBinding(workspaceBindings, 'channel', activeChannel.id)?.cwd
-                : undefined
-          }
-          agents={
-            activeThread?.type === 'dm'
-              ? agents.filter((agent) => agent.id === activeThread.authorId)
-              : currentChannelAgents
-          }
-          onCreateTopic={handleCreateTopic}
-        />
-      )}
-
-      {/* 9.1.1 Modal: Edit Topic */}
-      {Boolean(editingTopic) && (
-        <EditTopicModal
-          isOpen={Boolean(editingTopic)}
-          topic={editingTopic}
-          channel={editingTopicChannel}
-          agents={editingTopicAgents}
-          onClose={() => setEditingTopic(null)}
-          onUpdateTopic={handleUpdateTopic}
-        />
-      )}
-
-      {/* 10. Rust + Tauri Architecture & Source Code Hub */}
-      {isRustTauriHubOpen && (
-        <RustTauriArchitectureHub
-          isOpen={isRustTauriHubOpen}
-          onClose={() => setIsRustTauriHubOpen(false)}
-        />
-      )}
+        }
+        newTopicAgents={
+          activeThread?.type === 'dm'
+            ? agents.filter((agent) => agent.id === activeThread.authorId)
+            : currentChannelAgents
+        }
+        onCreateTopic={handleCreateTopic}
+        editingTopic={editingTopic}
+        editingTopicChannel={editingTopicChannel ?? undefined}
+        editingTopicAgents={editingTopicAgents}
+        onCloseEditTopicModal={() => setEditingTopic(null)}
+        onUpdateTopic={handleUpdateTopic}
+        isRustTauriHubOpen={isRustTauriHubOpen}
+        onCloseRustTauriHub={() => setIsRustTauriHubOpen(false)}
+      />
 
       </Suspense>
 

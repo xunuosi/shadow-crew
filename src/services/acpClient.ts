@@ -21,6 +21,10 @@ import {
   parseNativeMemoryCapability,
 } from './agentMemory';
 import { retrieveScpackExpertise } from './scpackService';
+export {
+  extractArbitrationRulingOptionsFromAcpResponse,
+  synthesizeContextGroundedRulingDrafts,
+} from './cogno/rulingDraftSynthesizer';
 
 export interface AcpSendPromptOptions {
   agent: Agent;
@@ -327,6 +331,7 @@ export interface AcpAgentResponse {
   memoryActions?: Array<{ action: string; key: string; detail: string }>;
   mcpToolCalls?: Array<{ server_name: string; tool_name: string; status: string; arguments?: any }>;
   rulingDraft?: ArbitrationRulingDraft;
+  rulingDraftOptions?: Record<RulingDecisionType, ArbitrationRulingDraft>;
   moduleDecompositionDraft?: ModuleDecompositionDraft;
   cartridgeCitation?: CartridgeCitation;
   workspaceDiffs?: TopicPatchDiffItem[];
@@ -367,12 +372,19 @@ export function extractExecutionMetaFromAcpResponse(rawText: string): {
     return { cleanedText: rawText };
   }
 
+  // 物理剥离模型思维链与中间推演标签，纯净保留最终结论与代码产物
+  let strippedText = rawText
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/<<<DEEP_THINKING>>>[\s\S]*?<<<DEEP_THINKING_END>>>/gi, '')
+    .replace(/<<<THINKING>>>[\s\S]*?<<<THINKING_END>>>/gi, '')
+    .trim();
+
   const metaRegex = /<<<EXECUTION_META>>>([\s\S]*?)<<<EXECUTION_META_END>>>/i;
   const fallbackJsonRegex = /```(?:json)?\s*(\{\s*"sectionTitle"[\s\S]*?"podTitle"[\s\S]*?\})\s*```/i;
 
-  const match = rawText.match(metaRegex) || rawText.match(fallbackJsonRegex);
+  const match = strippedText.match(metaRegex) || strippedText.match(fallbackJsonRegex);
   if (!match || !match[1]) {
-    return { cleanedText: rawText };
+    return { cleanedText: strippedText || rawText };
   }
 
   let executionMeta: TopicExecutionUiMeta | undefined;
@@ -395,10 +407,10 @@ export function extractExecutionMetaFromAcpResponse(rawText: string): {
     console.warn('[acpClient] Failed to parse <<<EXECUTION_META>>> block:', e);
   }
 
-  const cleanedText = rawText.replace(match[0], '').trim();
+  const cleanedText = strippedText.replace(match[0], '').trim();
   return {
     executionMeta,
-    cleanedText: cleanedText || rawText,
+    cleanedText: cleanedText || strippedText || rawText,
   };
 }
 

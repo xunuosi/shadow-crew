@@ -660,6 +660,9 @@ export interface TaskModuleSlice {
   frozenProposalSnippet?: string;   // 模块冻结定案后的最终方案摘要/契约实现
   assignedExecutorId?: string;      // 落地阶段指派给本模块的专职执行 Agent ID
   executionVerificationPassed?: boolean; // 执行期本模块静态检查/单测是否通过
+  executionStatus?: 'pending' | 'running' | 'completed' | 'failed'; // 落地执行阶段状态
+  executionDiffs?: TopicPatchDiffItem[]; // 该模块独立产出的工作区变更
+  executionSummary?: string;            // 该模块执行交付摘要
 }
 
 /**
@@ -702,6 +705,8 @@ export interface ModularOrchestrationState {
   activeModuleId?: string;          // 当前正在推演或聚焦的模块沙箱 ID
   overallEntropyReductionRatio?: number; // 相比全量上下文的 Token/信息熵压缩比 (0~1)
   whitelistDeduplications?: WhitelistDeduplicationRecord[]; // 白名单拓扑偏序收敛与去重审计记录 (N5)
+  activeExecutionModuleId?: string; // 落地执行阶段当前正在执行的模块沙箱 ID
+  executionCompletedCount?: number; // 落地执行阶段已完成交付的模块数量
 }
 
 export type WorkspacePatchApplyStatus = 'applied' | 'conflict' | 'archived_only' | 'failed';
@@ -779,7 +784,7 @@ export type RoleConcurrenceItemStatus =
   | RoleConcurrenceDecisionStatus
   | 'invalid';
 
-export type RoleConcurrenceSource = 'mcp_tool' | 'contract_block';
+export type RoleConcurrenceSource = 'mcp_tool' | 'contract_block' | 'arbiter_intrinsic';
 
 /**
  * 参研角色通过 submit_role_concurrence 工具或 ROLE_CONCURRENCE 契约块提交的终局票。
@@ -869,6 +874,7 @@ export interface GameTheoreticState {
   roundCount?: number;                   // 当前博弈轮次计数 (P2 回边使用)
   isSafetyCharterSigned?: boolean;       // 人类是否已签署 T2 高危工具执行安全宪章
   rulingDraft?: ArbitrationRulingDraft;  // 由综合仲裁官通过 submit_arbitration_ruling MCP 工具提交的结构化裁决书草案
+  rulingDraftOptions?: Record<RulingDecisionType, ArbitrationRulingDraft>; // 针对三种模式 (采纳方案、驳回重构、权衡矩阵) 动态生成的裁决草案字典
   modularState?: ModularOrchestrationState; // G-Frame 贝叶斯与团队博弈模块化分治状态
   concurrenceState?: GameRoleConcurrenceState; // 全员无异议征询保证与活体看板生成状态
   telemetryLogIds?: string[];

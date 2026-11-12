@@ -83,6 +83,16 @@ async function runAcpProcessConversation(
       terminal: false,
     });
 
+    let sendIndex = 0;
+    function sendNextMessage() {
+      if (isDone || sendIndex >= messagesToSend.length) return;
+      const nextMsg = messagesToSend[sendIndex++];
+      child.stdin.write(JSON.stringify(nextMsg) + '\n');
+      if (nextMsg.id === undefined) {
+        sendNextMessage();
+      }
+    }
+
     rl.on('line', (line) => {
       const trimmed = line.trim();
       if (!trimmed) return;
@@ -94,8 +104,10 @@ async function runAcpProcessConversation(
         if (msg.id !== undefined) {
           results.set(msg.id, msg);
           expectedIds.delete(msg.id);
-          // 当预期的所有请求都已经收到结果响应，稍等 100ms 接收可能尾随的通知后平滑结束
-          if (expectedIds.size === 0) {
+          if (sendIndex < messagesToSend.length) {
+            sendNextMessage();
+          } else if (expectedIds.size === 0) {
+            // 当预期的所有请求都已经收到结果响应，稍等 120ms 接收可能尾随的通知后平滑结束
             setTimeout(cleanupAndResolve, 120);
           }
         } else if (msg.method) {
@@ -123,9 +135,7 @@ async function runAcpProcessConversation(
       });
     }
 
-    for (const msg of messagesToSend) {
-      child.stdin.write(JSON.stringify(msg) + '\n');
-    }
+    sendNextMessage();
 
     timer = setTimeout(cleanupAndResolve, timeoutMs);
   });
@@ -281,6 +291,34 @@ console.log('▶ [Round 2] Verifying V2 Session Prompt Turn Completion & Receipt
     turnCompleteNotif?.params?.update?.messageId === promptResult?.result?.messageId,
     'turn_complete notification messageId must match session/prompt result messageId'
   );
+
+  // Test session/close as a standard JSON-RPC 2.0 request (with id)
+  const closeRun = await runAcpProcessConversation(
+    [
+      {
+        jsonrpc: '2.0',
+        id: 203,
+        method: 'initialize',
+        params: { protocolVersion: 2 },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 204,
+        method: 'session/close',
+        params: {
+          sessionId: 'test-session-to-close',
+        },
+      },
+    ],
+    {
+      PATH: '/nonexistent-bin-dir',
+      CODEX_PATH: '/nonexistent-bin-dir/codex',
+    }
+  );
+
+  const closeResult = closeRun.results.get(204);
+  check(Boolean(closeResult), 'session/close must return a response to request id 204');
+  check(closeResult?.result?.closed === true, 'session/close must confirm closed: true');
 }
 
 console.log('✓ Round 2 passed: V2 turn completion notification & receipt lifecycle verified.\n');
@@ -685,6 +723,281 @@ sleep 25
   console.log(
     `✓ Round 6 passed: turn.completed harvested in ${elapsedMs}ms (budget ${antiFreezeBudgetMs}ms) with active tool execution streaming.\n`
   );
+}
+
+// -----------------------------------------------------------------------------
+// Round 7: Official @agentclientprotocol/codex-acp Engine E2E Bridge Verification
+// -----------------------------------------------------------------------------
+console.log('▶ [Round 7] Verifying Official @agentclientprotocol/codex-acp Engine Bridge (systemPrompt Object/String/Empty & session/load->resume)...');
+
+{
+  const fs = await import('node:fs');
+  const mockAppServerPath = path.resolve('.mock-codex-app-server.cjs');
+  const recordedThreadStartsPath = path.resolve('.mock-codex-thread-starts.json');
+  try {
+    fs.unlinkSync(recordedThreadStartsPath);
+  } catch {
+    // ignore
+  }
+
+  const mockAppServerScript = `#!/usr/bin/env node
+const fs = require('node:fs');
+const readline = require('node:readline');
+
+const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  console.log('codex 0.167.0');
+  process.exit(0);
+}
+if (args.includes('features') && args.includes('list')) {
+  console.log('memories                 stage                true');
+  process.exit(0);
+}
+
+const recordedPath = ${JSON.stringify(recordedThreadStartsPath)};
+const recorded = { threadStarts: [], threadResumes: [] };
+function persistRecorded() {
+  try {
+    fs.writeFileSync(recordedPath, JSON.stringify(recorded), 'utf8');
+  } catch {}
+}
+
+let threadSeq = 1;
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+rl.on('line', (line) => {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  let req;
+  try {
+    req = JSON.parse(trimmed);
+  } catch {
+    return;
+  }
+  const { id, method, params } = req;
+  if (id === undefined) return;
+
+  const reply = (result) => {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n');
+  };
+
+  if (method === 'initialize') {
+    reply({ codexHome: process.cwd() });
+  } else if (method === 'config/read') {
+    reply({ config: { model_provider: 'openai', developer_instructions: '' } });
+  } else if (method === 'account/read') {
+    reply({ requiresOpenaiAuth: false, account: { type: 'apiKey' } });
+  } else if (method === 'skills/extraRoots/set') {
+    reply({});
+  } else if (method === 'skills/list') {
+    reply({ data: [] });
+  } else if (method === 'permissionProfile/list') {
+    reply({
+      data: [{ id: 'workspace-write', displayName: 'Workspace Write', description: 'Workspace Write' }],
+      defaultProfileId: 'workspace-write',
+    });
+  } else if (method === 'model/list') {
+    reply({
+      data: [
+        {
+          id: 'gpt-5.3-codex',
+          model: 'gpt-5.3-codex',
+          displayName: 'GPT-5.3 Codex',
+          description: 'Codex model',
+          supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: 'Medium' }],
+          defaultReasoningEffort: 'medium',
+          isDefault: true,
+        },
+      ],
+      nextCursor: null,
+    });
+  } else if (method === 'thread/start') {
+    const tid = '019a0000-0000-7000-8000-' + String(threadSeq++).padStart(12, '0');
+    recorded.threadStarts.push({ threadId: tid, developerInstructions: params?.developerInstructions ?? null, cwd: params?.cwd });
+    persistRecorded();
+    reply({
+      thread: {
+        id: tid,
+        model: 'gpt-5.3-codex',
+        modelProvider: 'openai',
+        reasoningEffort: 'medium',
+        status: { type: 'idle' },
+        historyMode: 'paginated',
+        path: null,
+        turns: [],
+      },
+      model: 'gpt-5.3-codex',
+      modelProvider: 'openai',
+      reasoningEffort: 'medium',
+      serviceTier: null,
+      activePermissionProfile: { id: 'workspace-write' },
+    });
+  } else if (method === 'thread/resume') {
+    recorded.threadResumes.push({ threadId: params?.threadId, developerInstructions: params?.developerInstructions ?? null });
+    persistRecorded();
+    reply({
+      thread: {
+        id: params?.threadId,
+        model: 'gpt-5.3-codex',
+        modelProvider: 'openai',
+        reasoningEffort: 'medium',
+        status: { type: 'idle' },
+        historyMode: 'paginated',
+        path: null,
+        turns: [],
+      },
+      model: 'gpt-5.3-codex',
+      modelProvider: 'openai',
+      reasoningEffort: 'medium',
+      serviceTier: null,
+      activePermissionProfile: { id: 'workspace-write' },
+      itemsBackwardsCursor: null,
+      collaborationMode: null,
+    });
+  } else {
+    reply({});
+  }
+});
+`;
+
+  fs.writeFileSync(mockAppServerPath, mockAppServerScript, { mode: 0o755 });
+
+  const officialRes = await runAcpProcessConversation(
+    [
+      {
+        jsonrpc: '2.0',
+        id: 701,
+        method: 'initialize',
+        params: {
+          protocolVersion: 2,
+          clientInfo: { name: 'shadow-crew', version: '0.1.0' },
+          capabilities: { tools: false },
+        },
+      },
+      // Case 7.1: Standard ACP v2 systemPrompt object (matching acp_manager.rs build_acp_system_prompt_param)
+      {
+        jsonrpc: '2.0',
+        id: 702,
+        method: 'session/new',
+        params: {
+          cwd: process.cwd(),
+          mcpServers: [],
+          systemPrompt: {
+            mode: 'append',
+            content: [{ type: 'text', text: 'You are MyCodex Verifier.' }],
+          },
+        },
+      },
+      // Case 7.2: Legacy string systemPrompt (testing startOfficialAdapterBridge auto-normalization)
+      {
+        jsonrpc: '2.0',
+        id: 703,
+        method: 'session/new',
+        params: {
+          cwd: '.',
+          mcpServers: [],
+          systemPrompt: 'Legacy string system prompt for MyCodex',
+        },
+      },
+      // Case 7.3: Empty string systemPrompt (must be stripped to avoid "systemPrompt content must not be empty")
+      {
+        jsonrpc: '2.0',
+        id: 704,
+        method: 'session/new',
+        params: {
+          cwd: process.cwd(),
+          mcpServers: [],
+          systemPrompt: '   ',
+        },
+      },
+      // Case 7.4: session/load on v2 (must be translated to session/resume with replayFrom: { type: 'start' })
+      {
+        jsonrpc: '2.0',
+        id: 705,
+        method: 'session/load',
+        params: {
+          sessionId: '019a0000-0000-7000-8000-000000000001',
+          cwd: process.cwd(),
+          mcpServers: [],
+          systemPrompt: 'Should not trigger changesSystemPrompt error on resume/load',
+        },
+      },
+    ],
+    {
+      CODEX_BINARY: mockAppServerPath,
+      SHADOW_CREW_FORCE_OFFICIAL_CODEX_ADAPTER: '1',
+      SHADOW_CREW_USE_BUILTIN_CODEX_ADAPTER: '0',
+    },
+    10000
+  );
+
+  let recordedData: any = { threadStarts: [], threadResumes: [] };
+  try {
+    recordedData = JSON.parse(fs.readFileSync(recordedTypesPath(recordedThreadStartsPath), 'utf8'));
+  } catch {
+    // ignore
+  }
+  function recordedTypesPath(p: string) {
+    return p;
+  }
+
+  try {
+    fs.unlinkSync(mockAppServerPath);
+    fs.unlinkSync(recordedThreadStartsPath);
+  } catch {
+    // ignore
+  }
+
+  const initResp = officialRes.results.get(701);
+  check(Boolean(initResp?.result), `Official initialize must succeed, got: ${JSON.stringify(initResp)}`);
+  check(initResp?.result?.protocolVersion === 2, 'Official engine must negotiate protocolVersion: 2');
+  check(
+    initResp?.result?.capabilities?.nativeMemory?.supported === true,
+    'Official bridge must inject nativeMemory capability into initialize response'
+  );
+
+  const sessObjResp = officialRes.results.get(702);
+  check(
+    Boolean(sessObjResp?.result?.sessionId) && !sessObjResp?.error,
+    `session/new with ACP v2 systemPrompt object must succeed without -32602 error, got: ${JSON.stringify(sessObjResp)}`
+  );
+
+  const sessStrResp = officialRes.results.get(703);
+  check(
+    Boolean(sessStrResp?.result?.sessionId) && !sessStrResp?.error,
+    `session/new with legacy string systemPrompt and relative cwd must be normalized and succeed, got: ${JSON.stringify(sessStrResp)}`
+  );
+
+  const sessEmptyResp = officialRes.results.get(704);
+  check(
+    Boolean(sessEmptyResp?.result?.sessionId) && !sessEmptyResp?.error,
+    `session/new with empty string systemPrompt must omit field and succeed, got: ${JSON.stringify(sessEmptyResp)}`
+  );
+
+  const sessLoadResp = officialRes.results.get(705);
+  check(
+    Boolean(sessLoadResp?.result) && !sessLoadResp?.error,
+    `session/load on v2 must be bridged to session/resume(replayFrom=start) and succeed, got: ${JSON.stringify(sessLoadResp)}`
+  );
+
+  check(
+    recordedData.threadStarts?.[0]?.developerInstructions === 'You are MyCodex Verifier.',
+    `Thread 1 must receive developerInstructions from object systemPrompt, got: ${recordedData.threadStarts?.[0]?.developerInstructions}`
+  );
+  check(
+    recordedData.threadStarts?.[1]?.developerInstructions === 'Legacy string system prompt for MyCodex',
+    `Thread 2 must receive developerInstructions from normalized string systemPrompt, got: ${recordedData.threadStarts?.[1]?.developerInstructions}`
+  );
+  check(
+    recordedData.threadStarts?.[2]?.developerInstructions === null,
+    `Thread 3 with blank systemPrompt must not set developerInstructions, got: ${recordedData.threadStarts?.[2]?.developerInstructions}`
+  );
+  check(
+    recordedData.threadResumes?.length === 1 &&
+      recordedData.threadResumes[0].threadId === '019a0000-0000-7000-8000-000000000001',
+    'session/load on v2 must invoke thread/resume on official app-server'
+  );
+
+  console.log('✓ Round 7 passed: Official @agentclientprotocol/codex-acp engine verified end-to-end.\n');
 }
 
 console.log('================================================================================');

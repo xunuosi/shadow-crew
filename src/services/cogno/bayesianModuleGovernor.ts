@@ -6,6 +6,7 @@ import {
   ModuleDecompositionDraft,
   SharedInterfaceContract,
   TaskModuleSlice,
+  TopicPatchDiffItem,
   WhitelistDeduplicationRecord,
 } from '../../types';
 
@@ -951,3 +952,113 @@ export function buildDefaultDecompositionFromTopic(
     submittedAt: new Date().toISOString(),
   };
 }
+
+/**
+ * 6. 基于 Module DAG 拓扑偏序计算落地执行全流程规划
+ * 采用 Kahn 算法严格确保上游依赖模块在下游依赖模块之前被执行调度；
+ * 若存在脱节环或无依赖节点，保序并入，杜绝死锁。
+ */
+export function computeTopologicalExecutionOrder(modules: TaskModuleSlice[]): TaskModuleSlice[] {
+  if (!modules || modules.length === 0) return [];
+  const sanitized = sanitizeModuleDependencyDAG(modules);
+  const modMap = new Map<string, TaskModuleSlice>();
+  sanitized.forEach((m) => modMap.set(m.moduleId, m));
+
+  const validIds = new Set(sanitized.map((m) => m.moduleId));
+  const inDegree = new Map<string, number>();
+  const graph = new Map<string, string[]>();
+
+  for (const m of sanitized) {
+    const validDeps = m.dependsOnModuleIds.filter((d) => validIds.has(d) && d !== m.moduleId);
+    inDegree.set(m.moduleId, validDeps.length);
+    for (const dep of validDeps) {
+      if (!graph.has(dep)) graph.set(dep, []);
+      graph.get(dep)!.push(m.moduleId);
+    }
+  }
+
+  // 入度为 0 的节点为拓扑根节点
+  const queue: TaskModuleSlice[] = [];
+  for (const m of sanitized) {
+    if ((inDegree.get(m.moduleId) || 0) === 0) {
+      queue.push(m);
+    }
+  }
+
+  const result: TaskModuleSlice[] = [];
+  const visited = new Set<string>();
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (visited.has(current.moduleId)) continue;
+    visited.add(current.moduleId);
+    result.push(current);
+
+    const dependents = graph.get(current.moduleId) || [];
+    for (const depId of dependents) {
+      const currentIn = (inDegree.get(depId) || 1) - 1;
+      inDegree.set(depId, currentIn);
+      if (currentIn <= 0 && !visited.has(depId)) {
+        const nextMod = modMap.get(depId);
+        if (nextMod) queue.push(nextMod);
+      }
+    }
+  }
+
+  // 兜底补齐：若有孤岛或因极端依赖遗漏的模块，按原声明顺序补入
+  for (const m of sanitized) {
+    if (!visited.has(m.moduleId)) {
+      result.push(m);
+      visited.add(m.moduleId);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * 7. 获取当前下一个可执行的原子模块切片
+ * 仅当该模块未完成 (executionStatus !== 'completed') 且其全部前置依赖模块均已完成时才可执行
+ */
+export function getNextExecutableModuleSlice(modules: TaskModuleSlice[]): TaskModuleSlice | undefined {
+  if (!modules || modules.length === 0) return undefined;
+  const completedIds = new Set(
+    modules.filter((m) => m.executionStatus === 'completed').map((m) => m.moduleId)
+  );
+  const allIds = new Set(modules.map((m) => m.moduleId));
+
+  // 优先查找正在执行中的模块
+  const running = modules.find((m) => m.executionStatus === 'running');
+  if (running) return running;
+
+  // 查找前置依赖全部 completed 的首个就绪模块
+  const ready = modules.find((m) => {
+    if (m.executionStatus === 'completed') return false;
+    return m.dependsOnModuleIds.every((depId) => !allIds.has(depId) || completedIds.has(depId));
+  });
+
+  return ready;
+}
+
+/**
+ * 8. 合并多阶段/多模块生成的工作区 Diff 项
+ * 同一文件若在多个模块阶段中被修改，保留最新变更，避免同名文件重复在 UI 产生冗余卡片
+ */
+export function mergeTopicPatchDiffs(
+  existing: TopicPatchDiffItem[],
+  incoming: TopicPatchDiffItem[]
+): TopicPatchDiffItem[] {
+  const map = new Map<string, TopicPatchDiffItem>();
+  for (const item of existing || []) {
+    if (item && item.filename) {
+      map.set(item.filename, item);
+    }
+  }
+  for (const item of incoming || []) {
+    if (item && item.filename) {
+      map.set(item.filename, item);
+    }
+  }
+  return Array.from(map.values());
+}
+

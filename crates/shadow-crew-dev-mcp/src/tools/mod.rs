@@ -202,6 +202,48 @@ pub fn get_tools_list() -> Value {
                     "solution": {
                         "type": "string",
                         "description": "落地方案或重构路径概要 (可选)"
+                    },
+                    "ruling_options": {
+                        "type": "object",
+                        "description": "可选的 3 种模式完整备选方案 (adopt_proposer, reject_rebuild, trade_off_matrix)，供法槌控制台多模式审阅与实时无缝切换",
+                        "properties": {
+                            "adopt_proposer": {
+                                "type": "object",
+                                "description": "采纳提案主导方案预案",
+                                "properties": {
+                                    "decision_type": { "type": "string", "enum": ["adopt_proposer"] },
+                                    "summary": { "type": "string", "description": "采纳方案核心依据" },
+                                    "trade_off_points": { "type": "array", "items": { "type": "string" }, "description": "权衡点列表" },
+                                    "impacted_files": { "type": "array", "items": { "type": "string" }, "description": "受影响文件" },
+                                    "solution": { "type": "string", "description": "落地实施路径" }
+                                },
+                                "required": ["decision_type", "summary", "trade_off_points", "impacted_files"]
+                            },
+                            "reject_rebuild": {
+                                "type": "object",
+                                "description": "采纳红队驳回重构预案",
+                                "properties": {
+                                    "decision_type": { "type": "string", "enum": ["reject_rebuild"] },
+                                    "summary": { "type": "string", "description": "驳回重构核心依据" },
+                                    "trade_off_points": { "type": "array", "items": { "type": "string" }, "description": "权衡点列表" },
+                                    "impacted_files": { "type": "array", "items": { "type": "string" }, "description": "受影响文件" },
+                                    "solution": { "type": "string", "description": "重构指引与安全假设" }
+                                },
+                                "required": ["decision_type", "summary", "trade_off_points", "impacted_files"]
+                            },
+                            "trade_off_matrix": {
+                                "type": "object",
+                                "description": "综合权衡折中矩阵预案",
+                                "properties": {
+                                    "decision_type": { "type": "string", "enum": ["trade_off_matrix"] },
+                                    "summary": { "type": "string", "description": "折中定案总览依据" },
+                                    "trade_off_points": { "type": "array", "items": { "type": "string" }, "description": "权衡点列表" },
+                                    "impacted_files": { "type": "array", "items": { "type": "string" }, "description": "受影响文件" },
+                                    "solution": { "type": "string", "description": "分阶段演进实施路径" }
+                                },
+                                "required": ["decision_type", "summary", "trade_off_points", "impacted_files"]
+                            }
+                        }
                     }
                 },
                 "required": ["decision_type", "summary", "trade_off_points", "impacted_files"]
@@ -431,13 +473,27 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
                 .collect::<Vec<_>>()
                 .join(", ");
 
+            let solution_line = if solution.is_empty() {
+                String::new()
+            } else {
+                format!("\n• 实施路径概要: {}", solution)
+            };
+
+            let ruling_options_info = if let Some(opts) = arguments.get("ruling_options").and_then(|v| v.as_object()) {
+                let keys = opts.keys().cloned().collect::<Vec<_>>().join(", ");
+                format!("\n• 备选模式预案: 包含 [{}]", keys)
+            } else {
+                String::new()
+            };
+
             Ok(format!(
-                "✓ 【仲裁定案裁决书】已成功提交至宿主与 ADR 画布：\n• 裁决类型: {}\n• 核心决议: {}\n• 关键权衡点:\n{}\n• 约束安全爆炸半径文件: {}\n{}",
+                "✓ 【仲裁定案裁决书】已成功提交至宿主与 ADR 画布：\n• 裁决类型: {}\n• 核心决议: {}\n• 关键权衡点:\n{}\n• 约束安全爆炸半径文件: {}{}{}",
                 decision_type,
                 summary,
                 formatted_points,
                 if formatted_files.is_empty() { "无" } else { &formatted_files },
-                if solution.is_empty() { String::new() } else { format!("• 实施路径概要: {}", solution) }
+                solution_line,
+                ruling_options_info
             ))
         }
         "submit_role_concurrence" => {
@@ -655,6 +711,49 @@ mod tests {
         assert!(res.contains("✓ 【仲裁定案裁决书】已成功提交"));
         assert!(res.contains("src/services/cache.ts"));
         assert!(res.contains("优先保障强一致性"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_submit_ruling_with_options() {
+        let args = json!({
+            "decision_type": "trade_off_matrix",
+            "summary": "围绕分布式缓存一致性进行两阶段推进",
+            "trade_off_points": [
+                "优先保障强一致性 (确定性权重 45%)",
+                "适度接受 5ms 本地内存对账延迟"
+            ],
+            "impacted_files": ["src/services/cache.ts", "config/redis.toml"],
+            "solution": "第一阶段启用本地原子流水号，第二阶段按需配置旁路对账",
+            "ruling_options": {
+                "adopt_proposer": {
+                    "decision_type": "adopt_proposer",
+                    "summary": "采纳提案主导方案",
+                    "trade_off_points": ["快速交付优先"],
+                    "impacted_files": ["src/services/cache.ts"],
+                    "solution": "合入主干"
+                },
+                "reject_rebuild": {
+                    "decision_type": "reject_rebuild",
+                    "summary": "驳回重构方案",
+                    "trade_off_points": ["严格协议规范"],
+                    "impacted_files": ["src/services/cache.ts"],
+                    "solution": "推倒重来"
+                },
+                "trade_off_matrix": {
+                    "decision_type": "trade_off_matrix",
+                    "summary": "权衡折中两阶段方案",
+                    "trade_off_points": ["两阶段推进"],
+                    "impacted_files": ["src/services/cache.ts"],
+                    "solution": "分期实施"
+                }
+            }
+        });
+        let res = dispatch_tool_call("submit_arbitration_ruling", &args).await.unwrap();
+        assert!(res.contains("✓ 【仲裁定案裁决书】已成功提交"));
+        assert!(res.contains("备选模式预案: 包含"));
+        assert!(res.contains("adopt_proposer"));
+        assert!(res.contains("reject_rebuild"));
+        assert!(res.contains("trade_off_matrix"));
     }
 
     #[tokio::test]

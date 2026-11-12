@@ -192,8 +192,14 @@ flowchart TB
 ```text
 shadow-crew/
 ├── src/                              # React 工作台与协同编排
-│   ├── App.tsx                       # 应用状态、讨论主流程与执行闭环
+│   ├── App.tsx                       # 应用核心工作区、主消息流与协同挂载根
 │   ├── components/                   # 频道、议题、ADR、Agent 配置等 UI
+│   │   └── AppModalsContainer.tsx    # 集中化弹窗容器（团队、存储、频道、Agent 连接等）
+│   ├── hooks/                        # 核心业务与编排状态机 Hooks
+│   │   ├── useResizablePanel.ts      # 侧边栏/分栏拖拽缩放
+│   │   ├── useTopicExecutionPipeline.ts # G-Frame 拓扑落地执行与工作区 Diff 合入管线
+│   │   ├── useArbitrationConcurrence.ts # 仲裁裁决合流、全员无异议征询与 Living ADR
+│   │   └── useGameTheoreticFsm.ts    # CognoNexus 4+1 博弈推演状态机控制器
 │   ├── services/
 │   │   ├── agentCollaboration.ts     # 增量上下文、Prompt 编译与 Turn Barrier
 │   │   ├── acpClient.ts              # ACP 前端契约、流式事件与会话清理

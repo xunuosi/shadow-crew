@@ -256,18 +256,29 @@ pub fn parse_negotiated_protocol_version(result: &serde_json::Value) -> String {
     "v1".to_string()
 }
 
+fn is_acp_capability_enabled(val: &serde_json::Value) -> bool {
+    val.as_bool() == Some(true) || val.is_object()
+}
+
 /// 构造 session/new 与 session/load 的 `systemPrompt` 字段载荷。
 ///
 /// ACP v2 将该字段定义为对象 `{ mode, content: [{ type: "text", text }] }`，
 /// 传入字符串会被 v2 端点以 `-32602 Invalid params` 拒绝；v1 端点仍只接受字符串。
-pub fn build_system_prompt_param(negotiated_version: &str, system_prompt: &str) -> serde_json::Value {
+/// 若输入为空或纯空白字符，则返回 `None`（调用方不应挂载该字段，避免触发空内容块校验错误）。
+pub fn build_system_prompt_param(
+    negotiated_version: &str,
+    system_prompt: &str,
+) -> Option<serde_json::Value> {
+    if system_prompt.trim().is_empty() {
+        return None;
+    }
     if negotiated_version == "v2" {
-        serde_json::json!({
+        Some(serde_json::json!({
             "mode": "append",
             "content": [{ "type": "text", "text": system_prompt }]
-        })
+        }))
     } else {
-        serde_json::Value::String(system_prompt.to_string())
+        Some(serde_json::Value::String(system_prompt.to_string()))
     }
 }
 
@@ -300,36 +311,60 @@ pub fn check_supports_load_session(result: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
-/// 检查 ACP initialize 响应中是否声明了 session/resume 能力 (优先遵循 ACP v1 标准 agentCapabilities.sessionCapabilities.resume，同时兼容平铺拓展)
+/// 检查 ACP initialize 响应中是否声明了 session/resume 能力
+/// (兼容 ACP v1 agentCapabilities.sessionCapabilities.resume、平铺拓展，以及 ACP v2 标准 capabilities.session)
 pub fn check_supports_resume_session(result: &serde_json::Value) -> bool {
-    result
-        .get("agentCapabilities")
-        .and_then(|c| c.get("sessionCapabilities"))
-        .and_then(|s| s.get("resume"))
-        .or_else(|| {
-            result
-                .get("sessionCapabilities")
-                .and_then(|c| c.get("resume"))
-        })
-        .or_else(|| {
-            result
-                .get("capabilities")
-                .and_then(|c| c.get("sessionCapabilities"))
-                .and_then(|s| s.get("resume"))
-        })
-        .or_else(|| {
-            result
-                .get("capabilities")
-                .and_then(|c| c.get("resume"))
-                .filter(|v| v.as_bool() == Some(true))
-        })
-        .or_else(|| {
-            result
-                .get("agentCapabilities")
-                .and_then(|c| c.get("resume"))
-                .filter(|v| v.as_bool() == Some(true))
-        })
-        .is_some()
+    let explicit_candidates = [
+        result
+            .get("agentCapabilities")
+            .and_then(|c| c.get("sessionCapabilities"))
+            .and_then(|s| s.get("resume")),
+        result
+            .get("sessionCapabilities")
+            .and_then(|c| c.get("resume")),
+        result
+            .get("capabilities")
+            .and_then(|c| c.get("sessionCapabilities"))
+            .and_then(|s| s.get("resume")),
+        result
+            .get("capabilities")
+            .and_then(|c| c.get("session"))
+            .and_then(|s| s.get("resume")),
+        result
+            .get("capabilities")
+            .and_then(|c| c.get("sessions"))
+            .and_then(|s| s.get("resume")),
+        result
+            .get("agentCapabilities")
+            .and_then(|c| c.get("sessions"))
+            .and_then(|s| s.get("resume")),
+        result.get("capabilities").and_then(|c| c.get("resume")),
+        result
+            .get("agentCapabilities")
+            .and_then(|c| c.get("resume")),
+    ];
+
+    for candidate in explicit_candidates.iter().flatten() {
+        if candidate.as_bool() == Some(false) {
+            return false;
+        }
+        if is_acp_capability_enabled(candidate) {
+            return true;
+        }
+    }
+
+    // 在 ACP v2 规范中，若 capabilities.session 存在且未显式禁用 resume，则原生支持 session/resume
+    if parse_negotiated_protocol_version(result) == "v2"
+        && result
+            .get("capabilities")
+            .and_then(|c| c.get("session"))
+            .and_then(|s| s.as_object())
+            .is_some()
+    {
+        return true;
+    }
+
+    false
 }
 
 /// 解析 initialize 结果中的会话恢复能力（(supports_load, supports_resume)）。
@@ -695,48 +730,74 @@ fn acp_client_capabilities_v2() -> serde_json::Value {
     })
 }
 
-fn check_supports_prompt_image(result: &serde_json::Value) -> bool {
-    result
-        .get("capabilities")
-        .and_then(|value| value.get("promptCapabilities"))
-        .and_then(|value| value.get("image"))
-        .and_then(|value| value.as_bool())
-        .or_else(|| {
-            result
-                .get("agentCapabilities")
-                .and_then(|value| value.get("promptCapabilities"))
-                .and_then(|value| value.get("image"))
-                .and_then(|value| value.as_bool())
-        })
-        .or_else(|| {
-            result
-                .get("promptCapabilities")
-                .and_then(|value| value.get("image"))
-                .and_then(|value| value.as_bool())
-        })
-        .unwrap_or(false)
+pub fn check_supports_prompt_image(result: &serde_json::Value) -> bool {
+    let candidates = [
+        result
+            .get("capabilities")
+            .and_then(|value| value.get("promptCapabilities"))
+            .and_then(|value| value.get("image")),
+        result
+            .get("agentCapabilities")
+            .and_then(|value| value.get("promptCapabilities"))
+            .and_then(|value| value.get("image")),
+        result
+            .get("promptCapabilities")
+            .and_then(|value| value.get("image")),
+        result
+            .get("capabilities")
+            .and_then(|value| value.get("session"))
+            .and_then(|value| value.get("prompt"))
+            .and_then(|value| value.get("image")),
+        result
+            .get("agentCapabilities")
+            .and_then(|value| value.get("session"))
+            .and_then(|value| value.get("prompt"))
+            .and_then(|value| value.get("image")),
+    ];
+    for candidate in candidates.iter().flatten() {
+        if candidate.as_bool() == Some(false) {
+            return false;
+        }
+        if is_acp_capability_enabled(candidate) {
+            return true;
+        }
+    }
+    false
 }
 
-fn check_supports_embedded_context(result: &serde_json::Value) -> bool {
-    result
-        .get("capabilities")
-        .and_then(|value| value.get("promptCapabilities"))
-        .and_then(|value| value.get("embeddedContext"))
-        .and_then(|value| value.as_bool())
-        .or_else(|| {
-            result
-                .get("agentCapabilities")
-                .and_then(|value| value.get("promptCapabilities"))
-                .and_then(|value| value.get("embeddedContext"))
-                .and_then(|value| value.as_bool())
-        })
-        .or_else(|| {
-            result
-                .get("promptCapabilities")
-                .and_then(|value| value.get("embeddedContext"))
-                .and_then(|value| value.as_bool())
-        })
-        .unwrap_or(false)
+pub fn check_supports_embedded_context(result: &serde_json::Value) -> bool {
+    let candidates = [
+        result
+            .get("capabilities")
+            .and_then(|value| value.get("promptCapabilities"))
+            .and_then(|value| value.get("embeddedContext")),
+        result
+            .get("agentCapabilities")
+            .and_then(|value| value.get("promptCapabilities"))
+            .and_then(|value| value.get("embeddedContext")),
+        result
+            .get("promptCapabilities")
+            .and_then(|value| value.get("embeddedContext")),
+        result
+            .get("capabilities")
+            .and_then(|value| value.get("session"))
+            .and_then(|value| value.get("prompt"))
+            .and_then(|value| value.get("embeddedContext")),
+        result
+            .get("agentCapabilities")
+            .and_then(|value| value.get("session"))
+            .and_then(|value| value.get("prompt"))
+            .and_then(|value| value.get("embeddedContext")),
+    ];
+    for candidate in candidates.iter().flatten() {
+        if candidate.as_bool() == Some(false) {
+            return false;
+        }
+        if is_acp_capability_enabled(candidate) {
+            return true;
+        }
+    }
+    false
 }
 
 fn attachment_file_uri(path: &Path) -> String {
@@ -1152,8 +1213,27 @@ fn build_permission_request_view(
 ) -> AcpPermissionRequestView {
     let tool_call = params
         .get("toolCall")
+        .or_else(|| {
+            params
+                .get("subject")
+                .and_then(|subject| subject.get("toolCall"))
+        })
         .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
+        .unwrap_or_else(|| {
+            if let Some(subject) = params.get("subject") {
+                if subject.get("type").and_then(|t| t.as_str()) == Some("command") {
+                    let cmd = subject.get("command").cloned().unwrap_or(serde_json::Value::Null);
+                    return serde_json::json!({
+                        "kind": "execute",
+                        "rawInput": {
+                            "command": cmd,
+                            "cwd": subject.get("cwd").cloned().unwrap_or(serde_json::Value::Null)
+                        }
+                    });
+                }
+            }
+            serde_json::json!({})
+        });
     let capability = classify_permission_capability(&tool_call);
     let raw_paths = permission_path_candidates(&tool_call);
     let (paths, outside_workspace_paths) =
@@ -1162,12 +1242,23 @@ fn build_permission_request_view(
         .get("rawInput")
         .and_then(|value| value.get("command"))
         .and_then(|value| value.as_str())
+        .or_else(|| {
+            params
+                .get("subject")
+                .and_then(|subject| subject.get("command"))
+                .and_then(|value| value.as_str())
+        })
         .map(|value| value.to_string());
     let description = params
-        .get("_meta")
-        .and_then(|value| value.get("permission"))
-        .and_then(|value| value.get("description"))
+        .get("description")
         .and_then(|value| value.as_str())
+        .or_else(|| {
+            params
+                .get("_meta")
+                .and_then(|value| value.get("permission"))
+                .and_then(|value| value.get("description"))
+                .and_then(|value| value.as_str())
+        })
         .map(|value| value.to_string());
     let supports_allow_once = options
         .iter()
@@ -1195,6 +1286,7 @@ fn build_permission_request_view(
         tool_title: tool_call
             .get("title")
             .and_then(|value| value.as_str())
+            .or_else(|| params.get("title").and_then(|value| value.as_str()))
             .unwrap_or_default()
             .to_string(),
         tool_kind: tool_call
@@ -2047,9 +2139,14 @@ impl AcpProcessManager {
                                         }
                                     }
 
+                                    let is_state_idle = update_type == "state_update"
+                                        && update.get("state").and_then(|s| s.as_str())
+                                            == Some("idle")
+                                        && active_req_id.is_some();
                                     let is_terminal = update_type == "turn_complete"
                                         || update_type == "completed"
-                                        || update.get("stopReason").is_some();
+                                        || update.get("stopReason").is_some()
+                                        || is_state_idle;
                                     if is_terminal {
                                         let mut completions = session_turn_completions_clone.lock().await;
                                         if let Some(tx) = completions.remove(sess_id) {
@@ -2973,23 +3070,35 @@ impl RunningAgent {
             let _ = db.delete_acp_session(Some(&self.agent_id), key_or_prefix, clear_generation);
         }
 
-        // 异步向底层 ACP 进程发送 session/close，使 Agent 进程释放底层会话资源
-        for sid in &removed_sessions {
+        // 异步向底层 ACP 进程发送 session/close 标准请求，使 Agent 进程释放底层活动会话、turn 与沙箱资源
+        for (idx, sid) in removed_sessions.iter().enumerate() {
             self.cancel_pending_permissions_for_session(
                 sid,
                 "ACP session was cleared before permission was resolved",
             )
             .await;
-            let close_req = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "session/close",
-                "params": {
-                    "sessionId": sid
-                }
-            });
+            let close_id = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64
+                + idx as u64;
+            let close_req = build_session_close_request(sid, close_id);
             let _ = self.stdin_tx.send(close_req.to_string()).await;
         }
     }
+}
+
+/// 构造符合官方 ACP v2 规范的 `session/close` 标准请求对象。
+/// 官方 ACP v2 将 `session/close` 注册为 request，必须包含 JSON-RPC `id`，严禁作为 notification 发送。
+pub(crate) fn build_session_close_request(session_id: &str, req_id: u64) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "session/close",
+        "params": {
+            "sessionId": session_id
+        }
+    })
 }
 
 /// 规范化用于 ACP 会话人设比对的系统提示词：
@@ -3699,6 +3808,15 @@ impl RunningAgent {
                                 "[Agent {}] Layer 1 session/resume failed or timed out for session {:?} (res: {:?}). Checking load or new...",
                                 agent_id, persisted.session_id, res
                             );
+                            if !supports_load {
+                                if let Some(ref db) = self.db_manager {
+                                    let _ = db.delete_acp_session(
+                                        Some(agent_id),
+                                        Some(&session_key),
+                                        None,
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -3750,8 +3868,11 @@ impl RunningAgent {
                     } else if let Some(c) = channel_id {
                         load_params["channelId"] = serde_json::Value::String(c.to_string());
                     }
-                    load_params["systemPrompt"] =
-                        build_system_prompt_param(&negotiated_version, &enriched_sp);
+                    if let Some(sp_obj) =
+                        build_system_prompt_param(&negotiated_version, &enriched_sp)
+                    {
+                        load_params["systemPrompt"] = sp_obj;
+                    }
 
                     let load_req = serde_json::json!({
                         "jsonrpc": "2.0",
@@ -3870,20 +3991,19 @@ impl RunningAgent {
                 .lock()
                 .await
                 .retain(|grant| grant.session_id != old_id);
-            let close_req = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "session/close",
-                "params": {
-                    "sessionId": old_id
-                }
-            });
+            let close_id = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let close_req = build_session_close_request(&old_id, close_id);
             let _ = self.stdin_tx.send(close_req.to_string()).await;
         }
 
         let new_sess_id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis() as u64;
+            .as_millis() as u64
+            + 1;
         let (sess_tx, sess_rx) = oneshot::channel();
         {
             let mut map = self.pending_requests.lock().await;
@@ -3906,12 +4026,14 @@ impl RunningAgent {
         if let Some(scope) = scope_type {
             params["scopeType"] = serde_json::Value::String(scope.to_string());
         }
-        params["systemPrompt"] = build_system_prompt_param(&negotiated_version, &enriched_sp);
-        params["_meta"] = serde_json::json!({
-            "systemPrompt": {
-                "append": enriched_sp.clone()
-            }
-        });
+        if let Some(sp_obj) = build_system_prompt_param(&negotiated_version, &enriched_sp) {
+            params["systemPrompt"] = sp_obj;
+            params["_meta"] = serde_json::json!({
+                "systemPrompt": {
+                    "append": enriched_sp.clone()
+                }
+            });
+        }
         let new_req = serde_json::json!({
             "jsonrpc": "2.0",
             "id": new_sess_id,
@@ -4554,9 +4676,16 @@ fn resolve_v2_terminal_text(
 ) -> String {
     let fallback_text = terminal_update
         .get("error")
-        .or_else(|| terminal_update.get("text_response"))
-        .or_else(|| terminal_update.get("text"))
-        .and_then(|text| text.as_str())
+        .and_then(|err| {
+            err.as_str()
+                .or_else(|| err.get("message").and_then(|m| m.as_str()))
+        })
+        .or_else(|| {
+            terminal_update
+                .get("text_response")
+                .or_else(|| terminal_update.get("text"))
+                .and_then(|text| text.as_str())
+        })
         .unwrap_or("");
     if stop_reason == "error" && !fallback_text.trim().is_empty() {
         fallback_text.to_string()
@@ -5923,6 +6052,17 @@ mod runtime_status_tests {
     }
 
     #[test]
+    fn test_build_session_close_request_contains_jsonrpc_id() {
+        use super::build_session_close_request;
+
+        let req = build_session_close_request("test-session-123", 98765);
+        assert_eq!(req["jsonrpc"], "2.0");
+        assert_eq!(req["method"], "session/close");
+        assert_eq!(req["id"], 98765);
+        assert_eq!(req["params"]["sessionId"], "test-session-123");
+    }
+
+    #[test]
     fn test_parse_negotiated_protocol_version() {
         use super::parse_negotiated_protocol_version;
 
@@ -5961,21 +6101,25 @@ mod runtime_status_tests {
         // v2 端点要求对象形态，字符串会被 -32602 拒绝
         assert_eq!(
             build_system_prompt_param("v2", "persona"),
-            serde_json::json!({
+            Some(serde_json::json!({
                 "mode": "append",
                 "content": [{ "type": "text", "text": "persona" }]
-            })
+            }))
         );
 
         // v1 端点保持字符串形态
         assert_eq!(
             build_system_prompt_param("v1", "persona"),
-            serde_json::json!("persona")
+            Some(serde_json::json!("persona"))
         );
         assert_eq!(
             build_system_prompt_param("unknown", "persona"),
-            serde_json::json!("persona")
+            Some(serde_json::json!("persona"))
         );
+
+        // 空字符串或纯空白不挂载 systemPrompt，防止官方 codex-acp 报 "systemPrompt content must not be empty"
+        assert_eq!(build_system_prompt_param("v2", ""), None);
+        assert_eq!(build_system_prompt_param("v1", "   \n\t "), None);
     }
 
     #[tokio::test]
@@ -6067,5 +6211,141 @@ mod runtime_status_tests {
         assert_eq!(*negotiated_version.lock().await, "v1");
         assert!(supports_load_session.load(Ordering::SeqCst));
         assert!(supports_resume_session.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_build_acp_system_prompt_param_and_official_v2_capabilities() {
+        use super::{
+            build_permission_request_view, build_system_prompt_param,
+            check_supports_embedded_context, check_supports_prompt_image,
+            check_supports_resume_session, parse_permission_options, resolve_v2_terminal_text,
+            PermissionScopeContext,
+        };
+
+        // 1. 空字符串或纯空白不挂载 systemPrompt 对象，防止官方 codex-acp 报 "systemPrompt content must not be empty"
+        assert!(build_system_prompt_param("v2", "").is_none());
+        assert!(build_system_prompt_param("v2", "   \n\t ").is_none());
+
+        // 2. 非空 systemPrompt 构造符合 zSystemPrompt / zSystemPrompt2 的标准结构
+        let sp_obj =
+            build_system_prompt_param("v2", "你是安全审计专家").expect("should build object");
+        assert_eq!(sp_obj["mode"], "append");
+        assert_eq!(sp_obj["content"][0]["type"], "text");
+        assert_eq!(sp_obj["content"][0]["text"], "你是安全审计专家");
+
+        // 3. 官方 @agentclientprotocol/codex-acp initializeV2 响应能力探测
+        let official_v2_init = serde_json::json!({
+            "protocolVersion": 2,
+            "info": {
+                "name": "@agentclientprotocol/codex-acp",
+                "title": "Codex",
+                "version": "2.6.0"
+            },
+            "capabilities": {
+                "auth": {},
+                "providers": {},
+                "session": {
+                    "prompt": {
+                        "embeddedContext": {},
+                        "image": {}
+                    },
+                    "mcp": {
+                        "stdio": {},
+                        "http": {}
+                    },
+                    "delete": {},
+                    "additionalDirectories": {},
+                    "fork": {},
+                    "title": {},
+                    "systemPrompt": {}
+                }
+            }
+        });
+        assert!(
+            check_supports_resume_session(&official_v2_init),
+            "官方 ACP v2 capabilities.session 应识别支持 session/resume"
+        );
+        assert!(
+            check_supports_prompt_image(&official_v2_init),
+            "官方 ACP v2 capabilities.session.prompt.image 对象应识别支持图片"
+        );
+        assert!(
+            check_supports_embedded_context(&official_v2_init),
+            "官方 ACP v2 capabilities.session.prompt.embeddedContext 对象应识别支持内嵌上下文"
+        );
+
+        // 4. 官方 ACP v2 session/request_permission (subject.toolCall + 顶层 title/description) 解析验证
+        let v2_perm_params = serde_json::json!({
+            "sessionId": "019a0000-0000-7000-8000-000000000001",
+            "title": "Run command?",
+            "description": "Execute cargo test in workspace",
+            "subject": {
+                "type": "tool_call",
+                "toolCall": {
+                    "toolCallId": "call-v2-1",
+                    "name": "Bash",
+                    "kind": "execute",
+                    "status": "pending",
+                    "rawInput": {
+                        "command": "cargo test -p shadow-crew-protocol"
+                    },
+                    "locations": [
+                        { "path": "/tmp/ws/crates/shadow-crew-protocol/src/lib.rs" },
+                        { "path": "/Users/test/.codex/auth.json" }
+                    ]
+                }
+            },
+            "options": [
+                { "optionId": "allow-once", "name": "Allow once", "kind": "allow_once" },
+                { "optionId": "reject", "name": "Reject", "kind": "reject_once" }
+            ]
+        });
+        let opts = parse_permission_options(&v2_perm_params);
+        let view = build_permission_request_view(
+            "agent-codex-v2",
+            "req-99".to_string(),
+            "019a0000-0000-7000-8000-000000000001".to_string(),
+            PermissionScopeContext {
+                scope_type: "topic".to_string(),
+                scope_id: "topic-1".to_string(),
+                workspace_binding_id: "ws-1".to_string(),
+                session_key: "agent-codex-v2:topic:topic-1:ws-1".to_string(),
+                cwd: "/tmp/ws".to_string(),
+            },
+            &v2_perm_params,
+            opts,
+        );
+        assert_eq!(view.capability, "shell.execute");
+        assert_eq!(view.tool_name, "Bash");
+        assert_eq!(view.tool_title, "Run command?");
+        assert_eq!(
+            view.description.as_deref(),
+            Some("Execute cargo test in workspace")
+        );
+        assert_eq!(
+            view.command.as_deref(),
+            Some("cargo test -p shadow-crew-protocol")
+        );
+        assert!(
+            view.outside_workspace_paths
+                .iter()
+                .any(|p| p.contains(".codex/auth.json")),
+            "ACP v2 subject.toolCall 越界敏感路径必须被准确提取并拦截"
+        );
+
+        // 5. 官方 ACP v2 state_update 错误对象文本提取验证
+        let v2_err_state = serde_json::json!({
+            "sessionUpdate": "state_update",
+            "state": "idle",
+            "stopReason": "error",
+            "error": {
+                "code": -32603,
+                "message": "Connection to Codex was lost."
+            }
+        });
+        assert_eq!(
+            resolve_v2_terminal_text("error", "", &v2_err_state),
+            "Connection to Codex was lost."
+        );
     }
 }

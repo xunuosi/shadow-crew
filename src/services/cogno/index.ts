@@ -11,4 +11,5 @@ export * from './gameConfigurationEvaluator';
 export * from './colmadGovernor';
 export * from './bayesianModuleGovernor';
 export * from './arbitrationConcurrenceGovernor';
+export * from './rulingDraftSynthesizer';
 
