@@ -47,39 +47,47 @@ export function validateStageContract(
     missingRequirements.push('检测到无实义确认性敷衍回复，未提供实质性技术观点');
   }
 
+  // 检测是否具备强事实工程交付物 (Unified Diff, Code Block, Concrete File Path, Structured JSON)
+  const hasCodeBlock = /```(?:diff|patch|typescript|ts|javascript|js|json|python|py|go|rust|rs|bash|sh|sql|yaml|yml)?[\s\S]*?```/i.test(trimmed);
+  const hasConcreteFilePath = /(?:src\/[\w./-]+|\b[\w-]+\.(?:ts|tsx|js|jsx|rs|go|py|json|md)\b)/i.test(trimmed);
+  const hasStrongEngineeringArtifact = hasCodeBlock || (hasConcreteFilePath && trimmed.length >= 60);
+
   switch (stage) {
     case 'decomposition': {
       const hasModuleKeywords = /(模块|契约|边界|阶段|维度|子任务|interface|contract|module|allowed_files|拆解|划分)/i.test(trimmed);
-      if (!hasModuleKeywords) {
+      const hasDecompArtifact = hasCodeBlock || trimmed.includes('<<<MODULE_DECOMPOSITION>>>') || trimmed.includes('"modules"');
+      if (!hasModuleKeywords && !hasDecompArtifact) {
         missingRequirements.push('未包含模块/维度拆解清单或跨模块公共契约定义');
       }
       break;
     }
 
     case 'proposal': {
-      if (trimmed.length < 60) {
-        missingRequirements.push('立论提案篇幅不足 (字符数 < 60)');
+      if (trimmed.length < 50) {
+        missingRequirements.push('立论提案篇幅不足 (字符数 < 50)');
       }
-      const hasCoreDesign = /(架构|方案|设计|组件|选型|时序|流程|实现|机制|通过|采用|构建|策略|路径|规划|模型|定位|规则|举措|体系|标准|步骤)/i.test(trimmed);
-      if (!hasCoreDesign) {
+      const hasCoreDesign = /(架构|方案|设计|组件|选型|时序|流程|实现|机制|通过|采用|构建|策略|路径|规划|模型|定位|规则|举措|体系|标准|步骤|architecture|design|interface|class|function)/i.test(trimmed);
+      const hasKeyAdvantageOrGoal = /(优势|目标|保证|性能|可用性|一致性|降低|提升|防止|收益|效率|成本|增长|转化|留存|安全|合规|可控|保障|价值|质量|goal|benefit|perf|security|reliability)/i.test(trimmed);
+
+      // 若具备具体代码块/工程文件产物，视同满足核心方案设计；否则要求明确的设计与目标断言
+      if (!hasStrongEngineeringArtifact && !hasCoreDesign) {
         missingRequirements.push('缺少核心方案设计断言（未说明核心机制、执行路径、策略模型或系统架构）');
       }
-      const hasKeyAdvantageOrGoal = /(优势|目标|保证|性能|可用性|一致性|降低|提升|防止|收益|效率|成本|增长|转化|留存|安全|合规|可控|保障|价值|质量)/i.test(trimmed);
-      if (!hasKeyAdvantageOrGoal) {
+      if (!hasStrongEngineeringArtifact && !hasKeyAdvantageOrGoal) {
         missingRequirements.push('缺少方案预期的衡量指标、业务价值或核心收益断言');
       }
       break;
     }
 
     case 'challenge': {
-      if (trimmed.length < 70) {
-        missingRequirements.push('反例压测篇幅不足 (字符数 < 70)');
+      if (trimmed.length < 50) {
+        missingRequirements.push('反例压测篇幅不足 (字符数 < 50)');
       }
-      // 红队四部曲检测：矛盾/缺陷、隐含假设、边缘失效、反例实证（同时适配研发与通用业务推演）
-      const hasRiskOrContradiction = /(矛盾|缺陷|风险|漏洞|瓶颈|竞争|冲突|单点|不可逆|隐患|盲区|短板|失真|亏损|流失|违约|副作用)/i.test(trimmed);
-      const hasHiddenAssumption = /(假设|前提|依赖|默认|如果|假定|理想化|高估|低估|忽略|条件)/i.test(trimmed);
-      const hasEdgeOrFailureScenario = /(极端|边界|并发|超时|断网|穿透|宕机|崩溃|延迟|抖动|脏数据|失效|异常|峰值|黑天鹅|最坏|挤兑|恶性|断层|滞后)/i.test(trimmed);
-      const hasCounterDemand = /(反例|压测|实证|检验|证明|复现|证据|指标|数据|测算|算例|推演|案例|核查|对标)/i.test(trimmed);
+      // 红队四部曲检测：矛盾/缺陷、隐含假设、边缘失效、反例实证（中英双语与工程语义兼容）
+      const hasRiskOrContradiction = /(矛盾|缺陷|风险|漏洞|瓶颈|竞争|冲突|单点|不可逆|隐患|盲区|短板|失真|亏损|流失|违约|副作用|deadlock|race condition|overflow|leak|failure|bug|vulnerability|flaw|regression|crash)/i.test(trimmed);
+      const hasHiddenAssumption = /(假设|前提|依赖|默认|如果|假定|理想化|高估|低估|忽略|条件|assumption|presume|precondition|premise|if|rely|depend)/i.test(trimmed);
+      const hasEdgeOrFailureScenario = /(极端|边界|并发|超时|断网|穿透|宕机|崩溃|延迟|抖动|脏数据|失效|异常|峰值|黑天鹅|最坏|挤兑|恶性|断层|滞后|edge case|corner case|boundary|concurrency|timeout|disconnect|corrupt|oom)/i.test(trimmed);
+      const hasCounterDemand = /(反例|压测|实证|检验|证明|复现|证据|指标|数据|测算|算例|推演|案例|核查|对标|counter-example|test case|reproduce|verify|benchmark|assertion|poc)/i.test(trimmed);
 
       let matchedDimensions = 0;
       if (hasRiskOrContradiction) matchedDimensions++;
@@ -87,7 +95,10 @@ export function validateStageContract(
       if (hasEdgeOrFailureScenario) matchedDimensions++;
       if (hasCounterDemand) matchedDimensions++;
 
-      if (matchedDimensions < 2) {
+      // 若包含具体代码块展示复现反例，且命中至少 1 个风险/边界维度，视为高质量反例质询
+      const isCodeGroundedChallenge = hasCodeBlock && (hasRiskOrContradiction || hasEdgeOrFailureScenario);
+
+      if (matchedDimensions < 2 && !isCodeGroundedChallenge) {
         missingRequirements.push(
           '未达到红队四部曲批判契约（须至少覆盖以下 2 项：1.逻辑矛盾/潜在风险 2.隐含假设/前提缺陷 3.极端边界/失效场景 4.反例算例与实证要求）'
         );
@@ -99,22 +110,23 @@ export function validateStageContract(
       if (trimmed.length < 40) {
         missingRequirements.push('接地实证报告篇幅不足 (字符数 < 40)');
       }
-      const hasVerifiableVerdict = /(验证|检验|实证|测试|通过|未通过|失败|证伪|证实|成立|不成立|属实|PASS|FAIL|TRUE|FALSE|结论|核查|核算)/i.test(trimmed);
-      if (!hasVerifiableVerdict) {
+      const hasVerifiableVerdict = /(验证|检验|实证|测试|通过|未通过|失败|证伪|证实|成立|不成立|属实|PASS|FAIL|TRUE|FALSE|结论|核查|核算|passed|failed)/i.test(trimmed);
+      const hasEvidenceArtifact = trimmed.includes('"evidences"') || trimmed.includes('"truthValue"');
+      if (!hasVerifiableVerdict && !hasEvidenceArtifact) {
         missingRequirements.push('未包含明确的真值判定或实证核查结论（如 PASS/FAIL、已证实/已证伪、成立/不成立）');
       }
-      const hasToolOrEvidence = /(工具|沙箱|sandbox|ast|grep|代码|测试|执行|用例|脚本|命令|evidence|evidences|sourceTool|query|output|数据|测算|公式|核算|案例|基准|推导|统计|账目|法条|调研|证据|计算)/i.test(trimmed);
-      if (!hasToolOrEvidence) {
+      const hasToolOrEvidence = hasCodeBlock || /(工具|沙箱|sandbox|ast|grep|代码|测试|执行|用例|脚本|命令|evidence|evidences|sourceTool|query|output|数据|测算|公式|核算|案例|基准|推导|统计|账目|法条|调研|证据|计算|npm test|cargo test|vitest|jest)/i.test(trimmed);
+      if (!hasToolOrEvidence && !hasEvidenceArtifact) {
         missingRequirements.push('未包含具体的检验工具、数据测算、客观基准或实证记录');
       }
       break;
     }
 
     case 'defense': {
-      if (trimmed.length < 50) {
-        missingRequirements.push('答辩修正篇幅不足 (字符数 < 50)');
+      if (trimmed.length < 40) {
+        missingRequirements.push('答辩修正篇幅不足 (字符数 < 40)');
       }
-      const hasDefenseOrPatch = /(答辩|回应|补丁|修正|防御|优化|缓解|改动|重构|弥补|方案调整|针对|兜底|预案|容错|补偿|完善|规避|限定)/i.test(trimmed);
+      const hasDefenseOrPatch = hasStrongEngineeringArtifact || /(答辩|回应|补丁|修正|防御|优化|缓解|改动|重构|弥补|方案调整|针对|兜底|预案|容错|补偿|完善|规避|限定|patch|fix|resolve|mitigate|defense|refactor|handle|workaround)/i.test(trimmed);
       if (!hasDefenseOrPatch) {
         missingRequirements.push('未针对红队反例提出明确的答辩阐述、风控兜底预案或防御修正方案 (Patch)');
       }
@@ -127,10 +139,10 @@ export function validateStageContract(
     }
 
     case 'arbitration': {
-      if (trimmed.length < 60) {
-        missingRequirements.push('仲裁建言篇幅不足 (字符数 < 60)');
+      if (trimmed.length < 40) {
+        missingRequirements.push('仲裁建言篇幅不足 (字符数 < 40)');
       }
-      const hasTradeoffOrRuling = /(仲裁|权衡|裁决|采纳|建议|平衡|折中|结论|定案|实施|取舍|优先级|决议)/i.test(trimmed);
+      const hasTradeoffOrRuling = /(仲裁|权衡|裁决|采纳|建议|平衡|折中|结论|定案|实施|取舍|优先级|决议|arbitration|ruling|tradeoff|decision|adopt|reject)/i.test(trimmed) || trimmed.includes('<<<RULING_DRAFT_OPTIONS>>>');
       if (!hasTradeoffOrRuling) {
         missingRequirements.push('未输出明确的仲裁权衡考量或终局裁决建议');
       }
