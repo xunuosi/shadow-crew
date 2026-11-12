@@ -252,20 +252,29 @@ export function extractArbitrationRulingOptionsFromAcpResponse(
           c.name === 'submit_arbitration_ruling'
       );
       if (rulingCall && (rulingCall.arguments || rulingCall.args)) {
-        const args = rulingCall.arguments || rulingCall.args;
-        const mainDraft = normalizeSingleRulingDraft(args, 'trade_off_matrix', context.authorName);
-        if (mainDraft) {
-          primaryDraftFromAcp = mainDraft;
-          parsedOptions[mainDraft.decisionType] = mainDraft;
-          recommendedType = mainDraft.decisionType;
+        let args = rulingCall.arguments || rulingCall.args;
+        if (typeof args === 'string') {
+          try {
+            args = JSON.parse(args);
+          } catch (e) {
+            console.warn('[rulingDraftSynthesizer] Failed to parse JSON arguments from tool call:', e);
+          }
         }
+        if (args && typeof args === 'object') {
+          const mainDraft = normalizeSingleRulingDraft(args, 'trade_off_matrix', context.authorName);
+          if (mainDraft) {
+            primaryDraftFromAcp = mainDraft;
+            parsedOptions[mainDraft.decisionType] = mainDraft;
+            recommendedType = mainDraft.decisionType;
+          }
 
-        const rawOpts = args.ruling_options || args.rulingOptions;
-        if (rawOpts && typeof rawOpts === 'object') {
-          for (const key of ['adopt_proposer', 'reject_rebuild', 'trade_off_matrix'] as RulingDecisionType[]) {
-            if (rawOpts[key]) {
-              const opt = normalizeSingleRulingDraft(rawOpts[key], key, context.authorName);
-              if (opt) parsedOptions[key] = opt;
+          const rawOpts = args.ruling_options || args.rulingOptions;
+          if (rawOpts && typeof rawOpts === 'object') {
+            for (const key of ['adopt_proposer', 'reject_rebuild', 'trade_off_matrix'] as RulingDecisionType[]) {
+              if (rawOpts[key]) {
+                const opt = normalizeSingleRulingDraft(rawOpts[key], key, context.authorName);
+                if (opt) parsedOptions[key] = opt;
+              }
             }
           }
         }

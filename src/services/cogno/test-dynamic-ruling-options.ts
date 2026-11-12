@@ -188,6 +188,54 @@ assert.match(extractedFromSingle.options.trade_off_matrix.summary, /权衡/);
 
 console.log('✓ 单草案输入时其余模式由上下文事实动态补齐，确保 3 种模式全量可用');
 
+// 3.3 测试通过 MCP 工具 submit_arbitration_ruling (含 ruling_options) 直接提取裁决与 3 种模式预案
+const toolCallAcpResp = {
+  textResponse: '【综合裁决】已通过原生 MCP 工具提交裁决书。',
+  mcpToolCalls: [
+    {
+      tool_name: 'submit_arbitration_ruling',
+      arguments: {
+        decision_type: 'trade_off_matrix',
+        summary: 'MCP工具提交：折中方案：第一阶段补齐 ID 请求，第二阶段增设优雅退出',
+        trade_off_points: ['第一阶段解决协议丢弃', '第二阶段保障超时收割'],
+        impacted_files: ['src/acp_manager.rs'],
+        solution: '分期实施',
+        ruling_options: {
+          adopt_proposer: {
+            decision_type: 'adopt_proposer',
+            summary: 'MCP工具预案：采纳提案方在 acp_manager.rs 的轻量代理，并以补丁防范网络抖动',
+            trade_off_points: ['吞吐量优先'],
+            impacted_files: ['src/acp_manager.rs'],
+            solution: '合入主干',
+          },
+          reject_rebuild: {
+            decision_type: 'reject_rebuild',
+            summary: 'MCP工具预案：驳回原案，官方 ACP v2 协议不兼容带 ID 缺失是系统级致命隐患',
+            trade_off_points: ['严格协议规范'],
+            impacted_files: ['src/acp_manager.rs'],
+            solution: '推倒重构',
+          },
+          trade_off_matrix: {
+            decision_type: 'trade_off_matrix',
+            summary: 'MCP工具预案：折中方案：第一阶段补齐 ID 请求，第二阶段增设优雅退出',
+            trade_off_points: ['第一阶段解决协议丢弃', '第二阶段保障超时收割'],
+            impacted_files: ['src/acp_manager.rs'],
+            solution: '分期实施',
+          },
+        },
+      },
+    },
+  ],
+};
+
+const extractedFromTool = extractArbitrationRulingOptionsFromAcpResponse(toolCallAcpResp, mockDebateFacts);
+assert.equal(extractedFromTool.primaryDraft.decisionType, 'trade_off_matrix');
+assert.equal(extractedFromTool.options.adopt_proposer.summary, 'MCP工具预案：采纳提案方在 acp_manager.rs 的轻量代理，并以补丁防范网络抖动');
+assert.equal(extractedFromTool.options.reject_rebuild.summary, 'MCP工具预案：驳回原案，官方 ACP v2 协议不兼容带 ID 缺失是系统级致命隐患');
+assert.equal(extractedFromTool.options.trade_off_matrix.summary, 'MCP工具预案：折中方案：第一阶段补齐 ID 请求，第二阶段增设优雅退出');
+
+console.log('✓ 原生 MCP 工具 submit_arbitration_ruling (含 ruling_options) 直接提取校验通过');
+
 // -----------------------------------------------------------------------------
 // 测试 4: 人类在法槌弹窗中切换模式与方案定制独立保存状态机
 // -----------------------------------------------------------------------------
