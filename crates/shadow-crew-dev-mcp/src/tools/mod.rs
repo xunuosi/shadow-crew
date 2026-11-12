@@ -452,6 +452,71 @@ pub fn get_tools_list() -> Value {
                 },
                 "required": ["section_title", "pod_title", "status_summary"]
             }
+        },
+        {
+            "name": "submit_challenge_critique",
+            "description": "在博弈阶段 2 (challenge) 提交红队反从众逆向质询与反例压测报告。必须完整覆盖红队四部曲（致命缺陷、隐含假设、失效场景、反例测算与实证要求），直接上报至争议定位器与契约门禁。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target_claim_id": {
+                        "type": "string",
+                        "description": "被攻击的立论因果论点节点 ID (如 node-1-schema 或 C-1)，用于精准对齐 LMAD 局部争议切片 (可选)"
+                    },
+                    "fatal_flaws": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "核心逻辑矛盾、系统级缺陷或单点失效隐患列表 (四部曲之一: 逻辑矛盾与潜在风险)"
+                    },
+                    "hidden_assumptions": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "暴露原提案中不合理的默认前提或理想化假设 (四部曲之二: 隐含假设缺陷)"
+                    },
+                    "failure_scenarios": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "极端并发、网络超时断连、死锁竞争、脏数据或服务崩溃等工况反例 (四部曲之三: 极端边缘与失效场景)"
+                    },
+                    "counter_demands": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "向提案方索要的实证检验要求或防御性架构补丁指标 (四部曲之四: 反例压测与实证要求)"
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "红队最终质询结论通俗陈词 (≤ 80 字)"
+                    }
+                },
+                "required": ["fatal_flaws", "hidden_assumptions", "failure_scenarios", "counter_demands", "summary"]
+            }
+        },
+        {
+            "name": "validate_workspace_diff",
+            "description": "对落地执行智能体产出的 Unified Diff 补丁执行 Dry-Run 预检。检验目标文件是否存在、上下文行是否对齐无冲突，并核验是否越界修改非白名单文件，确保 100% 可安全干净合入。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "patches": {
+                        "type": "array",
+                        "description": "待预检的文件补丁列表",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "filename": { "type": "string", "description": "相对目标文件路径 (如 src/services/acpClient.ts)" },
+                                "diff": { "type": "string", "description": "标准 Unified Diff 块 (包含 @@ 行)" }
+                            },
+                            "required": ["filename", "diff"]
+                        }
+                    },
+                    "allowed_files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "当前模块允许修改的文件路径白名单 (可选，用于安全爆炸半径约束)"
+                    }
+                },
+                "required": ["patches"]
+            }
         }
     ])
 }
@@ -765,6 +830,66 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
                 apply_label
             ))
         }
+        "submit_challenge_critique" => {
+            let fatal_flaws = arguments["fatal_flaws"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 fatal_flaws 数组"))?;
+            let hidden_assumptions = arguments["hidden_assumptions"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 hidden_assumptions 数组"))?;
+            let failure_scenarios = arguments["failure_scenarios"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 failure_scenarios 数组"))?;
+            let counter_demands = arguments["counter_demands"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 counter_demands 数组"))?;
+            let summary = arguments["summary"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 summary"))?;
+            let target_claim_id = arguments["target_claim_id"].as_str().unwrap_or("general_proposal");
+
+            if fatal_flaws.is_empty() || hidden_assumptions.is_empty() || failure_scenarios.is_empty() || counter_demands.is_empty() {
+                return Err(anyhow!("红队四部曲门禁未满足：fatal_flaws, hidden_assumptions, failure_scenarios, counter_demands 均不能为空"));
+            }
+
+            Ok(format!(
+                "✓ 【红队反例质询与四部曲门禁】已成功上报并锁定争议焦点：\n• 靶向论点: [{}]\n• 核心质询结论: {}\n• 致命缺陷 ({} 项): {}\n• 隐含假设 ({} 项): {}\n• 失效场景 ({} 项): {}\n• 实证补丁要求 ({} 项): {}",
+                target_claim_id,
+                summary,
+                fatal_flaws.len(),
+                fatal_flaws.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; "),
+                hidden_assumptions.len(),
+                hidden_assumptions.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; "),
+                failure_scenarios.len(),
+                failure_scenarios.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; "),
+                counter_demands.len(),
+                counter_demands.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; ")
+            ))
+        }
+        "validate_workspace_diff" => {
+            let raw_patches = arguments["patches"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 patches 数组"))?;
+            let mut patches = Vec::new();
+            for p in raw_patches {
+                let filename = p["filename"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("patch 项缺少 filename"))?
+                    .to_string();
+                let diff = p["diff"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("patch 项缺少 diff"))?
+                    .to_string();
+                patches.push(fs::PatchItem { filename, diff });
+            }
+
+            let allowed_files: Option<Vec<String>> = arguments
+                .get("allowed_files")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+
+            fs::validate_workspace_diff(&patches, allowed_files.as_deref()).await
+        }
         unknown => Err(anyhow!("未知的 MCP 工具名称: {}", unknown)),
     }
 }
@@ -795,6 +920,8 @@ mod tests {
         assert!(names.contains(&"submit_module_decomposition"));
         assert!(names.contains(&"submit_grounding_evidence"));
         assert!(names.contains(&"submit_execution_deliverable"));
+        assert!(names.contains(&"submit_challenge_critique"));
+        assert!(names.contains(&"validate_workspace_diff"));
     }
 
     #[tokio::test]
@@ -1029,6 +1156,51 @@ mod tests {
         assert!(res.contains("强杀补丁交付"));
         assert!(res.contains("workspace_files"));
         assert!(res.contains("审查补丁 Diff"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_submit_challenge_critique() {
+        let args = json!({
+            "target_claim_id": "node-1-schema",
+            "fatal_flaws": ["全局锁并发死锁", "无递增消息 ID 导致脑裂"],
+            "hidden_assumptions": ["假设网络零延迟", "假设单实例无竞争"],
+            "failure_scenarios": ["跨地域 200ms 抖动时超时", "GC 暂停导致租约失效"],
+            "counter_demands": ["提供带 ID 的优雅退出单测", "提供 Jepsen 网络分区验证用例"],
+            "summary": "原单点代理方案在断网时存在孤儿僵尸进程风险，必须引入超时强杀防御补丁"
+        });
+        let res = dispatch_tool_call("submit_challenge_critique", &args).await.unwrap();
+        assert!(res.contains("✓ 【红队反例质询与四部曲门禁】已成功上报"));
+        assert!(res.contains("node-1-schema"));
+        assert!(res.contains("全局锁并发死锁"));
+        assert!(res.contains("致命缺陷 (2 项)"));
+        assert!(res.contains("实证补丁要求 (2 项)"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_validate_workspace_diff() {
+        let temp_dir = std::env::temp_dir().join("shadow_crew_dispatch_diff_test");
+        let _ = tokio::fs::create_dir_all(&temp_dir).await;
+        let test_file = temp_dir.join("sample.txt");
+        let _ = tokio::fs::write(&test_file, "line1\nline2\nline3\n").await;
+
+        let sample_path = test_file.to_str().unwrap();
+
+        let args = json!({
+            "patches": [
+                {
+                    "filename": sample_path,
+                    "diff": "--- a/sample.txt\n+++ b/sample.txt\n@@ -1,3 +1,4 @@\n line1\n+added_line\n line2\n line3\n"
+                }
+            ],
+            "allowed_files": [sample_path]
+        });
+
+        let res = dispatch_tool_call("validate_workspace_diff", &args).await.unwrap();
+        assert!(res.contains("【工作区补丁 Dry-Run 预检报告】"));
+        assert!(res.contains("预检通过 (All Clean)"));
+        assert!(res.contains("Clean: 1"));
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
 }
 

@@ -35,6 +35,7 @@ import {
 } from '../services/agentCollaboration';
 import {
   buildThinkingProcessFromAcp,
+  extractChallengeCritiqueFromAcpResponse,
   sendPromptToAcpAgent,
 } from '../services/acpClient';
 import { isAgentOffline, isAgentOnline } from '../utils/agentRuntime';
@@ -639,7 +640,7 @@ export function useGameTheoreticFsm({
         });
 
         // CognoNexus 阶段 2: 阶段契约门禁强校验 (R-1 / M4)
-        const contractValidation = validateStageContract('challenge', acpResp.textResponse, challengerAgent.name);
+        const contractValidation = validateStageContract('challenge', acpResp.textResponse, challengerAgent.name, acpResp.mcpToolCalls);
         logGameTheoreticTelemetry('stage_contract_validation', topicId, {
           stage: 'challenge',
           agentId: challengerAgent.id,
@@ -718,8 +719,14 @@ export function useGameTheoreticFsm({
         delete stageRefineRetriesRef.current[`${topicId}:challenge`];
 
         // 提取论点因果节点、升级为 Claim DAG 与图差分冲突定位 (Wave 3 P1-1)
+        const { critiquePayload } = extractChallengeCritiqueFromAcpResponse(acpResp);
         const argumentNodes = extractArgumentNodes(targetProposalText);
-        const disputePacket = localizeGraphDiffDispute(argumentNodes, acpResp.textResponse);
+        const disputePacket = localizeGraphDiffDispute(
+          argumentNodes,
+          acpResp.textResponse,
+          undefined,
+          critiquePayload?.targetClaimId
+        );
         const committedStates = dehydrateContextToCommittedStates(targetProposalText, acpResp.textResponse, argumentNodes);
 
         // 提炼并保留伴生少数派异议报告 (P0-2 Disagreement-Aware Deliberation)
@@ -1174,7 +1181,7 @@ export function useGameTheoreticFsm({
         });
 
         // 阶段契约门禁强校验 (R-1 / M4)
-        const contractValidation = validateStageContract('verification', acpResp.textResponse, verifierAgent.name);
+        const contractValidation = validateStageContract('verification', acpResp.textResponse, verifierAgent.name, acpResp.mcpToolCalls);
         logGameTheoreticTelemetry('stage_contract_validation', topicId, {
           stage: 'verification',
           agentId: verifierAgent.id,
@@ -1732,7 +1739,7 @@ export function useGameTheoreticFsm({
         });
 
         // 阶段契约门禁强校验 (R-1 / M4)
-        const contractValidation = validateStageContract('defense', acpResp.textResponse, proposerAgent.name);
+        const contractValidation = validateStageContract('defense', acpResp.textResponse, proposerAgent.name, acpResp.mcpToolCalls);
         logGameTheoreticTelemetry('stage_contract_validation', topicId, {
           stage: 'defense',
           agentId: proposerAgent.id,

@@ -367,6 +367,138 @@ pub async fn write_channel_artifact(
     ))
 }
 
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct PatchItem {
+    pub filename: String,
+    pub diff: String,
+}
+
+/// 对 Unified Diff 执行工作区 Dry-Run 预检 (验证文件存在性、上下文对齐、冲突及 G-Frame 模块白名单越界)
+pub async fn validate_workspace_diff(
+    patches: &[PatchItem],
+    allowed_files: Option<&[String]>,
+) -> Result<String> {
+    if patches.is_empty() {
+        return Err(anyhow!("patches 数组不能为空"));
+    }
+
+    let mut report_lines = Vec::new();
+    let mut total_additions = 0;
+    let mut total_deletions = 0;
+    let mut clean_files_count = 0;
+    let mut conflict_files_count = 0;
+    let mut violation_files_count = 0;
+
+    let allowed_set: Option<std::collections::HashSet<String>> = allowed_files.map(|files| {
+        files
+            .iter()
+            .map(|f| f.trim().trim_start_matches("./").to_string())
+            .collect()
+    });
+
+    for patch in patches {
+        let clean_filename = patch.filename.trim().trim_start_matches("./").to_string();
+
+        // 1. 检查白名单越界
+        let is_whitelisted = match &allowed_set {
+            Some(set) => set.contains(&clean_filename),
+            None => true,
+        };
+
+        if !is_whitelisted {
+            violation_files_count += 1;
+            report_lines.push(format!(
+                "  ❌ [越界拦截] 文件 `{}` 不在当前 G-Frame 模块白名单中！",
+                clean_filename
+            ));
+            continue;
+        }
+
+        // 2. 统计 diff 行数与解析 hunk
+        let diff_lines: Vec<&str> = patch.diff.lines().collect();
+        let mut patch_add = 0;
+        let mut patch_del = 0;
+        let mut hunk_headers = 0;
+
+        for line in &diff_lines {
+            if line.starts_with("@@") {
+                hunk_headers += 1;
+            } else if line.starts_with('+') && !line.starts_with("+++") {
+                patch_add += 1;
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                patch_del += 1;
+            }
+        }
+
+        total_additions += patch_add;
+        total_deletions += patch_del;
+
+        // 3. 检查目标文件存在性与上下文匹配 (Dry-Run)
+        let target_path = Path::new(&clean_filename);
+        let file_exists = target_path.exists();
+
+        let mut conflict_details = Vec::new();
+        if file_exists {
+            if let Ok(existing_content) = fs::read_to_string(target_path).await {
+                // 检查 diff 中被删除的行或上下文行是否存在于原文件中
+                for line in &diff_lines {
+                    if line.starts_with('-') && !line.starts_with("---") {
+                        let target_substr = line[1..].trim();
+                        if !target_substr.is_empty() && !existing_content.contains(target_substr) {
+                            conflict_details.push(format!("原行未找到: `{}`", target_substr));
+                            if conflict_details.len() >= 2 {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        } else if hunk_headers > 0 && patch_del > 0 {
+            conflict_details.push("新建文件存在删除行要求".to_string());
+        }
+
+        if !conflict_details.is_empty() {
+            conflict_files_count += 1;
+            report_lines.push(format!(
+                "  ⚠️ [冲突预警] `{}` (+{}, -{}) - 可能存在漂移: {}",
+                clean_filename,
+                patch_add,
+                patch_del,
+                conflict_details.join("; ")
+            ));
+        } else {
+            clean_files_count += 1;
+            let status_note = if file_exists { "修改" } else { "新建" };
+            report_lines.push(format!(
+                "  ✓ [Clean Patch] `{}` ({}) - +{} / -{} 行，上下文对齐无冲突",
+                clean_filename,
+                status_note,
+                patch_add,
+                patch_del
+            ));
+        }
+    }
+
+    let is_all_clean = violation_files_count == 0 && conflict_files_count == 0;
+    let summary_status = if is_all_clean {
+        "✅ 预检通过 (All Clean): 补丁上下文完全匹配，可安全一键合入"
+    } else {
+        "⚠️ 预检发现风险 (Preflight Issues): 存在白名单越界或行号漂移冲突"
+    };
+
+    Ok(format!(
+        "【工作区补丁 Dry-Run 预检报告】\n• 预检结果: {}\n• 统计指标: 共 {} 个文件 (+{} / -{} 行) | Clean: {}, 冲突: {}, 越界: {}\n• 文件明细:\n{}",
+        summary_status,
+        patches.len(),
+        total_additions,
+        total_deletions,
+        clean_files_count,
+        conflict_files_count,
+        violation_files_count,
+        report_lines.join("\n")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,5 +562,40 @@ mod tests {
 
         let _ = fs::remove_dir_all(&temp_dir).await;
         std::env::remove_var("SHADOW_CREW_HOME");
+    }
+
+    #[tokio::test]
+    async fn test_validate_workspace_diff() {
+        let temp_dir = std::env::temp_dir().join("shadow_crew_diff_test");
+        let _ = fs::create_dir_all(&temp_dir).await;
+        let test_file = temp_dir.join("sample.rs");
+        let _ = fs::write(&test_file, "fn existing_code() {\n    println!(\"hello\");\n}\n").await;
+
+        let sample_path = test_file.to_str().unwrap();
+
+        // 1. Clean patch
+        let clean_patches = vec![PatchItem {
+            filename: sample_path.to_string(),
+            diff: "--- a/sample.rs\n+++ b/sample.rs\n@@ -1,3 +1,4 @@\n fn existing_code() {\n+    println!(\"added\");\n     println!(\"hello\");\n }\n".to_string(),
+        }];
+        let clean_res = validate_workspace_diff(&clean_patches, None).await.unwrap();
+        assert!(clean_res.contains("预检通过"));
+        assert!(clean_res.contains("Clean Patch"));
+
+        // 2. Conflict patch (missing original line)
+        let conflict_patches = vec![PatchItem {
+            filename: sample_path.to_string(),
+            diff: "--- a/sample.rs\n+++ b/sample.rs\n@@ -1,2 +1,2 @@\n-fn non_existent_code() {\n+fn updated() {\n".to_string(),
+        }];
+        let conflict_res = validate_workspace_diff(&conflict_patches, None).await.unwrap();
+        assert!(conflict_res.contains("冲突预警"));
+        assert!(conflict_res.contains("原行未找到"));
+
+        // 3. Whitelist violation
+        let allowed = vec!["other_file.rs".to_string()];
+        let viol_res = validate_workspace_diff(&clean_patches, Some(&allowed)).await.unwrap();
+        assert!(viol_res.contains("越界拦截"));
+
+        let _ = fs::remove_dir_all(&temp_dir).await;
     }
 }

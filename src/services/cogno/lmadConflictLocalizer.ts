@@ -393,7 +393,8 @@ export function calculateAffectedSubgraph(rootDisputeNodeId: string, nodes: Argu
 export function localizeGraphDiffDispute(
   proposalNodes: ArgumentNode[],
   critiqueText: string,
-  defenseText?: string
+  defenseText?: string,
+  targetClaimId?: string
 ): DisputeSpanPacket {
   const baseDispute = localizeEarliestDispute(
     proposalNodes.map((n) => n.claim).join('\n'),
@@ -405,8 +406,18 @@ export function localizeGraphDiffDispute(
     return baseDispute;
   }
 
+  // 0. 若显式指定目标论点 ID，优先精准锚定 (P1-1 / submit_challenge_critique 协同)
+  let matchedNode: ArgumentNode | undefined;
+  if (targetClaimId) {
+    matchedNode = proposalNodes.find(
+      (n) => n.id === targetClaimId || n.claim.includes(targetClaimId) || targetClaimId.includes(n.id)
+    );
+  }
+
   // 1. 寻找被直接批判命中的候选论点节点
-  let matchedNode = proposalNodes.find((n) => critiqueText.includes(n.claim.slice(0, 12)));
+  if (!matchedNode) {
+    matchedNode = proposalNodes.find((n) => critiqueText.includes(n.claim.slice(0, 12)));
+  }
 
   if (!matchedNode) {
     // 词项重叠打分匹配

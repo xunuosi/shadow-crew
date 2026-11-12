@@ -31,13 +31,30 @@ export const STAGE_CONTRACT_MAX_RETRIES = 2;
 export function validateStageContract(
   stage: GameTheoreticStage,
   text: string,
-  agentName?: string
+  agentName?: string,
+  mcpToolCalls?: any[]
 ): StageContractValidationResult {
   const trimmed = (text || '').trim();
   const missingRequirements: string[] = [];
 
-  // 通用底线：绝不允许极短敷衍回复或空回复
-  if (trimmed.length < 30) {
+  const hasSubstantialToolCall = Array.isArray(mcpToolCalls) && mcpToolCalls.some(
+    (c: any) =>
+      c?.tool_name === 'submit_challenge_critique' ||
+      c?.tool_name === 'submit_grounding_evidence' ||
+      c?.tool_name === 'submit_execution_deliverable' ||
+      c?.tool_name === 'submit_arbitration_ruling' ||
+      c?.tool === 'submit_challenge_critique' ||
+      c?.tool === 'submit_grounding_evidence' ||
+      c?.tool === 'submit_execution_deliverable' ||
+      c?.tool === 'submit_arbitration_ruling' ||
+      c?.name === 'submit_challenge_critique' ||
+      c?.name === 'submit_grounding_evidence' ||
+      c?.name === 'submit_execution_deliverable' ||
+      c?.name === 'submit_arbitration_ruling'
+  );
+
+  // 通用底线：绝不允许极短敷衍回复或空回复 (若已调用实质性 MCP 工具契约则豁免纯文本字数底线)
+  if (!hasSubstantialToolCall && trimmed.length < 30) {
     missingRequirements.push('回复篇幅过短 (字符数 < 30)，缺少必要的推演论证或事实细节');
   }
 
@@ -80,6 +97,38 @@ export function validateStageContract(
     }
 
     case 'challenge': {
+      // 0. 优先检验原生 MCP 工具 submit_challenge_critique
+      let hasValidCritiqueTool = false;
+      if (Array.isArray(mcpToolCalls) && mcpToolCalls.length > 0) {
+        const critiqueCall = mcpToolCalls.find(
+          (c: any) =>
+            c?.tool_name === 'submit_challenge_critique' ||
+            c?.tool === 'submit_challenge_critique' ||
+            c?.name === 'submit_challenge_critique'
+        );
+        if (critiqueCall) {
+          let args = critiqueCall.arguments ?? critiqueCall.args;
+          if (typeof args === 'string') {
+            try {
+              args = JSON.parse(args);
+            } catch {}
+          }
+          if (args && typeof args === 'object') {
+            const hasFlaws = Array.isArray(args.fatal_flaws) && args.fatal_flaws.length > 0;
+            const hasAssumptions = Array.isArray(args.hidden_assumptions) && args.hidden_assumptions.length > 0;
+            const hasScenarios = Array.isArray(args.failure_scenarios) && args.failure_scenarios.length > 0;
+            const hasDemands = Array.isArray(args.counter_demands) && args.counter_demands.length > 0;
+            if (hasFlaws && hasAssumptions && hasScenarios && hasDemands) {
+              hasValidCritiqueTool = true;
+            }
+          }
+        }
+      }
+
+      if (hasValidCritiqueTool) {
+        break; // 四部曲全量满足，直接通过门禁！
+      }
+
       if (trimmed.length < 50) {
         missingRequirements.push('反例压测篇幅不足 (字符数 < 50)');
       }
@@ -94,6 +143,10 @@ export function validateStageContract(
       if (hasHiddenAssumption) matchedDimensions++;
       if (hasEdgeOrFailureScenario) matchedDimensions++;
       if (hasCounterDemand) matchedDimensions++;
+
+      if (trimmed.includes('submit_challenge_critique') || trimmed.includes('<<<CHALLENGER_CRITIQUE>>>')) {
+        matchedDimensions += 2;
+      }
 
       // 若包含具体代码块展示复现反例，且命中至少 1 个风险/边界维度，视为高质量反例质询
       const isCodeGroundedChallenge = hasCodeBlock && (hasRiskOrContradiction || hasEdgeOrFailureScenario);
@@ -110,12 +163,18 @@ export function validateStageContract(
       if (trimmed.length < 40) {
         missingRequirements.push('接地实证报告篇幅不足 (字符数 < 40)');
       }
-      const hasVerifiableVerdict = /(验证|检验|实证|测试|通过|未通过|失败|证伪|证实|成立|不成立|属实|PASS|FAIL|TRUE|FALSE|结论|核查|核算|passed|failed)/i.test(trimmed);
-      const hasEvidenceArtifact = trimmed.includes('"evidences"') || trimmed.includes('"truthValue"') || trimmed.includes('submit_grounding_evidence');
+      const hasEvidenceToolCall = Array.isArray(mcpToolCalls) && mcpToolCalls.some(
+        (c: any) =>
+          c?.tool_name === 'submit_grounding_evidence' ||
+          c?.tool === 'submit_grounding_evidence' ||
+          c?.name === 'submit_grounding_evidence'
+      );
+      const hasVerifiableVerdict = hasEvidenceToolCall || /(验证|检验|实证|测试|通过|未通过|失败|证伪|证实|成立|不成立|属实|PASS|FAIL|TRUE|FALSE|结论|核查|核算|passed|failed)/i.test(trimmed);
+      const hasEvidenceArtifact = hasEvidenceToolCall || trimmed.includes('"evidences"') || trimmed.includes('"truthValue"') || trimmed.includes('submit_grounding_evidence');
       if (!hasVerifiableVerdict && !hasEvidenceArtifact) {
         missingRequirements.push('未包含明确的真值判定或实证核查结论（如 PASS/FAIL、已证实/已证伪、成立/不成立）');
       }
-      const hasToolOrEvidence = hasCodeBlock || /(工具|沙箱|sandbox|ast|grep|代码|测试|执行|用例|脚本|命令|evidence|evidences|sourceTool|submit_grounding_evidence|query|output|数据|测算|公式|核算|案例|基准|推导|统计|账目|法条|调研|证据|计算|npm test|cargo test|vitest|jest)/i.test(trimmed);
+      const hasToolOrEvidence = hasEvidenceToolCall || hasCodeBlock || /(工具|沙箱|sandbox|ast|grep|代码|测试|执行|用例|脚本|命令|evidence|evidences|sourceTool|submit_grounding_evidence|query|output|数据|测算|公式|核算|案例|基准|推导|统计|账目|法条|调研|证据|计算|npm test|cargo test|vitest|jest)/i.test(trimmed);
       if (!hasToolOrEvidence && !hasEvidenceArtifact) {
         missingRequirements.push('未包含具体的检验工具、数据测算、客观基准或实证记录');
       }
@@ -142,7 +201,13 @@ export function validateStageContract(
       if (trimmed.length < 40) {
         missingRequirements.push('仲裁建言篇幅不足 (字符数 < 40)');
       }
-      const hasTradeoffOrRuling = /(仲裁|权衡|裁决|采纳|建议|平衡|折中|结论|定案|实施|取舍|优先级|决议|arbitration|ruling|tradeoff|decision|adopt|reject)/i.test(trimmed) || trimmed.includes('<<<RULING_DRAFT_OPTIONS>>>');
+      const hasArbitrationToolCall = Array.isArray(mcpToolCalls) && mcpToolCalls.some(
+        (c: any) =>
+          c?.tool_name === 'submit_arbitration_ruling' ||
+          c?.tool === 'submit_arbitration_ruling' ||
+          c?.name === 'submit_arbitration_ruling'
+      );
+      const hasTradeoffOrRuling = hasArbitrationToolCall || /(仲裁|权衡|裁决|采纳|建议|平衡|折中|结论|定案|实施|取舍|优先级|决议|arbitration|ruling|tradeoff|decision|adopt|reject)/i.test(trimmed) || trimmed.includes('<<<RULING_DRAFT_OPTIONS>>>') || trimmed.includes('submit_arbitration_ruling');
       if (!hasTradeoffOrRuling) {
         missingRequirements.push('未输出明确的仲裁权衡考量或终局裁决建议');
       }

@@ -893,6 +893,79 @@ export function extractModuleDecompositionFromAcpResponse(
   return undefined;
 }
 
+export interface ChallengeCritiquePayload {
+  targetClaimId?: string;
+  fatalFlaws: string[];
+  hiddenAssumptions: string[];
+  failureScenarios: string[];
+  counterDemands: string[];
+  summary: string;
+}
+
+/**
+ * 从 ACP 响应（原生 MCP 工具 submit_challenge_critique 或结构化块）中提取红队质询四部曲载荷
+ */
+export function extractChallengeCritiqueFromAcpResponse(
+  acpResp: Partial<AcpAgentResponse>
+): {
+  critiquePayload?: ChallengeCritiquePayload;
+  cleanedText: string;
+} {
+  const toolCalls = collectAcpMcpToolCalls(acpResp);
+  const critiqueCall = toolCalls.find(
+    (c: any) =>
+      c?.tool_name === 'submit_challenge_critique' ||
+      c?.tool === 'submit_challenge_critique' ||
+      c?.name === 'submit_challenge_critique'
+  );
+
+  let critiquePayload: ChallengeCritiquePayload | undefined;
+  if (critiqueCall) {
+    let args = critiqueCall.arguments ?? critiqueCall.args;
+    if (typeof args === 'string') {
+      try {
+        args = JSON.parse(args);
+      } catch (e) {
+        console.warn('[acpClient] Failed to parse JSON arguments from submit_challenge_critique:', e);
+      }
+    }
+    if (args && typeof args === 'object') {
+      critiquePayload = {
+        targetClaimId: args.target_claim_id || args.targetClaimId,
+        fatalFlaws: Array.isArray(args.fatal_flaws) ? args.fatal_flaws.map(String) : [],
+        hiddenAssumptions: Array.isArray(args.hidden_assumptions) ? args.hidden_assumptions.map(String) : [],
+        failureScenarios: Array.isArray(args.failure_scenarios) ? args.failure_scenarios.map(String) : [],
+        counterDemands: Array.isArray(args.counter_demands) ? args.counter_demands.map(String) : [],
+        summary: String(args.summary || '').trim(),
+      };
+    }
+  }
+
+  const rawText = acpResp.textResponse || '';
+  const blockRegex = /<<<CHALLENGER_CRITIQUE>>>([\s\S]*?)<<<CHALLENGER_CRITIQUE_END>>>/i;
+  const match = rawText.match(blockRegex);
+  if (!critiquePayload && match && match[1]) {
+    try {
+      const parsed = JSON.parse(match[1].trim());
+      if (parsed && typeof parsed === 'object') {
+        critiquePayload = {
+          targetClaimId: parsed.target_claim_id || parsed.targetClaimId,
+          fatalFlaws: Array.isArray(parsed.fatal_flaws) ? parsed.fatal_flaws.map(String) : [],
+          hiddenAssumptions: Array.isArray(parsed.hidden_assumptions) ? parsed.hidden_assumptions.map(String) : [],
+          failureScenarios: Array.isArray(parsed.failure_scenarios) ? parsed.failure_scenarios.map(String) : [],
+          counterDemands: Array.isArray(parsed.counter_demands) ? parsed.counter_demands.map(String) : [],
+          summary: String(parsed.summary || '').trim(),
+        };
+      }
+    } catch (e) {
+      console.warn('[acpClient] Failed to parse <<<CHALLENGER_CRITIQUE>>> block:', e);
+    }
+  }
+
+  const cleanedText = match ? rawText.replace(match[0], '').trim() : rawText;
+  return { critiquePayload, cleanedText };
+}
+
 /**
  * 根据 ACP 响应 (包含记忆召回与原生 MCP 工具调用) 构建标准化 ThinkingProcess
  */

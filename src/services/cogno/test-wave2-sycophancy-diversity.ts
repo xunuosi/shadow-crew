@@ -1,5 +1,7 @@
 import assert from 'assert';
 import { Agent, GameRolesConfig } from '../../types';
+import { extractChallengeCritiqueFromAcpResponse } from '../acpClient';
+import { BUILTIN_SKILLS } from '../../skills';
 import {
   estimateBaselineSycophancyScore,
   evaluateDynamicSycophancyScore,
@@ -308,6 +310,89 @@ assert(bwmResultWithConf.confidenceMatrix !== undefined, 'Result payload must pr
 console.log('   ✓ Confidence-Weighted MCDA Ranking:');
 bwmResultWithConf.ranking.forEach((r) => {
   console.log(`     #${r.rank}: ${r.alternative} -> Utility ${(r.totalUtility * 10).toFixed(2)} / 10`);
+});
+
+// ==========================================
+// Test 9: submit_challenge_critique MCP Tool Contract & Stage Gate
+// ==========================================
+console.log('\n9. Testing submit_challenge_critique Tool Contract & Stage Gate...');
+const mockCritiqueToolCall = {
+  server_name: 'shadow-crew-dev-mcp',
+  tool_name: 'submit_challenge_critique',
+  status: 'success',
+  arguments: {
+    fatal_flaws: ['未实现分布式幂等防重机制'],
+    hidden_assumptions: ['假设下游支付网关永不超时与丢包'],
+    failure_scenarios: ['网络分区时触发重复扣款导致资金损失'],
+    counter_demands: ['引入全局分布式防重流水表与 2PC 兜底'],
+    summary: '高并发支付丢包时可能引发重复扣款',
+    target_claim_id: 'arg-node-1',
+  },
+};
+
+const toolContractValidation = validateStageContract(
+  'challenge',
+  '针对该方案，我调用了原生红队批判工具提交四部曲质询。',
+  'DeepSeek RedTeam',
+  [mockCritiqueToolCall]
+);
+assert.strictEqual(toolContractValidation.isValid, true, 'Stage contract must pass with submit_challenge_critique tool call');
+console.log('   ✓ Stage Contract Gate passed seamlessly via submit_challenge_critique tool call');
+
+const extractedFromTool = extractChallengeCritiqueFromAcpResponse({
+  textResponse: '针对方案已执行批判',
+  mcpToolCalls: [mockCritiqueToolCall],
+});
+assert(extractedFromTool.critiquePayload !== undefined, 'Critique payload must be extracted from tool call');
+assert.strictEqual(extractedFromTool.critiquePayload?.fatalFlaws[0], '未实现分布式幂等防重机制');
+assert.strictEqual(extractedFromTool.critiquePayload?.targetClaimId, 'arg-node-1');
+console.log('   ✓ Extracted critique payload from native MCP tool call');
+
+// ==========================================
+// Test 10: Fallback <<<CHALLENGER_CRITIQUE>>> Block Extraction
+// ==========================================
+console.log('\n10. Testing Fallback <<<CHALLENGER_CRITIQUE>>> Block Extraction...');
+const fallbackCritiqueText = `
+方案分析如下：
+<<<CHALLENGER_CRITIQUE>>>
+{
+  "fatal_flaws": ["缓存穿透引发 DB 宕机"],
+  "hidden_assumptions": ["假设所有查询 Key 均为热点有效键"],
+  "failure_scenarios": ["黑客构造海量不存在 ID 并发打爆数据库"],
+  "counter_demands": ["使用布隆过滤器或空值缓存"],
+  "summary": "缓存击穿/穿透防护缺失",
+  "target_claim_id": "arg-node-3"
+}
+<<<CHALLENGER_CRITIQUE_END>>>
+请及时修补。
+`;
+const extractedFromBlock = extractChallengeCritiqueFromAcpResponse({
+  textResponse: fallbackCritiqueText,
+});
+assert(extractedFromBlock.critiquePayload !== undefined, 'Critique payload must be extracted from fallback block');
+assert.strictEqual(extractedFromBlock.critiquePayload?.fatalFlaws[0], '缓存穿透引发 DB 宕机');
+assert.strictEqual(extractedFromBlock.critiquePayload?.targetClaimId, 'arg-node-3');
+assert(!extractedFromBlock.cleanedText.includes('<<<CHALLENGER_CRITIQUE>>>'), 'Cleaned text must strip contract block');
+console.log('   ✓ Extracted critique payload from fallback block and cleaned text');
+
+// ==========================================
+// Test 11: BUILTIN_SKILLS Registry Integrity
+// ==========================================
+console.log('\n11. Testing BUILTIN_SKILLS Registry Integrity...');
+assert(BUILTIN_SKILLS.length === 4, 'Must register exactly 4 built-in skills');
+const expectedSkillIds = [
+  'skill-red-team-falsification',
+  'skill-grounding-verification',
+  'skill-gframe-modular-executor',
+  'skill-living-adr-governance',
+];
+expectedSkillIds.forEach((id) => {
+  const skill = BUILTIN_SKILLS.find((s) => s.id === id);
+  assert(skill !== undefined, `Built-in skill ${id} must exist in registry`);
+  assert.strictEqual(skill.type, 'builtin');
+  assert.strictEqual(skill.mcpServer, 'shadow-crew-dev-mcp');
+  assert(Boolean(skill.commandSnippet), `Skill ${id} must have commandSnippet`);
+  console.log(`   ✓ Verified skill: [${skill.id}] -> ${skill.name} (${skill.commandSnippet})`);
 });
 
 console.log('\n=== All Wave 2 Unit & Integration Tests Passed 100%! ===\n');

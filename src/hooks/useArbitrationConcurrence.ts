@@ -127,7 +127,7 @@ export function useArbitrationConcurrence({
 
       try {
         // 契约门禁校验
-        const contractValidation = validateStageContract('arbitration', acpResp.textResponse, arbiterAgent.name);
+        const contractValidation = validateStageContract('arbitration', acpResp.textResponse, arbiterAgent.name, acpResp.mcpToolCalls);
         logGameTheoreticTelemetry('stage_contract_validation', topicId, {
           stage: 'arbitration',
           agentId: arbiterAgent.id,
