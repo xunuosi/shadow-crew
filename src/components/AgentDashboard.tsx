@@ -156,20 +156,35 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
       (a.capabilities as any)?.loadSession
     );
 
-  const supportedCount = agents.filter((a) => a.status !== 'idle' && hasAgentSessionRecovery(a)).length;
-  const unsupportedCount = agents.filter((a) => a.status !== 'idle' && !hasAgentSessionRecovery(a)).length;
-  const pendingCount = agents.filter((a) => a.status === 'idle').length;
+  /**
+   * 统一「会话恢复能力」三态判定：筛选统计与卡片能力条共用同一口径，
+   * 避免 `starting/error/auth_required` 期间握手结果尚未产生时被误计入「仅单次」。
+   */
+  const getSessionRecoveryState = (
+    a: Agent
+  ): 'pending' | 'supported' | 'unsupported' => {
+    const isHandshakePending =
+      a.status === 'idle' ||
+      a.status === 'starting' ||
+      a.status === 'error' ||
+      a.status === 'auth_required';
+    if (isHandshakePending) return 'pending';
+    return hasAgentSessionRecovery(a) ? 'supported' : 'unsupported';
+  };
+
+  const supportedCount = agents.filter(
+    (a) => getSessionRecoveryState(a) === 'supported'
+  ).length;
+  const unsupportedCount = agents.filter(
+    (a) => getSessionRecoveryState(a) === 'unsupported'
+  ).length;
+  const pendingCount = agents.filter(
+    (a) => getSessionRecoveryState(a) === 'pending'
+  ).length;
 
   const filteredAgents = agents.filter((a) => {
     if (sessionFilter === 'all') return true;
-    const isSupported = a.status !== 'idle' && hasAgentSessionRecovery(a);
-    const isUnsupported = a.status !== 'idle' && !hasAgentSessionRecovery(a);
-    const isPending = a.status === 'idle';
-
-    if (sessionFilter === 'supported') return isSupported;
-    if (sessionFilter === 'unsupported') return isUnsupported;
-    if (sessionFilter === 'pending') return isPending;
-    return true;
+    return getSessionRecoveryState(a) === sessionFilter;
   });
 
   // 点击其它区域或按 Escape 键自动回收 Agent/Team 下拉菜单
@@ -667,10 +682,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                   {/* 方案 1: 单行精炼能力条 */}
                   {(() => {
                     const isHandshakePending =
-                      agent.status === 'idle' ||
-                      agent.status === 'starting' ||
-                      agent.status === 'error' ||
-                      agent.status === 'auth_required';
+                      getSessionRecoveryState(agent) === 'pending';
                     const hasResume =
                       !isHandshakePending &&
                       Boolean(agent.capabilities?.supportsResumeSession);

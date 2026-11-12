@@ -332,6 +332,22 @@ pub fn check_supports_resume_session(result: &serde_json::Value) -> bool {
         .is_some()
 }
 
+/// 解析 initialize 结果中的会话恢复能力（(supports_load, supports_resume)）。
+///
+/// ACP v2 将 `session/list`、`session/resume`、`session/close` 定义为协议基线方法，
+/// 端点不会在 `capabilities` 中显式声明 `resume`；因此 v2 协商成功后必须默认视为
+/// 支持 `session/resume`。v1 没有该基线约定，仍需依据
+/// `agentCapabilities` / `sessionCapabilities` 的显式声明判定。
+pub fn resolve_session_capabilities(
+    result: &serde_json::Value,
+    negotiated_version: &str,
+) -> (bool, bool) {
+    let supports_load = check_supports_load_session(result);
+    let supports_resume =
+        negotiated_version == "v2" || check_supports_resume_session(result);
+    (supports_load, supports_resume)
+}
+
 /// 解析 ACP 可选扩展 agentCapabilities.nativeMemory。
 ///
 /// 契约示例：
@@ -2497,9 +2513,9 @@ impl AcpProcessManager {
                             if let Some(res) = fallback_resp.get("result") {
                                 initialized.store(true, Ordering::SeqCst);
                                 *negotiated_protocol_version.lock().await = "v1".to_string();
-                                let supported = check_supports_load_session(res);
+                                let (supported, supported_resume) =
+                                    resolve_session_capabilities(res, "v1");
                                 supports_load_session.store(supported, Ordering::SeqCst);
-                                let supported_resume = check_supports_resume_session(res);
                                 supports_resume_session.store(supported_resume, Ordering::SeqCst);
                                 supports_prompt_image.store(check_supports_prompt_image(res), Ordering::SeqCst);
                                 supports_embedded_context.store(check_supports_embedded_context(res), Ordering::SeqCst);
@@ -2542,9 +2558,9 @@ impl AcpProcessManager {
                         let neg_ver = parse_negotiated_protocol_version(res);
                         *negotiated_protocol_version.lock().await = neg_ver.clone();
                         tracing::info!("[Agent {}] ACP protocol negotiated version: {}", agent_id, neg_ver);
-                        let supported = check_supports_load_session(res);
+                        let (supported, supported_resume) =
+                            resolve_session_capabilities(res, &neg_ver);
                         supports_load_session.store(supported, Ordering::SeqCst);
-                        let supported_resume = check_supports_resume_session(res);
                         supports_resume_session.store(supported_resume, Ordering::SeqCst);
                         supports_prompt_image
                             .store(check_supports_prompt_image(res), Ordering::SeqCst);
@@ -2578,29 +2594,36 @@ impl AcpProcessManager {
         // 2. 检查特定 Agent 的 API Key 凭证 (如 Claude Code 需要 ANTHROPIC_API_KEY)
         let is_claude = command_line.contains("claude") || agent_id.contains("claude");
         if is_claude {
+            // Claude Code 官方支持两种凭证环境变量：API Key 与 OAuth/网关 Token。
+            // 仅凭 ANTHROPIC_API_KEY 缺失就判为未认证会产生假阴性（例如用户通过
+            // ANTHROPIC_AUTH_TOKEN 或 ~/.claude/settings.json 完成鉴权）。
+            let claude_credential_keys = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
             let has_key = env_vars
                 .as_ref()
                 .map(|vars| {
                     vars.iter().any(|item| {
                         let (k, v) = item.clone().into_pair();
-                        k.trim() == "ANTHROPIC_API_KEY" && !v.trim().is_empty()
+                        claude_credential_keys.contains(&k.trim()) && !v.trim().is_empty()
                     })
                 })
                 .unwrap_or(false)
-                || std::env::var("ANTHROPIC_API_KEY")
-                    .map(|k| !k.trim().is_empty())
-                    .unwrap_or(false);
+                || claude_credential_keys.iter().any(|key| {
+                    std::env::var(key)
+                        .map(|k| !k.trim().is_empty())
+                        .unwrap_or(false)
+                });
 
             if !has_key {
                 initial_status = "auth_required".to_string();
                 initial_auth_state = "auth_required".to_string();
-                detail_msg = Some("缺少 ANTHROPIC_API_KEY，点击编辑配置".to_string());
+                detail_msg =
+                    Some("缺少 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN，点击编辑配置".to_string());
                 *auth_state.lock().await = "auth_required".to_string();
                 *status_detail.lock().await = detail_msg.clone();
                 log_acp_event(
                     agent_id,
                     "WARN",
-                    "Missing ANTHROPIC_API_KEY for Claude Code ACP",
+                    "Missing ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN for Claude Code ACP",
                 );
             }
         }
@@ -3281,9 +3304,9 @@ where
                             if let Some(neg_lock) = negotiated_protocol_version {
                                 *neg_lock.lock().await = "v1".to_string();
                             }
-                            let supported = check_supports_load_session(res);
+                            let (supported, supported_resume) =
+                                resolve_session_capabilities(res, "v1");
                             supports_load_session.store(supported, Ordering::SeqCst);
-                            let supported_resume = check_supports_resume_session(res);
                             supports_resume_session.store(supported_resume, Ordering::SeqCst);
                             supports_prompt_image.store(check_supports_prompt_image(res), Ordering::SeqCst);
                             supports_embedded_context.store(check_supports_embedded_context(res), Ordering::SeqCst);
@@ -3315,9 +3338,9 @@ where
                         *neg_lock.lock().await = neg_ver.clone();
                     }
                     tracing::info!("[Agent {}] Lazy init: ACP protocol negotiated version: {}", agent_id, neg_ver);
-                    let supported = check_supports_load_session(res);
+                    let (supported, supported_resume) =
+                        resolve_session_capabilities(res, &neg_ver);
                     supports_load_session.store(supported, Ordering::SeqCst);
-                    let supported_resume = check_supports_resume_session(res);
                     supports_resume_session.store(supported_resume, Ordering::SeqCst);
                     supports_prompt_image
                         .store(check_supports_prompt_image(res), Ordering::SeqCst);
@@ -5766,6 +5789,45 @@ mod runtime_status_tests {
             }
         });
         assert!(!check_supports_resume_session(&without_support));
+    }
+
+    #[test]
+    fn test_resolve_session_capabilities_v2_baseline_resume() {
+        use super::resolve_session_capabilities;
+
+        // ACP v2 基线会话方法（含 session/resume）不需要也不允许在 capabilities 中声明；
+        // Claude Agent 0.106 的真实 initialize 结果即为此形态。
+        let v2_result = serde_json::json!({
+            "protocolVersion": 2,
+            "capabilities": {
+                "session": {
+                    "prompt": {},
+                    "delete": {},
+                    "fork": {},
+                    "title": {}
+                }
+            }
+        });
+        let (load_v2, resume_v2) = resolve_session_capabilities(&v2_result, "v2");
+        assert!(!load_v2, "v2 无 session/load 方法，不应伪造 load 能力");
+        assert!(resume_v2, "v2 协商成功后 session/resume 必须按协议基线视为支持");
+
+        // v1 没有基线约定，显式声明缺席即不支持。
+        let v1_result = serde_json::json!({
+            "protocolVersion": 1,
+            "agentCapabilities": { "promptCapabilities": {} }
+        });
+        let (load_v1, resume_v1) = resolve_session_capabilities(&v1_result, "v1");
+        assert!(!load_v1);
+        assert!(!resume_v1);
+
+        // v1 显式声明 resume 时仍需识别。
+        let v1_resume_result = serde_json::json!({
+            "agentCapabilities": { "sessionCapabilities": { "resume": {} } }
+        });
+        let (_, resume_v1_explicit) =
+            resolve_session_capabilities(&v1_resume_result, "v1");
+        assert!(resume_v1_explicit);
     }
 
     #[test]

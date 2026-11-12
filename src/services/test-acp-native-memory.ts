@@ -1824,6 +1824,10 @@ async function verifyRemoteWebSocketAndUiContracts(): Promise<number> {
   );
   assert.ok(dashboardStartingHtml.includes('待握手'));
   assert.equal(dashboardStartingHtml.includes('仅单次 ⚠️'), false);
+  // Filter chip counts must use the same three-state classification as the card:
+  // a `starting` Agent is handshake-pending, never counted as "仅单次".
+  assert.ok(dashboardStartingHtml.includes('待握手 (1)'));
+  assert.equal(dashboardStartingHtml.includes('仅单次 (1)'), false);
 
   const inspectorStartingHtml = renderToStaticMarkup(
     React.createElement(AcpInspector, {
@@ -1837,7 +1841,7 @@ async function verifyRemoteWebSocketAndUiContracts(): Promise<number> {
   assert.ok(inspectorStartingHtml.includes('recovery: pending'));
   assert.equal(inspectorStartingHtml.includes('未实现'), false);
   assert.equal(inspectorStartingHtml.includes('"id": 101'), false);
-  assertions += 12;
+  assertions += 14;
 
   return assertions;
 }
