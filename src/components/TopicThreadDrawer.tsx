@@ -140,7 +140,6 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   overlappingFiles = [],
 }) => {
   const [replyContent, setReplyContent] = useState('');
-  const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   const [showResolveModal, setShowResolveModal] = useState(false);
   const [solutionDraft, setSolutionDraft] = useState('');
   const [impactedFilesDraft, setImpactedFilesDraft] = useState('src/middleware/auth.ts, src/routes/oauth.ts');
@@ -977,10 +976,6 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       };
     }
     return null;
-  };
-
-  const toggleThinking = (msgId: string) => {
-    setExpandedThinking((prev) => ({ ...prev, [msgId]: !prev[msgId] }));
   };
 
   const handleSend = async () => {
@@ -2055,7 +2050,6 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           messages
             .filter((msg) => activeModuleFilterId === 'ALL' || !msg.moduleId || msg.moduleId === activeModuleFilterId)
             .map((msg, msgIdx, visibleMsgs) => {
-            const isThinkingOpen = expandedThinking[msg.id] ?? true;
             const isAgent = typeof msg.isAgent === 'boolean'
               ? msg.isAgent
               : Boolean(msg.agentBadge || msg.authorName.includes('Agent') || msg.authorName.includes('Reviewer'));
@@ -2330,31 +2324,6 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     )}
                   </div>
                 </div>
-
-                {/* Thinking Process Accordion (Finalized messages) */}
-                {msg.thinkingProcess && (
-                  <div className="rounded-lg bg-surface border border-border overflow-hidden text-[10px]">
-                    <button
-                      onClick={() => toggleThinking(msg.id)}
-                      className="w-full px-2.5 py-1.5 flex items-center justify-between text-fg-muted hover:text-fg transition-colors cursor-pointer bg-surface-subtle"
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <BrainCircuit className="w-3.5 h-3.5 text-accent" />
-                        <span className="font-semibold text-fg">
-                          Thinking Process ({msg.thinkingProcess.duration} · {msg.thinkingProcess.tokens} tokens)
-                        </span>
-                      </div>
-                      {isThinkingOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                    </button>
-
-                    {isThinkingOpen && (
-                      <div className="p-2.5 border-t border-border font-mono text-[10px] text-fg-secondary leading-relaxed whitespace-pre-wrap bg-surface select-text">
-                        <div className="text-accent font-bold mb-1 select-text">推理摘要: {msg.thinkingProcess.summary}</div>
-                        <div className="text-fg-muted select-text">{msg.thinkingProcess.detail}</div>
-                      </div>
-                    )}
-                  </div>
-                )}
 
                 {/* Message Content: Streaming / Pending or Finalized */}
                 {msg.isPending ? (

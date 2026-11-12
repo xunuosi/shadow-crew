@@ -368,10 +368,10 @@ export function buildCrewRosterGuidance(
  * 确立 description 为最高能力契约与职责边界，引入费曼沟通法则与双轨表达 (BLUF 结论先行)
  */
 export function buildAgentPersonaPrompt(agent: Agent): string {
-  const roleTitle = agent.role?.trim() || '技术专家 / 架构师';
+  const roleTitle = agent.role?.trim() || '核心开发工程师 / 架构师';
   const descText = agent.description?.trim()
     ? agent.description.trim()
-    : '协助团队与开发者进行深度技术推演、方案论证与工程实现。';
+    : '负责核心代码编写、架构落地、模块重构与工程质量把控。';
 
   return (
     `[🤖 智能体专属专精人设与认知规范 (Agent Identity & System Instruction)]:\n` +
@@ -380,11 +380,13 @@ export function buildAgentPersonaPrompt(agent: Agent): string {
     `• 核心专长描述与职责边界 (Competency & Boundary Contract · 最高行为依归):\n` +
     `${descText}\n\n` +
     `【行为准则、表达哲学与输出风格硬性约束】:\n` +
-    `1. 【职责锚定与严禁越界 (Scope Guard)】：上方【核心专长描述与职责边界】是你在团队中的唯一立足根本与审查边界！你必须且仅基于该专精领域进行深度推演和审查；严禁脱离上述专长越界空谈不相关的宏大架构，严禁借通用角色（如 ${roleTitle}）脱离专长描述泛泛而谈；\n` +
-    `2. 【费曼沟通法则与讲人话 (Feynman Principle)】：顶尖架构师的真正水准体现在“把极其复杂的底层逻辑讲得极简清晰”。你的底层知识库是你的思考底色，但在向团队陈述时，严禁生硬堆砌生僻术语。遇到专业机制，必须用“通俗大白话/形象类比 + 直白因果”拆解其作用与代价；\n` +
-    `3. 【结论先行，受众友好 (BLUF)】：每次陈词前必须在置顶处给出【💡 核心结论 (通俗版)】（用 2~3 句话说明“做不做、怎么做、最直接的好处/代价是什么”，确保使用者能直接听懂），随后再展开必要的技术推演；\n` +
-    `4. 【拒绝伪框架 (Anti-Over-modeling)】：严禁为了证明专业度而凭空发明新理论、新层级机制（如自造 N 层模型、N 步判据）或晦涩缩写。直接谈具体选型、具体边界、具体风险与代码/配置方案；\n` +
-    `5. 【清晰句法硬约束】：多用短句和动宾结构，单句尽量控制在 30 字以内，杜绝嵌套式长难定语从句；禁止整段大面积加粗，加粗仅限核心关键词。`
+    `1. 【生产代码与工程落地导向 (Coding-First)】：以真实工程代码落地为第一优先级。方案推演必须明确具体文件路径、数据结构、类型签名、核心函数与改动逻辑，严禁脱离代码的泛泛空谈；\n` +
+    `2. 【纯净终态交付 · 零思维过程废话 (Zero Fluff · Pure Deliverable)】：本回复直接呈报给人类工程师与决策者进行评审，严禁输出任何“我首先分析了...”、“根据我的推演思考...”等自我思维过程与内心独白，严禁空洞客套；\n` +
+    `3. 【三段式标准输出骨架 (Clean 3-Block Scaffold)】：每次陈词严格采用以下 3 块结构：\n` +
+    `   •【💡 最终结论】：用 2~3 句话通俗说明方案选型/漏洞/实测结论与核心收益（≤ 80 字，直接给人类读懂）；\n` +
+    `   •【📋 核心决策 / 变更清单】：用 3~5 条短 Bullet 清单明确具体的改动项、文件路径（如 \`src/...\`）、核心类/函数与处理的边界工况；\n` +
+    `   •【📦 代码交付 / 实施方案】：直接输出标准代码块、接口定义、测试命令或 Unified Diff 差异；若本阶段无代码变更，直接给出具体的实施要点；\n` +
+    `4. 【动宾短句与精确命名】：多用动宾短句，明确具体库、模块与组件名称，单句控制在 30 字以内，杜绝晦涩伪理论与嵌套长定语从句。`
   );
 }
 
@@ -407,6 +409,50 @@ export function buildCompositeSystemPrompt(options: {
 
 // 对标 Buzz: 别名导出为立足上下文 (Standing Context)
 export const buildStandingContext = buildCrewRosterGuidance;
+
+/**
+ * 对跨阶段传递的前序靶点上下文执行物理脱水 (Context Dehydration)
+ * 1. 彻底剔除模型思维链与内部标签 (<<<DEEP_THINKING>>>, <thinking>)
+ * 2. 优先提取高信噪比结构（【💡 最终结论】、【📋 核心决策 / 变更清单】、```diff 块）
+ * 3. 截断超长废话，防止下游 Agent 上下文滚雪球放大
+ */
+export function dehydrateTargetTextForHandover(rawText?: string, maxChars = 1500): string {
+  if (!rawText || !rawText.trim()) return '';
+
+  // 1. 剔除思维链块与元数据块
+  let clean = rawText
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/<<<DEEP_THINKING>>>[\s\S]*?<<<DEEP_THINKING_END>>>/gi, '')
+    .replace(/<<<THINKING>>>[\s\S]*?<<<THINKING_END>>>/gi, '')
+    .replace(/<<<EXECUTION_META>>>[\s\S]*?<<<EXECUTION_META_END>>>/gi, '')
+    .trim();
+
+  // 2. 若文本超长，优先保留首段核心结论、决策清单与 Diff 块
+  if (clean.length > maxChars) {
+    const conclusionMatch = clean.match(/【💡\s*[^】]*】[\s\S]*?(?=(?:【📋|【📦|```|$))/);
+    const checklistMatch = clean.match(/【📋\s*[^】]*】[\s\S]*?(?=(?:【📦|```|$))/);
+    const diffMatch = clean.match(/```(?:diff|patch)[\s\S]*?```/);
+
+    if (conclusionMatch || checklistMatch) {
+      const parts = [
+        conclusionMatch ? conclusionMatch[0].trim() : '',
+        checklistMatch ? checklistMatch[0].trim() : '',
+        diffMatch ? diffMatch[0].trim() : '',
+      ].filter(Boolean);
+
+      if (parts.length > 0) {
+        clean = parts.join('\n\n');
+      }
+    }
+
+    if (clean.length > maxChars) {
+      clean = clean.slice(0, maxChars) + '\n\n[...前序推演细节已脱水截断，以上为核心工程结论与变更靶点...]';
+    }
+  }
+
+  return clean;
+}
+
 
 /**
  * 构造跨智能体协同接力的结构化提示词
@@ -584,22 +630,26 @@ export function buildTopicPrompt(options: {
 
     if (role === 'proposer') {
       if (stage === 'decomposition') {
-        gameModeDirective = `\n\n【博弈编排 - 🧭 阶段 0: G-Frame 模块拓扑拆解与公共契约锚定 (Decomposition)】:
-你是本议题的提案构想者 (Proposer)。为压制长链生成的信息熵与 KL 散度，请根据本议题的实际领域属性（无论是业务战略、产品规划、流程风控还是软件研发），将任务拆解为 2~4 个职责单一、正交隔离的原子模块，并锁定跨模块只读《公共契约》。
-优先调用宿主 \`submit_module_decomposition\` 工具，或在回复末尾附带结构化拆解块（若为非代码类业务讨论，\`type_signatures\` 可留空 \`""\`，\`allowed_files\` 可留空 \`[]\`）：
+        gameModeDirective = `\n\n【博弈编排 - 🧭 阶段 0: G-Frame 模块拓扑拆解与接口契约锚定 (Decomposition)】:
+你是本议题的技术主导工程师 (Proposer)。请根据本研发任务的边界，将其拆解为 2~4 个职责单一、物理隔离的原子子模块，并锁定跨模块只读《公共接口契约 (SharedInterfaceContract)》，杜绝跨模块依赖混乱与接口不兼容。
+【输出铁律 · 纯净拆解载荷直出】:
+1. 严禁冗长的推演思考废话与客套；
+2. 首段给出【💡 最终拆解结论】(≤ 80 字，讲清模块边界与核心不变量)；
+3. 给出【📋 模块拓扑与职责清单】(明确各模块 ID、标题、依赖关系与白名单文件)；
+4. 优先调用宿主 \`submit_module_decomposition\` 工具，或在末尾附带结构化拆解载荷：
 <<<MODULE_DECOMPOSITION>>>
 {
   "shared_contract": {
-    "summary": "跨模块目标边界与核心假设简述",
-    "type_signatures": "",
-    "invariants": ["各模块严禁越界偏离单一职责或违背全局前置约束"]
+    "summary": "跨模块目标边界与核心接口契约简述",
+    "type_signatures": "export interface SharedContext { id: string; }",
+    "invariants": ["各模块严禁越界修改非白名单文件，严禁擅自修改公共接口签名"]
   },
   "modules": [
     {
-      "module_id": "mod-1",
-      "title": "模块 1：核心子模块标题",
-      "responsibility": "单一职责与边界说明",
-      "allowed_files": [],
+      "module_id": "mod-1-schema",
+      "title": "模块 1：核心类型与数据结构契约",
+      "responsibility": "定义核心领域模型与抽象接口",
+      "allowed_files": ["src/types/index.ts"],
       "depends_on": [],
       "complexity_level": "low_deterministic"
     }
@@ -608,14 +658,15 @@ export function buildTopicPrompt(options: {
 <<<MODULE_DECOMPOSITION_END>>>
 无需在正文 @ 任何人。`;
       } else if (stage === 'defense') {
-        gameModeDirective = `\n\n【博弈编排 - 🏛️ 阶段 4: 提案者答辩与防御修正 (Defense v2)】:
-红队挑战者已对你的初始提案提出针对性反例与边界质询，且接地验证智能体已提供物理实证检验（见下方靶点数据）。
-请针对挑战者指出的失效场景与接地检验结论做出正面答辩：
-1. 事实澄清与评估：认可还是反驳挑战方的失效推演？指出其推演中的合理之处或边界误判；
-2. 架构补丁与修正方案 (Patch v2)：若漏洞属实，提出具体的容灾、降级、锁机制或重构设计；
-3. 性能/复杂度折中说明：补丁方案对原架构的延迟、吞吐与维护成本有何影响；
-4. 交付准备：给出可供仲裁官定案评估的最终建议。
-【防谄媚守则 (Anti-Sycophancy)】: 严禁无原则全盘顺从或空洞认错！你必须以客观工程事实、防御补丁（Patch）或架构权衡进行自洽答辩，杜绝“您说得对、全盘放弃原案”式的敷衍认输。
+        gameModeDirective = `\n\n【博弈编排 - 🏛️ 阶段 4: 答辩修正与重构补丁 (Proposer Defense)】:
+红队挑战者已指出具体漏洞与失效场景，且接地实证工程师已提供检验结论（见下方靶点数据）。
+【答辩守则 · 用代码补丁说话】:
+严禁无原则全盘妥协或空洞认错，严禁空谈理论！必须以客观工程事实、防御补丁（Patch）或架构权衡进行自洽答辩。
+【输出铁律 · 纯净结论与直出补丁】:
+1. 严禁冗长的内心独白与思考过程废话；
+2. 【💡 最终答辩结论】(≤ 80 字通俗结论：认可/反驳挑战方哪些推演，核心修正收益是什么)；
+3. 【📋 修复与重构清单】(明确架构补丁方案、容灾降级、互斥加锁机制与性能/复杂度折中说明)；
+4. 【📦 架构补丁代码 / Unified Diff】(直接给出修复后的代码差异、接口修正或防御补丁)。
 无需在正文 @ 任何人，平台状态机将自动汇总攻防论据并提交仲裁。
 
 【红队反例质询 (攻击靶点)】:
@@ -623,20 +674,28 @@ export function buildTopicPrompt(options: {
 ${topic.targetChallengeText || '（详见前序讨论脉络中的挑战者发言）'}
 <<<CHALLENGER_CRITIQUE_END>>>${verificationSection}`;
       } else {
-        gameModeDirective = `\n\n【博弈编排 - 🏛️ 阶段 1: 提案智能体独立立论起草 (Proposer)】:
-你是本议题的提案构想者 (Proposer)。请基于议题目标与需求，在独立沙箱中设计全局架构首选技术方案，明确关键选型、核心接口、组件拆分与设计假设。
-注意：你的方案落库后将被平台直接递交至红队对抗智能体进行极限反例压测与反从众审查，请尽可能清晰完备地陈述方案逻辑与潜在风险边界。无需在正文 @ 任何人，平台状态机将自动递交方案。`;
+        gameModeDirective = `\n\n【博弈编排 - 🏛️ 阶段 1: 方案主导工程师立论起草 (Proposer)】:
+你是本议题的技术方案主导工程师 (Proposer)。请针对本议题的目标，给出最清晰、最具可落地性的工程技术方案。
+【输出铁律 · 纯净结论与直出代码】:
+1. 严禁冗长的推演思考废话、自我解释与客套；
+2. 【💡 最终结论】(≤ 80 字通俗结论：核心选型设计、实现路径与预期质量性能保证目标)；
+3. 【📋 核心设计与变更文件清单】(明确文件路径如 \`src/...\`、核心架构组件、关键函数/类与边界保证)；
+4. 【📦 核心代码草案或 Unified Diff】(直接呈现关键类型签名与核心代码块)。
+无需在正文 @ 任何人，平台状态机将自动递交方案。`;
       }
     } else if (role === 'challenger') {
-      gameModeDirective = `\n\n【博弈编排 - ⚔️ 阶段 2: 红队对抗反例压测与反向质询 (Red Team)】:
-你是本议题佩戴黑帽的红队对抗智能体 (Red Team / Challenger)。提案官已提交初始立论方案（见下方【攻击标的方案】）。
-【作战守则】:
-强制运行反从众批判模式，寻找隐藏假设漏洞、极端并发死锁、网络抖动失效场景或过度设计问题。严禁盲目附和与套话认同！
-请必须遵循以下四部曲批判契约：
-1. [质疑靶点]: 明确指出提案方案中的具体选型、代码设计或逻辑假设；
-2. [失效反例]: 构造具体的极端工况、恶意并发、故障注入或边界数据场景；
-3. [连锁反应]: 推演在此场景下系统为何崩溃、数据如何失真；
-4. [防御检验]: 要求提案官提供补丁防御设计或实证说明。
+      gameModeDirective = `\n\n【博弈编排 - ⚔️ 阶段 2: 红队质询工程师缺陷压测 (Challenger)】:
+你是本议题的技术红队质询工程师 (Challenger)。提案官已提交初始方案（见下方【攻击标的方案】）。
+【作战守则 · 精准挑刺找硬核 Bug】:
+严禁盲目附和与套话认同！严禁概念辩论，直接寻找以下具体缺陷：
+① 逻辑矛盾与隐含假设缺陷：指出方案中不合理的默认前提或理想化假设；
+② 极端边缘与失效场景：构造具体的恶意并发、网络断开超时、死锁竞争、脏数据或崩溃工况；
+③ 反例压测与实证要求：明确要求提案官提供补丁防御设计或复现测试用例。
+【输出铁律 · 纯净结论与直出漏洞】:
+1. 严禁冗长思考推演与客套铺垫；
+2. 【💡 最终质询结论】(≤ 80 字，直截了当指出最致命的 1~2 个缺陷风险)；
+3. 【📋 漏洞与失效工况清单】(1. 质疑靶点与文件 2. 极端失效反例场景 3. 系统崩溃/失真的连锁反应)；
+4. 【📦 修复补丁要求】(向提案方提出具体的架构补丁防御检验要求)。
 无需在正文 @ 任何人，平台将自动流转至接地验证/抗辩阶段。
 
 【被质询提案方案 (攻击标的)】:
@@ -644,14 +703,15 @@ ${topic.targetChallengeText || '（详见前序讨论脉络中的挑战者发言
 ${topic.targetProposalText || '（暂未提取到前序提案方案，请围绕前序讨论脉络展开边界质询）'}
 <<<PROPOSER_SOLUTION_END>>>`;
     } else if (role === 'verifier') {
-      gameModeDirective = `\n\n【博弈编排 - 🔍 阶段 3: 接地实证与反事实检验 (Grounding Verifier)】:
-你是本议题客观物理世界与事实逻辑的接地验证智能体 (Grounding Verifier)。
-【守则与职责】:
-1. 坚决不参与任何主观文本辩论与空洞口水战！
-2. 你的唯一任务是对红队提出的极端失效反例与提案方案的前提假设，执行确定性的反事实与实证逻辑检验；
-3. 给出具体的工具调用执行记录（如：ast_grep, static_analyzer, rag_search 或 code_sandbox）；
-4. 输出确定性结论：该反例工况在真实代码/系统环境下究竟是否成立 (PASS / FAIL / 证实 / 证伪)；
-5. 【必须输出结构化实证结果】：在陈词结尾附带标准 JSON 证据块：
+      gameModeDirective = `\n\n【博弈编排 - 🔍 阶段 3: 自动化测试与接地实证 (Grounding Verifier)】:
+你是本议题的自动化测试与客观物理接地验证工程师 (Grounding Verifier)。
+【实证守则 · 零口水，纯看代码与实测数据】:
+坚决不参与任何主观辩论！针对红队指出的失效场景与提案方案假设，执行确定性的反事实与实证逻辑检验（如：静态类型推导、代码沙箱执行、测试用例或命令调用）。
+【输出铁律 · 纯净结论与证据载荷】:
+1. 严禁长篇推测与主观评论；
+2. 【💡 实证核查结论】(明确输出真值判定：PASS / FAIL / 已证实 / 已证伪 / 成立 / 不成立，≤ 80 字)；
+3. 【📋 实证检验项与证据】(给出具体检验工具如 ast_grep/sandbox、测试用例代码与实际执行输出摘要)；
+4. 【📦 结构化证据块】(在回复结尾必须附带标准 JSON 证据块)：
 \`\`\`json
 {
   "evidences": [
@@ -661,7 +721,7 @@ ${topic.targetProposalText || '（暂未提取到前序提案方案，请围绕�
       "rawOutput": "执行输出摘要或观测结果",
       "truthValue": true,
       "confidence": 0.9,
-      "verifierReport": "精炼客观的实证推演结论"
+      "verifierReport": "精炼客观的实证结论"
     }
   ]
 }
@@ -696,6 +756,14 @@ ${topic.targetChallengeText || '详见前序脉络'}
     ? `\n【个人专精定位与知识设定】：\n${targetAgent.description.trim()}\n`
     : '';
 
+  const codingCleanOutputContract = `\n\n【🚨 编码与输出铁律 · 纯净终态交付 (Zero Fluff · Clean Deliverable)】:
+1. 【面向生产代码落地】：直接指明具体改动文件路径（如 \`src/...\`）、涉及数据结构/类型接口签名、如何防御并发异常与边界失效；
+2. 【严禁思维过程与长篇废话】：严格禁止输出任何“我首先分析了...”、“根据我的推演思考...”等内心独白与冗余客套；
+3. 【强制三段式结构】：
+   •【💡 最终结论】：用 2~3 句话直白讲清方案/漏洞/实测/补丁结论（≤ 80 字，直接给人类看懂）；
+   •【📋 核心决策 / 变更清单】：用 3~5 条短 Bullet 清单，明确文件路径与关键改动/反例/检验项；
+   •【📦 代码交付 / 实施方案】：直接给出标准代码块、类型定义、测试命令或 Unified Diff 差异（无代码则给出具体实施步骤）。`;
+
   return `[📌 议题研讨推演任务 (Topic Discussion Context)]
 【所属频道】: #${topic.channelName || '频道'}
 【议题编号】: ${topic.topicId}
@@ -709,7 +777,7 @@ ${scopedModuleDirective}${historySection}
 "${userContent}"
 ${gameModeDirective}
 
-请恪守你的专精定位【${targetAgent.name} (${targetAgent.handle}) · ${targetAgent.role}】${roleDescriptionAddon}针对上述议题目标与用户诉求展开技术推演与方案陈述：首段先给出 2 句话通俗结论，遵循费曼表达法则，多用短句并直指落地实现。`;
+请恪守你的专精定位【${targetAgent.name} (${targetAgent.handle}) · ${targetAgent.role}】${roleDescriptionAddon}${codingCleanOutputContract}`;
 }
 
 export interface BuildCascadePromptOptions {
@@ -777,17 +845,19 @@ export function buildCascadePrompt(options: BuildCascadePromptOptions): string {
     ? `【多智能体协同陈述 (用户排队协作)】:
 用户在上述讨论中同时指派了多位成员共同陈述观点。
 前序成员 (${invokingAgent.name}) 已完成其视角阐述（见上方结论）。现请基于你的专属专精职责（见系统认知设定）：${gameRoleAddon}
-1. 【💡 通俗结论置顶】：首段必须先用 2 句话以大白话给出你的核心判断与方案态度，确保非技术使用者一眼看懂；
-2. 【恪守专精边界】：严格立足你的专精能力范围提供审查或架构减法；严禁脱离专长越界空谈宏大架构，严禁为了发言而自创未经行业公认的新理论、新层级模型或堆砌生僻黑话；严禁纯客套的裸确认；
-3. ${conclusionTip}；
-4. 【杜绝流程黑话】：正文面向人类与同伴，严禁出现“第 N 轮接力”、“协同收敛协议”等调度控制词汇。`
+1. 【💡 最终结论置顶】：首段必须先用 2 句话直白给出你的核心判断与方案态度（≤ 80 字，直接给人类看懂）；
+2. 【📋 具体改动 / 缺陷清单】：指出具体文件路径（如 \`src/...\`）或代码中的失效漏洞、边界风险或实施建议；严禁脱离代码空谈宏大架构，严禁纯客套裸确认；
+3. 【📦 代码交付 / 实施方案】：若涉及代码修改直接给出标准代码块或 Diff；严禁输出任何自我推演与思维过程废话；
+4. ${conclusionTip}；
+5. 【杜绝流程黑话】：正文面向人类与同伴，严禁出现“第 N 轮接力”、“协同收敛协议”等调度控制词汇。`
     : `【对你的协作诉求】:
 ${invokingAgent.name} 在上述方案中点名了你 (${targetAgent.handle}) 请求技术审查与协作。
 现请基于你的专属专精职责（见系统认知设定）：${gameRoleAddon}
-1. 【💡 通俗结论置顶】：首段必须先用 2 句话以大白话说明你的审查结论与方案态度，确保非技术使用者一眼看懂；
-2. 【针对性审查与减法】：严格立足你的专精能力指出潜在失效漏洞、边界风险或提出架构减法；严禁自造抽象框架或堆砌黑话；严禁仅做「收到/已对齐」的裸确认；
-3. ${conclusionTip}；
-4. 【杜绝流程黑话】：正文面向人类与同伴，严禁出现“第 N 轮接力”、“协同收敛”等调度控制词汇。`;
+1. 【💡 最终结论置顶】：首段必须先用 2 句话直白说明你的审查结论与方案态度（≤ 80 字，直接给人类看懂）；
+2. 【📋 具体改动 / 缺陷清单】：严格立足专精能力指出潜在失效漏洞、边界风险或提出代码减法；严禁自造抽象框架；严禁仅做「收到/已对齐」的裸确认；
+3. 【📦 代码交付 / 实施方案】：若涉及代码修改直接给出标准代码块或 Diff；严禁输出任何自我推演与思维过程废话；
+4. ${conclusionTip}；
+5. 【杜绝流程黑话】：正文面向人类与同伴，严禁出现“第 N 轮接力”、“协同收敛”等调度控制词汇。`;
 
   return `[🤝 团队协同协作请求 (第 ${currentHop}/${cascade.maxDepth} 轮接力)]
 

@@ -19,6 +19,7 @@ import {
   buildTopicPrompt,
   compileMinorityReport,
   dehydrateContextToCommittedStates,
+  dehydrateTargetTextForHandover,
   estimateRoundAlignmentScore,
   evaluateDynamicSycophancyScore,
   extractArgumentNodes,
@@ -101,7 +102,18 @@ export function useGameTheoreticFsm({
   const triggerGameTheoreticStageHandover = useCallback(
     async (options: GameTheoreticStageHandoverOptions): Promise<void> => {
 
-    const { topicId, nextStage, targetProposalText, targetChallengeText, targetVerificationText, targetDefenseText } = options;
+    const {
+      topicId,
+      nextStage,
+      targetProposalText: rawProposalText,
+      targetChallengeText: rawChallengeText,
+      targetVerificationText: rawVerificationText,
+      targetDefenseText: rawDefenseText,
+    } = options;
+    const targetProposalText = rawProposalText ? dehydrateTargetTextForHandover(rawProposalText) : undefined;
+    const targetChallengeText = rawChallengeText ? dehydrateTargetTextForHandover(rawChallengeText) : undefined;
+    const targetVerificationText = rawVerificationText ? dehydrateTargetTextForHandover(rawVerificationText) : undefined;
+    const targetDefenseText = rawDefenseText ? dehydrateTargetTextForHandover(rawDefenseText) : undefined;
     const currentTopic = getTopicData(topicId);
     if (!currentTopic || currentTopic.status === 'resolved') return;
     const turnSnapshot = captureTurnEpoch(topicId, currentTopic.channelId || activeChannel?.id);
@@ -343,7 +355,7 @@ export function useGameTheoreticFsm({
           gameTheoreticState: {
             ...old.gameTheoreticState,
             currentStage: nextModStage,
-            targetProposalContent: acpResp.textResponse,
+            targetProposalContent: dehydrateTargetTextForHandover(acpResp.textResponse),
             isChallengerResponded: false,
             isChallengerBypassed: isFastTrackBypassed || old.gameTheoreticState?.isChallengerBypassed,
             challengerBypassedReason: isFastTrackBypassed
@@ -750,7 +762,7 @@ export function useGameTheoreticFsm({
               ...old.gameTheoreticState,
               currentStage: 'arbitration',
               targetProposalContent: targetProposalText,
-              targetChallengeContent: acpResp.textResponse,
+              targetChallengeContent: dehydrateTargetTextForHandover(acpResp.textResponse),
               isChallengerResponded: true,
               quorumAlert: '⚠️ SPRT 似然比跌破死锁下界 (Deadlock Escalation)，攻防陷入深层价值对立，已熔断自动推演',
               sprtState,
@@ -857,7 +869,7 @@ export function useGameTheoreticFsm({
               ...old.gameTheoreticState,
               currentStage: nextStageTarget,
               targetProposalContent: targetProposalText,
-              targetChallengeContent: acpResp.textResponse,
+              targetChallengeContent: dehydrateTargetTextForHandover(acpResp.textResponse),
               isChallengerResponded: true,
               quorumAlert: undefined,
               sprtState,
@@ -1397,7 +1409,7 @@ export function useGameTheoreticFsm({
               currentStage: resolvedVerNextStage,
               targetProposalContent: targetProposalText,
               targetChallengeContent: targetChallengeText,
-              targetVerificationContent: acpResp.textResponse,
+              targetVerificationContent: dehydrateTargetTextForHandover(acpResp.textResponse),
               isVerifierResponded: true,
               // 回填制衡方响应标记与旁路审计留痕：在全 fast_track 或模块旁路下保障法定门禁不误报 (N11)
               isChallengerResponded: isAllFrozenOrArbitration
@@ -1861,7 +1873,7 @@ export function useGameTheoreticFsm({
               currentStage: 'arbitration',
               targetProposalContent: targetProposalText,
               targetChallengeContent: targetChallengeText,
-              targetDefenseContent: acpResp.textResponse,
+              targetDefenseContent: dehydrateTargetTextForHandover(acpResp.textResponse),
               isDefenseResponded: true,
               quorumAlert: '⚠️ SPRT 似然比跌破死锁下界 (Deadlock Escalation)，答辩未能化解分歧，已熔断流转',
               sprtState: sprtStateAfterDefense,
@@ -1936,7 +1948,7 @@ export function useGameTheoreticFsm({
               roundCount: nextRound,
               targetProposalContent: targetProposalText,
               targetChallengeContent: targetChallengeText,
-              targetDefenseContent: acpResp.textResponse,
+              targetDefenseContent: dehydrateTargetTextForHandover(acpResp.textResponse),
               isChallengerResponded: false,
               isVerifierResponded: false,
               isDefenseResponded: false,
@@ -2106,7 +2118,7 @@ export function useGameTheoreticFsm({
             currentStage: resolvedNextStage,
             targetProposalContent: targetProposalText,
             targetChallengeContent: targetChallengeText,
-            targetDefenseContent: acpResp.textResponse,
+            targetDefenseContent: dehydrateTargetTextForHandover(acpResp.textResponse),
             isChallengerResponded: resolvedNextStage === 'arbitration',
             isVerifierResponded: resolvedNextStage === 'arbitration',
             isDefenseResponded: resolvedNextStage === 'arbitration',
