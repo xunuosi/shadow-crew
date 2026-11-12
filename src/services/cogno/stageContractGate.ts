@@ -111,11 +111,11 @@ export function validateStageContract(
         missingRequirements.push('接地实证报告篇幅不足 (字符数 < 40)');
       }
       const hasVerifiableVerdict = /(验证|检验|实证|测试|通过|未通过|失败|证伪|证实|成立|不成立|属实|PASS|FAIL|TRUE|FALSE|结论|核查|核算|passed|failed)/i.test(trimmed);
-      const hasEvidenceArtifact = trimmed.includes('"evidences"') || trimmed.includes('"truthValue"');
+      const hasEvidenceArtifact = trimmed.includes('"evidences"') || trimmed.includes('"truthValue"') || trimmed.includes('submit_grounding_evidence');
       if (!hasVerifiableVerdict && !hasEvidenceArtifact) {
         missingRequirements.push('未包含明确的真值判定或实证核查结论（如 PASS/FAIL、已证实/已证伪、成立/不成立）');
       }
-      const hasToolOrEvidence = hasCodeBlock || /(工具|沙箱|sandbox|ast|grep|代码|测试|执行|用例|脚本|命令|evidence|evidences|sourceTool|query|output|数据|测算|公式|核算|案例|基准|推导|统计|账目|法条|调研|证据|计算|npm test|cargo test|vitest|jest)/i.test(trimmed);
+      const hasToolOrEvidence = hasCodeBlock || /(工具|沙箱|sandbox|ast|grep|代码|测试|执行|用例|脚本|命令|evidence|evidences|sourceTool|submit_grounding_evidence|query|output|数据|测算|公式|核算|案例|基准|推导|统计|账目|法条|调研|证据|计算|npm test|cargo test|vitest|jest)/i.test(trimmed);
       if (!hasToolOrEvidence && !hasEvidenceArtifact) {
         missingRequirements.push('未包含具体的检验工具、数据测算、客观基准或实证记录');
       }

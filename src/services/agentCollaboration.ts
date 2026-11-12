@@ -707,18 +707,13 @@ ${topic.targetProposalText || '（暂未提取到前序提案方案，请围绕�
 1. 严禁长篇推测与主观评论；
 2. 【💡 实证核查结论】(明确输出真值判定：PASS / FAIL / 已证实 / 已证伪 / 成立 / 不成立，≤ 80 字)；
 3. 【📋 实证检验项与证据】(给出具体检验工具如 ast_grep/sandbox、测试用例代码与实际执行输出摘要)；
-4. 【📦 结构化证据块】(在回复结尾必须附带标准 JSON 证据块)：
+4. 【📦 结构化证据契约 (强制工具契约优先)】：
+   - 【首选执行（强制优先）】：直接调用宿主 MCP 工具 \`submit_grounding_evidence\`，传入 evidences 数组（包含 source_tool, input_query_or_code, raw_output, truth_value, confidence, verifier_report）；
+   - 【容灾备选（仅限无工具环境）】：在回复末尾附带紧凑证据块：
 \`\`\`json
 {
   "evidences": [
-    {
-      "sourceTool": "ast_grep",
-      "inputQueryOrCode": "具体的检验代码、查询命令或测试用例",
-      "rawOutput": "执行输出摘要或观测结果",
-      "truthValue": true,
-      "confidence": 0.9,
-      "verifierReport": "精炼客观的实证结论"
-    }
+    { "sourceTool": "ast_grep", "truthValue": true, "confidence": 0.9, "verifierReport": "实证检验结论" }
   ]
 }
 \`\`\`
@@ -1439,15 +1434,17 @@ ${filesList}
 【落地实施与 UI 契约输出要求】:
 1. 你已被指派为本议题定案决议的**落地执行智能体**。请依据上述定案结论与你的专职角色，直接产出真实的落地交付物（如工程代码变更、架构/需求规范文档、配置/SQL 脚本或专项执行报告）；
 2. 若本次落地涉及修改或新建工作区文件（代码、文档、配置等），请为每个文件输出标准 Unified Diff 块（使用 \`\`\`diff 包裹，首行注明 \`--- a/文件路径\` 与 \`+++ b/文件路径\`），或在代码块首行注明 \`// filepath: 文件路径\`，以便工作台自动解析并支持一键物理合入；若本议题属于纯方案规划或分析结论、无需改动工作区文件，则直接输出结构化 Markdown 报告，不要强行编造伪代码；
-3. **【强制 UI 描述契约】**：为使工作台 UI 动态适配本次交付物的真实业务语义，你**必须**在回复的最末尾附带如下格式的 JSON 元数据块（系统解析后会自动从展示正文中隐藏该块）：
+3. **【落地交付契约 (强制工具契约优先)】**：
+   - 【首选执行（强制优先）】：直接调用宿主 MCP 工具 \`submit_execution_deliverable\`，传入 \`section_title\`、\`pod_title\`、\`status_summary\`、\`deliverable_kind\` ("workspace_files" | "report_only")、\`review_action_label\`、\`apply_action_label\`；
+   - 【容灾备选（仅限无工具环境）】：在回复的最末尾附带紧凑元数据块：
 <<<EXECUTION_META>>>
 {
-  "sectionTitle": "贴合本次交付物性质的章节标题（例如：订单幂等锁实现与单测补丁 / OAuth2 鉴权 ADR 规范落盘 / 慢查询根因排查与止血执行预案）",
-  "podTitle": "带 Emoji 的简短落地舱名称（10字以内，例如：🛠️ 幂等锁代码交付 / 📄 鉴权规范落盘 / 📋 止血执行预案）",
-  "statusSummary": "一句话交付成果摘要（40字以内，用于主时间轴卡片与系统通知展示）",
-  "deliverableKind": "workspace_files 或 report_only（有工作区文件/文档变更时填 workspace_files，纯报告无文件变更时填 report_only）",
-  "reviewActionLabel": "审查按钮动态文案（例如：审查代码 Diff / 预览文档变更 / 查看脚本 Diff）",
-  "applyActionLabel": "合入按钮动态文案（例如：一键合入本地仓库 / 写入本地文档目录 / 应用配置变更）"
+  "sectionTitle": "贴合本次交付物性质的章节标题",
+  "podTitle": "🛠️ 简短落地舱名称",
+  "statusSummary": "一句话交付成果摘要 (40字以内)",
+  "deliverableKind": "workspace_files",
+  "reviewActionLabel": "审查代码 Diff",
+  "applyActionLabel": "合入本地工作区"
 }
 <<<EXECUTION_META_END>>>
 4. 无需在正文中 @ 任何人，直接交付高质量落地成果！`;
@@ -1548,12 +1545,14 @@ ${filesList}
 2. **【爆炸半径隔离铁律】**：当前处于本模块专属沙箱，你**只能**修改或新建上方白名单列出的文件，**严禁越界修改其他未授权模块的文件**！
 3. **【公共契约一致性铁律】**：涉及跨模块通信、共享数据结构或接口调用时，必须严格遵守《公共接口契约》，严禁擅自修改已约定的函数签名或字段；
 4. 若本模块涉及修改/新建工作区文件，请针对每个白名单文件输出标准 Unified Diff 块（使用 \`\`\`diff 包裹，首行注明 \`--- a/文件路径\` 与 \`+++ b/文件路径\`），或在代码块首行注明 \`// filepath: 文件路径\`，以便工作台自动解析并支持一键物理合入；
-5. **【强制 UI 描述契约】**：请在回复最末尾附带如下格式的 JSON 元数据块：
+5. **【落地交付契约 (强制工具契约优先)】**：
+   - 【首选执行（强制优先）】：直接调用宿主 MCP 工具 \`submit_execution_deliverable\`，传入本阶段交付元数据；
+   - 【容灾备选（仅限无工具环境）】：在回复最末尾附带紧凑元数据块：
 <<<EXECUTION_META>>>
 {
   "sectionTitle": "阶段 ${moduleIndex}/${totalModules}: ${moduleSlice.title} 落地交付",
   "podTitle": "🛠️ ${moduleSlice.title.slice(0, 8)}",
-  "statusSummary": "本阶段交付摘要（40字以内，如：已完成模块 1 核心数据结构与契约定义）",
+  "statusSummary": "本阶段交付摘要（40字以内）",
   "deliverableKind": "workspace_files",
   "reviewActionLabel": "审查本阶段 Diff",
   "applyActionLabel": "合入本阶段代码"

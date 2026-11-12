@@ -368,6 +368,90 @@ pub fn get_tools_list() -> Value {
                 },
                 "required": ["shared_contract", "modules"]
             }
+        },
+        {
+            "name": "submit_grounding_evidence",
+            "description": "在博弈阶段 3 (verification) 提交自动化测试与客观物理接地验证的实证检验数据与结论。将结构化实证结果直接上报至宿主争议证据链与安全宪章账本。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "evidences": {
+                        "type": "array",
+                        "description": "客观实证检验项列表",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "source_tool": {
+                                    "type": "string",
+                                    "description": "检验工具或执行沙箱名称 (如 ast_grep, code_sandbox, cargo_test, read_file, static_analyzer)"
+                                },
+                                "input_query_or_code": {
+                                    "type": "string",
+                                    "description": "执行的具体检验代码、测试命令或参数 (可选)"
+                                },
+                                "raw_output": {
+                                    "type": "string",
+                                    "description": "工具执行的原始输出摘要或观测结果 (可选)"
+                                },
+                                "truth_value": {
+                                    "type": "boolean",
+                                    "description": "真值判定: true 表示通过/证实，false 表示失效/反例成立"
+                                },
+                                "confidence": {
+                                    "type": "number",
+                                    "description": "实证置信度 (0.0 ~ 1.0，默认为 0.9)"
+                                },
+                                "verifier_report": {
+                                    "type": "string",
+                                    "description": "精炼客观的实证审查结论"
+                                }
+                            },
+                            "required": ["source_tool", "truth_value", "verifier_report"]
+                        }
+                    }
+                },
+                "required": ["evidences"]
+            }
+        },
+        {
+            "name": "submit_execution_deliverable",
+            "description": "在议题定案决议落地执行（或 G-Frame 模块化串行落地）阶段，提交落地交付物的结构化元数据，直接绑定落地舱 UI 展示与审查/合入行为，无需在正文中附加 EXECUTION_META 契约块。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "section_title": {
+                        "type": "string",
+                        "description": "交付章节标题 (如: 订单幂等锁实现与单测补丁)"
+                    },
+                    "pod_title": {
+                        "type": "string",
+                        "description": "带 Emoji 的简短落地舱名称 (10字以内，如: 🛠️ 幂等锁代码交付)"
+                    },
+                    "status_summary": {
+                        "type": "string",
+                        "description": "一句话交付成果摘要 (40字以内，用于卡片与系统通知展示)"
+                    },
+                    "deliverable_kind": {
+                        "type": "string",
+                        "enum": ["workspace_files", "report_only"],
+                        "description": "交付物类别: workspace_files(包含工作区文件变更) 或 report_only(纯方案报告)"
+                    },
+                    "review_action_label": {
+                        "type": "string",
+                        "description": "审查按钮动态文案 (例如: 审查代码 Diff / 预览文档变更)"
+                    },
+                    "apply_action_label": {
+                        "type": "string",
+                        "description": "合入按钮动态文案 (例如: 一键合入本地仓库 / 写入本地文档)"
+                    },
+                    "impacted_files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "本次落地修改或新建的文件路径列表 (可选)"
+                    }
+                },
+                "required": ["section_title", "pod_title", "status_summary"]
+            }
         }
     ])
 }
@@ -629,6 +713,58 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
                 formatted_modules
             ))
         }
+        "submit_grounding_evidence" => {
+            let raw_evidences = arguments
+                .get("evidences")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow!("缺少必填参数 evidences 数组"))?;
+            if raw_evidences.is_empty() {
+                return Err(anyhow!("evidences 数组不能为空，必须至少包含一条实证检验项"));
+            }
+
+            let formatted = raw_evidences
+                .iter()
+                .enumerate()
+                .map(|(i, ev)| {
+                    let tool = ev["source_tool"].as_str().unwrap_or("unknown_tool");
+                    let is_pass = ev["truth_value"].as_bool().unwrap_or(false);
+                    let report = ev["verifier_report"].as_str().unwrap_or("完成检验");
+                    let status_badge = if is_pass { "✓ PASS" } else { "✗ FAIL" };
+                    format!("  {}. [{}] 来源: {} -> {}", i + 1, status_badge, tool, report)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            Ok(format!(
+                "✓ 【客观物理接地实证结论】已成功载入实证证据链：\n• 提交实证项 ({} 项):\n{}",
+                raw_evidences.len(),
+                formatted
+            ))
+        }
+        "submit_execution_deliverable" => {
+            let section_title = arguments["section_title"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 section_title"))?;
+            let pod_title = arguments["pod_title"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 pod_title"))?;
+            let status_summary = arguments["status_summary"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 status_summary"))?;
+            let deliverable_kind = arguments["deliverable_kind"].as_str().unwrap_or("workspace_files");
+            let review_label = arguments["review_action_label"].as_str().unwrap_or("审查交付物");
+            let apply_label = arguments["apply_action_label"].as_str().unwrap_or("合入工作区");
+
+            Ok(format!(
+                "✓ 【定案落地交付物元数据】已成功上报：\n• 章节标题: {}\n• 落地舱: {}\n• 成果摘要: {}\n• 类别: {}\n• 操作标签: {} / {}",
+                section_title,
+                pod_title,
+                status_summary,
+                deliverable_kind,
+                review_label,
+                apply_label
+            ))
+        }
         unknown => Err(anyhow!("未知的 MCP 工具名称: {}", unknown)),
     }
 }
@@ -657,6 +793,8 @@ mod tests {
         assert!(names.contains(&"submit_arbitration_ruling"));
         assert!(names.contains(&"submit_role_concurrence"));
         assert!(names.contains(&"submit_module_decomposition"));
+        assert!(names.contains(&"submit_grounding_evidence"));
+        assert!(names.contains(&"submit_execution_deliverable"));
     }
 
     #[tokio::test]
@@ -844,6 +982,53 @@ mod tests {
         assert!(res.contains("✓ 【G-Frame 模块拓扑与公共接口契约】已成功锁定"));
         assert!(res.contains("mod-1"));
         assert!(res.contains("mod-2"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_submit_grounding_evidence() {
+        let args = json!({
+            "evidences": [
+                {
+                    "source_tool": "ast_grep",
+                    "input_query_or_code": "ast-grep --pattern 'active_sessions.lock()'",
+                    "raw_output": "src/acp_manager.rs:42: match found",
+                    "truth_value": true,
+                    "confidence": 0.95,
+                    "verifier_report": "复现全局锁竞争点，证实反例成立"
+                },
+                {
+                    "source_tool": "code_sandbox",
+                    "input_query_or_code": "cargo test -p shadow-crew-dev-mcp",
+                    "raw_output": "test failed: connection timeout",
+                    "truth_value": false,
+                    "confidence": 0.9,
+                    "verifier_report": "沙箱测试失败"
+                }
+            ]
+        });
+        let res = dispatch_tool_call("submit_grounding_evidence", &args).await.unwrap();
+        assert!(res.contains("✓ 【客观物理接地实证结论】已成功载入实证证据链"));
+        assert!(res.contains("2 项"));
+        assert!(res.contains("✓ PASS"));
+        assert!(res.contains("✗ FAIL"));
+        assert!(res.contains("ast_grep"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_submit_execution_deliverable() {
+        let args = json!({
+            "section_title": "优化 ACP 会话关闭超时强杀机制",
+            "pod_title": "🛠️ 强杀补丁交付",
+            "status_summary": "完成 3s 退出超时守卫与测试验证",
+            "deliverable_kind": "workspace_files",
+            "review_action_label": "审查补丁 Diff",
+            "apply_action_label": "应用补丁到本地工作区"
+        });
+        let res = dispatch_tool_call("submit_execution_deliverable", &args).await.unwrap();
+        assert!(res.contains("✓ 【定案落地交付物元数据】已成功上报"));
+        assert!(res.contains("强杀补丁交付"));
+        assert!(res.contains("workspace_files"));
+        assert!(res.contains("审查补丁 Diff"));
     }
 }
 

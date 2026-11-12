@@ -364,12 +364,49 @@ export function setOnAcpNativeMemoryCapabilityUpdated(
  * 从执行 Agent 响应正文中解析结构化 UI 描述契约块 <<<EXECUTION_META>>>...<<<EXECUTION_META_END>>>
  * 并自动剥离原始契约标签，确保展示给用户的 Markdown 正文干净无协议噪音
  */
-export function extractExecutionMetaFromAcpResponse(rawText: string): {
+export function extractExecutionMetaFromAcpResponse(
+  rawText: string,
+  mcpToolCalls?: any[]
+): {
   executionMeta?: TopicExecutionUiMeta;
   cleanedText: string;
 } {
+  // 1. 优先尝试从原生 MCP 工具调用 submit_execution_deliverable 中直接提取
+  let executionMetaFromTool: TopicExecutionUiMeta | undefined;
+  if (Array.isArray(mcpToolCalls) && mcpToolCalls.length > 0) {
+    const toolCall = mcpToolCalls.find(
+      (c: any) =>
+        c?.tool_name === 'submit_execution_deliverable' ||
+        c?.tool === 'submit_execution_deliverable' ||
+        c?.name === 'submit_execution_deliverable'
+    );
+    if (toolCall) {
+      let args = toolCall.arguments ?? toolCall.args;
+      if (typeof args === 'string') {
+        try {
+          args = JSON.parse(args);
+        } catch (e) {
+          console.warn('[acpClient] Failed to parse JSON arguments from submit_execution_deliverable:', e);
+        }
+      }
+      if (args && typeof args === 'object') {
+        const rawKind = args.deliverable_kind || args.deliverableKind;
+        const deliverableKind: 'workspace_files' | 'report_only' =
+          rawKind === 'report_only' ? 'report_only' : 'workspace_files';
+        executionMetaFromTool = {
+          sectionTitle: String(args.section_title || args.sectionTitle || '决议落地执行与交付产物').trim(),
+          podTitle: String(args.pod_title || args.podTitle || '🛠️ 决议落地交付').trim(),
+          statusSummary: String(args.status_summary || args.statusSummary || '已完成定案决议落地交付').trim(),
+          deliverableKind,
+          reviewActionLabel: args.review_action_label || args.reviewActionLabel ? String(args.review_action_label || args.reviewActionLabel).trim() : undefined,
+          applyActionLabel: args.apply_action_label || args.applyActionLabel ? String(args.apply_action_label || args.applyActionLabel).trim() : undefined,
+        };
+      }
+    }
+  }
+
   if (!rawText || !rawText.trim()) {
-    return { cleanedText: rawText };
+    return { executionMeta: executionMetaFromTool, cleanedText: rawText || '' };
   }
 
   // 物理剥离模型思维链与中间推演标签，纯净保留最终结论与代码产物
@@ -383,33 +420,31 @@ export function extractExecutionMetaFromAcpResponse(rawText: string): {
   const fallbackJsonRegex = /```(?:json)?\s*(\{\s*"sectionTitle"[\s\S]*?"podTitle"[\s\S]*?\})\s*```/i;
 
   const match = strippedText.match(metaRegex) || strippedText.match(fallbackJsonRegex);
-  if (!match || !match[1]) {
-    return { cleanedText: strippedText || rawText };
-  }
-
-  let executionMeta: TopicExecutionUiMeta | undefined;
-  try {
-    const jsonRaw = match[1].trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
-    const parsed = JSON.parse(jsonRaw);
-    if (parsed && typeof parsed === 'object') {
-      const deliverableKind: 'workspace_files' | 'report_only' =
-        parsed.deliverableKind === 'report_only' ? 'report_only' : 'workspace_files';
-      executionMeta = {
-        sectionTitle: String(parsed.sectionTitle || '决议落地执行与交付产物').trim(),
-        podTitle: String(parsed.podTitle || '🛠️ 决议落地交付').trim(),
-        statusSummary: String(parsed.statusSummary || '已完成定案决议落地交付').trim(),
-        deliverableKind,
-        reviewActionLabel: parsed.reviewActionLabel ? String(parsed.reviewActionLabel).trim() : undefined,
-        applyActionLabel: parsed.applyActionLabel ? String(parsed.applyActionLabel).trim() : undefined,
-      };
+  let executionMetaFromBlock: TopicExecutionUiMeta | undefined;
+  if (match && match[1]) {
+    try {
+      const jsonRaw = match[1].trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+      const parsed = JSON.parse(jsonRaw);
+      if (parsed && typeof parsed === 'object') {
+        const deliverableKind: 'workspace_files' | 'report_only' =
+          parsed.deliverableKind === 'report_only' ? 'report_only' : 'workspace_files';
+        executionMetaFromBlock = {
+          sectionTitle: String(parsed.sectionTitle || '决议落地执行与交付产物').trim(),
+          podTitle: String(parsed.podTitle || '🛠️ 决议落地交付').trim(),
+          statusSummary: String(parsed.statusSummary || '已完成定案决议落地交付').trim(),
+          deliverableKind,
+          reviewActionLabel: parsed.reviewActionLabel ? String(parsed.reviewActionLabel).trim() : undefined,
+          applyActionLabel: parsed.applyActionLabel ? String(parsed.applyActionLabel).trim() : undefined,
+        };
+      }
+    } catch (e) {
+      console.warn('[acpClient] Failed to parse <<<EXECUTION_META>>> block:', e);
     }
-  } catch (e) {
-    console.warn('[acpClient] Failed to parse <<<EXECUTION_META>>> block:', e);
   }
 
-  const cleanedText = strippedText.replace(match[0], '').trim();
+  const cleanedText = match ? strippedText.replace(match[0], '').trim() : strippedText;
   return {
-    executionMeta,
+    executionMeta: executionMetaFromTool || executionMetaFromBlock,
     cleanedText: cleanedText || strippedText || rawText,
   };
 }
@@ -1516,7 +1551,7 @@ export async function sendPromptToAcpAgent(
         const hasMcpToolCalls = Array.isArray(res.mcp_tool_calls) && res.mcp_tool_calls.length > 0;
         const isEmpty = !rawText.trim() && !hasMcpToolCalls;
         const fullText = rawText || (res.stopReason ? `【${agent.name}】ACP 任务已完成 (stopReason: ${res.stopReason})` : JSON.stringify(res));
-        const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(fullText);
+        const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(fullText, res.mcp_tool_calls);
         const nativeDiffs: TopicPatchDiffItem[] = Array.isArray(res.workspace_diffs) && res.workspace_diffs.length > 0
           ? res.workspace_diffs
           : extractWorkspaceDiffsFromText(cleanedText);
@@ -1534,7 +1569,7 @@ export async function sendPromptToAcpAgent(
           raw: response,
         };
       } else if (response && response.text_response) {
-        const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(response.text_response);
+        const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(response.text_response, response.mcp_tool_calls);
         const nativeDiffs: TopicPatchDiffItem[] = Array.isArray(response.workspace_diffs) && response.workspace_diffs.length > 0
           ? response.workspace_diffs
           : extractWorkspaceDiffsFromText(cleanedText);

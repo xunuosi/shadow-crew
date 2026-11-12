@@ -1257,6 +1257,7 @@ export function useGameTheoreticFsm({
         const { evidences, weightedTrueRatio, updatedDispute, updatedCommittedStates } = processVerifierEvidenceChain({
           topicId,
           verifierText: acpResp.textResponse,
+          mcpToolCalls: acpResp.mcpToolCalls || (acpResp as any).raw?.mcp_tool_calls || (acpResp as any).raw?.result?.mcp_tool_calls,
           isSafetyCharterSigned: currentTopic.gameTheoreticState?.isSafetyCharterSigned,
           disputePacket: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute,
           committedStates: currentTopic.gameTheoreticState?.cognoNexus?.committedStates,

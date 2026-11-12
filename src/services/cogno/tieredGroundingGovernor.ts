@@ -155,11 +155,61 @@ class TieredGroundingGovernor {
 
   /**
    * 解析 Verifier 智能体输出，提取结构化实证记录 (DIANOIA / Consistency Illusion)
+   * 优先从原生 MCP 工具 submit_grounding_evidence 中提取，次选 ```json 块，最后回退至启发式正则
    */
-  public parseVerifierOutput(verifierText: string): GroundingEvidence[] {
-    if (!verifierText || !verifierText.trim()) return [];
-
+  public parseVerifierOutput(verifierText: string, mcpToolCalls?: any[]): GroundingEvidence[] {
     const evidences: GroundingEvidence[] = [];
+
+    // 0. 优先从原生 MCP 工具调用 submit_grounding_evidence 中直接提取
+    if (Array.isArray(mcpToolCalls) && mcpToolCalls.length > 0) {
+      const toolCall = mcpToolCalls.find(
+        (c: any) =>
+          c?.tool_name === 'submit_grounding_evidence' ||
+          c?.tool === 'submit_grounding_evidence' ||
+          c?.name === 'submit_grounding_evidence'
+      );
+      if (toolCall) {
+        let args = toolCall.arguments ?? toolCall.args;
+        if (typeof args === 'string') {
+          try {
+            args = JSON.parse(args);
+          } catch (e) {
+            console.warn('[tieredGroundingGovernor] Failed to parse JSON arguments from submit_grounding_evidence:', e);
+          }
+        }
+        if (args && typeof args === 'object') {
+          const rawList = Array.isArray(args.evidences)
+            ? args.evidences
+            : Array.isArray(args)
+            ? args
+            : [args];
+          for (const item of rawList) {
+            if (item && typeof item === 'object') {
+              const toolName = item.source_tool || item.sourceTool || item.tool || 'static_analyzer';
+              const tier = this.getToolTier(toolName);
+              evidences.push({
+                evidenceId: item.evidence_id || item.evidenceId || `ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                sourceTool: toolName,
+                inputQueryOrCode: item.input_query_or_code || item.inputQueryOrCode || item.input || '实证代码/命令检测',
+                rawOutput: item.raw_output || item.rawOutput || item.output || '',
+                truthValue: Boolean(item.truth_value ?? item.truthValue ?? (item.status === 'PASS' || item.verdict === 'PASS')),
+                verifierReport: item.verifier_report || item.verifierReport || item.report || '实证检验已执行',
+                tier,
+                isAdvisory: tier === 'T1',
+                claimId: item.claim_id || item.claimId,
+                confidence: typeof item.confidence === 'number' ? item.confidence : 0.9,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    if (evidences.length > 0) {
+      return evidences;
+    }
+
+    if (!verifierText || !verifierText.trim()) return [];
 
     // 1. 尝试从 ```json ... ``` 块中提取
     const jsonMatch = verifierText.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
@@ -275,8 +325,8 @@ class TieredGroundingGovernor {
   public processVerifierEvidenceChain(
     options: ProcessVerifierEvidenceChainOptions
   ): ProcessVerifierEvidenceChainResult {
-    const { topicId, verifierText, isSafetyCharterSigned = false, disputePacket, committedStates } = options;
-    const rawEvidences = this.parseVerifierOutput(verifierText);
+    const { topicId, verifierText, mcpToolCalls, isSafetyCharterSigned = false, disputePacket, committedStates } = options;
+    const rawEvidences = this.parseVerifierOutput(verifierText, mcpToolCalls);
 
     const processedEvidences: GroundingEvidence[] = [];
     let totalWeight = 0;
@@ -436,6 +486,7 @@ class TieredGroundingGovernor {
 export interface ProcessVerifierEvidenceChainOptions {
   topicId: string;
   verifierText: string;
+  mcpToolCalls?: any[];
   isSafetyCharterSigned?: boolean;
   disputePacket?: DisputeSpanPacket;
   committedStates?: ArgumentNode[];
@@ -450,8 +501,8 @@ export interface ProcessVerifierEvidenceChainResult {
 
 export const tieredGroundingGovernor = new TieredGroundingGovernor();
 
-export function parseVerifierOutput(verifierText: string): GroundingEvidence[] {
-  return tieredGroundingGovernor.parseVerifierOutput(verifierText);
+export function parseVerifierOutput(verifierText: string, mcpToolCalls?: any[]): GroundingEvidence[] {
+  return tieredGroundingGovernor.parseVerifierOutput(verifierText, mcpToolCalls);
 }
 
 export function processVerifierEvidenceChain(

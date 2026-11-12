@@ -5,6 +5,7 @@ import {
   mergeTopicPatchDiffs,
 } from './bayesianModuleGovernor';
 import { buildModularExecutionPrompt, TopicPromptContext } from '../agentCollaboration';
+import { extractExecutionMetaFromAcpResponse } from '../acpClient';
 import {
   Agent,
   ModuleComplexityLevel,
@@ -309,6 +310,36 @@ console.log('\n--- 测试 5: 完整流水线仿真与异常隔离 (Fault Contain
   assert.equal(mod3.executionStatus, undefined, 'Mod 3 严防越级执行');
 
   console.log('✓ 流水线仿真与异常隔离校验通过：局部出错零污染前序成果，后续阶段安全阻断');
+}
+
+// -----------------------------------------------------------------------------
+// 测试 6: 原生 MCP 工具 submit_execution_deliverable 交付物元数据提取
+// -----------------------------------------------------------------------------
+console.log('\n--- 测试 6: 原生 MCP 工具 submit_execution_deliverable 交付物元数据提取 ---');
+{
+  const toolCallRaw = [
+    {
+      tool_name: 'submit_execution_deliverable',
+      arguments: {
+        section_title: '分布式订单状态机与幂等单测',
+        pod_title: '🛠️ 状态机交付',
+        status_summary: '完成状态机与死锁防护',
+        deliverable_kind: 'workspace_files',
+        review_action_label: '审查代码 Diff',
+        apply_action_label: '合入工作区',
+      },
+    },
+  ];
+  const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(
+    '已完成全部代码修改，请核验。',
+    toolCallRaw
+  );
+  assert.ok(executionMeta, '应当成功提取 executionMeta');
+  assert.equal(executionMeta.sectionTitle, '分布式订单状态机与幂等单测');
+  assert.equal(executionMeta.podTitle, '🛠️ 状态机交付');
+  assert.equal(executionMeta.deliverableKind, 'workspace_files');
+  assert.equal(cleanedText, '已完成全部代码修改，请核验。');
+  console.log('✓ 原生 MCP 工具 submit_execution_deliverable 提取与正文保持通过');
 }
 
 console.log('\n================================================================================');
