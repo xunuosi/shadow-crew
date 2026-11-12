@@ -517,7 +517,12 @@ export default defineConfig(() => {
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      // Rust/Tauri 构建产物 (target/) 与打包产物 (dist/) 不属于前端源码，
+      // 递归监视它们会让 dev server 持续处理事件批次并长期占用多个 CPU 核。
+      watch:
+        process.env.DISABLE_HMR === 'true'
+          ? null
+          : { ignored: ['**/target/**', '**/dist/**', '**/.git/**', '**/*.log'] },
     },
   };
 });
