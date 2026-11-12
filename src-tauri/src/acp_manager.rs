@@ -256,6 +256,21 @@ pub fn parse_negotiated_protocol_version(result: &serde_json::Value) -> String {
     "v1".to_string()
 }
 
+/// 构造 session/new 与 session/load 的 `systemPrompt` 字段载荷。
+///
+/// ACP v2 将该字段定义为对象 `{ mode, content: [{ type: "text", text }] }`，
+/// 传入字符串会被 v2 端点以 `-32602 Invalid params` 拒绝；v1 端点仍只接受字符串。
+pub fn build_system_prompt_param(negotiated_version: &str, system_prompt: &str) -> serde_json::Value {
+    if negotiated_version == "v2" {
+        serde_json::json!({
+            "mode": "append",
+            "content": [{ "type": "text", "text": system_prompt }]
+        })
+    } else {
+        serde_json::Value::String(system_prompt.to_string())
+    }
+}
+
 /// 检查 ACP initialize 响应中是否声明了 loadSession 能力 (支持 capabilities.loadSession 或 agentCapabilities.loadSession)
 pub fn check_supports_load_session(result: &serde_json::Value) -> bool {
     result
@@ -3533,6 +3548,7 @@ impl RunningAgent {
             Some(sp) if !sp.trim().is_empty() => format!("{}{}", sp, workspace_notice),
             _ => workspace_notice,
         };
+        let negotiated_version = self.negotiated_protocol_version.lock().await.clone();
 
         let normalized_sp = normalize_system_prompt_for_sync(&enriched_sp);
         let cached_sid = {
@@ -3711,7 +3727,8 @@ impl RunningAgent {
                     } else if let Some(c) = channel_id {
                         load_params["channelId"] = serde_json::Value::String(c.to_string());
                     }
-                    load_params["systemPrompt"] = serde_json::Value::String(enriched_sp.clone());
+                    load_params["systemPrompt"] =
+                        build_system_prompt_param(&negotiated_version, &enriched_sp);
 
                     let load_req = serde_json::json!({
                         "jsonrpc": "2.0",
@@ -3866,7 +3883,7 @@ impl RunningAgent {
         if let Some(scope) = scope_type {
             params["scopeType"] = serde_json::Value::String(scope.to_string());
         }
-        params["systemPrompt"] = serde_json::Value::String(enriched_sp.clone());
+        params["systemPrompt"] = build_system_prompt_param(&negotiated_version, &enriched_sp);
         params["_meta"] = serde_json::json!({
             "systemPrompt": {
                 "append": enriched_sp.clone()
@@ -5872,6 +5889,30 @@ mod runtime_status_tests {
                 "_meta": { "negotiatedProtocolVersion": 1 }
             })),
             "v1"
+        );
+    }
+
+    #[test]
+    fn test_build_system_prompt_param() {
+        use super::build_system_prompt_param;
+
+        // v2 端点要求对象形态，字符串会被 -32602 拒绝
+        assert_eq!(
+            build_system_prompt_param("v2", "persona"),
+            serde_json::json!({
+                "mode": "append",
+                "content": [{ "type": "text", "text": "persona" }]
+            })
+        );
+
+        // v1 端点保持字符串形态
+        assert_eq!(
+            build_system_prompt_param("v1", "persona"),
+            serde_json::json!("persona")
+        );
+        assert_eq!(
+            build_system_prompt_param("unknown", "persona"),
+            serde_json::json!("persona")
         );
     }
 
