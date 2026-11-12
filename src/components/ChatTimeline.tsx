@@ -506,56 +506,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             </button>
           )}
 
-          {/* Codex Diff Toggle */}
-          <button
-            onClick={() => onOpenCodexDiff(null)}
-            className="hidden @lg:flex px-2 py-1 rounded-lg hover:text-emerald-500 hover:bg-surface-hover border border-transparent hover:border-emerald-500/30 transition-all items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
-            title="查看代码变更与 Unified Diff (Codex 视图)"
-          >
-            <GitCompare className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-            <span className="hidden @xl:inline font-mono">Diff</span>
-          </button>
-
-          {/* ACP Inspector Toggle */}
-          <button
-            onClick={onOpenAcpInspector}
-            className="hidden @lg:flex px-2 py-1 rounded-lg hover:text-accent hover:bg-surface-hover border border-transparent hover:border-accent/30 transition-all items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
-            title="打开 ACP 协议与私有记忆观测面板 (Antigravity 视图)"
-          >
-            <Terminal className="w-3.5 h-3.5 text-accent shrink-0" />
-            <span className="hidden @xl:inline font-mono">ACP</span>
-          </button>
-
-          {/* Channel / DM Artifacts Folder Toggle */}
-          {(channel || activeThread?.type === 'dm' || activeThread?.channelId) && (
-            <button
-              onClick={async () => {
-                try {
-                  if (activeThread?.type === 'dm') {
-                    const agentId = activeThread.authorId || (activeThread.activeAgentIds && activeThread.activeAgentIds[0]) || activeThread.id.replace('thread-dm-', '');
-                    await openAgentArtifactsFolder(agentId);
-                  } else {
-                    const targetChannelId = channel?.id || activeThread?.channelId;
-                    if (targetChannelId) {
-                      await openChannelArtifactsFolder(targetChannelId, channel?.workspaceBindingId);
-                    }
-                  }
-                } catch (e) {
-                  console.error('Failed to open artifacts directory:', e);
-                }
-              }}
-              className="hidden @lg:flex px-2 py-1 rounded-lg hover:text-amber-500 hover:bg-surface-hover border border-transparent hover:border-amber-500/30 transition-all items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
-              title={
-                activeThread?.type === 'dm'
-                  ? `打开此 Agent 专属隔离产物目录 (~/.shadow-crew/agents/${activeThread.authorId || activeThread.id.replace('thread-dm-', '')}/artifacts/)`
-                  : '打开当前频道 Workspace Binding 的产物归档目录'
-              }
-            >
-              <FolderArchive className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-              <span className="hidden @xl:inline font-mono">产物 (Artifacts)</span>
-            </button>
-          )}
-
+          {/* 次级工具（Diff / ACP / 产物目录）统一收纳在右侧「更多」菜单，避免顶栏塞满图标 */}
           {/* Collaborator Count & List */}
           <div className="hidden @xl:block relative shrink-0">
             <button 
@@ -609,10 +560,11 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 setShowMoreMenu(!showMoreMenu);
                 setShowMembersPopover(false);
               }}
-              className="p-1.5 rounded-lg hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer"
-              title="更多操作与工具"
+              className="px-2 py-1 rounded-lg text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer flex items-center gap-1"
+              title="更多工具：Codex Diff / ACP 观测 / 产物目录 / 成员"
             >
               <MoreVertical className="w-3.5 h-3.5" />
+              <span className="hidden @xl:inline text-[11px]">工具</span>
             </button>
 
             {showMoreMenu && (

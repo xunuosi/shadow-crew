@@ -30,3 +30,23 @@ export function getTopicDrawerMaxWidth(
     availableWidth
   );
 }
+
+/** Default reading width bounds for the topic drawer (long-form debate text). */
+export const MIN_TOPIC_DRAWER_DEFAULT_WIDTH = 520;
+export const MAX_TOPIC_DRAWER_DEFAULT_WIDTH = 760;
+
+/**
+ * First-open width of the topic drawer: a viewport-proportional reading width
+ * instead of the former cramped fixed value. Users can still drag/resize or use
+ * focus mode; this only decides the untouched default.
+ */
+export function getTopicDrawerDefaultWidth(viewportWidth: number): number {
+  const safeViewportWidth = Number.isFinite(viewportWidth)
+    ? Math.max(0, viewportWidth)
+    : 0;
+  const proportional = Math.round(safeViewportWidth * 0.46);
+  return Math.min(
+    MAX_TOPIC_DRAWER_DEFAULT_WIDTH,
+    Math.max(MIN_TOPIC_DRAWER_DEFAULT_WIDTH, proportional)
+  );
+}

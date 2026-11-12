@@ -14,10 +14,10 @@ import {
 } from '../types';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { 
-  X, 
-  GitBranch, 
+  X,
+  GitBranch,
   HardDrive,
-  CornerDownRight, 
+  CornerDownRight,
   Send, 
   CheckCircle2, 
   Sparkles,
@@ -48,6 +48,8 @@ import {
   Zap,
   FileText,
   Image as ImageIcon,
+  Maximize2,
+  Minimize2,
   Paperclip,
   Clock,
   Loader2
@@ -57,6 +59,7 @@ import { renderFormattedContent } from '../utils/formatMentions';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import {
+  getTopicDrawerDefaultWidth,
   getTopicDrawerMaxWidth,
   MIN_TOPIC_DRAWER_WIDTH,
 } from '../config/layout';
@@ -118,6 +121,15 @@ function resolveTopicDrawerMaxWidth(): number {
       ? document.querySelector('main')?.getBoundingClientRect().left ?? 0
       : 0;
   return getTopicDrawerMaxWidth(window.innerWidth, workspaceLeftOffset);
+}
+
+/**
+ * 首次打开议题时的抽屉宽度：按视口占比取一个适合长文本阅读的宽度，
+ * 替代过去偏窄的固定 480px，避免辩论正文频繁折行。
+ */
+function resolveTopicDrawerDefaultWidth(): number {
+  if (typeof window === 'undefined') return 600;
+  return getTopicDrawerDefaultWidth(window.innerWidth);
 }
 
 export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
@@ -256,46 +268,30 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   const [isRulingDetailExpanded, setIsRulingDetailExpanded] = useState(false);
   const [activeModuleFilterId, setActiveModuleFilterId] = useState<string>('ALL');
 
-  // 顶部议题上下文与推演看板折叠状态 (已仲裁议题默认自动收起为单行摘要，释放纵向历史讨论视口)
-  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState<boolean>(() => {
-    if (topic?.status === 'resolved') return true;
-    try {
-      return localStorage.getItem('shinobi_topic_context_collapsed') === 'true';
-    } catch {
-      return false;
-    }
-  });
+  // 顶部议题上下文与推演看板折叠状态
+  // 阅读优先：每次进入议题都先收起为单行摘要，把纵向空间让给辩论记录；
+  // 需要目标详情或看板时由用户手动展开，不做跨议题的记忆。
+  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(true);
 
-  // 切换议题或议题状态变更为已仲裁时：若已仲裁定案则自动收起顶部看板，最大化历史讨论阅读空间
+  // 推演阶段与工程调控看板（FSM 阶段条 + 模块矩阵/SPRT/谄媚度等）默认收起，
+  // 避免诊断性信息挤占辩论记录视口。
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
+
+  // 切换议题时重置所有看板展开态，保持阅读优先
   useEffect(() => {
     if (!isOpen || !topic?.id) return;
     setIsRulingDetailExpanded(false);
     setActiveModuleFilterId('ALL');
-    if (topic.status === 'resolved') {
-      setIsHeaderCollapsed(true);
-    } else {
-      try {
-        setIsHeaderCollapsed(localStorage.getItem('shinobi_topic_context_collapsed') === 'true');
-      } catch {
-        setIsHeaderCollapsed(false);
-      }
-    }
+    setIsDiagnosticsOpen(false);
+    setIsHeaderCollapsed(true);
   }, [isOpen, topic?.id, topic?.status]);
 
   const toggleHeaderCollapsed = useCallback(() => {
-    setIsHeaderCollapsed((prev) => {
-      const next = !prev;
-      if (topic?.status !== 'resolved') {
-        try {
-          localStorage.setItem('shinobi_topic_context_collapsed', String(next));
-        } catch {}
-      }
-      return next;
-    });
-  }, [topic?.status]);
+    setIsHeaderCollapsed((prev) => !prev);
+  }, []);
 
-  // 底部首席仲裁官法槌控制台折叠状态
-  const [isGavelCollapsed, setIsGavelCollapsed] = useState(false);
+  // 底部首席仲裁官法槌控制台折叠状态（默认收起，把纵向空间优先让给辩论记录）
+  const [isGavelCollapsed, setIsGavelCollapsed] = useState(true);
 
   // 记录人类在法槌弹窗中对三种模式的定制方案修改状态（切换模式时独立保留，绝不相互覆盖丢失）
   const [customDraftsByMode, setCustomDraftsByMode] = useState<Partial<Record<RulingDecisionType, {
@@ -725,11 +721,36 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   // Resizable drawer width (persisted in localStorage)
   const { width: drawerWidth, isDragging, handlePointerDown, resetWidth, setWidth, panelRef } = useResizablePanel({
     direction: 'left',
-    defaultWidth: 480,
+    defaultWidth: resolveTopicDrawerDefaultWidth(),
     minWidth: MIN_TOPIC_DRAWER_WIDTH,
     maxWidth: resolveTopicDrawerMaxWidth,
-    storageKey: 'shinobi_topic_drawer_width',
+    // v2: 旧版默认宽度过窄，重置一次宽度偏好，让新默认值（按视口比例的阅读宽度）生效
+    storageKey: 'shinobi_topic_drawer_width_v2',
   });
+
+  // 专注阅读：一键把抽屉扩展到可用最大宽度（保留主时间线最小宽度），把屏幕让给辩论记录
+  const isFocusMode = drawerWidth >= resolveTopicDrawerMaxWidth() - 1;
+  const preFocusWidthRef = useRef<number | null>(null);
+
+  const toggleFocusMode = useCallback(() => {
+    if (!isFocusMode) {
+      preFocusWidthRef.current = drawerWidth;
+      setWidth(resolveTopicDrawerMaxWidth());
+    } else {
+      const restore = preFocusWidthRef.current ?? resolveTopicDrawerDefaultWidth();
+      preFocusWidthRef.current = null;
+      setWidth(restore);
+    }
+  }, [isFocusMode, drawerWidth, setWidth]);
+
+  // 手动拖拽宽度即视为退出专注模式
+  const handleDrawerResizePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      preFocusWidthRef.current = null;
+      handlePointerDown(e);
+    },
+    [handlePointerDown]
+  );
 
   useEffect(() => {
     if (typeof ResizeObserver === 'undefined') return;
@@ -1180,7 +1201,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       {/* Draggable Left Resize Handle */}
       <ResizeHandle
         direction="left"
-        onPointerDown={handlePointerDown}
+        onPointerDown={handleDrawerResizePointerDown}
         onDoubleClick={resetWidth}
         isDragging={isDragging}
         title="拖动调整议题抽屉宽度，双击恢复默认"
@@ -1286,6 +1307,18 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             {isHeaderCollapsed ? <ChevronDown className="w-3.5 h-3.5 text-purple-500" /> : <ChevronUp className="w-3.5 h-3.5" />}
             <span className="hidden sm:inline text-[11px]">{isHeaderCollapsed ? '展开看板' : '收起看板'}</span>
           </button>
+          <button
+            type="button"
+            onClick={toggleFocusMode}
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer shrink-0 border ${
+              isFocusMode
+                ? 'text-purple-600 dark:text-purple-400 bg-purple-500/10 hover:bg-purple-500/20 border-purple-500/30'
+                : 'text-fg-muted hover:text-fg hover:bg-surface-hover border-transparent'
+            }`}
+            title={isFocusMode ? '退出专注阅读 (恢复原宽度)' : '专注阅读 (把屏幕让给辩论记录)'}
+          >
+            {isFocusMode ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
           {onEditTopic && (
             <button
               type="button"
@@ -1346,17 +1379,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           </div>
         </div>
       ) : (
-        <div className="max-h-[40vh] overflow-y-auto shrink-0">
+        <div className="max-h-[32vh] overflow-y-auto shrink-0">
           {/* 2. Topic Anchor Context */}
           <div className="p-3.5 bg-surface-subtle border-b border-border text-[11px] space-y-2 shrink-0">
-            {workspaceCwd && (
-              <div className="flex items-center gap-1.5 min-w-0 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-[10px] text-fg-muted">
-                <HardDrive className="w-3 h-3 text-accent shrink-0" />
-                <span className="shrink-0 font-semibold text-fg-secondary">议题工作目录</span>
-                <span className="truncate font-mono" title={workspaceCwd}>{workspaceCwd}</span>
-                <span className="ml-auto shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 border border-border">工作空间</span>
-              </div>
-            )}
             <div className="flex items-center justify-between">
               <span className="text-[10px] text-purple-600 dark:text-purple-400 font-semibold flex items-center gap-1">
                 <CornerDownRight className="w-3 h-3" />
@@ -1467,6 +1492,43 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         </div>
       )}
 
+      {/* 推演阶段与工程调控看板：默认收起，仅在需要诊断时展开 */}
+      {!isDmDuel && topic.discussionMode === 'game_theoretic' && (
+        <div className="border-b border-border bg-surface-subtle/50 shrink-0">
+          <button
+            type="button"
+            onClick={() => setIsDiagnosticsOpen((prev) => !prev)}
+            className="w-full px-3.5 py-2 flex items-center justify-between gap-2 text-[10px] text-fg-muted hover:text-fg hover:bg-surface-hover/50 transition-colors cursor-pointer select-none"
+            title={isDiagnosticsOpen ? '收起推演阶段与工程调控看板' : '展开推演阶段、模块矩阵与工程调控看板'}
+          >
+            <span className="flex items-center gap-1.5 font-semibold min-w-0">
+              <SlidersHorizontal className="w-3 h-3 text-purple-500 shrink-0" />
+              <span className="shrink-0">推演阶段与工程调控</span>
+              <span className="font-mono px-1.5 py-0.5 rounded-full bg-surface border border-border text-fg-secondary shrink-0">
+                {topic.gameStage === 'proposal' ? '🏛️ 立论 (1/5)' :
+                 topic.gameStage === 'challenge' ? '⚔️ 压测 (2/5)' :
+                 topic.gameStage === 'verification' ? '🔍 验证 (3/5)' :
+                 topic.gameStage === 'defense' ? '🛡️ 答辩 (4/5)' :
+                 topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' ? '⚖️ 仲裁 (5/5)' : '推演中'}
+              </span>
+            </span>
+            <span className="flex items-center gap-1 shrink-0">
+              <span>{isDiagnosticsOpen ? '收起' : '展开'}</span>
+              {isDiagnosticsOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </span>
+          </button>
+        </div>
+      )}
+
+      {isDiagnosticsOpen && (
+        <>
+      {workspaceCwd && (
+        <div className="flex items-center gap-1.5 min-w-0 border-b border-border bg-surface-subtle/40 px-3.5 py-1.5 text-[10px] text-fg-muted">
+          <HardDrive className="w-3 h-3 text-accent shrink-0" />
+          <span className="shrink-0 font-semibold text-fg-secondary">工作目录</span>
+          <span className="truncate font-mono" title={workspaceCwd}>{workspaceCwd}</span>
+        </div>
+      )}
       {/* Channel 4+1 博弈推演阶段状态机指示器 */}
       {!isDmDuel && topic.discussionMode === 'game_theoretic' && (
         <div className="@container px-3.5 py-2 bg-surface-subtle/70 border-b border-border text-[11px]">
@@ -1952,6 +2014,8 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             );
           })()}
         </div>
+      )}
+        </>
       )}
     </div>
   )}
