@@ -1374,15 +1374,6 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {topic.discussionMode === 'game_theoretic' && (
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-surface border border-border text-fg-secondary">
-                {topic.gameStage === 'proposal' ? '🏛️ 立论 (1/5)' :
-                 topic.gameStage === 'challenge' ? '⚔️ 压测 (2/5)' :
-                 topic.gameStage === 'verification' ? '🔍 验证 (3/5)' :
-                 topic.gameStage === 'defense' ? '🛡️ 答辩 (4/5)' :
-                 topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' ? '⚖️ 仲裁 (5/5)' : '推演中'}
-              </span>
-            )}
             <span className="text-[11px] text-purple-600 dark:text-purple-400 font-medium group-hover:underline flex items-center gap-0.5">
               <span>展开看板</span>
               <ChevronDown className="w-3.5 h-3.5 transition-transform group-hover:translate-y-0.5" />
@@ -1503,25 +1494,18 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         </div>
       )}
 
-      {/* 推演阶段与工程调控看板：默认收起，仅在需要诊断时展开 */}
+      {/* 工程调控看板：推演阶段已由顶部常驻进度条展示，此处仅保留模块矩阵与治理诊断 */}
       {!isDmDuel && topic.discussionMode === 'game_theoretic' && (
         <div className="border-b border-border bg-surface-subtle/50 shrink-0">
           <button
             type="button"
             onClick={() => setIsDiagnosticsOpen((prev) => !prev)}
             className="w-full px-3.5 py-2 flex items-center justify-between gap-2 text-[10px] text-fg-muted hover:text-fg hover:bg-surface-hover/50 transition-colors cursor-pointer select-none"
-            title={isDiagnosticsOpen ? '收起推演阶段与工程调控看板' : '展开推演阶段、模块矩阵与工程调控看板'}
+            title={isDiagnosticsOpen ? '收起工程调控看板' : '展开模块矩阵与工程调控看板'}
           >
             <span className="flex items-center gap-1.5 font-semibold min-w-0">
               <SlidersHorizontal className="w-3 h-3 text-purple-500 shrink-0" />
-              <span className="shrink-0">推演阶段与工程调控</span>
-              <span className="font-mono px-1.5 py-0.5 rounded-full bg-surface border border-border text-fg-secondary shrink-0">
-                {topic.gameStage === 'proposal' ? '🏛️ 立论 (1/5)' :
-                 topic.gameStage === 'challenge' ? '⚔️ 压测 (2/5)' :
-                 topic.gameStage === 'verification' ? '🔍 验证 (3/5)' :
-                 topic.gameStage === 'defense' ? '🛡️ 答辩 (4/5)' :
-                 topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' ? '⚖️ 仲裁 (5/5)' : '推演中'}
-              </span>
+              <span className="shrink-0">工程调控看板</span>
             </span>
             <span className="flex items-center gap-1 shrink-0">
               <span>{isDiagnosticsOpen ? '收起' : '展开'}</span>
@@ -1538,176 +1522,6 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           <HardDrive className="w-3 h-3 text-accent shrink-0" />
           <span className="shrink-0 font-semibold text-fg-secondary">工作目录</span>
           <span className="truncate font-mono" title={workspaceCwd}>{workspaceCwd}</span>
-        </div>
-      )}
-      {/* Channel 4+1 博弈推演阶段状态机指示器 */}
-      {!isDmDuel && topic.discussionMode === 'game_theoretic' && (
-        <div className="@container px-3.5 py-2 bg-surface-subtle/70 border-b border-border text-[11px]">
-          <div className="flex flex-wrap items-center gap-1.5 select-none">
-            {/* Step 1: 方案立论 */}
-            <div className={`flex-1 basis-28 min-w-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
-              (topic.gameStage === 'proposal' || !topic.gameStage)
-                ? 'bg-blue-500/15 border-blue-500/30 text-blue-700 dark:text-blue-300 font-semibold shadow-xs'
-                : 'bg-surface border-border text-fg-muted'
-            }`}>
-              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0 ${
-                (topic.gameStage === 'proposal' || !topic.gameStage)
-                  ? 'bg-blue-500 text-white font-bold'
-                  : 'bg-emerald-500/20 text-emerald-600'
-              }`}>
-                {(topic.gameStage && topic.gameStage !== 'proposal') ? '✓' : '1'}
-              </div>
-              <div className="truncate min-w-0">
-                <span className="truncate block font-medium">🏛️ 方案立论</span>
-              </div>
-            </div>
-
-            <ArrowRight className="hidden @md:block w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
-
-            {/* Step 2: 反例压测 */}
-            <div className={`flex-1 basis-28 min-w-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
-              topic.gameStage === 'challenge'
-                ? 'bg-rose-500/15 border-rose-500/30 text-rose-700 dark:text-rose-300 font-semibold shadow-xs'
-                : topic.gameTheoreticState?.isChallengerBypassed
-                ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-medium'
-                : topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                ? 'bg-amber-500/15 border-amber-500/30 text-amber-700 dark:text-amber-300 font-semibold'
-                : (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                ? 'bg-surface border-border text-fg-muted'
-                : 'bg-surface border-border text-fg-muted opacity-60'
-            }`}>
-              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0 ${
-                topic.gameStage === 'challenge'
-                  ? 'bg-rose-500 text-white font-bold'
-                  : topic.gameTheoreticState?.isChallengerBypassed
-                  ? 'bg-emerald-500 text-white font-bold'
-                  : topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                  ? 'bg-amber-500 text-white font-bold'
-                  : (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                  ? 'bg-emerald-500/20 text-emerald-600'
-                  : 'bg-border text-fg-muted'
-              }`}>
-                {topic.gameStage === 'challenge'
-                  ? '2'
-                  : topic.gameTheoreticState?.isChallengerBypassed
-                  ? '⚡'
-                  : topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                  ? '!'
-                  : (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                  ? '✓'
-                  : '2'}
-              </div>
-              <div className="truncate min-w-0">
-                <span className="truncate block font-medium">
-                  {topic.gameTheoreticState?.isChallengerBypassed
-                    ? '⚡ 压测旁路'
-                    : topic.gameTheoreticState?.isChallengerResponded === false && (topic.gameStage === 'verification' || topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                    ? '⚔️ 压测缺席'
-                    : '⚔️ 反例压测'}
-                </span>
-              </div>
-            </div>
-
-            {/* Step 3: 接地验证 (仅当指派了接地验证官时显示) */}
-            {topic.gameRoles?.verifiers && topic.gameRoles.verifiers.length > 0 && (
-              <>
-                <ArrowRight className="hidden @md:block w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
-
-                <div className={`flex-1 basis-28 min-w-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
-                  topic.gameStage === 'verification'
-                    ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-700 dark:text-cyan-300 font-semibold shadow-xs'
-                    : topic.gameTheoreticState?.isVerifierResponded === false && (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                    ? 'bg-amber-500/15 border-amber-500/30 text-amber-700 dark:text-amber-300 font-semibold'
-                    : (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                    ? 'bg-surface border-border text-fg-muted'
-                    : 'bg-surface border-border text-fg-muted opacity-60'
-                }`}>
-                  <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0 ${
-                    topic.gameStage === 'verification'
-                      ? 'bg-cyan-500 text-white font-bold'
-                      : topic.gameTheoreticState?.isVerifierResponded === false && (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                      ? 'bg-amber-500 text-white font-bold'
-                      : (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                      ? 'bg-emerald-500/20 text-emerald-600'
-                      : 'bg-border text-fg-muted'
-                  }`}>
-                    {topic.gameTheoreticState?.isVerifierResponded === false && (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                      ? '!'
-                      : (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                      ? '✓'
-                      : '3'}
-                  </div>
-                  <div className="truncate min-w-0">
-                    <span className="truncate block font-medium">
-                      {topic.gameTheoreticState?.isVerifierResponded === false && (topic.gameStage === 'defense' || topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                        ? '🔍 验证跳过'
-                        : '🔍 接地验证'}
-                    </span>
-                  </div>
-                </div>
-              </>
-            )}
-
-            <ArrowRight className="hidden @md:block w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
-
-            {/* Step 4: 答辩修正 */}
-            <div className={`flex-1 basis-28 min-w-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
-              topic.gameStage === 'defense'
-                ? 'bg-blue-500/15 border-blue-500/30 text-blue-700 dark:text-blue-300 font-semibold shadow-xs'
-                : topic.gameTheoreticState?.isDefenseResponded === false && (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                ? 'bg-amber-500/15 border-amber-500/30 text-amber-700 dark:text-amber-300 font-semibold'
-                : (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                ? 'bg-surface border-border text-fg-muted'
-                : 'bg-surface border-border text-fg-muted opacity-60'
-            }`}>
-              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0 ${
-                topic.gameStage === 'defense'
-                  ? 'bg-blue-500 text-white font-bold'
-                  : topic.gameTheoreticState?.isDefenseResponded === false && (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                  ? 'bg-amber-500 text-white font-bold'
-                  : (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                  ? 'bg-emerald-500/20 text-emerald-600'
-                  : 'bg-border text-fg-muted'
-              }`}>
-                {topic.gameTheoreticState?.isDefenseResponded === false && (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                  ? '!'
-                  : (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                  ? '✓'
-                  : (topic.gameRoles?.verifiers && topic.gameRoles.verifiers.length > 0 ? '4' : '3')}
-              </div>
-              <div className="truncate min-w-0">
-                <span className="truncate block font-medium">
-                  {topic.gameTheoreticState?.isDefenseResponded === false && (topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' || topic.status === 'resolved')
-                    ? '🛡️ 答辩缺席'
-                    : '🛡️ 答辩修正'}
-                </span>
-              </div>
-            </div>
-
-            <ArrowRight className="hidden @md:block w-3.5 h-3.5 text-fg-muted shrink-0 opacity-40" />
-
-            {/* Step 5: 综合仲裁 */}
-            <div className={`flex-1 basis-28 min-w-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
-              topic.gameStage === 'concluded' || topic.status === 'resolved'
-                ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-semibold'
-                : topic.gameStage === 'arbitration'
-                ? 'bg-purple-500/15 border-purple-500/30 text-purple-700 dark:text-purple-300 font-semibold shadow-xs'
-                : 'bg-surface border-border text-fg-muted opacity-60'
-            }`}>
-              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0 ${
-                topic.gameStage === 'concluded' || topic.status === 'resolved'
-                  ? 'bg-emerald-500 text-white font-bold'
-                  : topic.gameStage === 'arbitration'
-                  ? 'bg-purple-500 text-white font-bold'
-                  : 'bg-border text-fg-muted'
-              }`}>
-                {topic.gameStage === 'concluded' || topic.status === 'resolved' ? '✓' : (topic.gameRoles?.verifiers && topic.gameRoles.verifiers.length > 0 ? '5' : '4')}
-              </div>
-              <div className="truncate min-w-0">
-                <span className="truncate block font-medium">⚖️ 综合仲裁</span>
-              </div>
-            </div>
-          </div>
         </div>
       )}
 
