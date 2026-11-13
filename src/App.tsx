@@ -3404,6 +3404,7 @@ export default function App() {
   const { runTopicWorkflow } = useTopicWorkflow({
     agentsRef,
     messagesRef,
+    activeExecutionsRef,
     getTopicData,
     updateTopicDataInState,
     commitMessages,

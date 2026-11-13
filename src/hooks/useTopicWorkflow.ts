@@ -35,6 +35,7 @@ import {
 interface UseTopicWorkflowParams {
   agentsRef: React.MutableRefObject<Agent[]>;
   messagesRef: React.MutableRefObject<Record<string, Message[]>>;
+  activeExecutionsRef: React.MutableRefObject<Record<string, ActiveAgentExecution>>;
   getTopicData: (topicId: string) => TopicMessageData | null | undefined;
   updateTopicDataInState: (
     topicId: string,
@@ -78,6 +79,8 @@ function nowLabel(): string {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+const USER_ABORT_FAILURE_REASON = '用户已终止该 Agent 的阶段执行';
+
 function isGuardFailureText(text: string): boolean {
   return /^(🔌 \*\*Agent 通信不可用\*\*|🛑 \*\*专家能力包|⚠️【)/.test(text.trim());
 }
@@ -95,6 +98,7 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
   const {
     agentsRef,
     messagesRef,
+    activeExecutionsRef,
     getTopicData,
     updateTopicDataInState,
     commitMessages,
@@ -267,6 +271,36 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
         });
       };
 
+      // 用户单独终止该 Agent 时，activeExecutionsRef 会被同步删除；据此把阶段显式判为失败，
+      // 避免阶段门禁拿着残缺输出继续推进后续阶段。
+      const isExecutionAborted = () => !activeExecutionsRef.current[execKey];
+      const abortedOutput = (): WorkflowStageOutput => {
+        replacePending({
+          id: `wf-reply-abort-${Date.now()}-${agent.id}`,
+          threadId: topic.id,
+          channelId: topic.channelId,
+          authorId: agent.id,
+          authorName: agent.name,
+          authorHandle: agent.handle,
+          authorAvatar: agent.avatar,
+          isAgent: true,
+          kind: 'error',
+          agentBadge: '已终止',
+          timestamp: nowLabel(),
+          content: '*(已由用户手动终止该 Agent 的阶段执行)*',
+          workflowStage: stageKey,
+          workflowRole: spec.role,
+        });
+        return {
+          agentId: agent.id,
+          agentName: agent.name,
+          messageId: '',
+          content: '',
+          failed: true,
+          failureReason: USER_ABORT_FAILURE_REASON,
+        };
+      };
+
       const systemPrompt = buildCompositeSystemPrompt({
         agent,
         availableAgents: participants,
@@ -286,8 +320,12 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
           localHistoryIntact: state.artifacts.length > 0,
         });
       } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
+        const abortedByUser = isExecutionAborted();
         removeExecution();
+        if (abortedByUser) {
+          return abortedOutput();
+        }
+        const reason = err instanceof Error ? err.message : String(err);
         replacePending({
           id: `wf-reply-err-${Date.now()}-${agent.id}`,
           threadId: topic.id,
@@ -312,6 +350,10 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
           failed: true,
           failureReason: `会话初始化异常：${reason}`,
         };
+      }
+
+      if (isExecutionAborted()) {
+        return abortedOutput();
       }
 
       const prompt = buildWorkflowPrompt({
@@ -339,7 +381,11 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
           systemPrompt,
           discussionMode: 'workflow',
         });
+        const abortedByUser = isExecutionAborted();
         removeExecution();
+        if (abortedByUser) {
+          return abortedOutput();
+        }
 
         const rawText = acpResp.textResponse || '';
         const diffs = acpResp.workspaceDiffs ?? [];
@@ -395,7 +441,11 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
           filesTouched: diffs.map((diff) => diff.filename),
         };
       } catch (err) {
+        const abortedByUser = isExecutionAborted();
         removeExecution();
+        if (abortedByUser) {
+          return abortedOutput();
+        }
         const reason = err instanceof Error ? err.message : String(err);
         replacePending({
           id: `wf-reply-err-${Date.now()}-${agent.id}`,
@@ -424,6 +474,7 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
       }
     },
     [
+      activeExecutionsRef,
       agentsRef,
       commitMessages,
       getTopicWorkspaceBinding,
@@ -652,6 +703,32 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
             cancelTopicWorkflow(
               topicId,
               '检测到新的用户消息或回合已失效，旧工作流已停止，避免覆盖最新指令。'
+            );
+            return;
+          }
+
+          const userAborted = outputs.find(
+            (output) => output.failureReason === USER_ABORT_FAILURE_REASON
+          );
+          if (userAborted) {
+            current = {
+              ...current,
+              stages: current.stages.map((record) =>
+                record.key === stageKey
+                  ? {
+                      ...record,
+                      state: 'failed',
+                      failureReason: userAborted.failureReason,
+                      finishedAt: Date.now(),
+                    }
+                  : record
+              ),
+              updatedAt: Date.now(),
+            };
+            persistState(topicId, current);
+            cancelTopicWorkflow(
+              topicId,
+              `用户终止了阶段「${spec.label}」的执行者（${userAborted.agentName}），工作流已停止。`
             );
             return;
           }
