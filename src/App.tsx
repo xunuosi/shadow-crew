@@ -5533,10 +5533,11 @@ export default function App() {
     setMainView('chat');
     setQuotingMessage(null);
     setSearchQuery('');
+    // 交由 ChatTimeline 处理窗口化定位（目标行可能尚未渲染）。
     window.setTimeout(() => {
-      document
-        .getElementById(`chat-msg-${message.id}`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      window.dispatchEvent(
+        new CustomEvent('shadow-crew:scroll-to-message', { detail: { messageId: message.id } })
+      );
     }, 150);
   };
 

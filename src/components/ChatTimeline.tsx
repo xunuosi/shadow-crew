@@ -50,6 +50,17 @@ import {
   exportMessagesAsMarkdownFile,
 } from '../services/dbClient';
 import { MessageAttachmentList } from './MessageAttachmentList';
+import { computeVirtualWindow } from '../utils/virtualWindow';
+
+/**
+ * 长会话窗口化渲染参数。
+ * 低于阈值时保持全量渲染（保持既有交互与滚动定位语义）；超出后仅渲染视口附近的行。
+ */
+const VIRTUALIZE_THRESHOLD = 120;
+const VIRTUAL_OVERSCAN_PX = 800;
+const DEFAULT_ESTIMATED_ROW_HEIGHT = 160;
+/** 与容器 `space-y-6` 一致的相邻行间距，用于高度缓存换算。 */
+const ROW_GAP_PX = 24;
 
 /** 仅用于展示的紧凑 token 计数；数值本身始终来自 ACP 上报。 */
 function formatCost(cost: { amount: number; currency: string }): string {
@@ -134,17 +145,42 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   } | null>(null);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  // 窗口化后目标行可能不在 DOM 中：先钉住该行强制渲染，再执行滚动定位。
+  const [pinnedMessageId, setPinnedMessageId] = useState<string | null>(null);
 
   const scrollToMessageTop = useCallback((targetMsgId: string) => {
-    const el = document.getElementById(`chat-msg-${targetMsgId}`);
-    if (el) {
+    const focusAndHighlight = () => {
+      const el = document.getElementById(`chat-msg-${targetMsgId}`);
+      if (!el) return;
       el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       setHighlightedMessageId(targetMsgId);
       setTimeout(() => {
         setHighlightedMessageId((prev) => (prev === targetMsgId ? null : prev));
       }, 2200);
+    };
+
+    if (document.getElementById(`chat-msg-${targetMsgId}`)) {
+      focusAndHighlight();
+      return;
     }
+    setPinnedMessageId(targetMsgId);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        focusAndHighlight();
+        setPinnedMessageId(null);
+      });
+    });
   }, []);
+
+  // 供上层（全局搜索跳转）在切换线程后触发精确滚动定位。
+  useEffect(() => {
+    const handleScrollRequest = (event: Event) => {
+      const messageId = (event as CustomEvent<{ messageId?: string }>).detail?.messageId;
+      if (messageId) scrollToMessageTop(messageId);
+    };
+    window.addEventListener('shadow-crew:scroll-to-message', handleScrollRequest);
+    return () => window.removeEventListener('shadow-crew:scroll-to-message', handleScrollRequest);
+  }, [scrollToMessageTop]);
 
   // Close popovers and context menu on global click or Escape
   useEffect(() => {
@@ -232,11 +268,79 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
 
   const isAtBottomRef = useRef(true);
 
+  // ---- 长会话窗口化：滚动位置 + 行高缓存（ResizeObserver 实测，未实测行用均值估算） ----
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(800);
+  const [rowHeightVersion, setRowHeightVersion] = useState(0);
+  const scrollRafRef = useRef<number | null>(null);
+  const rowHeightsRef = useRef<Map<string, number>>(new Map());
+  const rowObserversRef = useRef<Map<string, { el: HTMLElement; ro: ResizeObserver }>>(new Map());
+  const rowRefCallbacksRef = useRef<Map<string, (el: HTMLElement | null) => void>>(new Map());
+
+  const attachRowMeasure = useCallback((id: string, el: HTMLElement | null) => {
+    const existing = rowObserversRef.current.get(id);
+    if (existing) {
+      if (existing.el === el) return;
+      existing.ro.disconnect();
+      rowObserversRef.current.delete(id);
+    }
+    if (!el) return;
+    const measure = () => {
+      const height = el.getBoundingClientRect().height;
+      if (height <= 0) return;
+      const prev = rowHeightsRef.current.get(id);
+      if (prev === undefined || Math.abs(prev - height) > 1) {
+        rowHeightsRef.current.set(id, height);
+        setRowHeightVersion((v) => v + 1);
+      }
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    rowObserversRef.current.set(id, { el, ro });
+  }, []);
+
+  // 每条消息复用同一个回调，避免每次渲染重新挂载/卸载 ResizeObserver。
+  const getRowRef = useCallback(
+    (id: string) => {
+      let cb = rowRefCallbacksRef.current.get(id);
+      if (!cb) {
+        cb = (el: HTMLElement | null) => attachRowMeasure(id, el);
+        rowRefCallbacksRef.current.set(id, cb);
+      }
+      return cb;
+    },
+    [attachRowMeasure]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current);
+      rowObserversRef.current.forEach(({ ro }) => ro.disconnect());
+      rowObserversRef.current.clear();
+    };
+  }, []);
+
   const handleScroll = useCallback(() => {
     if (!scrollContainerRef.current) return;
     const c = scrollContainerRef.current;
     isAtBottomRef.current = c.scrollHeight - c.scrollTop - c.clientHeight <= 100;
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      const el = scrollContainerRef.current;
+      if (!el) return;
+      setScrollTop(el.scrollTop);
+      setViewportHeight(el.clientHeight);
+    });
   }, []);
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    setScrollTop(el.scrollTop);
+    setViewportHeight(el.clientHeight);
+  }, [activeThread?.id, filter]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const container = scrollContainerRef.current;
@@ -375,6 +479,34 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     () => new Set(filteredMessages.map((m) => m.id)),
     [filteredMessages]
   );
+
+  /**
+   * 窗口化区间：短会话全量渲染；长会话仅渲染视口 ± overscan 的行。
+   * 未实测过的行按已实测行均值估算，滚动过程中会持续被 ResizeObserver 修正。
+   */
+  const virtualWindow = useMemo(() => {
+    const count = filteredMessages.length;
+    if (count <= VIRTUALIZE_THRESHOLD) {
+      return { start: 0, end: count, topPad: 0, bottomPad: 0 };
+    }
+
+    return computeVirtualWindow({
+      ids: filteredMessages.map((m) => m.id),
+      heights: rowHeightsRef.current,
+      scrollTop,
+      viewportHeight,
+      overscanPx: VIRTUAL_OVERSCAN_PX,
+      estimatedRowHeight: DEFAULT_ESTIMATED_ROW_HEIGHT,
+      gapPx: ROW_GAP_PX,
+      // 定位目标行必须强制在窗口内，否则 scrollIntoView 找不到 DOM 节点。
+      pinnedIndex: pinnedMessageId
+        ? filteredMessages.findIndex((m) => m.id === pinnedMessageId)
+        : undefined,
+    });
+    // rowHeightVersion 用于在实测行高变化后强制重算窗口；
+    // rowHeightsRef 是可变缓存，通过版本号参与依赖。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredMessages, scrollTop, viewportHeight, rowHeightVersion, pinnedMessageId]);
 
   const topicCount = useMemo(
     () => messages.filter((m) => m.type === 'topic').length,
@@ -904,11 +1036,21 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           </div>
         )}
 
-        {filteredMessages.map((message, msgIdx) => {
+        {virtualWindow.topPad > 0 && (
+          <div aria-hidden className="w-full" style={{ height: `${virtualWindow.topPad}px` }} />
+        )}
+
+        {filteredMessages.slice(virtualWindow.start, virtualWindow.end).map((message, localIdx) => {
+          const msgIdx = virtualWindow.start + localIdx;
           // Render Topic Message Card
           if (message.type === 'topic' && message.topicData) {
             return (
-              <div key={message.id} id={`chat-msg-${message.id}`} className="max-w-3xl mx-auto w-full min-w-0 scroll-mt-4">
+              <div
+                key={message.id}
+                id={`chat-msg-${message.id}`}
+                ref={getRowRef(message.id)}
+                className="max-w-3xl mx-auto w-full min-w-0 scroll-mt-4"
+              >
                 <TopicMessageCard
                   topic={message.topicData}
                   agents={agents}
@@ -992,6 +1134,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             <article
               id={`chat-msg-${message.id}`}
               key={message.id}
+              ref={getRowRef(message.id)}
               onContextMenu={(e) => handleContextMenu(e, message)}
               className={`max-w-3xl mx-auto w-full min-w-0 group relative transition-all duration-300 rounded-xl p-2 scroll-mt-4 ${
                 highlightedMessageId === message.id
@@ -1419,6 +1562,10 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             </article>
           );
         })}
+
+        {virtualWindow.bottomPad > 0 && (
+          <div aria-hidden className="w-full" style={{ height: `${virtualWindow.bottomPad}px` }} />
+        )}
 
         {/* Antigravity / Codex Minimal Inline Live Thinking for 1v1 DM */}
         {activeThread.type === 'dm' && currentThreadExecutions.length > 0 && (
