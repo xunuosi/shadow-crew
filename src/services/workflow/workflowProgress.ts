@@ -36,6 +36,19 @@ const STATUS_LABEL: Record<TopicWorkflowState['status'], string> = {
   cancelled: '已取消',
 };
 
+/** 供 memo 组件做语义比较，避免每次父组件渲染都重绘进度条 */
+export function workflowProgressSignature(view: WorkflowProgressView): string {
+  return [
+    view.status,
+    view.verdict || '',
+    view.blockingReason || '',
+    view.headline,
+    view.nodes
+      .map((node) => `${node.key}:${node.state}:${node.agentNames.join('|')}`)
+      .join(';'),
+  ].join('::');
+}
+
 export function buildWorkflowProgressView(
   state: TopicWorkflowState,
   resolveAgentName?: (agentId: string) => string | undefined
