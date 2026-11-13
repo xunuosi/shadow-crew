@@ -8,6 +8,7 @@ import {
   GameRoleType,
   GameTheoreticPolicy,
   TopicScopeType,
+  TopicWorkflowMode,
 } from '../types';
 import { X, Sparkles, Plus, Bot, Check, GitBranch, Maximize2, Minimize2, Swords, Scale, Crown, HardDrive } from 'lucide-react';
 import { ResizeHandle } from './ResizeHandle';
@@ -18,6 +19,7 @@ import {
   RECOMMENDED_GAME_THEORETIC_POLICY,
 } from '../services/cogno';
 import { normalizeDuelRoles } from '../services/workspaceBindings';
+import { createWorkflowPlan, WORKFLOW_MODES } from '../services/workflow';
 
 interface NewTopicModalProps {
   isOpen: boolean;
@@ -34,6 +36,7 @@ interface NewTopicModalProps {
       description: string;
       assignedAgentIds: string[];
       discussionMode?: DiscussionMode;
+      workflowMode?: TopicWorkflowMode;
       gameRoles?: GameRolesConfig;
       gamePolicy?: GameTheoreticPolicy;
       duelRoles?: DuelRolesConfig;
@@ -63,6 +66,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
   const [description, setDescription] = useState('');
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
   const [discussionMode, setDiscussionMode] = useState<DiscussionMode>('standard');
+  const [workflowMode, setWorkflowMode] = useState<TopicWorkflowMode>('consult');
   const [agentRoles, setAgentRoles] = useState<Record<string, GameRoleType[]>>({});
   const [gamePolicy, setGamePolicy] = useState<GameTheoreticPolicy>({
     ...RECOMMENDED_GAME_THEORETIC_POLICY,
@@ -106,6 +110,12 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
     });
   }, [discussionMode, dmScope, agents, currentRolesConfig, gamePolicy]);
 
+  const workflowPlan = useMemo(() => {
+    if (discussionMode !== 'workflow' || dmScope) return null;
+    const participants = agents.filter((agent) => selectedAgentIds.includes(agent.id));
+    return createWorkflowPlan(workflowMode, participants);
+  }, [discussionMode, dmScope, agents, selectedAgentIds, workflowMode]);
+
   const autoMapRoles = (agentList: Agent[]) => {
     const mapping: Record<string, GameRoleType[]> = {};
     agentList.forEach((agent, idx) => {
@@ -139,6 +149,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
       setDescription('');
       setSelectedAgentIds(agentsRef.current.map((a) => a.id));
       setDiscussionMode('standard');
+      setWorkflowMode('consult');
       setHumanIsArbiter(true);
       setDuelRoles({ proposer: 'human', challenger: 'agent' });
       setAgentRoles(autoMapRoles(agentsRef.current));
@@ -277,6 +288,16 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
       );
       return;
     }
+    if (!dmScope && discussionMode === 'workflow') {
+      if (!workflowPlan || workflowPlan.blockingIssues.length > 0) {
+        setError(
+          `工作流配置未通过准入：${
+            workflowPlan?.blockingIssues.join('；') || '请先指派参与 Agent'
+          }`
+        );
+        return;
+      }
+    }
     const effectiveSelectedAgentIds = dmAgent ? [dmAgent.id] : selectedAgentIds;
     const dmAgentRole = duelRoles.proposer === 'agent' ? 'proposer' : 'challenger';
     const normalizedDuelRoles = dmScope && isGame ? normalizeDuelRoles(duelRoles) : undefined;
@@ -309,6 +330,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
         description: description.trim(),
         assignedAgentIds: effectiveSelectedAgentIds,
         discussionMode,
+        workflowMode: discussionMode === 'workflow' && !dmScope ? workflowMode : undefined,
         gameRoles: isGame && !dmScope
           ? {
               proposers,
@@ -414,6 +436,8 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
               <span className="text-[10px] text-fg-muted font-normal">
                 {discussionMode === 'game_theoretic'
                   ? (dmScope ? '⚔️ 双方对抗博弈 (提案方 + 对抗方)' : '♟️ 4+1 认知协同攻防决策 (提案/红队/接地/综合 + 人类法槌)')
+                  : discussionMode === 'workflow'
+                  ? '🧭 咨询 / 评审 / 交付流水线（角色分离，门禁可追溯）'
                   : '💬 轮流自由发言推演'}
               </span>
             </label>
@@ -466,7 +490,78 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
                   </p>
                 </div>
               </button>
+
+              {!dmScope && (
+                <button
+                  type="button"
+                  onClick={() => setDiscussionMode('workflow')}
+                  className={`col-span-2 p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                    discussionMode === 'workflow'
+                      ? 'bg-emerald-500/10 border-emerald-500/50 text-fg shadow-xs ring-1 ring-emerald-500/20'
+                      : 'bg-surface-subtle border-border hover:bg-surface-hover text-fg-secondary'
+                  }`}
+                >
+                  <div className={`p-1.5 rounded-lg shrink-0 mt-0.5 ${
+                    discussionMode === 'workflow' ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300' : 'bg-surface text-fg-muted'
+                  }`}>
+                    <GitBranch className="w-3.5 h-3.5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
+                      <span>工作流交付模式</span>
+                      <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-mono">日常研发</span>
+                      {discussionMode === 'workflow' && <Check className="w-3 h-3 text-emerald-500 stroke-[2.5]" />}
+                    </div>
+                    <p className="text-[10px] text-fg-muted mt-0.5 leading-snug">
+                      按固定流水线串行推进：主笔产出 → 独立核验 → 独立验收，角色分离、结论可追溯
+                    </p>
+                  </div>
+                </button>
+              )}
             </div>
+
+            {!dmScope && discussionMode === 'workflow' && (
+              <div className="mt-2 rounded-xl border border-emerald-500/30 bg-emerald-50/70 dark:bg-emerald-500/10 p-2.5 space-y-2">
+                <div className="flex flex-wrap gap-1.5">
+                  {Object.values(WORKFLOW_MODES).map((meta) => {
+                    const active = workflowMode === meta.mode;
+                    return (
+                      <button
+                        key={meta.mode}
+                        type="button"
+                        onClick={() => setWorkflowMode(meta.mode)}
+                        className={`flex-1 min-w-[130px] p-2 rounded-lg border text-left transition-all cursor-pointer ${
+                          active
+                            ? 'bg-surface border-emerald-500/60 ring-1 ring-emerald-500/25'
+                            : 'bg-surface/70 border-border hover:bg-surface-hover'
+                        }`}
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-sm shrink-0">{meta.icon}</span>
+                          <span className="font-semibold text-xs text-fg truncate">{meta.label}</span>
+                          <span className="ml-auto text-[9px] font-mono text-fg-muted shrink-0">≥{meta.minAgents} 人</span>
+                        </div>
+                        <p className="text-[10px] text-fg-secondary mt-1 leading-snug">{meta.description}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-fg-muted leading-snug">
+                  <span className="font-semibold text-fg-secondary">阶段：</span>
+                  {WORKFLOW_MODES[workflowMode].stages.map((stage) => `${stage.icon} ${stage.label}`).join(' → ')}
+                </p>
+                <p className="text-[10px] text-fg-muted leading-snug">
+                  <span className="font-semibold text-fg-secondary">适用：</span>
+                  {WORKFLOW_MODES[workflowMode].scenarios}
+                </p>
+                {workflowPlan?.blockingIssues.map((issue) => (
+                  <p key={issue} className="text-[10px] text-rose-700 dark:text-rose-300 leading-snug">⛔ {issue}</p>
+                ))}
+                {workflowPlan?.warnings.map((warning) => (
+                  <p key={warning} className="text-[10px] text-amber-700 dark:text-amber-300 leading-snug">⚠️ {warning}</p>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Topic Title */}
@@ -833,7 +928,7 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
               className="px-4 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold text-xs shadow-md transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              <span>{isSubmitting ? '创建中...' : discussionMode === 'game_theoretic' ? '开启博弈讨论推演' : '创建议题并开启推演'}</span>
+              <span>{isSubmitting ? '创建中...' : discussionMode === 'game_theoretic' ? '开启博弈讨论推演' : discussionMode === 'workflow' ? '创建工作流议题' : '创建议题并开启推演'}</span>
             </button>
           </div>
         </form>

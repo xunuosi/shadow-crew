@@ -18,6 +18,7 @@ import {
   ActiveAgentExecution,
   AgentRuntimeStatus,
   DiscussionMode,
+  TopicWorkflowMode,
   GameRolesConfig,
   GameRoleType,
   GameTheoreticPolicy,
@@ -54,6 +55,8 @@ import { AppModalsContainer } from './components/AppModalsContainer';
 import { useArbitrationConcurrence } from './hooks/useArbitrationConcurrence';
 import { useTopicExecutionPipeline } from './hooks/useTopicExecutionPipeline';
 import { useGameTheoreticFsm } from './hooks/useGameTheoreticFsm';
+import { useTopicWorkflow } from './hooks/useTopicWorkflow';
+import { getWorkflowModeMeta, initializeWorkflowState } from './services/workflow';
 
 
 
@@ -2101,6 +2104,7 @@ export default function App() {
       description: string;
       assignedAgentIds: string[];
       discussionMode?: DiscussionMode;
+      workflowMode?: TopicWorkflowMode;
       gameRoles?: GameRolesConfig;
       gamePolicy?: GameTheoreticPolicy;
       duelRoles?: DuelRolesConfig;
@@ -2155,6 +2159,28 @@ export default function App() {
       (isDmScope ? agents : currentChannelAgents).some((a) => a.id === id)
     );
     const isGame = topicData.discussionMode === 'game_theoretic';
+    const isWorkflow = topicData.discussionMode === 'workflow' && !isDmScope;
+    if (topicData.discussionMode === 'workflow' && isDmScope) {
+      throw new Error('私聊议题不支持工作流模式，请改用标准协作或博弈决策');
+    }
+    let initialWorkflowState: TopicMessageData['workflowState'];
+    if (isWorkflow) {
+      const workflowMode = topicData.workflowMode || 'consult';
+      const workflowParticipants = currentChannelAgents.filter((agent) =>
+        validAssignedAgentIds.includes(agent.id)
+      );
+      const workflowInit = initializeWorkflowState(
+        workflowMode,
+        workflowParticipants,
+        `wf-token-${topicId}`
+      );
+      if (workflowInit.plan.blockingIssues.length > 0) {
+        throw new Error(
+          `工作流配置未通过准入：${workflowInit.plan.blockingIssues.join('；')}`
+        );
+      }
+      initialWorkflowState = workflowInit.state;
+    }
     const newGamePolicy = isGame && !isDmScope
       ? normalizeGameTheoreticPolicy(
           topicData.gamePolicy ?? RECOMMENDED_GAME_THEORETIC_POLICY
@@ -2204,6 +2230,7 @@ export default function App() {
       description: topicData.description,
       status: 'open',
       discussionMode: topicData.discussionMode || 'standard',
+      workflowState: initialWorkflowState,
       gameRoles: topicData.gameRoles,
       duelRoles: isDmScope ? normalizedDuelRoles : undefined,
       gameStage: isGame ? 'proposal' : undefined,
@@ -2274,7 +2301,15 @@ export default function App() {
     const dmDuelSummary = isDmScope && isGame && topicData.duelRoles
       ? `已发起私聊双方博弈议题【${topicData.title}】。\n目标背景：${topicData.description || '开始双方攻防推演。'}\n- ${topicData.duelRoles.proposer === 'human' ? '👤 人类担任提案方' : `🤖 ${dmAgent?.name || 'Agent'} 担任提案方`}\n- ${topicData.duelRoles.challenger === 'human' ? '👤 人类担任对抗方' : `🤖 ${dmAgent?.name || 'Agent'} 担任对抗方`}`
       : null;
-    const initContent = dmDuelSummary || (isGame && topicData.gameRoles
+    const workflowMeta = isWorkflow && initialWorkflowState
+      ? getWorkflowModeMeta(initialWorkflowState.mode)
+      : null;
+    const workflowRoleNames = (ids: string[]) =>
+      ids.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指派';
+    const workflowInitSummary = workflowMeta && initialWorkflowState
+      ? `已发起【${workflowMeta.label}】工作流议题【${topicData.title}】。\n目标背景：${topicData.description || '等待补充目标背景。'}\n- 📝 主笔/执行：${workflowRoleNames([initialWorkflowState.roles.author])}\n- 🔍 独立评审：${workflowRoleNames(initialWorkflowState.roles.criticIds)}\n- 🧪 独立验收：${workflowRoleNames(initialWorkflowState.roles.verifierId ? [initialWorkflowState.roles.verifierId] : [])}\n- 阶段：${workflowMeta.stages.map((stage) => stage.label).join(' → ')}\n发送首条消息即可启动工作流，后续阶段按门禁自动推进。`
+      : null;
+    const initContent = dmDuelSummary || workflowInitSummary || (isGame && topicData.gameRoles
       ? `已发起 4+1 认知协同决策议题【${topicData.title}】。\n目标背景：${topicData.description || '开始架构决策攻防推演。'}\n【4+1 协同角色配置】：\n- 🏛️ 提案者：${topicData.gameRoles.proposers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- ⚔️ 红队对抗：${topicData.gameRoles.challengers.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}${verifiersSummary}\n- ⚖️ 流程综合：${topicData.gameRoles.arbiters.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、') || '未指定'}\n- 👤 终局裁判：${topicData.gameRoles.humanIsArbiter ? 'Norris_M5Pro (人类首席仲裁官, 持法槌)' : '已委派 AI 综合仲裁'}${diversityWarning}`
       : `已发起议题【${topicData.title}】。\n目标背景：${topicData.description || '开始方案推演。'}\n指派 Agent：${validAssignedAgentIds.length > 0 ? validAssignedAgentIds.map(id => agents.find(a => a.id === id)?.name).filter(Boolean).join('、') : '暂无 (可在抽屉中指派)'}。`);
 
@@ -2312,6 +2347,7 @@ export default function App() {
       description: string;
       assignedAgentIds: string[];
       discussionMode?: DiscussionMode;
+      workflowMode?: TopicWorkflowMode;
       gameRoles?: GameRolesConfig;
       gamePolicy?: GameTheoreticPolicy;
       duelRoles?: DuelRolesConfig;
@@ -2331,6 +2367,35 @@ export default function App() {
         : undefined;
     if (isDmTopic && nextDiscussionMode === 'game_theoretic' && !normalizedDuelRoles) {
       throw new Error('私聊双方博弈议题缺少合法的双方角色配置');
+    }
+    const nextWorkflowMode = updatedData.workflowMode ?? editingTopic?.workflowState?.mode;
+    let nextWorkflowState = editingTopic?.workflowState;
+    if (!isDmTopic && nextDiscussionMode === 'workflow') {
+      const workflowMode = nextWorkflowMode || 'consult';
+      const participants = editingTopicAgents.filter((agent) =>
+        validAssignedAgentIds.includes(agent.id)
+      );
+      const configChanged =
+        !editingTopic?.workflowState ||
+        editingTopic.workflowState.mode !== workflowMode ||
+        editingTopic.participatingAgentIds.slice().sort().join(',') !==
+          validAssignedAgentIds.slice().sort().join(',');
+      if (configChanged) {
+        if (editingTopic?.workflowState?.status === 'running') {
+          throw new Error('工作流执行中不允许修改模式或成员，请等待当前轮次结束后再编辑');
+        }
+        const workflowInit = initializeWorkflowState(
+          workflowMode,
+          participants,
+          `wf-token-${topicId}-${Date.now()}`
+        );
+        if (workflowInit.plan.blockingIssues.length > 0) {
+          throw new Error(
+            `工作流配置未通过准入：${workflowInit.plan.blockingIssues.join('；')}`
+          );
+        }
+        nextWorkflowState = workflowInit.state;
+      }
     }
     const nextGamePolicy =
       !isDmTopic && nextDiscussionMode === 'game_theoretic'
@@ -2375,6 +2440,10 @@ export default function App() {
             description: updatedData.description,
             participatingAgentIds: validAssignedAgentIds,
             discussionMode: nextDiscussionMode,
+            workflowState:
+              !isDmTopic && nextDiscussionMode === 'workflow'
+                ? nextWorkflowState
+                : oldTopic.workflowState,
             gameRoles: isDmTopic ? undefined : updatedData.gameRoles !== undefined ? updatedData.gameRoles : oldTopic.gameRoles,
             gameTheoreticState:
               nextDiscussionMode === 'game_theoretic' && !isDmTopic
@@ -2413,7 +2482,7 @@ export default function App() {
         authorAvatar: '📝',
         isAgent: false,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: `📝 **议题信息已更新**：\n- **议题标题**：${updatedData.title}\n- **议题模式**：${(updatedData.discussionMode || 'standard') === 'game_theoretic' ? '♟️ 博弈讨论模式' : '标准研讨模式'}\n- **背景目标**：${updatedData.description || '无'}\n- **协作成员**：${
+        content: `📝 **议题信息已更新**：\n- **议题标题**：${updatedData.title}\n- **议题模式**：${(updatedData.discussionMode || 'standard') === 'game_theoretic' ? '♟️ 博弈讨论模式' : (updatedData.discussionMode || 'standard') === 'workflow' ? `${getWorkflowModeMeta(nextWorkflowMode || 'consult').icon} ${getWorkflowModeMeta(nextWorkflowMode || 'consult').label}工作流` : '标准研讨模式'}\n- **背景目标**：${updatedData.description || '无'}\n- **协作成员**：${
           validAssignedAgentIds.length > 0
             ? validAssignedAgentIds
                 .map((id) => agents.find((a) => a.id === id)?.name)
@@ -3331,6 +3400,22 @@ export default function App() {
     processArbitrationConcurrence,
   });
 
+  // 5. 工作流编排 Hook（咨询产出 / 评审审查 / 交付实施）
+  const { runTopicWorkflow } = useTopicWorkflow({
+    agentsRef,
+    messagesRef,
+    getTopicData,
+    updateTopicDataInState,
+    commitMessages,
+    getTopicWorkspaceBinding,
+    setActiveExecutions,
+    setIsGenerating,
+    setAgents,
+    captureTurnEpoch,
+    isTurnStale,
+    syncRunningAgentsWithBackend,
+  });
+
   const handleSendTopicMessage = async (
     topicId: string,
     content: string,
@@ -3662,6 +3747,13 @@ export default function App() {
 
     const existingTopicMsgs = messagesRef.current[topicId] || [];
     const currentTopicObj = getTopicData(topicId) || activeTopicData;
+
+    // 工作流模式：本轮用户输入作为流水线输入，由 useTopicWorkflow 串行推进阶段与门禁
+    if (currentTopicObj?.discussionMode === 'workflow' && currentTopicObj.scopeType !== 'dm') {
+      void runTopicWorkflow(topicId, agentTurnContent, userMsg.id);
+      return;
+    }
+
     const isGameTheoretic = currentTopicObj?.discussionMode === 'game_theoretic';
     const currentTopicStage: GameTheoreticStage = currentTopicObj?.gameStage || currentTopicObj?.gameTheoreticState?.currentStage || 'proposal';
     let executionStage: GameTheoreticStage = currentTopicStage;

@@ -11,13 +11,16 @@ import {
   MinorityReport,
   TopicPatchDiffItem,
   MessageAttachmentInput,
+  WorkflowStageKey,
 } from '../types';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { TopicProgressStrip } from './TopicProgressStrip';
+import { WorkflowProgressStrip } from './WorkflowProgressStrip';
 import {
   deriveTopicProgressView,
   type TopicProgressNodeKey,
 } from '../services/topicProgressView';
+import { buildWorkflowProgressView } from '../services/workflow';
 import { deriveGavelConsoleState } from '../services/gavelConsoleState';
 import { 
   X,
@@ -744,8 +747,23 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
   // 只读进度视图：仅消费既有 topic / messages / executions，不新增任何事件订阅
   const topicProgressView = useMemo(
-    () => deriveTopicProgressView({ topic, messages, executions: topicExecutions }),
+    () =>
+      topic?.discussionMode === 'workflow'
+        ? null
+        : deriveTopicProgressView({ topic, messages, executions: topicExecutions }),
     [topic, messages, topicExecutions]
+  );
+
+  // 工作流模式：只读阶段进度（咨询/评审/交付），与博弈进度条互斥
+  const workflowProgressView = useMemo(
+    () =>
+      topic?.workflowState
+        ? buildWorkflowProgressView(
+            topic.workflowState,
+            (agentId) => agents.find((agent) => agent.id === agentId)?.name
+          )
+        : null,
+    [topic?.workflowState, agents]
   );
 
   const shouldTick = isExecuting || hasPendingMessage;
@@ -892,6 +910,17 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       if (target) scrollToTopicMessageTop(target.id);
     },
     [scrollToBottom, scrollToTopicMessageTop, scrollToTop]
+  );
+
+  const handleSelectWorkflowStage = useCallback(
+    (key: WorkflowStageKey) => {
+      const currentMessages = messagesForJumpRef.current;
+      const target =
+        currentMessages.find((message) => message.workflowStage === key && !message.isPending) ??
+        currentMessages.find((message) => message.workflowStage === key);
+      if (target) scrollToTopicMessageTop(target.id);
+    },
+    [scrollToTopicMessageTop]
   );
 
   // 1. 进入议题（打开抽屉或切换议题 ID 时）：立即瞬移至最新消息位置，并用 rAF + 多级微任务防止 Markdown/代码块排版滞后
@@ -1411,13 +1440,18 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         </div>
       )}
 
-      {/* 常驻只读进度条：无需展开看板即可看到当前阶段、执行者与耗时 */}
-      {topicProgressView && (
+      {/* 常驻只读进度条：工作流模式展示咨询/评审/交付阶段，其余模式展示博弈/标准进度 */}
+      {workflowProgressView ? (
+        <WorkflowProgressStrip
+          view={workflowProgressView}
+          onSelectStage={handleSelectWorkflowStage}
+        />
+      ) : topicProgressView ? (
         <TopicProgressStrip
           view={topicProgressView}
           onSelectNode={handleSelectProgressNode}
         />
-      )}
+      ) : null}
 
       {/* 2. Topic Anchor Context & Telemetry Dashboard (Collapsible) */}
       {isHeaderCollapsed ? (

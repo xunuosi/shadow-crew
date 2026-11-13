@@ -8,11 +8,13 @@ import {
   GameRolesConfig,
   GameRoleType,
   GameTheoreticPolicy,
+  TopicWorkflowMode,
 } from '../types';
 import { X, Save, Bot, Check, GitBranch, Maximize2, Minimize2, Edit3, Swords, Scale, Sparkles } from 'lucide-react';
 import { ResizeHandle } from './ResizeHandle';
 import { GameConfigurationEvaluationCard } from './GameConfigurationEvaluationCard';
 import { normalizeDuelRoles } from '../services/workspaceBindings';
+import { WORKFLOW_MODES } from '../services/workflow';
 import {
   evaluateGameConfiguration,
   normalizeGameTheoreticPolicy,
@@ -31,6 +33,7 @@ interface EditTopicModalProps {
       description: string;
       assignedAgentIds: string[];
       discussionMode?: DiscussionMode;
+      workflowMode?: TopicWorkflowMode;
       gameRoles?: GameRolesConfig;
       gamePolicy?: GameTheoreticPolicy;
       duelRoles?: DuelRolesConfig;
@@ -50,6 +53,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
   const [description, setDescription] = useState('');
   const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
   const [discussionMode, setDiscussionMode] = useState<DiscussionMode>('standard');
+  const [workflowMode, setWorkflowMode] = useState<TopicWorkflowMode>('consult');
   const [agentRoles, setAgentRoles] = useState<Record<string, GameRoleType[]>>({});
   const [gamePolicy, setGamePolicy] = useState<GameTheoreticPolicy>(() =>
     normalizeGameTheoreticPolicy(topic?.gameTheoreticState?.gamePolicy)
@@ -97,6 +101,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
       setDescription(topic.description || '');
       setSelectedAgentIds(topic.participatingAgentIds || []);
       setDiscussionMode(topic.discussionMode || 'standard');
+      setWorkflowMode(topic.workflowState?.mode || 'consult');
       setHumanIsArbiter(topic.gameRoles?.humanIsArbiter ?? true);
       setDuelRoles(topic.duelRoles ?? { proposer: 'human', challenger: 'agent' });
 
@@ -269,6 +274,7 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
       description: description.trim(),
       assignedAgentIds: selectedAgentIds,
       discussionMode,
+      workflowMode: discussionMode === 'workflow' && !dmScope ? workflowMode : undefined,
       gameRoles: isGame && !dmScope
         ? {
             proposers,
@@ -363,6 +369,8 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
                   ? dmScope
                     ? '⚔️ 双方对抗博弈 (提案方 + 对抗方)'
                     : '♟️ 4+1 认知协同攻防决策 (提案/红队/接地/综合 + 人类法槌)'
+                  : discussionMode === 'workflow'
+                  ? '🧭 咨询 / 评审 / 交付流水线（角色分离，门禁可追溯）'
                   : '💬 轮流自由发言推演'}
               </span>
             </label>
@@ -417,7 +425,71 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
                   </p>
                 </div>
               </button>
+
+              {!dmScope && (
+                <button
+                  type="button"
+                  onClick={() => setDiscussionMode('workflow')}
+                  className={`col-span-2 p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                    discussionMode === 'workflow'
+                      ? 'bg-emerald-500/10 border-emerald-500/50 text-fg shadow-xs ring-1 ring-emerald-500/20'
+                      : 'bg-surface-subtle border-border hover:bg-surface-hover text-fg-secondary'
+                  }`}
+                >
+                  <div className={`p-1.5 rounded-lg shrink-0 mt-0.5 ${
+                    discussionMode === 'workflow' ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300' : 'bg-surface text-fg-muted'
+                  }`}>
+                    <GitBranch className="w-3.5 h-3.5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
+                      <span>工作流交付模式</span>
+                      <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-mono">日常研发</span>
+                      {discussionMode === 'workflow' && <Check className="w-3 h-3 text-emerald-500 stroke-[2.5]" />}
+                    </div>
+                    <p className="text-[10px] text-fg-muted mt-0.5 leading-snug">
+                      咨询产出 / 评审审查 / 交付实施，阶段自动推进且结论可追溯
+                    </p>
+                  </div>
+                </button>
+              )}
             </div>
+
+            {!dmScope && discussionMode === 'workflow' && (
+              <div className="mt-2 rounded-xl border border-emerald-500/30 bg-emerald-50/70 dark:bg-emerald-500/10 p-2.5 space-y-2">
+                <div className="flex flex-wrap gap-1.5">
+                  {Object.values(WORKFLOW_MODES).map((meta) => {
+                    const active = workflowMode === meta.mode;
+                    return (
+                      <button
+                        key={meta.mode}
+                        type="button"
+                        onClick={() => setWorkflowMode(meta.mode)}
+                        className={`flex-1 min-w-[130px] p-2 rounded-lg border text-left transition-all cursor-pointer ${
+                          active
+                            ? 'bg-surface border-emerald-500/60 ring-1 ring-emerald-500/25'
+                            : 'bg-surface/70 border-border hover:bg-surface-hover'
+                        }`}
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-sm shrink-0">{meta.icon}</span>
+                          <span className="font-semibold text-xs text-fg truncate">{meta.label}</span>
+                          <span className="ml-auto text-[9px] font-mono text-fg-muted shrink-0">≥{meta.minAgents} 人</span>
+                        </div>
+                        <p className="text-[10px] text-fg-secondary mt-1 leading-snug">{meta.description}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-fg-muted leading-snug">
+                  <span className="font-semibold text-fg-secondary">阶段：</span>
+                  {WORKFLOW_MODES[workflowMode].stages.map((stage) => `${stage.icon} ${stage.label}`).join(' → ')}
+                </p>
+                <p className="text-[10px] text-amber-700 dark:text-amber-300 leading-snug">
+                  ⚠️ 修改工作流模式或成员会重置当前阶段进度。
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Topic Title */}
