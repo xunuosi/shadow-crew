@@ -44,12 +44,27 @@
 - `artifacts`：**完整原文交接物**（`document | findings | plan | diff | verification | summary`）
 - `counters`：`designRevisions`（方案返工）/ `fixRounds`（验收返修）
 - `status` / `verdict` / `blockingReason` / `runToken`
+- `round`：当前轮次（首次运行 = 1，后续追问续跑递增）
+- `carryover`：前序轮次交接物（`fromRound` / `previousStatus` / `previousVerdict` / `artifacts` 完整原文）
 
 ## 4. 交接物与上下文
 
 - 下游阶段通过 `StageSpec.inputStageKeys` 声明依赖，注入的是**完整原文**（单条 16k 字符、总计 48k 字符上限，超出时头 70% + 尾 30% 截断并标注）。
 - 与博弈模式 `dehydrateTargetTextForHandover`（1500 字脱水）不同：工作流不允许把主笔产出压成摘要后再让下游重建上下文。
 - 同一阶段重复执行（返工）时，下游只取每个 Agent 最近一次的交接物。
+
+### 4.1 增量续跑（后续追问）
+
+同一议题在工作流结束后再次收到用户消息时，默认**复用上一轮交接物增量续跑**，而不是从零重跑：
+
+- 续跑判定集中在 `planWorkflowContinuation(previous, mode)`，仅在以下条件全部满足时成立：
+  1. 上一轮状态存在且 `mode` 与本次一致；
+  2. 上一轮不处于 `running`（运行中必须先取消或自愈）；
+  3. 上一轮至少有一条交接物。
+- 新状态 `round = previous.round + 1`（旧持久化状态无 `round` 时集中按首轮解释）；`carryover` 保存上一轮全部交接物**完整原文**；本轮 `artifacts` 与阶段记录全部清空重置。
+- Prompt 注入：`[人类本轮输入]` 之后追加 `[增量续跑]` 段落，按阶段顺序渲染 `<<<CARRYOVER ...>>>` 原文（单条 12k、总计 36k 字符上限，头 70% + 尾 30% 截断），同一阶段同一 Agent 只取最近一次。
+- **门禁隔离不变量**：`carryover` 只用于 Prompt 增量修订，严禁参与本轮门禁判定；所有 `latestArtifacts` / 结构化报告解析只读取本轮 `artifacts`。Prompt 中显式声明「前序交接物不是本轮已通过的证据」。
+- 运行中收到新用户消息时，旧运行取消并持久化已完成阶段的交接物，排队的新一轮以该状态作为 `carryover` 续跑。
 
 ## 5. 门禁规则
 
@@ -93,7 +108,8 @@
 
 - 阶段串行推进；`parallel` 阶段通过 `Promise.all` 并行派发，任一 Agent 失败以显式输出返回，不中断其他评审。
 - 每次阶段迁移都会写入 `workflowState` 并向时间线追加系统通知（接力 / 返工 / 完成 / 阻断 / 失败），不存在静默停摆。
-- 用户发送新消息或议题被编辑导致回合失效时，旧运行令牌失效，工作流标记为 `cancelled`。
+- 用户发送新消息或议题被编辑导致回合失效时，旧运行令牌失效，工作流标记为 `cancelled`；新消息随后以 §4.1 的 `carryover` 续跑。
+- 进度视图标题在 `round > 1` 时显式展示「第 N 轮 ·」，启动通知标注「工作流续跑」并列出复用的前序阶段。
 - 用户单独终止某个执行者（`activeExecutionsRef` 中该执行项被移除）时：该阶段失败原因记为「用户已终止该 Agent 的阶段执行」，阶段置为 `failed`，整个工作流立即 `cancelled`，不会用残缺输出继续推进后续阶段。
 - 阶段执行者离线、会话初始化失败、ACP 报错均产出显式失败原因。
 
@@ -105,6 +121,8 @@
 2. 在 `workflowEngine.ts` 增加对应阶段迁移规则（必须返回显式 `decision`）。
 3. 在 `workflowPrompts.ts` 增加阶段指令与结构化输出契约。
 4. 在 `test-workflow-engine.ts` 增加规范可追溯用例。
+
+续跑相关的契约测试（`test-workflow-engine.ts` §22~§25）覆盖：续跑判定条件、轮次与交接物初始化、Prompt 注入顺序与语义声明、前序报告不得绕过本轮门禁。
 
 ## 8. 验证基线
 

@@ -2,6 +2,7 @@ import type {
   TopicWorkflowMode,
   TopicWorkflowState,
   WorkflowArtifact,
+  WorkflowCarryover,
   WorkflowRoleAssignment,
   WorkflowStageKey,
   WorkflowStageRecord,
@@ -76,11 +77,39 @@ export interface WorkflowInitResult {
   plan: WorkflowPlan;
 }
 
+/**
+ * 判断同一议题的新一轮用户输入是否可以复用上一轮交接物做增量续跑。
+ *
+ * 明确的不可续跑条件（不做猜测性兜底）：
+ * - 没有上一轮状态；
+ * - 工作流模式已变更（旧交接物与新模式阶段不对应）；
+ * - 上一轮仍在运行（必须先显式取消/自愈，避免两个运行令牌共用产出）；
+ * - 上一轮没有任何交接物（没有可复用的内容）。
+ *
+ * 旧版本持久化的状态没有 `round` 字段，集中在此处按第 1 轮解释。
+ */
+export function planWorkflowContinuation(
+  previous: TopicWorkflowState | undefined,
+  mode: TopicWorkflowMode
+): WorkflowCarryover | undefined {
+  if (!previous) return undefined;
+  if (previous.mode !== mode) return undefined;
+  if (previous.status === 'running') return undefined;
+  if (previous.artifacts.length === 0) return undefined;
+  return {
+    fromRound: previous.round ?? 1,
+    previousStatus: previous.status,
+    previousVerdict: previous.verdict,
+    artifacts: previous.artifacts,
+  };
+}
+
 export function initializeWorkflowState(
   mode: TopicWorkflowMode,
   participants: Agent[],
   runToken: string,
-  now: number = Date.now()
+  now: number = Date.now(),
+  carryover?: WorkflowCarryover
 ): WorkflowInitResult {
   const plan = createWorkflowPlan(mode, participants);
   const state: TopicWorkflowState = {
@@ -91,6 +120,8 @@ export function initializeWorkflowState(
     roles: plan.roles,
     status: plan.blockingIssues.length > 0 ? 'blocked' : 'idle',
     artifacts: [],
+    round: carryover ? carryover.fromRound + 1 : 1,
+    ...(carryover ? { carryover } : {}),
     counters: {},
     blockingReason: plan.blockingIssues.length > 0 ? plan.blockingIssues.join('；') : undefined,
     runToken,

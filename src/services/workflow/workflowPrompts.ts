@@ -14,6 +14,9 @@ import {
 
 const ARTIFACT_PROMPT_LIMIT = 16_000;
 const TOTAL_ARTIFACT_PROMPT_LIMIT = 48_000;
+/** 前序轮次交接物独立预算：不与本轮上游交接物抢额度，超限时同样头尾保留。 */
+const CARRYOVER_ARTIFACT_PROMPT_LIMIT = 12_000;
+const TOTAL_CARRYOVER_PROMPT_LIMIT = 36_000;
 
 /**
  * 上游交接物按「完整原文」注入，仅在超出上下文预算时做头尾保留截断。
@@ -90,6 +93,63 @@ function renderArtifacts(
     return '（本阶段无上游交接物，评审对象为议题描述与人类本轮输入。）';
   }
   return sections.join('\n\n');
+}
+
+/**
+ * 前序轮次交接物：同一阶段 + 同一 Agent 只保留最近一次（返工中间稿不重复占预算）。
+ * 仅渲染当前模式阶段列表内的交接物，模式变更后的旧阶段不会被注入。
+ */
+function collectCarryoverArtifacts(state: TopicWorkflowState): WorkflowArtifact[] {
+  const carryover = state.carryover;
+  if (!carryover) return [];
+  const latest = new Map<string, WorkflowArtifact>();
+  for (const artifact of carryover.artifacts) {
+    if (!state.stageOrder.includes(artifact.stageKey)) continue;
+    latest.set(`${artifact.stageKey}::${artifact.agentId}`, artifact);
+  }
+  return [...latest.values()].sort((a, b) => {
+    const stageDelta = state.stageOrder.indexOf(a.stageKey) - state.stageOrder.indexOf(b.stageKey);
+    return stageDelta !== 0 ? stageDelta : a.createdAt - b.createdAt;
+  });
+}
+
+function renderCarryover(state: TopicWorkflowState): string {
+  const artifacts = collectCarryoverArtifacts(state);
+  if (artifacts.length === 0) return '';
+  const carryover = state.carryover!;
+  const statusLabel =
+    carryover.previousStatus === 'completed'
+      ? '已完成'
+      : carryover.previousStatus === 'blocked'
+        ? '被阻断'
+        : carryover.previousStatus === 'failed'
+          ? '执行失败'
+          : '已取消';
+  const sections = artifacts.map((artifact) => {
+    const content = truncateArtifactForPrompt(artifact.content, CARRYOVER_ARTIFACT_PROMPT_LIMIT);
+    return `<<<CARRYOVER stage=${artifact.stageKey} agent=${artifact.agentName}>\n${content}\n<<<CARRYOVER_END>>>`;
+  });
+  // 总预算从后往前裁剪：先保证最早阶段（交付主线）的原文完整。
+  let remaining = TOTAL_CARRYOVER_PROMPT_LIMIT;
+  const windowed: string[] = [];
+  for (const section of sections) {
+    if (remaining <= 0) break;
+    if (section.length <= remaining) {
+      windowed.push(section);
+      remaining -= section.length;
+    } else {
+      windowed.push(truncateArtifactForPrompt(section, remaining));
+      remaining = 0;
+    }
+  }
+  return [
+    `[增量续跑] 这是该议题的第 ${state.round ?? 1} 轮工作流；上一轮（第 ${carryover.fromRound} 轮，${statusLabel}${
+      carryover.previousVerdict ? `，结论 ${carryover.previousVerdict}` : ''
+    }）的完整交接物如下。`,
+    '请在本轮最新输入的基础上增量修订：保留仍然正确的内容，只重写受影响部分；不得无视前序结论从零重演。',
+    '注意：前序交接物只是上一轮的产出，不是本轮已通过的证据；本轮必须重新按当前阶段职责完成工作并给出新证据。',
+    windowed.join('\n\n'),
+  ].join('\n');
 }
 
 const STAGE_INSTRUCTIONS: Record<WorkflowStageKey, string> = {
@@ -224,6 +284,11 @@ export function buildWorkflowPrompt(input: WorkflowPromptInput): string {
 
   if (userContent?.trim()) {
     sections.push(`[人类本轮输入]\n${userContent.trim()}`);
+  }
+
+  const carryoverSection = renderCarryover(state);
+  if (carryoverSection) {
+    sections.push(carryoverSection);
   }
 
   sections.push(`[上游交接物]\n${renderArtifacts(state, stageKey, input.acceptanceCriteria)}`);

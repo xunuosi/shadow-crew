@@ -87,18 +87,20 @@ export function buildWorkflowProgressView(
   const isBlocked = state.status === 'blocked';
   const isCancelled = state.status === 'cancelled';
   const countLabel = `${doneCount}/${total}`;
+  // 续跑轮次必须在进度上可辨认，避免用户误以为又跑了一遍首轮。
+  const roundPrefix = state.round && state.round > 1 ? `第 ${state.round} 轮 · ` : '';
 
   let headline: string;
   if (isTerminal) {
-    headline = `${meta.label} · 已完成${state.verdict ? `（${state.verdict}）` : ''}`;
+    headline = `${roundPrefix}${meta.label} · 已完成${state.verdict ? `（${state.verdict}）` : ''}`;
   } else if (isBlocked) {
-    headline = `${meta.label} · 已阻断`;
+    headline = `${roundPrefix}${meta.label} · 已阻断`;
   } else if (isFailed) {
-    headline = `${meta.label} · 执行失败`;
+    headline = `${roundPrefix}${meta.label} · 执行失败`;
   } else if (isActive && currentSpec) {
-    headline = `${meta.label} · ${currentSpec.icon} ${currentLabel} ${countLabel}`;
+    headline = `${roundPrefix}${meta.label} · ${currentSpec.icon} ${currentLabel} ${countLabel}`;
   } else {
-    headline = `${meta.label} · ${STATUS_LABEL[state.status]}`;
+    headline = `${roundPrefix}${meta.label} · ${STATUS_LABEL[state.status]}`;
   }
 
   return {

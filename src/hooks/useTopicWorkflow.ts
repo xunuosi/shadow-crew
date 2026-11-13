@@ -28,6 +28,7 @@ import {
   initializeWorkflowState,
   markWorkflowStageActive,
   parseDesignArtifact,
+  planWorkflowContinuation,
   resolveStageAgentIds,
   type WorkflowDecision,
   type WorkflowStageOutput,
@@ -339,7 +340,9 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
           workspaceBindingId: topic.workspaceBindingId,
           workspaceCwd: binding?.cwd,
           scopeType: 'topic',
-          localHistoryIntact: state.artifacts.length > 0,
+          // 续跑轮次虽无本轮交接物，但前序交接物已进入 Prompt，本地会话历史必须保持完整。
+          localHistoryIntact:
+            state.artifacts.length > 0 || (state.carryover?.artifacts.length ?? 0) > 0,
         });
       } catch (err) {
         const abortedByUser = isExecutionAborted();
@@ -621,11 +624,12 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
         postSystem(topicId, '⛔ 议题缺少工作流模式配置，无法启动。', '工作流失败', '⛔');
         return;
       }
-      if (topic.workflowState?.status === 'running') {
+      let previousWorkflowState = topic.workflowState;
+      if (previousWorkflowState?.status === 'running') {
         // 内存中没有对应运行锁，说明是上次进程退出（崩溃/强杀）遗留的 running 状态。
         // 直接自愈为 cancelled，避免该议题永久“仍在执行中”无法继续。
         const healedState: TopicWorkflowState = {
-          ...topic.workflowState,
+          ...previousWorkflowState,
           status: 'cancelled',
           runToken: undefined,
           currentStageKey: undefined,
@@ -634,6 +638,7 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
           updatedAt: Date.now(),
         };
         persistState(topicId, healedState);
+        previousWorkflowState = healedState;
         postSystem(
           topicId,
           '♻️ 检测到上次异常中断的工作流残留状态，已自动恢复为可重新运行。',
@@ -651,7 +656,15 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
         .map((agent) => agent.name);
 
       const runToken = `wf-run-${Date.now()}`;
-      const initialized = initializeWorkflowState(mode, onlineParticipants, runToken);
+      // 后续追问复用上一轮交接物做增量续跑；首轮或模式变更时 carryover 为 undefined。
+      const carryover = planWorkflowContinuation(previousWorkflowState, mode);
+      const initialized = initializeWorkflowState(
+        mode,
+        onlineParticipants,
+        runToken,
+        Date.now(),
+        carryover
+      );
       const meta = getWorkflowModeMeta(mode);
 
       if (initialized.plan.blockingIssues.length > 0) {
@@ -677,8 +690,20 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
 
       const roleName = (id?: string) =>
         id ? agentsRef.current.find((agent) => agent.id === id)?.name || id : '未指派';
+      const carryoverStageLabels = carryover
+        ? [
+            ...new Set(
+              carryover.artifacts.map((artifact) => getWorkflowStageSpec(artifact.stageKey).label)
+            ),
+          ]
+        : [];
       const kickoffLines = [
-        `🧭 已启动【${meta.label}】工作流。`,
+        carryover
+          ? `🔁 已按【${meta.label}】工作流续跑第 ${initialized.state.round} 轮，复用上一轮 ${carryover.artifacts.length} 条交接物。`
+          : `🧭 已启动【${meta.label}】工作流。`,
+        ...(carryover
+          ? [`- 前序交接物：${carryoverStageLabels.join('、')}（上一轮状态：${carryover.previousStatus}）`]
+          : []),
         `- 主笔/执行：${roleName(initialized.state.roles.author)}`,
         `- 独立评审：${
           initialized.state.roles.criticIds.length > 0
@@ -692,7 +717,12 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
         ...(offlineNames.length > 0 ? [`- ⚠️ 离线未参与：${offlineNames.join('、')}`] : []),
         ...initialized.plan.warnings.map((warning) => `- ⚠️ ${warning}`),
       ];
-      postSystem(topicId, kickoffLines.join('\n'), '工作流启动', meta.icon);
+      postSystem(
+        topicId,
+        kickoffLines.join('\n'),
+        carryover ? '工作流续跑' : '工作流启动',
+        carryover ? '🔁' : meta.icon
+      );
 
       let current = initialized.state;
       let guard = 0;

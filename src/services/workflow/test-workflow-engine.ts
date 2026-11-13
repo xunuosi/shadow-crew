@@ -13,6 +13,7 @@ import {
   parseDesignArtifact,
   parseReviewReport,
   parseVerificationReport,
+  planWorkflowContinuation,
   truncateArtifactForPrompt,
   WORKFLOW_USER_ID,
   workflowProgressSignature,
@@ -482,6 +483,162 @@ const designWithCriteria = [
   // kickoff 消息不在列表中（数据异常）时保守取消
   assert.equal(hasUserMessageAfterKickoff(messages, 'missing-kickoff'), true);
   console.log('✓ 新一轮用户输入判定');
+}
+
+// 22. 后续追问续跑判定：复用条件必须显式且可证伪
+{
+  let { state } = initializeWorkflowState('consult', [authorAgent, criticAgent], 'token-round-1');
+  state = runStage(state, 'consult_draft', [output(authorAgent, longDraft)]).state;
+  state = runStage(state, 'consult_crosscheck', [
+    output(criticAgent, reviewBlock({ verdict: 'approve', findings: [] })),
+  ]).state;
+  state = runStage(state, 'consult_finalize', [output(authorAgent, `${longDraft}\nFINAL_DOC_MARKER`)])
+    .state;
+  assert.equal(state.status, 'completed');
+
+  const carryover = planWorkflowContinuation(state, 'consult');
+  assert.ok(carryover, '已完成且存在交接物时必须允许续跑');
+  assert.equal(carryover?.fromRound, 1, '旧持久化状态无 round 字段时集中按第 1 轮解释');
+  assert.equal(carryover?.previousStatus, 'completed');
+  assert.equal(carryover?.previousVerdict, 'DELIVERED');
+  assert.ok((carryover?.artifacts.length ?? 0) >= 3, '全部交接物原文必须带入');
+  assert.equal(planWorkflowContinuation(state, 'review'), undefined, '模式变更不得复用旧阶段交接物');
+  assert.equal(
+    planWorkflowContinuation({ ...state, status: 'running' }, 'consult'),
+    undefined,
+    '仍在运行的轮次不得作为续跑来源'
+  );
+  const emptyRound = initializeWorkflowState('consult', [authorAgent], 'token-empty-round').state;
+  assert.equal(planWorkflowContinuation(emptyRound, 'consult'), undefined, '无交接物不得续跑');
+  assert.equal(planWorkflowContinuation(undefined, 'consult'), undefined);
+  console.log('✓ 后续追问续跑判定');
+}
+
+// 23. 续跑初始化：轮次递增、交接物保留、本轮 artifacts 与阶段全部重置
+{
+  let { state } = initializeWorkflowState('consult', [authorAgent, criticAgent], 'token-round-init');
+  state = runStage(state, 'consult_draft', [output(authorAgent, longDraft)]).state;
+  state = runStage(state, 'consult_crosscheck', [
+    output(criticAgent, reviewBlock({ verdict: 'approve', findings: [] })),
+  ]).state;
+  state = runStage(state, 'consult_finalize', [output(authorAgent, `${longDraft}\nFINAL_DOC_MARKER`)])
+    .state;
+  const carryover = planWorkflowContinuation(state, 'consult')!;
+  const next = initializeWorkflowState(
+    'consult',
+    [authorAgent, criticAgent],
+    'token-round-init-2',
+    Date.now(),
+    carryover
+  );
+  assert.equal(next.state.round, 2, '续跑轮次必须递增');
+  assert.equal(
+    next.state.carryover?.artifacts.length,
+    carryover.artifacts.length,
+    '前序交接物必须完整保留供 Prompt 注入'
+  );
+  assert.equal(next.state.artifacts.length, 0, '本轮 artifacts 必须清空，旧证据不得参与门禁');
+  assert.ok(
+    next.state.stages.every((record) => record.state === 'pending'),
+    '续跑必须重置阶段记录'
+  );
+  console.log('✓ 续跑初始化');
+}
+
+// 24. 续跑 Prompt：人类最新输入在前，前序交接物完整注入并声明其非证据属性
+{
+  let { state } = initializeWorkflowState('consult', [authorAgent, criticAgent], 'token-round-prompt');
+  state = runStage(state, 'consult_draft', [output(authorAgent, longDraft)]).state;
+  state = runStage(state, 'consult_crosscheck', [
+    output(criticAgent, reviewBlock({ verdict: 'approve', findings: [] })),
+  ]).state;
+  state = runStage(state, 'consult_finalize', [output(authorAgent, `${longDraft}\nFINAL_DOC_MARKER`)])
+    .state;
+  const carryover = planWorkflowContinuation(state, 'consult')!;
+  const round2 = initializeWorkflowState(
+    'consult',
+    [authorAgent, criticAgent],
+    'token-round-prompt-2',
+    Date.now(),
+    carryover
+  ).state;
+  const prompt = buildWorkflowPrompt({
+    topicTitle: '梳理 Edge 链路',
+    state: round2,
+    stageKey: 'consult_draft',
+    targetAgent: authorAgent,
+    participants: [authorAgent, criticAgent],
+    userContent: '请补充失败重试的边界条件',
+    attempt: 1,
+  });
+  assert.ok(prompt.includes('增量续跑'), '续跑 Prompt 必须显式标注轮次语义');
+  assert.ok(prompt.includes('第 2 轮'), '续跑 Prompt 必须给出当前轮次');
+  assert.ok(prompt.includes('FINAL_DOC_MARKER'), '前序交付物必须按完整原文注入');
+  assert.ok(prompt.includes('<<<CARRYOVER'), '交接物必须带结构化边界');
+  assert.ok(
+    prompt.includes('不是本轮已通过的证据'),
+    '必须声明前序交接物不能当作本轮证据，防止门禁被旧结论污染'
+  );
+  assert.ok(
+    prompt.indexOf('请补充失败重试的边界条件') < prompt.indexOf('<<<CARRYOVER'),
+    '人类最新输入必须排在前序交接物之前'
+  );
+  console.log('✓ 续跑 Prompt 注入');
+}
+
+// 25. 门禁隔离：前序轮次通过的报告不得让本轮空验收直接通过
+{
+  let { state } = initializeWorkflowState(
+    'build',
+    [authorAgent, criticAgent, verifierAgent],
+    'token-round-gate'
+  );
+  state = runStage(state, 'build_design', [output(authorAgent, designWithCriteria)]).state;
+  state = runStage(state, 'build_design_review', [
+    output(criticAgent, reviewBlock({ verdict: 'approve', findings: [] })),
+  ]).state;
+  state = runStage(state, 'build_implement', [
+    output(authorAgent, '修改 src/services/edge/edgeClient.ts，npm run lint 通过', {
+      filesTouched: ['src/services/edge/edgeClient.ts'],
+    }),
+  ]).state;
+  state = runStage(state, 'build_verify', [
+    output(
+      verifierAgent,
+      verifyBlock({
+        verdict: 'pass',
+        checks: [{ command: 'npm run lint', output: 'ok', passed: true }],
+        failures: [],
+      })
+    ),
+  ]).state;
+  state = runStage(state, 'build_accept', [output(authorAgent, '交付摘要：已完成。')]).state;
+  assert.equal(state.status, 'completed');
+
+  const carryover = planWorkflowContinuation(state, 'build')!;
+  const round2 = initializeWorkflowState(
+    'build',
+    [authorAgent, criticAgent, verifierAgent],
+    'token-round-gate-2',
+    Date.now(),
+    carryover
+  ).state;
+  const verifyAgain = runStage(round2, 'build_verify', [
+    output(verifierAgent, '本轮未执行任何检查，也没有结构化报告。'),
+  ]);
+  assert.equal(
+    verifyAgain.decision.kind,
+    'retry',
+    '上一轮的 pass 报告不得被本轮门禁复用，本轮无有效证据必须返修'
+  );
+  assert.equal(verifyAgain.decision.nextStageKey, 'build_fix');
+  assert.equal(verifyAgain.state.round, 2, '门禁推进后轮次必须保持');
+  assert.equal(
+    verifyAgain.state.carryover?.artifacts.length,
+    carryover.artifacts.length,
+    '门禁推进不得丢失前序交接物'
+  );
+  console.log('✓ 续跑门禁隔离');
 }
 
 console.log('\n✅ Workflow test suite passed');

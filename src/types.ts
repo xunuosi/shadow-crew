@@ -671,6 +671,18 @@ export type WorkflowRunStatus =
   | 'failed'
   | 'cancelled';
 
+/**
+ * 前序轮次交接物：同一议题的后续追问触发续跑时，上一轮全部交接物的完整原文。
+ * 只用于 Prompt 增量注入，绝不参与本轮门禁判定（门禁只认当前轮 artifacts）。
+ */
+export interface WorkflowCarryover {
+  /** 前序轮次序号（首次运行 = 1） */
+  fromRound: number;
+  previousStatus: WorkflowRunStatus;
+  previousVerdict?: string;
+  artifacts: WorkflowArtifact[];
+}
+
 export interface TopicWorkflowState {
   mode: TopicWorkflowMode;
   stageOrder: WorkflowStageKey[];
@@ -679,6 +691,10 @@ export interface TopicWorkflowState {
   roles: WorkflowRoleAssignment;
   status: WorkflowRunStatus;
   artifacts: WorkflowArtifact[];
+  /** 当前轮次序号：首次运行 = 1，后续追问续跑递增 */
+  round?: number;
+  /** 前序轮次交接物（仅增量 Prompt 注入，不参与门禁判定） */
+  carryover?: WorkflowCarryover;
   /** 设计返工 / 验证失败返修等回路计数 */
   counters: Record<string, number>;
   verdict?: string;
