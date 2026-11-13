@@ -428,7 +428,7 @@ impl DatabaseManager {
         let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let message_json = serde_json::to_string(val)?;
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         conn.execute(
             "INSERT INTO messages (id, thread_id, channel_id, author_id, author_name, timestamp, content, message_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -457,7 +457,7 @@ impl DatabaseManager {
 
     /// 批量事务写入消息（用于首次启动从 localStorage 平滑迁移）
     pub fn save_messages_batch(&self, messages: &[serde_json::Value]) -> Result<usize> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let tx = conn.transaction()?;
         let mut count = 0;
 
@@ -515,7 +515,7 @@ impl DatabaseManager {
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> Result<Vec<serde_json::Value>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let mut query = "SELECT message_json FROM messages WHERE 1=1".to_string();
         let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -561,7 +561,7 @@ impl DatabaseManager {
 
     /// 删除指定线程或频道的历史消息
     pub fn delete_messages(&self, thread_id: Option<String>, channel_id: Option<String>) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut count = 0;
 
         if let Some(tid) = thread_id {
@@ -575,7 +575,7 @@ impl DatabaseManager {
 
     /// 清空所有消息历史（保留 acp_memories 核心记忆）
     pub fn clear_all_messages(&self) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let count = conn.execute("DELETE FROM messages", [])?;
         let _ = conn.execute_batch("VACUUM;");
         Ok(count)
@@ -583,7 +583,7 @@ impl DatabaseManager {
 
     /// 汇总计算存储统计指标（区分可清理、半持久历史、受保护核心）
     pub fn get_storage_stats(&self, logs_path: &str) -> Result<StorageStatsDto> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
         // 1. 统计消息条数
         let total_messages: usize = conn
@@ -650,7 +650,7 @@ impl DatabaseManager {
         }
 
         // 2. 压缩 SQLite WAL 文件
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
 
         let wal_path = format!("{}-wal", self.db_path);
@@ -663,7 +663,7 @@ impl DatabaseManager {
 
     /// 保存频道列表
     pub fn save_channels(&self, channels: &[serde_json::Value]) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM channels", [])?;
         {
@@ -685,7 +685,7 @@ impl DatabaseManager {
 
     /// 查询频道列表
     pub fn get_channels(&self) -> Result<Vec<serde_json::Value>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut stmt = conn.prepare("SELECT data_json FROM channels ORDER BY updated_at ASC")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut list = Vec::new();
@@ -699,7 +699,7 @@ impl DatabaseManager {
 
     /// 保存 Workspace Binding 列表。
     pub fn save_workspace_bindings(&self, bindings: &[serde_json::Value]) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare(
@@ -780,7 +780,7 @@ impl DatabaseManager {
         if binding_ids.is_empty() {
             return Ok(());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let tx = conn.transaction()?;
         for binding_id in binding_ids {
             tx.execute(
@@ -794,7 +794,7 @@ impl DatabaseManager {
 
     /// 查询全部 Workspace Binding。
     pub fn get_workspace_bindings(&self) -> Result<Vec<serde_json::Value>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut stmt = conn.prepare(
             "SELECT id, owner_type, owner_id, mode, origin, cwd, artifact_root, created_at
              FROM workspace_bindings ORDER BY created_at ASC",
@@ -824,7 +824,7 @@ impl DatabaseManager {
 
     /// 保存话题/议题列表
     pub fn save_threads(&self, threads: &[serde_json::Value]) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM threads", [])?;
         {
@@ -847,7 +847,7 @@ impl DatabaseManager {
 
     /// 查询话题/议题列表
     pub fn get_threads(&self) -> Result<Vec<serde_json::Value>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut stmt = conn.prepare("SELECT data_json FROM threads ORDER BY updated_at ASC")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut list = Vec::new();
@@ -861,7 +861,7 @@ impl DatabaseManager {
 
     /// 保存 Agent 列表
     pub fn save_agents(&self, agents: &[serde_json::Value]) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM agents", [])?;
         {
@@ -884,7 +884,7 @@ impl DatabaseManager {
 
     /// 查询 Agent 列表
     pub fn get_agents(&self) -> Result<Vec<serde_json::Value>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut stmt = conn.prepare("SELECT data_json FROM agents ORDER BY updated_at ASC")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut list = Vec::new();
@@ -898,7 +898,7 @@ impl DatabaseManager {
 
     /// 保存 Team 编队列表
     pub fn save_teams(&self, teams: &[serde_json::Value]) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM teams", [])?;
         {
@@ -920,7 +920,7 @@ impl DatabaseManager {
 
     /// 查询 Team 编队列表
     pub fn get_teams(&self) -> Result<Vec<serde_json::Value>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut stmt = conn.prepare("SELECT data_json FROM teams ORDER BY updated_at ASC")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut list = Vec::new();
@@ -934,7 +934,7 @@ impl DatabaseManager {
 
     /// 保存工作区状态键值对 (activeChannelId, activeThreadId, globalModelConfig, subThreads)
     pub fn save_workspace_state(&self, key: &str, value: &serde_json::Value) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let json_str = serde_json::to_string(value)?;
         conn.execute(
             "INSERT INTO workspace_state (key, value_json) VALUES (?1, ?2)
@@ -946,7 +946,7 @@ impl DatabaseManager {
 
     /// 获取单个工作区状态
     pub fn get_workspace_state(&self, key: &str) -> Result<Option<serde_json::Value>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut stmt = conn.prepare("SELECT value_json FROM workspace_state WHERE key = ?1")?;
         let mut rows = stmt.query(params![key])?;
         if let Some(row) = rows.next()? {
@@ -966,7 +966,7 @@ impl DatabaseManager {
         let agents = self.get_agents()?;
         let teams = self.get_teams()?;
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut stmt = conn.prepare("SELECT key, value_json FROM workspace_state")?;
         let state_rows = stmt.query_map([], |row| {
             let k: String = row.get(0)?;
@@ -1002,7 +1002,7 @@ impl DatabaseManager {
         system_prompt: &str,
         created_gen: u64,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         conn.execute(
             "INSERT INTO acp_sessions (agent_id, session_key, session_id, workspace_binding_id, workspace_cwd, system_prompt, created_gen, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)
@@ -1020,7 +1020,7 @@ impl DatabaseManager {
 
     /// 获取指定 Agent 与 session_key 的持久化会话记录
     pub fn get_acp_session(&self, agent_id: &str, session_key: &str) -> Result<Option<AcpSessionRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut stmt = conn.prepare(
             "SELECT agent_id, session_key, session_id, workspace_binding_id, workspace_cwd, system_prompt, created_gen, created_at, updated_at
              FROM acp_sessions
@@ -1046,7 +1046,7 @@ impl DatabaseManager {
 
     /// 持久化一条本地 ACP Scope Grant。相同 Agent + Scope + Binding + Capability 幂等覆盖。
     pub fn save_acp_permission_grant(&self, grant: &AcpPermissionGrantRecord) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         conn.execute(
             "INSERT INTO acp_permission_grants
                 (id, agent_id, scope_type, scope_id, workspace_binding_id, capability, created_at)
@@ -1080,7 +1080,7 @@ impl DatabaseManager {
         workspace_binding_id: &str,
         capability: &str,
     ) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let exists: i64 = conn.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM acp_permission_grants
@@ -1107,7 +1107,7 @@ impl DatabaseManager {
         &self,
         agent_id: Option<&str>,
     ) -> Result<Vec<AcpPermissionGrantRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let map_row = |row: &rusqlite::Row<'_>| {
             Ok(AcpPermissionGrantRecord {
                 id: row.get(0)?,
@@ -1142,7 +1142,7 @@ impl DatabaseManager {
 
     /// 撤销单条 Grant，返回是否真实删除。
     pub fn revoke_acp_permission_grant(&self, grant_id: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let affected = conn.execute(
             "DELETE FROM acp_permission_grants WHERE id = ?1",
             params![grant_id],
@@ -1152,13 +1152,13 @@ impl DatabaseManager {
 
     /// 撤销全部 Grant，返回删除数量。
     pub fn revoke_all_acp_permission_grants(&self) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         Ok(conn.execute("DELETE FROM acp_permission_grants", [])?)
     }
 
     /// 删除 Agent 时同步撤销其全部持久 Grant。
     pub fn revoke_acp_permission_grants_for_agent(&self, agent_id: &str) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         Ok(conn.execute(
             "DELETE FROM acp_permission_grants WHERE agent_id = ?1",
             params![agent_id],
@@ -1170,7 +1170,7 @@ impl DatabaseManager {
         scope_type: &str,
         scope_id: &str,
     ) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         Ok(conn.execute(
             "DELETE FROM acp_permission_grants WHERE scope_type = ?1 AND scope_id = ?2",
             params![scope_type, scope_id],
@@ -1185,7 +1185,7 @@ impl DatabaseManager {
         session_key_or_prefix: Option<&str>,
         max_created_gen: Option<u64>,
     ) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut removed_sids = Vec::new();
 
         let (select_sql, delete_sql, params_vec): (String, String, Vec<String>) = match (agent_id, session_key_or_prefix) {
@@ -1282,7 +1282,7 @@ impl DatabaseManager {
     /// 列出指定 Agent 的所有持久化会话记录
     #[allow(dead_code)]
     pub fn list_acp_sessions(&self, agent_id: Option<&str>) -> Result<Vec<AcpSessionRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut records = Vec::new();
 
         if let Some(a) = agent_id {

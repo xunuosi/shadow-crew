@@ -1661,8 +1661,20 @@ fn db_save_message(message: serde_json::Value, state: State<'_, AppState>) -> Re
 
 /// Tauri Command: 批量事务保存消息 (用于首次从 localStorage 迁移)
 #[tauri::command]
-fn db_save_messages_batch(messages: Vec<serde_json::Value>, state: State<'_, AppState>) -> Result<usize, String> {
-    state.db_manager.save_messages_batch(&messages).map_err(|e| e.to_string())
+async fn db_save_messages_batch(
+    messages: Vec<serde_json::Value>,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    // 同步命令会在 Tauri 主线程执行，流式输出期间的全量 upsert 会直接卡住 UI。
+    // 放到 blocking 线程池，主线程只负责调度。
+    let db_manager = state.db_manager.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        db_manager
+            .save_messages_batch(&messages)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("db_save_messages_batch join error: {e}"))?
 }
 
 /// Tauri Command: 查询消息
@@ -1761,6 +1773,17 @@ fn db_get_workspace_state(key: String, state: State<'_, AppState>) -> Result<Opt
 }
 
 /// Tauri Command: 打开指定频道的落地产物工作区目录 (系统 Finder / 资源管理器)
+/// 以“即发即弃”方式启动系统命令，并在后台回收子进程。
+/// 直接丢弃 `Child` 会在退出后留下未回收的句柄（Unix 下为僵尸进程），
+/// 长期驻留的桌面应用必须显式 wait。
+fn spawn_and_reap(cmd: &mut std::process::Command) -> std::io::Result<()> {
+    let mut child = cmd.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 #[tauri::command]
 async fn open_channel_artifacts_dir(channel_id: String) -> Result<String, String> {
     let channel_dir = db_manager::get_channel_dir(&channel_id);
@@ -1769,11 +1792,11 @@ async fn open_channel_artifacts_dir(channel_id: String) -> Result<String, String
     let path_str = artifacts_dir.to_string_lossy().to_string();
 
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(&path_str).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("open").arg(&path_str));
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("explorer").arg(&path_str).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("explorer").arg(&path_str));
     #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(&path_str).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("xdg-open").arg(&path_str));
 
     Ok(path_str)
 }
@@ -1796,11 +1819,11 @@ async fn open_workspace_artifacts_dir(
         .map_err(|e| e.to_string())?;
 
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(&artifacts_dir).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("open").arg(&artifacts_dir));
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("explorer").arg(&artifacts_dir).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("explorer").arg(&artifacts_dir));
     #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(&artifacts_dir).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("xdg-open").arg(&artifacts_dir));
 
     Ok(artifacts_dir)
 }
@@ -1831,11 +1854,11 @@ async fn open_agent_artifacts_dir(agent_id: String) -> Result<String, String> {
     let path_str = artifacts_dir.to_string_lossy().to_string();
 
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(&path_str).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("open").arg(&path_str));
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("explorer").arg(&path_str).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("explorer").arg(&path_str));
     #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(&path_str).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("xdg-open").arg(&path_str));
 
     Ok(path_str)
 }
@@ -2022,11 +2045,11 @@ async fn open_file_in_system(
     let path_str = target_path.to_string_lossy().to_string();
 
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(&path_str).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("open").arg(&path_str));
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd").args(["/c", "start", "", &path_str]).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("cmd").args(["/c", "start", "", &path_str]));
     #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(&path_str).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("xdg-open").arg(&path_str));
 
     Ok(path_str)
 }
@@ -2044,13 +2067,13 @@ async fn reveal_file_in_folder(
     let path_str = target_path.to_string_lossy().to_string();
 
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg("-R").arg(&path_str).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("open").arg("-R").arg(&path_str));
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path_str)).spawn();
+    let _ = spawn_and_reap(std::process::Command::new("explorer").arg(format!("/select,{}", path_str)));
     #[cfg(target_os = "linux")]
     {
         if let Some(parent) = target_path.parent() {
-            let _ = std::process::Command::new("xdg-open").arg(parent).spawn();
+            let _ = spawn_and_reap(std::process::Command::new("xdg-open").arg(parent));
         }
     }
 
@@ -2084,14 +2107,19 @@ async fn open_file_in_editor(
         .arg(&target_arg)
         .spawn();
 
-    if spawned.is_err() {
+    if let Ok(mut child) = spawned {
+        // 成功拉起编辑器后同样需要后台回收，避免僵尸进程累积。
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    } else {
         // 如果未安装或找不到指定命令行（如 code），回退使用系统默认打开
         #[cfg(target_os = "macos")]
-        let _ = std::process::Command::new("open").arg(&path_str).spawn();
+        let _ = spawn_and_reap(std::process::Command::new("open").arg(&path_str));
         #[cfg(target_os = "windows")]
-        let _ = std::process::Command::new("cmd").args(["/c", "start", "", &path_str]).spawn();
+        let _ = spawn_and_reap(std::process::Command::new("cmd").args(["/c", "start", "", &path_str]));
         #[cfg(target_os = "linux")]
-        let _ = std::process::Command::new("xdg-open").arg(&path_str).spawn();
+        let _ = spawn_and_reap(std::process::Command::new("xdg-open").arg(&path_str));
     }
 
     Ok(target_arg)
@@ -3161,9 +3189,23 @@ async fn main() {
                         }
                     };
                     runtime.block_on(async move {
-                        let mut guard = manager.lock().await;
-                        if let Err(e) = guard.stop_all().await {
-                            tracing::warn!("Failed to stop all ACP agents on exit: {}", e);
+                        // 退出清理必须有硬超时：任何仍被长回合占用/等待的锁都不能让主线程无限 join。
+                        let cleanup = async move {
+                            let mut guard = manager.lock().await;
+                            if let Err(e) = guard.stop_all().await {
+                                tracing::warn!("Failed to stop all ACP agents on exit: {}", e);
+                            }
+                        };
+                        if tokio::time::timeout(
+                            std::time::Duration::from_secs(12),
+                            cleanup,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            tracing::warn!(
+                                "ACP exit cleanup timed out after 12s; some child processes may need manual termination"
+                            );
                         }
                     });
                 });

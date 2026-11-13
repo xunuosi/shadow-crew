@@ -33,6 +33,17 @@ pub fn log_acp_event(agent_id: &str, direction: &str, line: &str) {
     let _ = std::fs::create_dir_all(&logs_dir);
     let log_file = logs_dir.join("acp.log");
 
+    // 单文件轮转：长期驻留时 acp.log 会无限增长（曾观测到 22MB+），
+    // 超过阈值后保留一份上一代日志即可，避免磁盘与读取开销持续膨胀。
+    const MAX_LOG_BYTES: u64 = 20 * 1024 * 1024;
+    if let Ok(meta) = std::fs::metadata(&log_file) {
+        if meta.len() > MAX_LOG_BYTES {
+            let rotated = logs_dir.join("acp.log.1");
+            let _ = std::fs::remove_file(&rotated);
+            let _ = std::fs::rename(&log_file, &rotated);
+        }
+    }
+
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -51,18 +62,35 @@ pub fn get_acp_log_path() -> String {
 }
 
 pub fn read_recent_acp_logs(lines_count: usize) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+
     let log_path = get_acp_log_path();
-    if let Ok(content) = std::fs::read_to_string(&log_path) {
-        let lines: Vec<&str> = content.lines().collect();
-        let start = if lines.len() > lines_count {
-            lines.len() - lines_count
-        } else {
-            0
-        };
-        lines[start..].join("\n")
-    } else {
-        format!("暂无日志文件或尚未生成: {}", log_path)
+    let mut file = match std::fs::File::open(&log_path) {
+        Ok(file) => file,
+        Err(_) => return format!("暂无日志文件或尚未生成: {}", log_path),
+    };
+
+    // 只读取文件尾部（最多 1MB），避免为了最后几百行把整个日志载入内存。
+    const TAIL_BYTES: u64 = 1024 * 1024;
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let start_offset = len.saturating_sub(TAIL_BYTES);
+    if file.seek(SeekFrom::Start(start_offset)).is_err() {
+        return format!("日志文件读取失败: {}", log_path);
     }
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return format!("日志文件读取失败: {}", log_path);
+    }
+    // 从任意字节偏移切分时首个字符可能是半个 UTF-8 码点，使用 lossy 解码避免读取失败。
+    let buffer = String::from_utf8_lossy(&bytes);
+
+    let mut lines: Vec<&str> = buffer.lines().collect();
+    // 从中间截断时，首行可能是半行，丢弃。
+    if start_offset > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    let start = lines.len().saturating_sub(lines_count);
+    lines[start..].join("\n")
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -1602,6 +1630,17 @@ impl AcpProcessManager {
             agent.is_alive.store(false, Ordering::SeqCst);
             drop(agent.stdin_tx);
             if let Some(mut child) = agent.child.lock().await.take() {
+                // 包装型启动命令（npx / cmd / sh）会派生出孙进程，child.kill() 只杀直接子进程。
+                // Windows 下用 taskkill /T 整树终止；其余平台保留 child.kill()。
+                #[cfg(target_os = "windows")]
+                if let Some(pid) = child.id() {
+                    let _ = tokio::process::Command::new("taskkill")
+                        .args(["/PID", &pid.to_string(), "/T", "/F"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .await;
+                }
                 let _ = child.kill().await;
                 // 回收进程句柄，避免僵尸进程与句柄泄漏
                 let _ = child.wait().await;
@@ -3046,7 +3085,10 @@ impl RunningAgent {
         key_or_prefix: Option<&str>,
         clear_generation: Option<u64>,
     ) {
-        let _guard = self.prompt_lock.lock().await;
+        // 关键：若该 Agent 有 prompt 回合在途，绝不能在持有全局 manager 锁时长时间等待
+        // prompt_lock（单回合可长达 1800s），否则 start/stop、权限审批、状态轮询与退出清理都会被堵死。
+        // 这里只做不依赖管道空闲的即时清理；尽力而为的 session/close 仅在拿到锁时发送。
+        let prompt_guard = self.prompt_lock.try_lock().ok();
 
         let removed_sessions = {
             let mut reg = self.session_registry.lock().await;
@@ -3070,20 +3112,24 @@ impl RunningAgent {
             let _ = db.delete_acp_session(Some(&self.agent_id), key_or_prefix, clear_generation);
         }
 
-        // 异步向底层 ACP 进程发送 session/close 标准请求，使 Agent 进程释放底层活动会话、turn 与沙箱资源
-        for (idx, sid) in removed_sessions.iter().enumerate() {
-            self.cancel_pending_permissions_for_session(
-                sid,
-                "ACP session was cleared before permission was resolved",
-            )
-            .await;
-            let close_id = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64
-                + idx as u64;
-            let close_req = build_session_close_request(sid, close_id);
-            let _ = self.stdin_tx.send(close_req.to_string()).await;
+        // 异步向底层 ACP 进程发送 session/close 标准请求，使 Agent 进程释放底层活动会话、turn 与沙箱资源。
+        // 若当前有 prompt 在途（prompt_guard 为 None），跳过写管道以避免与在途请求交错；寄存器已清理，
+        // 下一次 prompt 会建立新会话。
+        if prompt_guard.is_some() {
+            for (idx, sid) in removed_sessions.iter().enumerate() {
+                self.cancel_pending_permissions_for_session(
+                    sid,
+                    "ACP session was cleared before permission was resolved",
+                )
+                .await;
+                let close_id = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64
+                    + idx as u64;
+                let close_req = build_session_close_request(sid, close_id);
+                let _ = self.stdin_tx.send(close_req.to_string()).await;
+            }
         }
     }
 }
