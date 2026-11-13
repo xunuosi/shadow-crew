@@ -375,6 +375,34 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
               </span>
             </label>
             <div className="grid grid-cols-2 gap-2">
+              {!dmScope && (
+                <button
+                  type="button"
+                  onClick={() => setDiscussionMode('workflow')}
+                  className={`col-span-2 p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                    discussionMode === 'workflow'
+                      ? 'bg-emerald-500/10 border-emerald-500/50 text-fg shadow-xs ring-1 ring-emerald-500/20'
+                      : 'bg-surface-subtle border-border hover:bg-surface-hover text-fg-secondary'
+                  }`}
+                >
+                  <div className={`p-1.5 rounded-lg shrink-0 mt-0.5 ${
+                    discussionMode === 'workflow' ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300' : 'bg-surface text-fg-muted'
+                  }`}>
+                    <GitBranch className="w-3.5 h-3.5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
+                      <span>工作流交付模式</span>
+                      <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-mono">日常研发</span>
+                      {discussionMode === 'workflow' && <Check className="w-3 h-3 text-emerald-500 stroke-[2.5]" />}
+                    </div>
+                    <p className="text-[10px] text-fg-muted mt-0.5 leading-snug">
+                      咨询产出 / 评审审查 / 交付实施，阶段自动推进且结论可追溯
+                    </p>
+                  </div>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={() => setDiscussionMode('standard')}
@@ -425,34 +453,6 @@ export const EditTopicModal: React.FC<EditTopicModalProps> = ({
                   </p>
                 </div>
               </button>
-
-              {!dmScope && (
-                <button
-                  type="button"
-                  onClick={() => setDiscussionMode('workflow')}
-                  className={`col-span-2 p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
-                    discussionMode === 'workflow'
-                      ? 'bg-emerald-500/10 border-emerald-500/50 text-fg shadow-xs ring-1 ring-emerald-500/20'
-                      : 'bg-surface-subtle border-border hover:bg-surface-hover text-fg-secondary'
-                  }`}
-                >
-                  <div className={`p-1.5 rounded-lg shrink-0 mt-0.5 ${
-                    discussionMode === 'workflow' ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300' : 'bg-surface text-fg-muted'
-                  }`}>
-                    <GitBranch className="w-3.5 h-3.5" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
-                      <span>工作流交付模式</span>
-                      <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-mono">日常研发</span>
-                      {discussionMode === 'workflow' && <Check className="w-3 h-3 text-emerald-500 stroke-[2.5]" />}
-                    </div>
-                    <p className="text-[10px] text-fg-muted mt-0.5 leading-snug">
-                      咨询产出 / 评审审查 / 交付实施，阶段自动推进且结论可追溯
-                    </p>
-                  </div>
-                </button>
-              )}
             </div>
 
             {!dmScope && discussionMode === 'workflow' && (
