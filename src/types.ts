@@ -594,7 +594,101 @@ export interface AcpPermissionGrant {
 // PRD 规范：Topic 议题状态与共识决策记录
 export type TopicStatus = 'open' | 'investigating' | 'resolved';
 
-export type DiscussionMode = 'standard' | 'game_theoretic';
+export type DiscussionMode = 'standard' | 'game_theoretic' | 'workflow';
+
+/**
+ * 工作流协同模式：面向日常研发交付的三条固定流水线
+ * - consult：只读检索与产出（代码梳理、文档、影响半径、选型对比、源码导读）
+ * - review：独立多评审并行 + 汇总（方案评审、Code Review、安全自查、SQL/配置审查）
+ * - build：设计 → 方案评审 → 实现 → 独立验证 → 修复 → 交付（功能开发、脚本、迁移）
+ */
+export type TopicWorkflowMode = 'consult' | 'review' | 'build';
+
+export type WorkflowRoleKind = 'author' | 'critic' | 'verifier' | 'synthesizer';
+
+export type WorkflowStageKey =
+  | 'consult_draft'
+  | 'consult_crosscheck'
+  | 'consult_finalize'
+  | 'review_scan'
+  | 'review_synthesize'
+  | 'build_design'
+  | 'build_design_review'
+  | 'build_implement'
+  | 'build_verify'
+  | 'build_fix'
+  | 'build_accept';
+
+export type WorkflowArtifactKind =
+  | 'document'
+  | 'findings'
+  | 'plan'
+  | 'diff'
+  | 'verification'
+  | 'summary';
+
+export type WorkflowStageRunState = 'pending' | 'active' | 'done' | 'failed' | 'skipped';
+
+export interface WorkflowArtifact {
+  id: string;
+  stageKey: WorkflowStageKey;
+  kind: WorkflowArtifactKind;
+  agentId: string;
+  agentName: string;
+  messageId: string;
+  /** 完整原文交接（禁止压缩成摘要后丢失上下文） */
+  content: string;
+  summary?: string;
+  filesTouched?: string[];
+  createdAt: number;
+}
+
+export interface WorkflowStageRecord {
+  key: WorkflowStageKey;
+  state: WorkflowStageRunState;
+  agentIds: string[];
+  artifactIds: string[];
+  attempt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  failureReason?: string;
+}
+
+export interface WorkflowRoleAssignment {
+  /** 主笔 / 执行者 */
+  author: string;
+  /** 评审者（并行，互不可见对方结论） */
+  criticIds: string[];
+  /** 独立验收者；缺省时构建模式会阻断 */
+  verifierId?: string;
+}
+
+export type WorkflowRunStatus =
+  | 'idle'
+  | 'running'
+  | 'completed'
+  | 'blocked'
+  | 'failed'
+  | 'cancelled';
+
+export interface TopicWorkflowState {
+  mode: TopicWorkflowMode;
+  stageOrder: WorkflowStageKey[];
+  currentStageKey?: WorkflowStageKey;
+  stages: WorkflowStageRecord[];
+  roles: WorkflowRoleAssignment;
+  status: WorkflowRunStatus;
+  artifacts: WorkflowArtifact[];
+  /** 设计返工 / 验证失败返修等回路计数 */
+  counters: Record<string, number>;
+  verdict?: string;
+  blockingReason?: string;
+  /** 运行令牌：新一次运行会令旧异步链自动失效 */
+  runToken?: string;
+  startedAt?: number;
+  updatedAt: number;
+  finishedAt?: number;
+}
 
 export type TopicScopeType = 'channel' | 'dm';
 export type DuelParticipantRole = 'human' | 'agent';
@@ -1173,6 +1267,7 @@ export interface TopicMessageData {
   duelRoles?: DuelRolesConfig;
   gameStage?: GameTheoreticStage;
   gameTheoreticState?: GameTheoreticState;
+  workflowState?: TopicWorkflowState;
   rulingRecord?: RulingRecord;
   authorId: string;
   authorName: string;
@@ -1334,6 +1429,9 @@ export interface Message {
   reactions?: MessageReaction[];
   gameRole?: GameRoleType;
   gameStage?: GameTheoreticStage;
+  workflowStage?: WorkflowStageKey;
+  workflowRole?: WorkflowRoleKind;
+  workflowArtifactId?: string;
   moduleId?: string; // G-Frame 所属原子模块沙箱 ID
   isPending?: boolean; // 正在推演/流式输出中的临时占位卡
   pendingHint?: string; // 实时推演/心跳动作描述提示

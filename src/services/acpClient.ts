@@ -1,6 +1,7 @@
 import {
   Agent,
   CartridgeCitation,
+  DiscussionMode,
   ArbitrationRulingDraft,
   RulingDecisionType,
   TopicPatchDiffItem,
@@ -36,7 +37,7 @@ export interface AcpSendPromptOptions {
   systemPrompt?: string;
   isDm?: boolean;
   scopeType?: 'channel' | 'topic' | 'dm' | 'dm_topic';
-  discussionMode?: 'standard' | 'game_theoretic';
+  discussionMode?: DiscussionMode;
   attachments?: MessageAttachment[];
 }
 
