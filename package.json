@@ -21,10 +21,11 @@
     "test:acp-permission-ui": "tsx src/services/test-acp-permission-ui.ts",
     "test:chat-attachments": "tsx src/services/test-chat-attachments.ts",
     "test:layout": "tsx src/services/test-topic-drawer-layout.ts",
+    "test:progress": "tsx src/services/test-topic-progress-view.ts",
     "test:dm": "tsx src/services/test-dm-topics.ts",
     "test:file-viewer": "tsx src/services/test-file-viewer.ts",
     "test:game-config": "tsx src/services/cogno/test-game-configuration-evaluation.ts && tsx src/services/cogno/test-game-configuration-ui.ts",
-    "test:cogno": "tsx src/services/cogno/verify-all-governance.ts && tsx src/services/cogno/test-wave1-closed-loop.ts && tsx src/services/cogno/test-wave2-sycophancy-diversity.ts && tsx src/services/cogno/test-wave3-dag-sprt-colmad.ts && tsx src/services/cogno/test-exact-bwm.ts && tsx src/services/cogno/test-gframe-bayesian-modular.ts && tsx src/services/cogno/test-adaptive-sprt-governance.ts && tsx src/services/cogno/test-game-configuration-evaluation.ts && tsx src/services/cogno/test-game-configuration-ui.ts && tsx src/services/cogno/test-arbitration-concurrence-adr.ts && tsx src/services/cogno/test-game-theoretic-recovery.ts && tsx src/services/cogno/test-dynamic-ruling-options.ts && tsx src/services/cogno/test-gframe-single-agent-execution.ts",
+    "test:cogno": "tsx src/services/cogno/verify-all-governance.ts && tsx src/services/cogno/test-wave1-closed-loop.ts && tsx src/services/cogno/test-wave2-sycophancy-diversity.ts && tsx src/services/cogno/test-wave3-dag-sprt-colmad.ts && tsx src/services/cogno/test-exact-bwm.ts && tsx src/services/cogno/test-gframe-bayesian-modular.ts && tsx src/services/cogno/test-adaptive-sprt-governance.ts && tsx src/services/cogno/test-game-configuration-evaluation.ts && tsx src/services/cogno/test-game-configuration-ui.ts && tsx src/services/cogno/test-arbitration-concurrence-adr.ts && tsx src/services/cogno/test-game-theoretic-recovery.ts && tsx src/services/cogno/test-dynamic-ruling-options.ts && tsx src/services/cogno/test-gframe-single-agent-execution.ts && tsx src/services/test-topic-progress-view.ts",
     "test:cogno:edge": "tsx src/services/cogno/test-gframe-edge-cases.ts",
     "test:runtime-policy": "tsx src/services/test-agent-runtime-policy.ts"
   },

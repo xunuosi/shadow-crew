@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { 
   TopicMessageData, 
   Message, 
@@ -13,6 +13,8 @@ import {
   MessageAttachmentInput,
 } from '../types';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
+import { TopicProgressStrip } from './TopicProgressStrip';
+import { deriveTopicProgressView } from '../services/topicProgressView';
 import { 
   X,
   GitBranch,
@@ -708,6 +710,12 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   const isExecuting = topicExecutions.length > 0;
   const activeTopicExecution = topicExecutions[0];
 
+  // 只读进度视图：仅消费既有 topic / messages / executions，不新增任何事件订阅
+  const topicProgressView = useMemo(
+    () => deriveTopicProgressView({ topic, messages, executions: topicExecutions }),
+    [topic, messages, topicExecutions]
+  );
+
   const hasPendingMessage = messages.some((m) => m.isPending);
   const shouldTick = isExecuting || hasPendingMessage;
 
@@ -1345,6 +1353,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           <div className="absolute inset-y-0 w-1/3 bg-gradient-to-r from-transparent via-purple-500 via-accent to-transparent animate-streamline" />
         </div>
       )}
+
+      {/* 常驻只读进度条：无需展开看板即可看到当前阶段、执行者与耗时 */}
+      {topicProgressView && <TopicProgressStrip view={topicProgressView} />}
 
       {/* 2. Topic Anchor Context & Telemetry Dashboard (Collapsible) */}
       {isHeaderCollapsed ? (

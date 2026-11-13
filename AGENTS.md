@@ -60,7 +60,7 @@ src/
 ### 2. 状态与依赖拓扑设计
 
 - **自下而上的清晰依赖链**：`useTopicExecutionPipeline`（输出执行能力）→ `handleResolveTopic`（敲定并可选触发派发）→ `useArbitrationConcurrence`（合流并触发定案敲定）→ `useGameTheoreticFsm`（博弈流转并在阶段 5 触发仲裁合流）。
-- **严格回归保护**：任何涉及上述编排 Hook 的重构与调整，均受已有 13 套自动化测试套件（`npm run test:cogno`）与 TypeScript 编译（`npm run lint`）的严格无缝校验。
+- **严格回归保护**：任何涉及上述编排 Hook 的重构与调整，均受已有 14 套自动化测试套件（`npm run test:cogno`）与 TypeScript 编译（`npm run lint`）的严格无缝校验。
 
 ---
 
