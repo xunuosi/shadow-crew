@@ -306,6 +306,7 @@ export function useGameTheoreticFsm({
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           content: acpResp.textResponse,
           thinkingProcess: buildThinkingProcessFromAcp(acpResp, `已基于《公共接口契约》完成模块 [${activeMod?.title || '新模块'}] 独立设计`),
+          tokenUsage: acpResp.usage,
           diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
           cartridgeCitation: acpResp.cartridgeCitation,
           gameStage: 'proposal',
@@ -637,6 +638,7 @@ export function useGameTheoreticFsm({
           gameStage: 'challenge',
           gameRole: 'challenger',
           thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成反例边界与架构证伪推演'),
+          tokenUsage: acpResp.usage,
           diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
           cartridgeCitation: acpResp.cartridgeCitation,
         };
@@ -1175,6 +1177,7 @@ export function useGameTheoreticFsm({
           gameStage: 'verification',
           gameRole: 'verifier',
           thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成工具执行与物理事实接地验证'),
+          tokenUsage: acpResp.usage,
           diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
           cartridgeCitation: acpResp.cartridgeCitation,
         };
@@ -1739,6 +1742,7 @@ export function useGameTheoreticFsm({
           gameStage: 'defense',
           gameRole: 'proposer',
           thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成反例答辩与架构防御补丁构建'),
+          tokenUsage: acpResp.usage,
           diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
           cartridgeCitation: acpResp.cartridgeCitation,
         };
@@ -2398,6 +2402,7 @@ export function useGameTheoreticFsm({
             gameStage: 'arbitration',
             gameRole: 'arbiter',
             thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已完成立论、反例与答辩补丁的综合仲裁审查'),
+            tokenUsage: acpResp.usage,
             diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
             cartridgeCitation: acpResp.cartridgeCitation,
           };

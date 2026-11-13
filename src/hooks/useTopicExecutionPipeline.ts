@@ -460,6 +460,7 @@ export function useTopicExecutionPipeline({
                 acpResp,
                 `已完成模块 [${stepIdx + 1}/${totalSteps}: ${currentSlice.title}] 交付`
               ),
+              tokenUsage: acpResp.usage,
               diffView: stepDiffs.length > 0 ? stepDiffs[0] : undefined,
               diffViews: stepDiffs.length > 0 ? stepDiffs : undefined,
               relatedTopicId: topicId,
@@ -763,6 +764,7 @@ export function useTopicExecutionPipeline({
             acpResp,
             execMeta?.statusSummary || '已完成定案决议落地执行交付'
           ),
+          tokenUsage: acpResp.usage,
           diffView: extractedDiffs.length > 0 ? extractedDiffs[0] : undefined,
           diffViews: extractedDiffs.length > 0 ? extractedDiffs : undefined,
           relatedTopicId: topicId,

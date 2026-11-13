@@ -2178,6 +2178,28 @@ impl AcpProcessManager {
                                         }
                                     }
 
+                                    // ACP v2 unstable: 会话级上下文占用与累计成本快照。
+                                    // 独立事件通道，避免污染流式 chunk 路由。
+                                    if update_type == "usage_update" {
+                                        let session_key = {
+                                            let registry =
+                                                session_registry_permissions.lock().await;
+                                            registry.entries.iter().find_map(|(key, entry)| {
+                                                (entry.session_id == sess_id)
+                                                    .then(|| key.clone())
+                                            })
+                                        };
+                                        let payload = serde_json::json!({
+                                            "agent_id": &agent_id_clone,
+                                            "sessionId": sess_id,
+                                            "session_key": session_key,
+                                            "used": update.get("used"),
+                                            "size": update.get("size"),
+                                            "cost": update.get("cost")
+                                        });
+                                        let _ = app_handle_clone.emit("acp:usage", &payload);
+                                    }
+
                                     let is_state_idle = update_type == "state_update"
                                         && update.get("state").and_then(|s| s.as_str())
                                             == Some("idle")
@@ -4613,6 +4635,13 @@ impl RunningAgent {
                     if let Some(nm) = term_val.get("nativeMemory") {
                         if let Some(obj) = res_obj.as_object_mut() {
                             obj.insert("nativeMemory".to_string(), nm.clone());
+                        }
+                    }
+                    // ACP v2 unstable: 前台工作完成的真实 token 用量。必须原样透传，
+                    // 前端以「未上报」显式标注降级，禁止用正文长度伪造 token 数。
+                    if let Some(usage) = term_val.get("usage") {
+                        if let Some(obj) = res_obj.as_object_mut() {
+                            obj.insert("usage".to_string(), usage.clone());
                         }
                     }
                     Ok(serde_json::json!({

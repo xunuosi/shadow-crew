@@ -439,6 +439,7 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
             acpResp,
             `已完成工作流阶段：${spec.label}`
           ),
+          tokenUsage: acpResp.usage,
           diffView: diffs.length > 0 ? diffs[0] : undefined,
           // 全量 diff 必须一并落消息，否则多文件改造在抽屉里只会显示/可操作第一个文件。
           diffViews: diffs.length > 0 ? diffs : undefined,

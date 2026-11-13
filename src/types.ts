@@ -1383,6 +1383,30 @@ export interface MessageAttachment {
   previewDataUrl?: string;
 }
 
+/**
+ * ACP v2 unstable `usage`：单轮前台工作的真实 token 用量。
+ * 仅当对端 Agent 上报时存在；缺失即代表「未上报」，不得用正文长度估算顶替。
+ */
+export interface AcpTokenUsage {
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  thoughtTokens?: number | null;
+  cachedReadTokens?: number | null;
+  cachedWriteTokens?: number | null;
+}
+
+/**
+ * ACP v2 unstable `usage_update`：会话级上下文占用与累计成本快照。
+ * cost 仅在 Agent 上报时为真值，否则不做任何单价换算。
+ */
+export interface AcpSessionUsage {
+  used: number;
+  size: number;
+  cost?: { amount: number; currency: string } | null;
+  updatedAt: number;
+}
+
 export interface Message {
   id: string;
   threadId: string;
@@ -1408,10 +1432,14 @@ export interface Message {
   // Antigravity Thinking Chain
   thinkingProcess?: {
     duration: string;
-    tokens: number;
+    /** 仅在 ACP 上报真实 token 用量时存在 */
+    tokens?: number;
     summary: string;
     detail: string;
   };
+
+  /** ACP 上报的单轮真实 token 用量（未上报时缺省） */
+  tokenUsage?: AcpTokenUsage;
   
   // Codex Unified Diff
   diffView?: TopicPatchDiffItem;

@@ -35,6 +35,7 @@ import {
   MessageAttachment,
   MessageAttachmentInput,
   RoleConcurrenceSubmission,
+  AcpSessionUsage,
 } from './types';
 import { 
   INITIAL_AGENTS, 
@@ -810,6 +811,8 @@ export default function App() {
   }, [subThreads]);
 
   const [rpcLogs, setRpcLogs] = useState<AcpRpcLog[]>(INITIAL_RPC_LOGS);
+  // ACP v2 usage_update 上报的会话级上下文与成本快照，键为 `${roomId}::${agentId}`
+  const [acpSessionUsage, setAcpSessionUsage] = useState<Record<string, AcpSessionUsage>>({});
 
   // Topic States (PRD 三层半扁平拓扑：频道 ➔ Topic 消息卡片 ➔ 独立推演抽屉)
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
@@ -1182,6 +1185,15 @@ export default function App() {
   }, [isDirectMessageSelected, threads, activeThreadId, activeChannel, agents]);
 
   const activeMessages = activeThread ? messages[activeThread.id] || [] : [];
+  const activeSessionUsage = useMemo(() => {
+    if (!activeThread) return {};
+    const prefix = `${activeThread.id}::`;
+    const result: Record<string, AcpSessionUsage> = {};
+    for (const [key, value] of Object.entries(acpSessionUsage)) {
+      if (key.startsWith(prefix)) result[key.slice(prefix.length)] = value;
+    }
+    return result;
+  }, [acpSessionUsage, activeThread]);
   const activeSubThread = activeSubThreadId ? subThreads[activeSubThreadId] : null;
   const selectedAgent = agents.find((a) => a.id === selectedAgentId) || agents[0];
 
@@ -1667,6 +1679,32 @@ export default function App() {
       unlistenChunk = fn;
     }).catch(() => {});
 
+    let unlistenUsage: (() => void) | undefined;
+    tauriListen('acp:usage', (event: any) => {
+      const payload = event?.payload;
+      if (!payload || !payload.agent_id) return;
+      if (typeof payload.session_key !== 'string') return;
+      const parsed = parseSessionKey(payload.session_key);
+      const roomId = 'roomId' in parsed ? parsed.roomId : undefined;
+      if (!roomId) return;
+      const used = Number(payload.used);
+      const size = Number(payload.size);
+      if (!Number.isFinite(used) || !Number.isFinite(size) || size <= 0) return;
+      const rawCost = payload.cost;
+      const cost =
+        rawCost && typeof rawCost === 'object' && Number.isFinite(Number(rawCost.amount))
+          ? { amount: Number(rawCost.amount), currency: String(rawCost.currency || '') }
+          : null;
+      const key = `${roomId}::${payload.agent_id}`;
+      setAcpSessionUsage((prev) => ({
+        ...prev,
+        [key]: { used, size, cost, updatedAt: Date.now() },
+      }));
+    }).then((fn: any) => {
+      if (disposed) { fn(); return; }
+      unlistenUsage = fn;
+    }).catch(() => {});
+
     return () => {
       disposed = true;
       // 卸载前把尚未刷新的流式片段落地，避免丢字。
@@ -1679,6 +1717,7 @@ export default function App() {
       if (unlistenReplaySink) unlistenReplaySink();
       if (unlistenHeartbeat) unlistenHeartbeat();
       if (unlistenChunk) unlistenChunk();
+      if (unlistenUsage) unlistenUsage();
     };
   }, []);
 
@@ -3056,6 +3095,7 @@ export default function App() {
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             content: acpResp.textResponse,
             thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已基于增量上下文批次完成审查与规约对齐'),
+            tokenUsage: acpResp.usage,
             diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
             cartridgeCitation: acpResp.cartridgeCitation,
             collaborationInfo: {
@@ -3656,6 +3696,7 @@ export default function App() {
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             content: response.textResponse,
             thinkingProcess: buildThinkingProcessFromAcp(response, '已处理私聊议题上下文'),
+            tokenUsage: response.usage,
             gameRole: isGame ? agentRole : undefined,
             gameStage: isGame ? stage : undefined,
             agentBadge: isGame
@@ -4428,6 +4469,7 @@ export default function App() {
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             content: acpResp.textResponse,
             thinkingProcess: buildThinkingProcessFromAcp(acpResp, isGameTheoretic ? '已完成博弈推演与技术边界审定' : '已检索私有记忆库并完成技术边界考量'),
+            tokenUsage: acpResp.usage,
             diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
             cartridgeCitation: acpResp.cartridgeCitation,
             collaborationInfo: {
@@ -5303,6 +5345,7 @@ export default function App() {
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             content: acpResp.textResponse,
             thinkingProcess: buildThinkingProcessFromAcp(acpResp, '已消化增量事件流并完成技术边界考量'),
+            tokenUsage: acpResp.usage,
             diffView: acpResp.workspaceDiffs && acpResp.workspaceDiffs.length > 0 ? acpResp.workspaceDiffs[0] : undefined,
             cartridgeCitation: acpResp.cartridgeCitation,
             collaborationInfo: isDmThread ? undefined : {
@@ -6047,6 +6090,7 @@ export default function App() {
                   isSidebarCollapsed={isSidebarCollapsed}
                   onToggleSidebar={() => toggleSidebar()}
                   currentWorkspace="shadow-crew"
+                  sessionUsageByAgent={activeSessionUsage}
                 />
 
                 <MessageInput

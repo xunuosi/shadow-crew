@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Message, Thread, Agent, Channel, ActiveAgentExecution, TopicMessageData, TopicPatchDiffItem } from '../types';
+import { Message, Thread, Agent, Channel, ActiveAgentExecution, TopicMessageData, TopicPatchDiffItem, AcpSessionUsage } from '../types';
 import { TopicMessageCard } from './TopicMessageCard';
 import { ChannelComposerActivityBar } from './ChannelComposerActivityBar';
 import { 
@@ -44,6 +44,21 @@ import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { openChannelArtifactsFolder, openAgentArtifactsFolder } from '../services/dbClient';
 import { MessageAttachmentList } from './MessageAttachmentList';
 
+/** 仅用于展示的紧凑 token 计数；数值本身始终来自 ACP 上报。 */
+function formatCost(cost: { amount: number; currency: string }): string {
+  const currency = (cost.currency || '').toUpperCase();
+  if (currency === 'USD') return `$${cost.amount.toFixed(cost.amount < 0.01 ? 4 : 2)}`;
+  if (currency === 'CNY' || currency === 'RMB') return `¥${cost.amount.toFixed(2)}`;
+  return `${cost.amount.toFixed(2)} ${cost.currency}`.trim();
+}
+
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 10_000) return `${Math.round(tokens / 1000)}k`;
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
+  return String(tokens);
+}
+
 interface ChatTimelineProps {
   messages: Message[];
   activeThread?: Thread;
@@ -67,6 +82,8 @@ interface ChatTimelineProps {
   isSidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
   currentWorkspace?: string;
+  /** 当前议题下各 Agent 的 ACP 真实会话用量（未上报的 Agent 不出现） */
+  sessionUsageByAgent?: Record<string, AcpSessionUsage>;
 }
 
 export const ChatTimeline: React.FC<ChatTimelineProps> = ({
@@ -92,6 +109,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   isSidebarCollapsed = false,
   onToggleSidebar,
   currentWorkspace,
+  sessionUsageByAgent,
 }) => {
   const [filter, setFilter] = useState<'all' | 'topics' | 'resolved'>('all');
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
@@ -354,6 +372,19 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     [messages]
   );
 
+  // 仅展示 ACP 真实上报的会话用量；未上报的 Agent 不会出现在这里，也不做任何估算补位。
+  const usageEntries = useMemo(
+    () =>
+      Object.entries(sessionUsageByAgent || {})
+        .map(([agentId, usage]) => ({
+          agentId,
+          usage,
+          agent: agents.find((a) => a.id === agentId),
+        }))
+        .sort((a, b) => b.usage.updatedAt - a.usage.updatedAt),
+    [sessionUsageByAgent, agents]
+  );
+
   if (!activeThread) {
     return (
       <div 
@@ -462,6 +493,34 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
               </span>
             )}
           </div>
+
+          {/* ACP 真实会话用量（usage_update）：上下文占用 + Agent 上报的累计成本 */}
+          {usageEntries.length > 0 && (
+            <div className="hidden @xl:flex items-center gap-1.5 shrink-0">
+              {usageEntries.slice(0, 2).map(({ agentId, agent, usage }) => {
+                const pct = Math.min(100, Math.round((usage.used / usage.size) * 100));
+                return (
+                  <span
+                    key={agentId}
+                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface-subtle border border-border text-[10px] font-mono text-fg-secondary whitespace-nowrap"
+                    title={`${agent?.name || agentId} · 上下文 ${usage.used.toLocaleString()}/${usage.size.toLocaleString()} tokens (${pct}%)${
+                      usage.cost ? ` · 会话累计 ${usage.cost.amount} ${usage.cost.currency}` : ' · Agent 未上报成本'
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-600 dark:bg-blue-400 shrink-0" />
+                    <span className="max-w-[90px] truncate">{agent?.name || agentId}</span>
+                    <span className="text-fg">{pct}%</span>
+                    {usage.cost && (
+                      <span className="text-emerald-800 dark:text-emerald-300">{formatCost(usage.cost)}</span>
+                    )}
+                  </span>
+                );
+              })}
+              {usageEntries.length > 2 && (
+                <span className="text-[10px] font-mono text-fg-muted">+{usageEntries.length - 2}</span>
+              )}
+            </div>
+          )}
 
           {/* Filter Pill Tabs */}
           {topicCount > 0 && (
@@ -1026,6 +1085,20 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                     <span className="text-[10px] text-fg-muted font-mono">
                       · {message.timestamp}
                     </span>
+                    {message.tokenUsage && (
+                      <span
+                        className="text-[10px] text-fg-secondary font-mono px-1.5 py-0.5 rounded bg-surface-subtle border border-border whitespace-nowrap"
+                        title={[
+                          `ACP 上报用量 · 合计 ${message.tokenUsage.totalTokens.toLocaleString()} tokens`,
+                          `输入 ${message.tokenUsage.inputTokens.toLocaleString()} · 输出 ${message.tokenUsage.outputTokens.toLocaleString()}`,
+                          message.tokenUsage.thoughtTokens != null ? `思考 ${message.tokenUsage.thoughtTokens.toLocaleString()}` : null,
+                          message.tokenUsage.cachedReadTokens != null ? `缓存读 ${message.tokenUsage.cachedReadTokens.toLocaleString()}` : null,
+                          message.tokenUsage.cachedWriteTokens != null ? `缓存写 ${message.tokenUsage.cachedWriteTokens.toLocaleString()}` : null,
+                        ].filter(Boolean).join(' · ')}
+                      >
+                        {formatTokenCount(message.tokenUsage.totalTokens)} tok
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -1113,7 +1186,10 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                         <div className="flex items-center gap-2">
                           <BrainCircuit className="w-3.5 h-3.5 text-accent" />
                           <span className="font-semibold text-fg">
-                            Thinking Process ({message.thinkingProcess.duration} · {message.thinkingProcess.tokens} tokens)
+                            Thinking Process ({message.thinkingProcess.duration}
+                            {message.thinkingProcess.tokens != null
+                              ? ` · ${formatTokenCount(message.thinkingProcess.tokens)} tokens`
+                              : ' · token 未上报'})
                           </span>
                         </div>
                         {isThinkingOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}

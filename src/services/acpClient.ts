@@ -1,5 +1,6 @@
 import {
   Agent,
+  AcpTokenUsage,
   CartridgeCitation,
   DiscussionMode,
   ArbitrationRulingDraft,
@@ -327,8 +328,43 @@ export function matchesSessionScope(
   return false;
 }
 
+/**
+ * 规范化 ACP 上报的 token 用量（ACP v2 unstable `usage`）。
+ * 字段缺失、null 或非法类型一律视为「未上报」并返回 undefined；
+ * 严禁用正文长度等启发式方式伪造 token 数。
+ */
+export function parseAcpTokenUsage(raw: unknown): AcpTokenUsage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Record<string, unknown>;
+  const nonNegativeInt = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0
+      ? Math.round(value)
+      : undefined;
+  const optionalCount = (value: unknown): number | null | undefined => {
+    if (value === null) return null;
+    return nonNegativeInt(value);
+  };
+
+  const inputTokens = nonNegativeInt(obj.inputTokens);
+  const outputTokens = nonNegativeInt(obj.outputTokens);
+  const totalTokens = nonNegativeInt(obj.totalTokens);
+  if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) {
+    return undefined;
+  }
+  return {
+    totalTokens: totalTokens ?? (inputTokens ?? 0) + (outputTokens ?? 0),
+    inputTokens: inputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    thoughtTokens: optionalCount(obj.thoughtTokens),
+    cachedReadTokens: optionalCount(obj.cachedReadTokens),
+    cachedWriteTokens: optionalCount(obj.cachedWriteTokens),
+  };
+}
+
 export interface AcpAgentResponse {
   textResponse: string;
+  /** ACP 上报的单轮真实 token 用量；未上报时为 undefined */
+  usage?: AcpTokenUsage;
   memoryActions?: Array<{ action: string; key: string; detail: string }>;
   mcpToolCalls?: Array<{ server_name: string; tool_name: string; status: string; arguments?: any }>;
   rulingDraft?: ArbitrationRulingDraft;
@@ -893,9 +929,10 @@ export function buildThinkingProcessFromAcp(
     ? `已执行 ${acpResp.mcpToolCalls!.length} 项原生 MCP 工具调用并完成推演`
     : defaultSummary;
 
+  const reportedTokens = acpResp.usage?.totalTokens;
   return {
     duration: `${acpResp.durationMs}ms`,
-    tokens: Math.round(acpResp.textResponse.length * 1.3),
+    ...(reportedTokens === undefined ? {} : { tokens: reportedTokens }),
     summary,
     detail: details.join('\n'),
   };
@@ -1311,6 +1348,7 @@ export async function sendPromptToRemoteAcpWebSocket(
 
                 resolve({
                   textResponse: finalReply,
+                  usage: parseAcpTokenUsage(msg.result.usage),
                   memoryActions: msg.result.memory_actions || memoryActions,
                   workspaceDiffs: readOnlyGuard ? [] : msg.result.workspace_diffs || [],
                   ...(hasNativeMemoryDecl
@@ -1647,6 +1685,7 @@ export async function sendPromptToAcpAgent(
           textResponse: cleanedText,
           isEmptyTurn: isEmpty,
           stopReason: res.stopReason,
+          usage: parseAcpTokenUsage(res.usage),
           memoryActions: res.memory_actions || [],
           mcpToolCalls: res.mcp_tool_calls || [],
           workspaceDiffs: nativeDiffs,
@@ -1665,6 +1704,7 @@ export async function sendPromptToAcpAgent(
         return {
           textResponse: cleanedText,
           isEmptyTurn: !cleanedText.trim() && !hasMcpToolCalls,
+          usage: parseAcpTokenUsage(response.usage),
           memoryActions: response.memory_actions || [],
           mcpToolCalls: response.mcp_tool_calls || [],
           workspaceDiffs: nativeDiffs,
