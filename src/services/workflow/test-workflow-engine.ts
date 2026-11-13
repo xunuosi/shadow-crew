@@ -13,6 +13,7 @@ import {
   parseReviewReport,
   parseVerificationReport,
   truncateArtifactForPrompt,
+  workflowProgressSignature,
   type WorkflowStageOutput,
 } from './index';
 import {
@@ -411,6 +412,30 @@ const designWithCriteria = [
   assert.ok(view.headline.includes('独立核验'));
   assert.equal(view.isActive, true);
   console.log('✓ 进度视图');
+}
+
+// 18b. 取消态进度视图：必须显式标记已取消并保留取消原因
+{
+  const { state } = initializeWorkflowState('consult', [authorAgent, criticAgent], 'token-cancel');
+  const cancelled = {
+    ...state,
+    status: 'cancelled' as const,
+    currentStageKey: undefined,
+    blockingReason: '用户终止了阶段执行者',
+  };
+  const view = buildWorkflowProgressView(cancelled);
+  assert.equal(view.isCancelled, true);
+  assert.equal(view.isActive, false);
+  assert.equal(view.isTerminal, false);
+  assert.equal(view.status, 'cancelled');
+  assert.ok(view.headline.includes('已取消'));
+  assert.equal(view.blockingReason, '用户终止了阶段执行者');
+  // 取消原因变化必须触发重绘签名变化
+  assert.notEqual(
+    workflowProgressSignature(view),
+    workflowProgressSignature({ ...view, blockingReason: '回合已失效' })
+  );
+  console.log('✓ 取消态进度视图');
 }
 
 // 19. 重新激活阶段会清理下游已完成状态，避免返工后残留旧结论

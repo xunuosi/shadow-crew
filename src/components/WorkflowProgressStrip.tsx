@@ -56,7 +56,9 @@ function WorkflowProgressStripInner({ view, onSelectStage }: WorkflowProgressStr
     ? { Icon: AlertTriangle, className: 'text-rose-600 dark:text-rose-400' }
     : view.isBlocked
       ? { Icon: AlertTriangle, className: 'text-amber-600 dark:text-amber-400' }
-      : view.isTerminal
+      : view.isCancelled
+        ? { Icon: Clock, className: 'text-fg-muted' }
+        : view.isTerminal
         ? { Icon: CheckCircle2, className: 'text-emerald-600 dark:text-emerald-400' }
         : view.isActive
           ? { Icon: Loader2, className: 'text-emerald-600 dark:text-emerald-400 animate-spin' }
@@ -133,6 +135,15 @@ function WorkflowProgressStripInner({ view, onSelectStage }: WorkflowProgressStr
           title={view.blockingReason}
         >
           <span className="shrink-0 font-semibold">阻断原因</span>
+          <span className="truncate min-w-0">{view.blockingReason}</span>
+        </div>
+      )}
+      {view.isCancelled && view.blockingReason && (
+        <div
+          className="mt-1 flex items-start gap-1 min-w-0 text-[10px] text-fg-secondary"
+          title={view.blockingReason}
+        >
+          <span className="shrink-0 font-semibold">取消原因</span>
           <span className="truncate min-w-0">{view.blockingReason}</span>
         </div>
       )}

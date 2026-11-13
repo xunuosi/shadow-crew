@@ -21,6 +21,7 @@ export interface WorkflowProgressView {
   isTerminal: boolean;
   isFailed: boolean;
   isBlocked: boolean;
+  isCancelled: boolean;
   startedAt?: number;
   verdict?: string;
   blockingReason?: string;
@@ -84,6 +85,7 @@ export function buildWorkflowProgressView(
   const isTerminal = state.status === 'completed';
   const isFailed = state.status === 'failed';
   const isBlocked = state.status === 'blocked';
+  const isCancelled = state.status === 'cancelled';
   const countLabel = `${doneCount}/${total}`;
 
   let headline: string;
@@ -109,6 +111,7 @@ export function buildWorkflowProgressView(
     isTerminal,
     isFailed,
     isBlocked,
+    isCancelled,
     startedAt: state.startedAt,
     verdict: state.verdict,
     blockingReason: state.blockingReason,
