@@ -466,6 +466,7 @@ export interface ActiveAgentExecution {
   status: AgentExecutionStatus;
   currentActionDetail?: string; // e.g. "正在检索本地工作区 src/App.tsx..."
   startedAt: number; // timestamp
+  lastHeartbeatAt?: number; // 最近一次 ACP 思考心跳时间戳（用于停滞检测）
   cascadeHop?: number; // 协同链跳数 (1, 2, 3...)
   invokingAgentName?: string; // 哪个 Agent 呼叫该 Agent 协同
 }

@@ -1513,6 +1513,7 @@ export default function App() {
               next[key] = {
                 ...next[key],
                 currentActionDetail: hint,
+                lastHeartbeatAt: Date.now(),
               };
               updated = true;
             }

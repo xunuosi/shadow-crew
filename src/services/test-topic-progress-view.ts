@@ -5,7 +5,9 @@ import { TopicProgressStrip } from '../components/TopicProgressStrip';
 import {
   deriveTopicProgressView,
   formatProgressElapsed,
+  isProgressStalled,
   topicProgressViewSignature,
+  PROGRESS_STALL_THRESHOLD_MS,
 } from './topicProgressView';
 import type {
   ActiveAgentExecution,
@@ -103,17 +105,35 @@ function makeModule(
 const states = (view: ReturnType<typeof deriveTopicProgressView>) =>
   view ? view.nodes.map((node) => `${node.key}:${node.state}`).join(',') : '<null>';
 
-// —— 1. 作用域守卫：普通协同 / DM 双人博弈不展示 ——
+// —— 1. 模式分流：标准协同 / DM 博弈各自成视图，DM 标准私聊不展示 ——
+const standardIdle = deriveTopicProgressView({
+  topic: makeTopic({ discussionMode: 'standard' }),
+  messages: [],
+});
+assert.ok(standardIdle);
+assert.equal(standardIdle.mode, 'standard');
+assert.equal(standardIdle.nodes.length, 0);
+assert.equal(standardIdle.isActive, false);
+assert.ok(standardIdle.headline.includes('待启动'));
+
+const dmDuelIdle = deriveTopicProgressView({
+  topic: makeTopic({ scopeType: 'dm', duelRoles: { proposer: 'human', challenger: 'agent' } }),
+  messages: [],
+});
+assert.ok(dmDuelIdle);
+assert.equal(dmDuelIdle.mode, 'dm_duel');
+assert.equal(dmDuelIdle.nodes.length, 0);
+assert.ok(dmDuelIdle.headline.includes('双方博弈'));
+
 assert.equal(
-  deriveTopicProgressView({ topic: makeTopic({ discussionMode: 'standard' }), messages: [] }),
-  null
-);
-assert.equal(
-  deriveTopicProgressView({ topic: makeTopic({ scopeType: 'dm' }), messages: [] }),
+  deriveTopicProgressView({
+    topic: makeTopic({ scopeType: 'dm', discussionMode: 'standard' }),
+    messages: [],
+  }),
   null
 );
 assert.equal(deriveTopicProgressView({ topic: null, messages: [] }), null);
-console.log('✓ standard / DM / absent topics are excluded');
+console.log('✓ standard / DM duel / DM standard / absent topics are routed correctly');
 
 // —— 2. 全新议题：未启动，默认停在提案节点 ——
 const fresh = deriveTopicProgressView({ topic: makeTopic(), messages: [] });
@@ -404,5 +424,370 @@ const terminalRender = renderView(
 assert.ok(terminalRender.includes('text-emerald-600'));
 assert.ok(terminalRender.includes('已定案'));
 console.log('✓ static render exposes active / failed / terminal semantics and theme colors');
+
+// —— 18. 无异议征询：仲裁完成后的逐角色复核必须可见 ——
+const concurrenceState = (items: Array<{ agentId: string; agentName: string; role: 'proposer' | 'challenger' | 'verifier' | 'arbiter'; status: 'pending' | 'concurred' | 'objected' | 'conditional' | 'unavailable' | 'invalid' }>, allConcurred = false) => ({
+  protocolVersion: 1 as const,
+  solutionDigest: 'digest-1',
+  isConcurrencePhaseActive: true,
+  items,
+  allConcurred,
+});
+
+const concurrenceActive = deriveTopicProgressView({
+  topic: makeTopic({
+    status: 'investigating',
+    gameStage: 'arbitration',
+    gameRoles: {
+      proposers: ['p1', 'p2'],
+      challengers: ['c1'],
+      arbiters: ['a1'],
+      humanIsArbiter: false,
+    },
+    gameTheoreticState: {
+      currentStage: 'arbitration',
+      concurrenceState: concurrenceState([
+        { agentId: 'a1', agentName: '公孙胜', role: 'arbiter', status: 'concurred' },
+        { agentId: 'p1', agentName: '吴用', role: 'proposer', status: 'pending' },
+        { agentId: 'p2', agentName: '卢俊义', role: 'proposer', status: 'pending' },
+      ]),
+    } as GameTheoreticState,
+  }),
+  messages: [
+    makeMessage({
+      gameStage: 'arbitration',
+      isPending: true,
+      authorName: '吴用',
+      startedAt: 5_000,
+    }),
+  ],
+  executions: [makeExecution({ agentName: '吴用' })],
+});
+assert.ok(concurrenceActive);
+assert.equal(concurrenceActive.phase, 'concurrence');
+assert.equal(concurrenceActive.isActive, true);
+assert.equal(concurrenceActive.isBlocked, false);
+assert.ok(concurrenceActive.headline.includes('无异议征询 1/3'));
+assert.ok(concurrenceActive.headline.includes('吴用 正在复核'));
+console.log('✓ concurrence sub-phase exposes replied/total and current reviewer');
+
+// —— 19. 无异议未达成：非 concurred 票必须阻断并转人工 ——
+const concurrenceBlocked = deriveTopicProgressView({
+  topic: makeTopic({
+    status: 'investigating',
+    gameStage: 'arbitration',
+    gameTheoreticState: {
+      currentStage: 'arbitration',
+      concurrenceState: concurrenceState(
+        [
+          { agentId: 'a1', agentName: '公孙胜', role: 'arbiter', status: 'concurred' },
+          { agentId: 'p1', agentName: '吴用', role: 'proposer', status: 'objected' },
+          { agentId: 'p2', agentName: '卢俊义', role: 'proposer', status: 'concurred' },
+        ],
+        false
+      ),
+    } as GameTheoreticState,
+  }),
+  messages: [],
+});
+assert.ok(concurrenceBlocked);
+assert.equal(concurrenceBlocked.phase, 'blocked');
+assert.equal(concurrenceBlocked.isBlocked, true);
+assert.equal(concurrenceBlocked.isActive, false);
+assert.ok(concurrenceBlocked.headline.includes('无异议未达成'));
+console.log('✓ objected concurrence blocks and hands off to a human');
+
+// —— 20. 一致性门禁拦截：全员 concurred 但门禁消息存在 ——
+const gateBlocked = deriveTopicProgressView({
+  topic: makeTopic({
+    status: 'investigating',
+    gameStage: 'arbitration',
+    gameTheoreticState: {
+      currentStage: 'arbitration',
+      concurrenceState: concurrenceState(
+        [
+          { agentId: 'a1', agentName: '公孙胜', role: 'arbiter', status: 'concurred' },
+          { agentId: 'p1', agentName: '吴用', role: 'proposer', status: 'concurred' },
+        ],
+        true
+      ),
+    } as GameTheoreticState,
+  }),
+  messages: [makeMessage({ agentBadge: 'Gate Blocked', content: '一致性硬门禁未通过' })],
+});
+assert.ok(gateBlocked);
+assert.equal(gateBlocked.phase, 'blocked');
+assert.ok(gateBlocked.headline.includes('门禁拦截'));
+console.log('✓ gate-blocked concurrence is surfaced distinctly');
+
+// —— 21. 全员 concurred 且无门禁：等待终局落槌 ——
+const concurrenceDone = deriveTopicProgressView({
+  topic: makeTopic({
+    status: 'investigating',
+    gameStage: 'arbitration',
+    gameTheoreticState: {
+      currentStage: 'arbitration',
+      concurrenceState: concurrenceState(
+        [
+          { agentId: 'a1', agentName: '公孙胜', role: 'arbiter', status: 'concurred' },
+          { agentId: 'p1', agentName: '吴用', role: 'proposer', status: 'concurred' },
+        ],
+        true
+      ),
+    } as GameTheoreticState,
+  }),
+  messages: [],
+});
+assert.ok(concurrenceDone);
+assert.equal(concurrenceDone.phase, 'concurrence');
+assert.equal(concurrenceDone.isBlocked, false);
+assert.ok(concurrenceDone.headline.includes('等待终局落槌'));
+console.log('✓ fully concurred phase waits for the final ruling');
+
+// —— 22. 定案后的落地执行：不得提前显示「已定案」终态 ——
+const executing = deriveTopicProgressView({
+  topic: makeTopic({
+    status: 'resolved',
+    gameStage: 'concluded',
+    gameTheoreticState: {
+      currentStage: 'concluded',
+      executionStatus: 'running',
+      executionStartedAt: 9_000,
+      executionSummary: '正在执行模块 [2/3: 状态契约与类型定义]',
+      modularState: {
+        enabled: true,
+        modules: [
+          makeModule('mod-1', '核心类型定义'),
+          makeModule('mod-2', '状态契约与类型定义'),
+          makeModule('mod-3', 'UI 接线'),
+        ],
+        activeModuleId: 'mod-2',
+        executionCompletedCount: 1,
+      },
+    } as GameTheoreticState,
+  }),
+  messages: [],
+  executions: [],
+});
+assert.ok(executing);
+assert.equal(executing.phase, 'execution');
+assert.equal(executing.isTerminal, false);
+assert.equal(executing.isActive, true);
+assert.equal(executing.activeStartedAt, 9_000);
+assert.equal(
+  states(executing),
+  'decomposition:done,proposal:done,challenge:done,defense:done,arbitration:done,execution:active'
+);
+assert.ok(executing.headline.includes('落地执行'));
+assert.ok(executing.headline.includes('状态契约与类型定义'));
+assert.equal(executing.compactHeadline, '⚙️ 落地 1/3');
+console.log('✓ running execution is a separate phase instead of premature terminal');
+
+// —— 23. 落地失败：定位执行节点并展示失败原因 ——
+const executionFailed = deriveTopicProgressView({
+  topic: makeTopic({
+    status: 'resolved',
+    gameStage: 'concluded',
+    gameTheoreticState: {
+      currentStage: 'concluded',
+      executionStatus: 'failed',
+      executionSummary: '工作区合并冲突：src/App.tsx',
+    } as GameTheoreticState,
+  }),
+  messages: [],
+});
+assert.ok(executionFailed);
+assert.equal(executionFailed.phase, 'failed');
+assert.equal(executionFailed.isFailed, true);
+assert.equal(executionFailed.failureText, '工作区合并冲突：src/App.tsx');
+assert.ok(executionFailed.headline.includes('落地失败'));
+assert.ok(states(executionFailed).endsWith('execution:failed'));
+console.log('✓ execution failure is surfaced with its reason');
+
+// —— 24. 落地完成 / 已合入：终态文案区分 ——
+const executionCompleted = deriveTopicProgressView({
+  topic: makeTopic({
+    status: 'resolved',
+    gameStage: 'concluded',
+    gameTheoreticState: {
+      currentStage: 'concluded',
+      executionStatus: 'completed',
+    } as GameTheoreticState,
+  }),
+  messages: [],
+});
+assert.ok(executionCompleted);
+assert.equal(executionCompleted.isTerminal, true);
+assert.ok(executionCompleted.headline.includes('待合入工作区'));
+
+const executionApplied = deriveTopicProgressView({
+  topic: makeTopic({
+    status: 'resolved',
+    gameStage: 'concluded',
+    gameTheoreticState: {
+      currentStage: 'concluded',
+      executionStatus: 'applied',
+    } as GameTheoreticState,
+  }),
+  messages: [],
+});
+assert.ok(executionApplied);
+assert.equal(executionApplied.isTerminal, true);
+assert.equal(executionApplied.phase, 'terminal');
+assert.ok(executionApplied.headline.includes('已合入工作区'));
+console.log('✓ completed / applied execution states are distinguished');
+
+// —— 25. cognoNexus.modularState 回落：双镜像位置均应读取 ——
+const mirroredModular = deriveTopicProgressView({
+  topic: makeTopic({
+    status: 'investigating',
+    gameStage: 'challenge',
+    gameTheoreticState: {
+      currentStage: 'challenge',
+      cognoNexus: {
+        modularState: {
+          enabled: true,
+          modules: [makeModule('mod-1', '核心类型定义'), makeModule('mod-2', '状态契约与类型定义')],
+          activeModuleId: 'mod-2',
+        },
+      },
+    } as GameTheoreticState,
+  }),
+  messages: [],
+});
+assert.ok(mirroredModular);
+assert.ok(states(mirroredModular).startsWith('decomposition:done'));
+assert.equal(mirroredModular.moduleLabel, '模块 2/2：状态契约与类型定义');
+console.log('✓ modular state falls back to cognoNexus mirror');
+
+// —— 26. 多角色阶段回复计数 ——
+const multiActor = deriveTopicProgressView({
+  topic: makeTopic({
+    status: 'investigating',
+    gameStage: 'proposal',
+    gameRoles: {
+      proposers: ['p1', 'p2'],
+      challengers: ['c1'],
+      arbiters: ['a1'],
+      humanIsArbiter: false,
+    },
+  }),
+  messages: [
+    makeMessage({ authorId: 'p1', authorName: '吴用', gameStage: 'proposal' }),
+    makeMessage({ authorId: 'p2', authorName: '卢俊义', gameStage: 'proposal', isPending: true }),
+  ],
+  executions: [makeExecution({ agentId: 'p2', agentName: '卢俊义' })],
+});
+assert.ok(multiActor);
+assert.deepEqual(multiActor.actorProgress, { done: 1, total: 2 });
+assert.ok(multiActor.headline.includes('已回复 1/2'));
+console.log('✓ per-stage participant reply counts are derived from the roster');
+
+// —— 27. 停滞判定：仅活跃且心跳超阈值时告警 ——
+const heartbeatNow = 1_000_000;
+const activeWithHeartbeat = deriveTopicProgressView({
+  topic: makeTopic({ status: 'investigating', gameStage: 'proposal' }),
+  messages: [
+    makeMessage({
+      gameStage: 'proposal',
+      isPending: true,
+      authorName: '吴用',
+      startedAt: heartbeatNow - 30_000,
+    }),
+  ],
+  executions: [
+    makeExecution({ agentName: '吴用', startedAt: heartbeatNow - 30_000, lastHeartbeatAt: heartbeatNow - 5_000 }),
+  ],
+});
+assert.ok(activeWithHeartbeat);
+assert.equal(activeWithHeartbeat.lastHeartbeatAt, heartbeatNow - 5_000);
+assert.equal(isProgressStalled(activeWithHeartbeat, heartbeatNow), false);
+assert.equal(
+  isProgressStalled(activeWithHeartbeat, heartbeatNow + PROGRESS_STALL_THRESHOLD_MS + 1),
+  true
+);
+assert.equal(isProgressStalled(concluded, heartbeatNow + PROGRESS_STALL_THRESHOLD_MS * 10), false);
+console.log('✓ stall detection uses heartbeat age only while active');
+
+// —— 28. 标准协同模式：活跃回复者与终态 ——
+const standardActive = deriveTopicProgressView({
+  topic: makeTopic({ discussionMode: 'standard', status: 'investigating' }),
+  messages: [
+    makeMessage({ isPending: true, authorName: '宋江', startedAt: 2_000 }),
+  ],
+});
+assert.ok(standardActive);
+assert.equal(standardActive.mode, 'standard');
+assert.equal(standardActive.isActive, true);
+assert.ok(standardActive.headline.includes('宋江 正在回复'));
+
+const standardTerminal = deriveTopicProgressView({
+  topic: makeTopic({ discussionMode: 'standard', status: 'resolved' }),
+  messages: [],
+});
+assert.ok(standardTerminal);
+assert.equal(standardTerminal.isTerminal, true);
+assert.ok(standardTerminal.headline.includes('已定案'));
+console.log('✓ standard collaboration mode exposes active responders and terminal state');
+
+// —— 29. DM 双方博弈：当前发言方与人类/Agent 角色映射 ——
+const dmDuelActive = deriveTopicProgressView({
+  topic: makeTopic({
+    scopeType: 'dm',
+    dmAgentId: 'agent-dm',
+    duelRoles: { proposer: 'human', challenger: 'agent' },
+    status: 'investigating',
+  }),
+  messages: [
+    makeMessage({
+      authorId: 'agent-dm',
+      authorName: '燕青',
+      isPending: true,
+      startedAt: 3_000,
+    }),
+  ],
+  executions: [makeExecution({ agentId: 'agent-dm', agentName: '燕青', startedAt: 3_000 })],
+});
+assert.ok(dmDuelActive);
+assert.equal(dmDuelActive.mode, 'dm_duel');
+assert.ok(dmDuelActive.headline.includes('燕青 正在质询'));
+assert.equal(dmDuelActive.activeStartedAt, 3_000);
+console.log('✓ DM duel maps the active side to the configured roles');
+
+// —— 30. 节点点击：提供回调时渲染可访问按钮，未开始节点禁用 ——
+const clickableMarkup = renderToStaticMarkup(
+  createElement(TopicProgressStrip, {
+    view: activeWithHeartbeat,
+    onSelectNode: () => {},
+  })
+);
+assert.ok(clickableMarkup.includes('<button'));
+assert.ok(clickableMarkup.includes('跳转到提案立论'));
+assert.ok(clickableMarkup.includes('disabled=""'));
+console.log('✓ node dots become jump buttons when a handler is provided');
+
+// —— 31. 标准 / DM / 执行态静态渲染冒烟 ——
+const standardMarkup = renderToStaticMarkup(
+  createElement(TopicProgressStrip, { view: standardActive })
+);
+assert.ok(standardMarkup.includes('协同讨论'));
+assert.ok(standardMarkup.includes('animate-spin'));
+
+const dmMarkup = renderToStaticMarkup(
+  createElement(TopicProgressStrip, { view: dmDuelActive })
+);
+assert.ok(dmMarkup.includes('双方博弈'));
+
+const executionMarkup = renderToStaticMarkup(
+  createElement(TopicProgressStrip, { view: executing })
+);
+assert.ok(executionMarkup.includes('落地执行'));
+assert.ok(executionMarkup.includes('text-purple-600'));
+
+const blockedMarkup = renderToStaticMarkup(
+  createElement(TopicProgressStrip, { view: concurrenceBlocked })
+);
+assert.ok(blockedMarkup.includes('text-amber-600'));
+console.log('✓ static render covers standard / DM / execution / blocked phases');
 
 console.log('All Topic Progress View tests passed.');

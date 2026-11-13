@@ -14,7 +14,10 @@ import {
 } from '../types';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { TopicProgressStrip } from './TopicProgressStrip';
-import { deriveTopicProgressView } from '../services/topicProgressView';
+import {
+  deriveTopicProgressView,
+  type TopicProgressNodeKey,
+} from '../services/topicProgressView';
 import { 
   X,
   GitBranch,
@@ -837,6 +840,32 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     }
   }, []);
 
+  /**
+   * 进度条节点点击：跳转到该阶段的第一条已落定消息。
+   * 通过 ref 读取最新消息，保持回调身份稳定，避免思考心跳刷新 pendingHint 时
+   * 让 memo 进度条无谓重渲染。
+   */
+  const messagesForJumpRef = useRef(messages);
+  messagesForJumpRef.current = messages;
+  const handleSelectProgressNode = useCallback(
+    (key: TopicProgressNodeKey) => {
+      if (key === 'decomposition') {
+        scrollToTop('smooth');
+        return;
+      }
+      if (key === 'execution') {
+        scrollToBottom('smooth');
+        return;
+      }
+      const currentMessages = messagesForJumpRef.current;
+      const target =
+        currentMessages.find((message) => message.gameStage === key && !message.isPending) ??
+        currentMessages.find((message) => message.gameStage === key);
+      if (target) scrollToTopicMessageTop(target.id);
+    },
+    [scrollToBottom, scrollToTopicMessageTop, scrollToTop]
+  );
+
   // 1. 进入议题（打开抽屉或切换议题 ID 时）：立即瞬移至最新消息位置，并用 rAF + 多级微任务防止 Markdown/代码块排版滞后
   useEffect(() => {
     if (!isOpen || !topic?.id) {
@@ -1355,7 +1384,12 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       )}
 
       {/* 常驻只读进度条：无需展开看板即可看到当前阶段、执行者与耗时 */}
-      {topicProgressView && <TopicProgressStrip view={topicProgressView} />}
+      {topicProgressView && (
+        <TopicProgressStrip
+          view={topicProgressView}
+          onSelectNode={handleSelectProgressNode}
+        />
+      )}
 
       {/* 2. Topic Anchor Context & Telemetry Dashboard (Collapsible) */}
       {isHeaderCollapsed ? (
