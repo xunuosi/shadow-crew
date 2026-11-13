@@ -24,6 +24,7 @@ import {
   buildWorkflowPrompt,
   getWorkflowModeMeta,
   getWorkflowStageSpec,
+  hasUserMessageAfterKickoff,
   initializeWorkflowState,
   markWorkflowStageActive,
   parseDesignArtifact,
@@ -155,10 +156,7 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
 
   const hasNewUserMessage = useCallback(
     (topicId: string, kickoffUserMessageId: string): boolean =>
-      (messagesRef.current[topicId] || []).some(
-        (message) =>
-          message.authorId === 'user-norris' && message.id !== kickoffUserMessageId
-      ),
+      hasUserMessageAfterKickoff(messagesRef.current[topicId] || [], kickoffUserMessageId),
     [messagesRef]
   );
 

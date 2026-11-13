@@ -3,3 +3,4 @@ export * from './workflowGates';
 export * from './workflowEngine';
 export * from './workflowPrompts';
 export * from './workflowProgress';
+export * from './workflowInputs';

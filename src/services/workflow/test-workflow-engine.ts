@@ -9,10 +9,12 @@ import {
   initializeWorkflowState,
   isVerificationPassed,
   markWorkflowStageActive,
+  hasUserMessageAfterKickoff,
   parseDesignArtifact,
   parseReviewReport,
   parseVerificationReport,
   truncateArtifactForPrompt,
+  WORKFLOW_USER_ID,
   workflowProgressSignature,
   type WorkflowStageOutput,
 } from './index';
@@ -458,6 +460,28 @@ const designWithCriteria = [
   const missing = parseDesignArtifact('随便写点方案，没有问题。');
   assert.equal(missing.hasAcceptanceCriteria, false);
   console.log('✓ 设计产物解析');
+}
+
+// 21. 新一轮用户输入判定：只统计 kickoff 之后的消息，避免历史消息误取消工作流
+{
+  const messages = [
+    { id: 'user-old', authorId: WORKFLOW_USER_ID },
+    { id: 'system-kickoff', authorId: 'workflow-orchestrator' },
+    { id: 'user-kickoff', authorId: WORKFLOW_USER_ID },
+    { id: 'agent-reply', authorId: 'agent-author' },
+  ];
+  assert.equal(hasUserMessageAfterKickoff(messages, 'user-kickoff'), false);
+  assert.equal(hasUserMessageAfterKickoff(messages, 'system-kickoff'), true);
+  assert.equal(
+    hasUserMessageAfterKickoff(
+      [...messages, { id: 'user-next', authorId: WORKFLOW_USER_ID }],
+      'user-kickoff'
+    ),
+    true
+  );
+  // kickoff 消息不在列表中（数据异常）时保守取消
+  assert.equal(hasUserMessageAfterKickoff(messages, 'missing-kickoff'), true);
+  console.log('✓ 新一轮用户输入判定');
 }
 
 console.log('\n✅ Workflow test suite passed');
