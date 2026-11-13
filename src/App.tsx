@@ -137,6 +137,7 @@ import {
   saveChannelsToDb,
   saveWorkspaceBindingsToDb,
   deleteWorkspaceBindingsFromDb,
+  deleteMessagesFromDb,
   resolveWorkspaceCwd,
   saveThreadsToDb,
   saveAgentsToDb,
@@ -211,6 +212,7 @@ import {
   executeAbortAllOrchestration,
   executeUpdateChannelMembersOrchestration,
 } from './services/agentCollaboration';
+import { resolveFastPathResponder } from './services/intentRouter';
 import {
   evaluateGameConfiguration,
   normalizeGameTheoreticPolicy,
@@ -272,6 +274,11 @@ export default function App() {
 
   // 关键防回滚锁：首轮从 SQLite 加载完成前，严禁各 entity 的初始挂载触发 useEffect 覆盖底层数据库
   const isWorkspaceHydratedRef = useRef(false);
+  /**
+   * 已成功写入 SQLite 的消息快照（按 id）。每次持久化只提交与快照不同引用的消息，
+   * 避免流式输出期间每 600ms 对全部历史做一次 O(N) 全表 upsert。
+   */
+  const persistedMessageRefsRef = useRef<Map<string, Message>>(new Map());
   const workspaceBindingSchemaPersistedRef = useRef(false);
   const syncRunningAgentsWithBackendRef = useRef<(() => Promise<void>) | null>(null);
   const sanitizeMessages = useCallback((list: Message[]): Message[] => {
@@ -730,10 +737,18 @@ export default function App() {
     if (!isWorkspaceHydratedRef.current) return;
     const timer = window.setTimeout(() => {
       const allMsgs = Object.values(messages).flat();
-      if (allMsgs.length > 0) {
-        saveMessagesBatchToDb(allMsgs).catch((e) => {
-          console.error('[App] SQLite saveMessagesBatchToDb failed:', e);
-        });
+      // 仅提交自上次成功写入后发生变化的增量消息，避免全量重写。
+      const dirtyMsgs = allMsgs.filter(
+        (m) => persistedMessageRefsRef.current.get(m.id) !== m
+      );
+      if (dirtyMsgs.length > 0) {
+        saveMessagesBatchToDb(dirtyMsgs)
+          .then(() => {
+            for (const m of dirtyMsgs) persistedMessageRefsRef.current.set(m.id, m);
+          })
+          .catch((e) => {
+            console.error('[App] SQLite saveMessagesBatchToDb failed:', e);
+          });
       }
       if (!isTauriEnvironment()) {
         try {
@@ -752,10 +767,17 @@ export default function App() {
     const flushMessages = () => {
       if (!isWorkspaceHydratedRef.current) return;
       const allMsgs = Object.values(messagesRef.current).flat();
-      if (allMsgs.length === 0) return;
-      void saveMessagesBatchToDb(allMsgs).catch((e) => {
-        console.error('[App] SQLite flush on page hide failed:', e);
-      });
+      const dirtyMsgs = allMsgs.filter(
+        (m) => persistedMessageRefsRef.current.get(m.id) !== m
+      );
+      if (dirtyMsgs.length === 0) return;
+      void saveMessagesBatchToDb(dirtyMsgs)
+        .then(() => {
+          for (const m of dirtyMsgs) persistedMessageRefsRef.current.set(m.id, m);
+        })
+        .catch((e) => {
+          console.error('[App] SQLite flush on page hide failed:', e);
+        });
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') flushMessages();
@@ -1363,6 +1385,9 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const tauriListen = listenTauriEvent;
+    // Tauri 事件注册是异步的：若 effect 在注册 Promise resolve 前卸载，
+    // 必须立即解绑，否则 StrictMode 首次挂载的监听会永久存活并重复处理事件。
+    let disposed = false;
 
     const mergePendingPermission = (request: AcpPermissionRequest) => {
       setPendingAcpPermissions((prev) => upsertPendingAcpPermission(prev, request));
@@ -1375,6 +1400,7 @@ export default function App() {
         mergePendingPermission(request);
       }
     }).then((fn: any) => {
+      if (disposed) { fn(); return; }
       unlistenPermissionRequest = fn;
     }).catch((err) => {
       console.warn('[App] Failed to subscribe ACP permission events:', err);
@@ -1390,6 +1416,7 @@ export default function App() {
         );
       }
     }).then((fn: any) => {
+      if (disposed) { fn(); return; }
       unlistenPermissionResolved = fn;
     }).catch((err) => {
       console.warn('[App] Failed to subscribe ACP permission resolution events:', err);
@@ -1418,6 +1445,7 @@ export default function App() {
         setAgents((prev) => applyLocalStatusChangeEvent(prev, payload));
       }
     }).then((fn: any) => {
+      if (disposed) { fn(); return; }
       unlisten = fn;
     }).catch(() => {});
 
@@ -1442,6 +1470,7 @@ export default function App() {
         persistSessionWarmState();
       }
     }).then((fn: any) => {
+      if (disposed) { fn(); return; }
       unlistenSessionReset = fn;
     }).catch(() => {});
 
@@ -1483,6 +1512,7 @@ export default function App() {
         };
       });
     }).then((fn: any) => {
+      if (disposed) { fn(); return; }
       unlistenReplaySink = fn;
     }).catch(() => {});
 
@@ -1550,6 +1580,7 @@ export default function App() {
         });
       }
     }).then((fn: any) => {
+      if (disposed) { fn(); return; }
       unlistenHeartbeat = fn;
     }).catch(() => {});
 
@@ -1632,10 +1663,12 @@ export default function App() {
         buf.timer = window.setTimeout(() => flushChunkBuffer(key), flushInterval);
       }
     }).then((fn: any) => {
+      if (disposed) { fn(); return; }
       unlistenChunk = fn;
     }).catch(() => {});
 
     return () => {
+      disposed = true;
       // 卸载前把尚未刷新的流式片段落地，避免丢字。
       for (const key of Array.from(chunkBuffers.keys())) flushChunkBuffer(key);
       window.clearInterval(permissionPollTimer);
@@ -2009,6 +2042,18 @@ export default function App() {
       }
       return nextMsgs;
     });
+    // 同步清理 SQLite：否则已删除频道的消息会在下次启动水合时重新出现。
+    void deleteMessagesFromDb(undefined, channelId)
+      .then((deleted) => {
+        for (const [id, persisted] of Array.from(persistedMessageRefsRef.current.entries())) {
+          if (persisted.channelId === channelId || deletedThreads.includes(persisted.threadId)) {
+            persistedMessageRefsRef.current.delete(id);
+          }
+        }
+      })
+      .catch((err) => {
+        console.error('[App] Failed to delete channel messages from SQLite:', err);
+      });
 
     // 清理该频道的会话水位线、交付缓存以及底层 ACP 进程中对应的 session_ids
     clearSessionWarmScope({ channelId, deletedThreadIds: deletedThreads });
@@ -3401,7 +3446,7 @@ export default function App() {
   });
 
   // 5. 工作流编排 Hook（咨询产出 / 评审审查 / 交付实施）
-  const { runTopicWorkflow } = useTopicWorkflow({
+  const { runTopicWorkflow, cancelTopicWorkflow } = useTopicWorkflow({
     agentsRef,
     messagesRef,
     activeExecutionsRef,
@@ -3900,8 +3945,9 @@ export default function App() {
       if (userMentionedAgents.length > 0) {
         respondingAgents = userMentionedAgents;
       } else if (candidateAgents.length > 0) {
-        // 标准讨论模式（对标 Buzz）：当用户未显式点名特定 Agent 时，唤醒当前议题内所有已指派的在线 Agent 在 Hop 1 并发发言
-        respondingAgents = candidateAgents;
+        // 简单事实型问题走单 Agent 快答；复杂诉求仍全员并发会诊（对标 Buzz Hop 1）。
+        const fastResponder = resolveFastPathResponder(agentTurnContent, candidateAgents);
+        respondingAgents = fastResponder ? [fastResponder] : candidateAgents;
       }
     }
 
@@ -4954,8 +5000,9 @@ export default function App() {
     } else if (userMentionedAgents.length > 0) {
       respondingAgents = userMentionedAgents;
     } else if (candidateAgents.length > 0) {
-      // 普通频道模式（对标 Buzz）：当用户首次发言未显式点名特定单人时，唤醒当前频道内所有已准入的在线 Agent 在 Hop 1 并发发言
-      respondingAgents = candidateAgents;
+      // 简单事实型问题走单 Agent 快答；复杂诉求仍唤醒频道内全部已准入在线 Agent 并发会诊。
+      const fastResponder = resolveFastPathResponder(agentTurnContent, candidateAgents);
+      respondingAgents = fastResponder ? [fastResponder] : candidateAgents;
     }
 
     if (respondingAgents.length === 0) {
@@ -6069,8 +6116,16 @@ export default function App() {
                 onResolveTopic={handleResolveTopic}
                 onReopenTopic={handleReopenTopic}
                 onExecuteTopicPatch={handleExecuteTopicPatch}
-                onApplyTopicPatch={(tid) => handleApplyTopicPatch(tid)}
+                onApplyTopicPatch={(tid, diffs) => handleApplyTopicPatch(tid, diffs)}
                 onRollbackTopicPatch={handleRollbackTopicPatch}
+                onCancelWorkflow={(tid) => {
+                  cancelTopicWorkflow(
+                    tid,
+                    '用户在工作流进度条上主动取消了本次运行。'
+                  );
+                  // 同时终止该议题在途的 Agent 回合，避免“已取消”后仍在后台跑完整个阶段。
+                  handleAbortAll(tid);
+                }}
                 workspaceCwd={getTopicWorkspaceBinding(activeTopicId ?? undefined)?.cwd}
                 overlappingFiles={(() => {
                   if (!activeTopicData || activeTopicData.gameTheoreticState?.executionStatus === 'applied') return [];

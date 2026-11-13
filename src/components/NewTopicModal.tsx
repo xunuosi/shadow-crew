@@ -175,6 +175,15 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
     return 560;
   });
   const [isDraggingEdge, setIsDraggingEdge] = useState<'left' | 'right' | null>(null);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+
+  // 拖拽中弹窗被卸载时兜底移除 window 监听，避免已卸载组件继续被 pointermove 驱动。
+  useEffect(() => {
+    return () => {
+      dragCleanupRef.current?.();
+      dragCleanupRef.current = null;
+    };
+  }, []);
 
   const handleStartDrag = (side: 'left' | 'right', e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -205,9 +214,8 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
       target.releasePointerCapture?.(upEvent.pointerId);
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', handlePointerUp);
-      window.removeEventListener('pointercancel', handlePointerUp);
+      dragCleanupRef.current?.();
+      dragCleanupRef.current = null;
 
       const windowCenter = window.innerWidth / 2;
       let calculatedWidth: number;
@@ -227,6 +235,11 @@ export const NewTopicModal: React.FC<NewTopicModalProps> = ({
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
     window.addEventListener('pointercancel', handlePointerUp);
+    dragCleanupRef.current = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
   };
 
   const toggleWidescreen = () => {

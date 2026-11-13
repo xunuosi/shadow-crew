@@ -42,20 +42,20 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         </div>
       </div>
 
-      {/* Center: Nostr Relay & Workspace Status */}
+      {/* Center: 本地运行态 & 工作区（不展示未接通的远端 Relay 与伪造延迟） */}
       <div className="hidden md:flex items-center gap-3">
         <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-surface-subtle border border-border text-fg-secondary">
-          <Radio className="w-3.5 h-3.5 text-emerald-500 animate-pulse" />
-          <span>Relay:</span>
-          <span className="text-emerald-500">wss://relay.shinobi.local</span>
-          <span className="text-[10px] text-fg-muted font-sans">8ms</span>
+          <Radio className="w-3.5 h-3.5 text-emerald-500" />
+          <span>ACP:</span>
+          <span className="text-emerald-600 dark:text-emerald-400">本地托管</span>
         </div>
 
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-surface-subtle border border-border text-fg-secondary">
-          <ShieldCheck className="w-3.5 h-3.5 text-blue-500" />
-          <span>Repo:</span>
-          <span className="text-blue-500 font-bold">{currentWorkspace}</span>
-          <span className="text-[10px] px-1 bg-surface rounded text-blue-500 border border-border">main</span>
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-surface-subtle border border-border text-fg-secondary min-w-0">
+          <ShieldCheck className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+          <span className="shrink-0">Workspace:</span>
+          <span className="text-blue-600 dark:text-blue-400 font-bold truncate max-w-[220px]" title={currentWorkspace}>
+            {currentWorkspace}
+          </span>
         </div>
       </div>
 

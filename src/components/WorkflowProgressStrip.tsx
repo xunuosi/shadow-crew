@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Clock, Loader2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Clock, Loader2, Square } from 'lucide-react';
 import type { WorkflowStageKey } from '../types';
 import { formatProgressElapsed } from '../services/topicProgressView';
 import {
@@ -12,6 +12,8 @@ interface WorkflowProgressStripProps {
   view: WorkflowProgressView;
   /** 点击阶段节点跳转到该阶段的消息 */
   onSelectStage?: (key: WorkflowStageKey) => void;
+  /** 运行中允许用户主动取消整个工作流 */
+  onCancel?: () => void;
 }
 
 const NODE_STATE_LABEL: Record<WorkflowProgressNodeState, string> = {
@@ -37,7 +39,7 @@ function nodeDotClass(state: WorkflowProgressNodeState): string {
   }
 }
 
-function WorkflowProgressStripInner({ view, onSelectStage }: WorkflowProgressStripProps) {
+function WorkflowProgressStripInner({ view, onSelectStage, onCancel }: WorkflowProgressStripProps) {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -127,6 +129,19 @@ function WorkflowProgressStripInner({ view, onSelectStage }: WorkflowProgressStr
             {elapsedLabel}
           </span>
         ) : null}
+
+        {view.isActive && onCancel ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            title="取消当前工作流"
+            aria-label="取消当前工作流"
+            className="shrink-0 inline-flex items-center gap-1 rounded border border-rose-300 dark:border-rose-500/40 bg-rose-50 dark:bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-500/20 transition-colors"
+          >
+            <Square className="w-2.5 h-2.5" />
+            取消
+          </button>
+        ) : null}
       </div>
 
       {view.isBlocked && view.blockingReason && (
@@ -164,5 +179,6 @@ export const WorkflowProgressStrip = memo(
   WorkflowProgressStripInner,
   (prev, next) =>
     prev.onSelectStage === next.onSelectStage &&
+    prev.onCancel === next.onCancel &&
     workflowProgressSignature(prev.view) === workflowProgressSignature(next.view)
 );

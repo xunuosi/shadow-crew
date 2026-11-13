@@ -36,7 +36,7 @@ interface TopicMessageCardProps {
   overlappingFiles?: string[];
 }
 
-export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
+const TopicMessageCardInner: React.FC<TopicMessageCardProps> = ({
   topic,
   agents,
   onClick,
@@ -683,3 +683,24 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
     </div>
   );
 };
+
+function sameArray<T>(a: T[] | undefined, b: T[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return !a && !b;
+  if (a.length !== b.length) return false;
+  return a.every((item, index) => item === b[index]);
+}
+
+/**
+ * 议题卡片重渲染成本高（长文本 + 多子区块）。父级 ChatTimeline 在流式输出时每次
+ * 40ms 刷新都会重渲染整条消息列表，这里按真实数据做浅比较并忽略回调函数身份，
+ * 避免无关卡片的重复渲染。
+ */
+export const TopicMessageCard = React.memo(
+  TopicMessageCardInner,
+  (prev, next) =>
+    prev.topic === next.topic &&
+    prev.agents === next.agents &&
+    sameArray(prev.activeExecutions, next.activeExecutions) &&
+    sameArray(prev.overlappingFiles, next.overlappingFiles)
+);

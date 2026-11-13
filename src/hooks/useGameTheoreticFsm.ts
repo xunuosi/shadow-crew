@@ -99,6 +99,34 @@ export function useGameTheoreticFsm({
   getTopicWorkspaceBinding,
   processArbitrationConcurrence,
 }: UseGameTheoreticFsmParams): UseGameTheoreticFsmReturn {
+  /**
+   * 博弈阶段必须有用户可见的失败面：提案阶段此前只 console.warn，
+   * 一旦提案者缺席或返回空内容，界面会永久停在“等待中”且无任何提示。
+   */
+  const postStageFailure = useCallback(
+    (topicId: string, channelId: string | undefined, content: string) => {
+      const failureNotice: Message = {
+        id: `msg-stage-failure-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        threadId: topicId,
+        channelId,
+        authorId: 'system',
+        authorName: 'CognoNexus 阶段守护',
+        authorHandle: '@stage-guard',
+        authorAvatar: '⛔',
+        isAgent: true,
+        kind: 'error',
+        agentBadge: 'Stage Failed',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content,
+      };
+      setMessages((prev) => ({
+        ...prev,
+        [topicId]: [...(prev[topicId] || []), failureNotice],
+      }));
+    },
+    [setMessages]
+  );
+
   const triggerGameTheoreticStageHandover = useCallback(
     async (options: GameTheoreticStageHandoverOptions): Promise<void> => {
 
@@ -141,7 +169,11 @@ export function useGameTheoreticFsm({
 
       if (!proposerAgent) {
         inFlightHandoverRef.current.delete(handoverKey);
-        console.warn('[GameTheoretic] No proposer agent available for modular proposal handover.');
+        postStageFailure(
+          topicId,
+          topicChannel?.id,
+          '⛔ **提案阶段无法启动**：当前议题没有可用的提案者（Proposer）。请在议题中指派并启动至少一名提案 Agent，然后重新发起提案阶段。'
+        );
         return;
       }
 
@@ -252,6 +284,11 @@ export function useGameTheoreticFsm({
             ...prev,
             [topicId]: (prev[topicId] || []).filter((m) => m.id !== proposalPendingId),
           }));
+          postStageFailure(
+            topicId,
+            topicChannel?.id,
+            `⛔ **提案阶段失败**：提案者 **${proposerAgent.name}** 返回了空内容或执行错误。\n\n可能原因：ACP 会话未就绪、模型超时或鉴权失败。请检查该 Agent 的运行状态或改派其他提案者后重试。`
+          );
           inFlightHandoverRef.current.delete(handoverKey);
           return;
         }
@@ -2474,6 +2511,7 @@ export function useGameTheoreticFsm({
       updateTopicDataInState,
       getTopicWorkspaceBinding,
       processArbitrationConcurrence,
+      postStageFailure,
     ]
   );
 

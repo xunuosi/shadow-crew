@@ -766,29 +766,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 <Paperclip className="w-3.5 h-3.5" />
               </button>
 
-              {/* Voice */}
-              <button 
-                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
-                title="语音输入"
-              >
-                <Mic className="w-3.5 h-3.5" />
-              </button>
-
-              {/* Emoji */}
-              <button 
-                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
-                title="插入表情"
-              >
-                <Smile className="w-3.5 h-3.5" />
-              </button>
-
-              {/* Typography / AA */}
-              <button 
-                className="p-1.5 rounded-lg hover:text-accent hover:bg-surface-hover transition-colors cursor-pointer shrink-0"
-                title="富文本格式"
-              >
-                <span className="text-[10px] font-bold">AA</span>
-              </button>
             </div>
 
             {/* Right Action Button: Send or Stop */}

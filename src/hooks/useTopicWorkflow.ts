@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type {
   ActiveAgentExecution,
   Agent,
@@ -113,6 +113,30 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
   } = params;
 
   const runningRef = useRef<Set<string>>(new Set());
+  /**
+   * 运行期排队的用户输入：同一议题在运行中收到新消息时先入队，
+   * 当前阶段结束、旧运行退出后再以最新输入重启，保证“排队”提示与真实行为一致，
+   * 绝不静默丢弃用户新指令。
+   */
+  const pendingRunRef = useRef<
+    Map<
+      string,
+      {
+        topicId: string;
+        userContent: string;
+        kickoffUserMessageId: string;
+        modeOverride?: TopicWorkflowMode;
+      }
+    >
+  >(new Map());
+  const runTopicWorkflowRef = useRef<
+    (
+      topicId: string,
+      userContent: string,
+      kickoffUserMessageId: string,
+      modeOverride?: TopicWorkflowMode
+    ) => Promise<void>
+  >(async () => undefined);
 
   const postSystem = useCallback(
     (topicId: string, content: string, badge: string, avatar: string) => {
@@ -416,6 +440,8 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
             `已完成工作流阶段：${spec.label}`
           ),
           diffView: diffs.length > 0 ? diffs[0] : undefined,
+          // 全量 diff 必须一并落消息，否则多文件改造在抽屉里只会显示/可操作第一个文件。
+          diffViews: diffs.length > 0 ? diffs : undefined,
           workflowStage: stageKey,
           workflowRole: spec.role,
         });
@@ -572,9 +598,16 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
       modeOverride?: TopicWorkflowMode
     ) => {
       if (runningRef.current.has(topicId)) {
+        // 真实排队：覆盖为最新输入，当前阶段结束后由 finally 自动重启新一轮。
+        pendingRunRef.current.set(topicId, {
+          topicId,
+          userContent,
+          kickoffUserMessageId,
+          modeOverride,
+        });
         postSystem(
           topicId,
-          '⏳ 当前议题已有工作流在执行，本轮输入会在当前阶段结束后再处理。',
+          '⏳ 当前议题已有工作流在执行，本轮输入已排队；当前阶段结束后将自动以该输入重跑工作流。',
           '工作流排队',
           '⏳'
         );
@@ -588,8 +621,24 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
         return;
       }
       if (topic.workflowState?.status === 'running') {
-        postSystem(topicId, '⏳ 工作流仍在执行中，请等待当前阶段结束。', '工作流排队', '⏳');
-        return;
+        // 内存中没有对应运行锁，说明是上次进程退出（崩溃/强杀）遗留的 running 状态。
+        // 直接自愈为 cancelled，避免该议题永久“仍在执行中”无法继续。
+        const healedState: TopicWorkflowState = {
+          ...topic.workflowState,
+          status: 'cancelled',
+          runToken: undefined,
+          currentStageKey: undefined,
+          blockingReason: '上次运行在应用退出或进程中断时未正常结束，已自动标记为取消。',
+          finishedAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        persistState(topicId, healedState);
+        postSystem(
+          topicId,
+          '♻️ 检测到上次异常中断的工作流残留状态，已自动恢复为可重新运行。',
+          '工作流自愈',
+          '♻️'
+        );
       }
 
       const participants = agentsRef.current.filter((agent) =>
@@ -745,6 +794,20 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
       } finally {
         runningRef.current.delete(topicId);
         syncRunningAgentsWithBackend();
+
+        // 排队输入接管：旧运行完全退出后再启动新一轮，避免并发写同一议题状态。
+        const pending = pendingRunRef.current.get(topicId);
+        if (pending) {
+          pendingRunRef.current.delete(topicId);
+          queueMicrotask(() => {
+            void runTopicWorkflowRef.current(
+              pending.topicId,
+              pending.userContent,
+              pending.kickoffUserMessageId,
+              pending.modeOverride
+            );
+          });
+        }
       }
     },
     [
@@ -763,6 +826,10 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
       syncRunningAgentsWithBackend,
     ]
   );
+
+  useEffect(() => {
+    runTopicWorkflowRef.current = runTopicWorkflow;
+  }, [runTopicWorkflow]);
 
   const isTopicWorkflowRunning = useCallback(
     (topicId: string) => runningRef.current.has(topicId),

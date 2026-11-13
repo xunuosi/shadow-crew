@@ -1330,7 +1330,8 @@ export async function sendPromptToRemoteAcpWebSocket(
       };
 
       ws.onclose = () => {
-        if (!resolved && promptSent) {
+        // 无论 prompt 是否已发出，连接关闭都必须立即结算，否则该请求会一直悬挂到 300s 空闲超时。
+        if (!resolved) {
           resolved = true;
           cleanupTimers();
           resolve({
@@ -2505,6 +2506,14 @@ export async function clearAcpAgentSessions(
     }
   }
   latestScopeClearGeneration.set(scopeKey, clearGeneration);
+
+  // 新的清理请求接管同一（或更宽）作用域时，先解除旧的失败锁：
+  // 一次超时不应把该议题永久 Fail-Closed 到只能删议题；若本次仍失败，catch 会重新写入失败锁。
+  for (const failedKey of Array.from(failedSessionClearScopes.keys())) {
+    if (failedKey === scopeKey || doesScopeCoverOtherScope(scopeKey, failedKey)) {
+      failedSessionClearScopes.delete(failedKey);
+    }
+  }
 
   let resolveSettled!: () => void;
   const settledPromise = new Promise<void>((resolve) => {

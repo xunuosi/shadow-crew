@@ -61,6 +61,7 @@ export function useResizablePanel({
   const startWidthRef = useRef(width);
   const currentWidthRef = useRef(width);
   const rafIdRef = useRef<number | null>(null);
+  const detachPointerListenersRef = useRef<(() => void) | null>(null);
 
   // Keep currentWidthRef in sync
   useEffect(() => {
@@ -202,12 +203,8 @@ export function useResizablePanel({
           }
         }
 
-        target.removeEventListener('pointermove', handlePointerMove);
-        target.removeEventListener('pointerup', handlePointerUp);
-        target.removeEventListener('pointercancel', handlePointerUp);
-        window.removeEventListener('pointermove', handlePointerMove);
-        window.removeEventListener('pointerup', handlePointerUp);
-        window.removeEventListener('pointercancel', handlePointerUp);
+        detachPointerListenersRef.current?.();
+        detachPointerListenersRef.current = null;
 
         // 3. Finalize width calculation
         const deltaX = upEvent.clientX - startXRef.current;
@@ -244,6 +241,16 @@ export function useResizablePanel({
       window.addEventListener('pointermove', handlePointerMove, { passive: true });
       window.addEventListener('pointerup', handlePointerUp);
       window.addEventListener('pointercancel', handlePointerUp);
+
+      // 记录解绑器：拖拽过程中组件卸载时由 cleanup 兜底移除，避免监听永驻。
+      detachPointerListenersRef.current = () => {
+        target.removeEventListener('pointermove', handlePointerMove);
+        target.removeEventListener('pointerup', handlePointerUp);
+        target.removeEventListener('pointercancel', handlePointerUp);
+        window.removeEventListener('pointermove', handlePointerMove);
+        window.removeEventListener('pointerup', handlePointerUp);
+        window.removeEventListener('pointercancel', handlePointerUp);
+      };
     },
     [direction, minWidth, getMaxWidth, storageKey, panelRef]
   );
@@ -251,6 +258,8 @@ export function useResizablePanel({
   // Clean up global cursor and pending rAF if unmounted while dragging
   useEffect(() => {
     return () => {
+      detachPointerListenersRef.current?.();
+      detachPointerListenersRef.current = null;
       if (rafIdRef.current !== null) {
         cancelAnimationFrame(rafIdRef.current);
       }

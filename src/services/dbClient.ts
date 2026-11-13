@@ -442,6 +442,37 @@ export async function saveWorkspaceBindingsToDb(bindings: WorkspaceBinding[]): P
   }
 }
 
+/**
+ * 删除消息：频道被删除时按 channelId 清理其下所有线程消息。
+ * 仅清理内存而不清库，会让已删除频道在下次启动时“复活”。
+ */
+export async function deleteMessagesFromDb(
+  threadId?: string,
+  channelId?: string
+): Promise<number> {
+  if (!threadId && !channelId) return 0;
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    const count = await invoke('db_delete_messages', {
+      threadId: threadId || null,
+      channelId: channelId || null,
+    });
+    return Number(count) || 0;
+  }
+  try {
+    const raw = localStorage.getItem('shinobi_messages');
+    if (!raw) return 0;
+    const messages: Message[] = JSON.parse(raw);
+    const kept = messages.filter(
+      (m) => m.threadId !== threadId && m.channelId !== channelId
+    );
+    localStorage.setItem('shinobi_messages', JSON.stringify(kept));
+    return messages.length - kept.length;
+  } catch (err) {
+    failClosed('localStorage 消息删除', err);
+  }
+}
+
 export async function deleteWorkspaceBindingsFromDb(bindingIds: string[]): Promise<void> {
   if (bindingIds.length === 0) return;
   const invoke = getTauriInvoke();

@@ -115,8 +115,12 @@ interface TopicThreadDrawerProps {
   }) => void;
   onReopenTopic?: (topicId: string) => void;
   onExecuteTopicPatch?: (topicId: string, executorId: string) => void;
-  onApplyTopicPatch?: (topicId: string) => Promise<void> | void;
+  onApplyTopicPatch?: (
+    topicId: string,
+    customDiffs?: TopicPatchDiffItem[]
+  ) => Promise<void> | void;
   onRollbackTopicPatch?: (topicId: string) => Promise<void> | void;
+  onCancelWorkflow?: (topicId: string) => void;
   onOpenCodexDiff: (diff: any) => void;
   onEditTopic?: () => void;
   workspaceCwd?: string;
@@ -157,6 +161,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   onExecuteTopicPatch,
   onApplyTopicPatch,
   onRollbackTopicPatch,
+  onCancelWorkflow,
   onOpenCodexDiff,
   onEditTopic,
   workspaceCwd,
@@ -1043,11 +1048,17 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     return list;
   })();
 
+  const handleCancelWorkflow = useCallback(() => {
+    if (topic?.id && onCancelWorkflow) onCancelWorkflow(topic.id);
+  }, [topic?.id, onCancelWorkflow]);
+
   const handleApplyPatchClick = async () => {
     if (!onApplyTopicPatch || !topic?.id) return;
     setIsApplyingPatch(true);
     try {
-      await onApplyTopicPatch(topic.id);
+      // 显式传入抽屉解析出的全量 diff：workflow 模式不写 gameTheoreticState.executionDiffs，
+      // 不传会导致合入逻辑读到空数组而静默 return。
+      await onApplyTopicPatch(topic.id, topicExecutionDiffs);
     } finally {
       setIsApplyingPatch(false);
     }
@@ -1445,6 +1456,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         <WorkflowProgressStrip
           view={workflowProgressView}
           onSelectStage={handleSelectWorkflowStage}
+          onCancel={onCancelWorkflow ? handleCancelWorkflow : undefined}
         />
       ) : topicProgressView ? (
         <TopicProgressStrip

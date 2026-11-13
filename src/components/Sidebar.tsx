@@ -13,8 +13,6 @@ import {
   Search,
   MessageSquare,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   Layers,
   LogOut,
   Sliders,
@@ -84,7 +82,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const drafts = useAllDrafts();
   const isChatView = currentMainView === 'chat';
-  const visibleChannels = channels.filter((channel) => channel.status !== 'deleted');
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const visibleChannels = channels.filter(
+    (channel) =>
+      channel.status !== 'deleted' &&
+      (normalizedQuery.length === 0 ||
+        channel.name.toLowerCase().includes(normalizedQuery))
+  );
 
   return (
     <aside
@@ -118,18 +122,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <PanelLeftClose className="w-3.5 h-3.5" />
           </button>
-          <button 
-            className="p-1 hover:text-fg rounded hover:bg-surface-hover transition-colors cursor-pointer"
-            title="后退"
-          >
-            <ChevronLeft className="w-3.5 h-3.5" />
-          </button>
-          <button 
-            className="p-1 hover:text-fg rounded hover:bg-surface-hover transition-colors cursor-pointer"
-            title="前进"
-          >
-            <ChevronRight className="w-3.5 h-3.5" />
-          </button>
         </div>
       </div>
 
@@ -145,7 +137,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none"
           />
           <span className="text-[10px] text-fg-muted font-mono flex items-center gap-0.5 border border-border px-1 py-0.5 rounded bg-surface shrink-0">
-            ⌘K
+            筛选
           </span>
         </div>
       </div>

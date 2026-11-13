@@ -328,18 +328,31 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     return { parallelLandingTopics: landingList, topicOverlapMap: overlapMap };
   }, [messages, activeThread?.type]);
 
-  const filteredMessages = messages.filter((m) => {
-    if (activeThread?.type === 'dm') {
-      if (m.agentBadge === 'Channel Guard') {
-        return false;
-      }
-    }
-    if (filter === 'topics') return m.type === 'topic';
-    if (filter === 'resolved') return m.type === 'topic' && m.topicData?.status === 'resolved';
-    return true;
-  });
+  const filteredMessages = useMemo(
+    () =>
+      messages.filter((m) => {
+        if (activeThread?.type === 'dm') {
+          if (m.agentBadge === 'Channel Guard') {
+            return false;
+          }
+        }
+        if (filter === 'topics') return m.type === 'topic';
+        if (filter === 'resolved') return m.type === 'topic' && m.topicData?.status === 'resolved';
+        return true;
+      }),
+    [messages, activeThread?.type, filter]
+  );
 
-  const topicCount = messages.filter((m) => m.type === 'topic').length;
+  // 消息 id 集合：渲染循环里避免对每条消息再做一次 O(n) 的 some 查找。
+  const messageIdSet = useMemo(
+    () => new Set(filteredMessages.map((m) => m.id)),
+    [filteredMessages]
+  );
+
+  const topicCount = useMemo(
+    () => messages.filter((m) => m.type === 'topic').length,
+    [messages]
+  );
 
   if (!activeThread) {
     return (
@@ -848,7 +861,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
 
             // 1. Resolve root question message ID (original prompt at the beginning of this cascade)
             let rootId: string | null = null;
-            if (collab.rootMessageId && filteredMessages.some((m) => m.id === collab.rootMessageId)) {
+            if (collab.rootMessageId && messageIdSet.has(collab.rootMessageId)) {
               rootId = collab.rootMessageId;
             } else {
               for (let i = msgIdx - 1; i >= 0; i--) {
@@ -862,7 +875,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
 
             // 2. Resolve direct invoking message ID (the message by @Agent that summoned this reply)
             let sourceId: string | null = null;
-            if (collab.sourceMessageId && filteredMessages.some((m) => m.id === collab.sourceMessageId)) {
+            if (collab.sourceMessageId && messageIdSet.has(collab.sourceMessageId)) {
               sourceId = collab.sourceMessageId;
             } else if (collab.invokedByAgentId || collab.invokedByAgentName) {
               for (let i = msgIdx - 1; i >= 0; i--) {
