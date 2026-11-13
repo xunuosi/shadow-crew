@@ -3149,12 +3149,27 @@ async fn main() {
             // 仅监听 Exit（此时窗口已关闭、退出不可撤销），避免 ExitRequested 被取消时误杀进程。
             if let tauri::RunEvent::Exit = event {
                 let manager = app_handle.state::<AppState>().acp_manager.clone();
-                tauri::async_runtime::block_on(async move {
-                    let mut guard = manager.lock().await;
-                    if let Err(e) = guard.stop_all().await {
-                        tracing::warn!("Failed to stop all ACP agents on exit: {}", e);
-                    }
+                // 退出回调运行在 Tauri 异步运行时上下文中，直接 block_on 会 panic
+                // （Cannot start a runtime from within a runtime）。改在独立线程中用
+                // 专用 runtime 阻塞等待，确保进程退出前完成 ACP 子进程清理。
+                let cleanup = std::thread::spawn(move || {
+                    let runtime = match tokio::runtime::Runtime::new() {
+                        Ok(runtime) => runtime,
+                        Err(e) => {
+                            tracing::warn!("Failed to build exit cleanup runtime: {}", e);
+                            return;
+                        }
+                    };
+                    runtime.block_on(async move {
+                        let mut guard = manager.lock().await;
+                        if let Err(e) = guard.stop_all().await {
+                            tracing::warn!("Failed to stop all ACP agents on exit: {}", e);
+                        }
+                    });
                 });
+                if let Err(e) = cleanup.join() {
+                    tracing::warn!("Exit cleanup thread panicked: {:?}", e);
+                }
             }
         });
 }
