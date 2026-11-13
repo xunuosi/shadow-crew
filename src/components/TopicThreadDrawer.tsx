@@ -18,6 +18,7 @@ import {
   deriveTopicProgressView,
   type TopicProgressNodeKey,
 } from '../services/topicProgressView';
+import { deriveGavelConsoleState } from '../services/gavelConsoleState';
 import { 
   X,
   GitBranch,
@@ -316,6 +317,32 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     ? evaluateRulingGates(topic).isChallengerQuorumMet
     : true;
 
+  // ===== 法槌控制台门禁：回合边界可随时截断，但生成中途禁止落槌 =====
+  const hasPendingMessage = messages.some((message) => message.isPending);
+  const gavelConsoleState = deriveGavelConsoleState({
+    isResolved: topic?.status === 'resolved',
+    stage: topic?.gameStage ?? topic?.gameTheoreticState?.currentStage,
+    quorumAlert: topic?.gameTheoreticState?.quorumAlert,
+    sprtDecisionState: topic?.gameTheoreticState?.sprtState?.decisionState,
+    executionStatus: topic?.gameTheoreticState?.executionStatus,
+    hasPendingMessage,
+    activeExecutionCount: (activeExecutions ?? []).length,
+  });
+  const isGavelBusy = gavelConsoleState.isBusy;
+  const needsHumanRuling = gavelConsoleState.needsHumanRuling;
+
+  // 进入真正等待裁决的状态时自动展开操作按钮；离开时收起，避免常驻挤占阅读区
+  useEffect(() => {
+    setIsGavelCollapsed(!needsHumanRuling);
+  }, [needsHumanRuling, topic?.id]);
+
+  const hasConsistencyFailure = topic?.gameTheoreticState?.mcdaPayload
+    ? !topic.gameTheoreticState.mcdaPayload.consistencyPassed
+    : false;
+  const isRulingConfirmBlocked =
+    isGavelBusy ||
+    ((!isChallengerQuorumMet || hasConsistencyFailure) && !exemptionChecked);
+
   const resolveRulingDraftForModal = (
     type: RulingDecisionType
   ): {
@@ -380,6 +407,8 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   };
 
   const handleOpenRuling = (type: RulingDecisionType = 'adopt_proposer') => {
+    // 生成中途不进入裁决流程：避免同会话并发 prompt 与迟到回复写回阶段
+    if (isGavelBusy) return;
     setRulingType(type);
     setExemptionChecked(false);
     setExemptionReason('');
@@ -538,7 +567,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   };
 
   const handleConfirmRuling = () => {
-    if (!topic?.id) return;
+    if (!topic?.id || isGavelBusy) return;
     const resolvedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const finalImpactedFiles = rulingImpactedFiles.split(',').map((s) => s.trim()).filter(Boolean);
     const aiArbiterNames = (topic.gameRoles?.arbiters || [])
@@ -719,7 +748,6 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     [topic, messages, topicExecutions]
   );
 
-  const hasPendingMessage = messages.some((m) => m.isPending);
   const shouldTick = isExecuting || hasPendingMessage;
 
   const [now, setNow] = useState(Date.now());
@@ -1393,24 +1421,13 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
       {/* 2. Topic Anchor Context & Telemetry Dashboard (Collapsible) */}
       {isHeaderCollapsed ? (
-        <div
-          onClick={toggleHeaderCollapsed}
-          className="px-3.5 py-2 bg-surface-subtle/80 hover:bg-surface-subtle border-b border-border flex items-center justify-between text-[11px] cursor-pointer transition-colors group select-none shrink-0"
-          title="点击展开议题上下文与博弈推演看板"
-        >
-          <div className="flex items-center gap-2 min-w-0 flex-1 mr-3">
+        <div className="px-3.5 py-2 bg-surface-subtle/80 border-b border-border flex items-center text-[11px] select-none shrink-0">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 font-mono font-medium shrink-0">
               🎯 议题目标
             </span>
             <span className="truncate text-fg-secondary text-[11px]">
               {topic.description || topic.title}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="text-[11px] text-purple-600 dark:text-purple-400 font-medium group-hover:underline flex items-center gap-0.5">
-              <span>展开看板</span>
-              <ChevronDown className="w-3.5 h-3.5 transition-transform group-hover:translate-y-0.5" />
             </span>
           </div>
         </div>
@@ -1438,15 +1455,6 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 <span className="text-[10px] text-fg-muted font-mono">
                   发起人: {topic.authorName} · {topic.timestamp}
                 </span>
-                <button
-                  type="button"
-                  onClick={toggleHeaderCollapsed}
-                  className="text-[10px] text-fg-muted hover:text-purple-600 dark:hover:text-purple-400 flex items-center gap-0.5 transition-colors cursor-pointer ml-1 font-medium"
-                  title="收起顶部上下文与看板"
-                >
-                  <ChevronUp className="w-3 h-3" />
-                  <span>收起</span>
-                </button>
               </div>
             </div>
             <div className="p-2.5 rounded-xl bg-surface border border-border text-fg leading-relaxed select-text">
@@ -3067,7 +3075,11 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           </div>
         ) : topic.discussionMode === 'game_theoretic' && !isDmDuel ? (
           (topic.gameRoles?.humanIsArbiter ?? true) ? (
-            <div className="space-y-2 p-2.5 rounded-xl bg-amber-50/90 dark:bg-amber-950/25 border border-amber-300/80 dark:border-amber-700/50 shadow-xs">
+            <div className={`space-y-2 p-2.5 rounded-xl border shadow-xs transition-all ${
+              needsHumanRuling && !isGavelBusy
+                ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-400 dark:border-amber-500/70 ring-2 ring-amber-400/50 dark:ring-amber-400/30'
+                : 'bg-amber-50/90 dark:bg-amber-950/25 border-amber-300/80 dark:border-amber-700/50'
+            }`}>
               <div className="flex items-center justify-between text-[11px]">
                 <div className="flex items-center gap-1.5 font-bold text-amber-950 dark:text-amber-100">
                   <Gavel className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
@@ -3083,18 +3095,36 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     <span>{isGavelCollapsed ? '展开操作' : '收起'}</span>
                     {isGavelCollapsed ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />}
                   </button>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-amber-600 dark:bg-amber-500 text-white font-bold shadow-2xs flex items-center gap-1 tracking-tight">
-                    👑 终局裁决权
+                  <span className={`text-[10px] font-mono px-2 py-0.5 rounded-md text-white font-bold shadow-2xs flex items-center gap-1 tracking-tight ${
+                    isGavelBusy
+                      ? 'bg-amber-500/80 dark:bg-amber-500/70'
+                      : 'bg-amber-600 dark:bg-amber-500'
+                  }`}>
+                    {isGavelBusy ? '⏳ 生成中' : needsHumanRuling ? '⚖️ 等待裁决' : '👑 终局裁决权'}
                   </span>
                 </div>
               </div>
+              {isGavelBusy ? (
+                <div className="flex items-center gap-1.5 text-[10px] text-amber-800 dark:text-amber-200">
+                  <Loader2 className="w-3 h-3 shrink-0 animate-spin" />
+                  <span>生成中，回合结束后可落槌</span>
+                </div>
+              ) : needsHumanRuling && gavelConsoleState.prompt ? (
+                <div className="flex items-center gap-1.5 text-[10px] font-medium text-amber-900 dark:text-amber-100">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0 animate-pulse" />
+                  <span>{gavelConsoleState.prompt}</span>
+                </div>
+              ) : null}
               {!isGavelCollapsed && (
                 <div className="grid grid-cols-3 gap-1.5">
                   <button
                     type="button"
                     onClick={() => handleOpenRuling('adopt_proposer')}
-                    className="py-1.5 px-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[11px] shadow-sm flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer text-center"
-                    title="认可提案官方案的可行性与完整度，直接定案"
+                    disabled={isGavelBusy}
+                    className={`py-1.5 px-2 rounded-lg bg-emerald-600 text-white font-semibold text-[11px] shadow-sm flex flex-col items-center justify-center gap-0.5 transition-all text-center ${
+                      isGavelBusy ? 'opacity-40 cursor-not-allowed' : 'hover:bg-emerald-500 cursor-pointer'
+                    }`}
+                    title={isGavelBusy ? '生成中，回合结束后可落槌' : '认可提案官方案的可行性与完整度，直接定案'}
                   >
                     <div className="flex items-center gap-1">
                       <CheckCircle2 className="w-3 h-3 shrink-0" />
@@ -3106,8 +3136,11 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   <button
                     type="button"
                     onClick={() => handleOpenRuling('reject_rebuild')}
-                    className="py-1.5 px-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-[11px] shadow-sm flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer text-center"
-                    title="认可红队指出的严重隐患与反例，裁定驳回重构"
+                    disabled={isGavelBusy}
+                    className={`py-1.5 px-2 rounded-lg bg-rose-600 text-white font-semibold text-[11px] shadow-sm flex flex-col items-center justify-center gap-0.5 transition-all text-center ${
+                      isGavelBusy ? 'opacity-40 cursor-not-allowed' : 'hover:bg-rose-500 cursor-pointer'
+                    }`}
+                    title={isGavelBusy ? '生成中，回合结束后可落槌' : '认可红队指出的严重隐患与反例，裁定驳回重构'}
                   >
                     <div className="flex items-center gap-1">
                       <RotateCcw className="w-3 h-3 shrink-0" />
@@ -3119,8 +3152,11 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   <button
                     type="button"
                     onClick={() => handleOpenRuling('trade_off_matrix')}
-                    className="py-1.5 px-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-semibold text-[11px] shadow-sm flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer text-center"
-                    title="提案与红队各具合理性，生成权衡折中矩阵并定案"
+                    disabled={isGavelBusy}
+                    className={`py-1.5 px-2 rounded-lg bg-purple-600 text-white font-semibold text-[11px] shadow-sm flex flex-col items-center justify-center gap-0.5 transition-all text-center ${
+                      isGavelBusy ? 'opacity-40 cursor-not-allowed' : 'hover:bg-purple-500 cursor-pointer'
+                    }`}
+                    title={isGavelBusy ? '生成中，回合结束后可落槌' : '提案与红队各具合理性，生成权衡折中矩阵并定案'}
                   >
                     <div className="flex items-center gap-1">
                       <SlidersHorizontal className="w-3 h-3 shrink-0" />
@@ -3846,9 +3882,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               <button
                 type="button"
                 onClick={handleConfirmRuling}
-                disabled={(!isChallengerQuorumMet || (topic.gameTheoreticState?.mcdaPayload && !topic.gameTheoreticState.mcdaPayload.consistencyPassed)) && !exemptionChecked}
+                disabled={isRulingConfirmBlocked}
+                title={isGavelBusy ? '生成中，回合结束后可落槌' : undefined}
                 className={`px-4 py-1.5 rounded-xl font-semibold text-xs shadow-md transition-all flex items-center gap-1.5 ${
-                  (!isChallengerQuorumMet || (topic.gameTheoreticState?.mcdaPayload && !topic.gameTheoreticState.mcdaPayload.consistencyPassed)) && !exemptionChecked
+                  isRulingConfirmBlocked
                     ? 'bg-fg-muted/20 text-fg-muted cursor-not-allowed'
                     : rulingType === 'adopt_proposer'
                     ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer'
