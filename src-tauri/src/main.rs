@@ -1689,6 +1689,20 @@ fn db_get_messages(
     state.db_manager.get_messages(thread_id, channel_id, limit, offset).map_err(|e| e.to_string())
 }
 
+/// Tauri Command: 跨议题全文检索历史消息
+#[tauri::command]
+fn db_search_messages(
+    query: String,
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let effective_limit = limit.unwrap_or(30).clamp(1, 200);
+    state
+        .db_manager
+        .search_messages(&query, effective_limit)
+        .map_err(|e| e.to_string())
+}
+
 /// Tauri Command: 删除指定范围历史消息
 #[tauri::command]
 fn db_delete_messages(
@@ -3137,6 +3151,7 @@ async fn main() {
             db_save_message,
             db_save_messages_batch,
             db_get_messages,
+            db_search_messages,
             db_delete_messages,
             db_clear_all_messages,
             db_get_storage_stats,

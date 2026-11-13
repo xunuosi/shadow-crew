@@ -4912,30 +4912,32 @@ export default function App() {
   // Send Message in active thread
   const handleSendMessage = async (
     content: string,
-    pendingAttachments: MessageAttachmentInput[] = []
+    pendingAttachments: MessageAttachmentInput[] = [],
+    options: { retryTargetAgentId?: string; retryUserMessage?: Message } = {}
   ) => {
     if ((!content.trim() && pendingAttachments.length === 0) || !activeThread) return;
 
     const currentThreadId = activeThread.id;
     const isDmThread = activeThread.type === 'dm';
+    const retryUserMessage = options.retryUserMessage;
 
     const targetChannelId = isDmThread
       ? undefined
       : activeChannel?.id;
-    const userMessageId = `msg-${Date.now()}`;
-    const scopeType = isDmThread ? 'dm' : 'channel';
-    const scopeId = isDmThread ? currentThreadId : (targetChannelId || currentThreadId);
-    const savedAttachments: MessageAttachment[] = await persistMessageAttachments({
-      scopeType,
-      scopeId,
-      messageId: userMessageId,
-      attachments: pendingAttachments,
-    });
+    const savedAttachments: MessageAttachment[] = retryUserMessage
+      ? (retryUserMessage.attachments || [])
+      : await persistMessageAttachments({
+          scopeType: isDmThread ? 'dm' : 'channel',
+          scopeId: isDmThread ? currentThreadId : (targetChannelId || currentThreadId),
+          messageId: `msg-${Date.now()}`,
+          attachments: pendingAttachments,
+        });
     const attachmentManifest = buildAttachmentManifest(savedAttachments);
     const agentTurnContent = `${content}${attachmentManifest}`.trim();
 
-    const userMsg: Message = {
-      id: userMessageId,
+    // 重试复用原始用户消息：不新增一条用户发言，也不重复写入附件。
+    const userMsg: Message = retryUserMessage ?? {
+      id: `msg-${Date.now()}`,
       threadId: currentThreadId,
       channelId: targetChannelId,
       authorId: 'user-norris',
@@ -5045,6 +5047,13 @@ export default function App() {
       // 简单事实型问题走单 Agent 快答；复杂诉求仍唤醒频道内全部已准入在线 Agent 并发会诊。
       const fastResponder = resolveFastPathResponder(agentTurnContent, candidateAgents);
       respondingAgents = fastResponder ? [fastResponder] : candidateAgents;
+    }
+
+    // 单条消息重试：严格只重发给原回复的 Agent，不扩散到其他成员。
+    if (options.retryTargetAgentId) {
+      const retryAgent = agents.find((a) => a.id === options.retryTargetAgentId);
+      if (!retryAgent) return;
+      respondingAgents = [retryAgent];
     }
 
     if (respondingAgents.length === 0) {
@@ -5473,6 +5482,64 @@ export default function App() {
     }
   };
 
+  /**
+   * 单条消息重试：找到该回复之前最近的一条用户消息，只向原回复 Agent 重发。
+   * 不新增用户发言、不扩散到其他成员；若找不到用户消息则不做任何事。
+   */
+  const handleRetryMessage = (message: Message) => {
+    if (!activeThread || message.threadId !== activeThread.id) return;
+    if (!message.isAgent || message.isPending) return;
+    if (message.topicData || message.gameStage || message.workflowStage) return;
+    const targetAgent = agents.find((a) => a.id === message.authorId);
+    if (!targetAgent || isAgentOffline(targetAgent)) return;
+
+    const threadMessages = messagesRef.current[message.threadId] || [];
+    const index = threadMessages.findIndex((m) => m.id === message.id);
+    if (index < 0) return;
+    for (let i = index - 1; i >= 0; i--) {
+      const candidate = threadMessages[i];
+      if (!candidate.isAgent && candidate.authorId === 'user-norris') {
+        void handleSendMessage(candidate.content, [], {
+          retryTargetAgentId: message.authorId,
+          retryUserMessage: candidate,
+        });
+        return;
+      }
+    }
+  };
+
+  /**
+   * 跨议题检索结果跳转：优先定位承载线程；若命中项属于议题抽屉，
+   * 则回到承载该议题的频道线程并打开议题。
+   */
+  const handleOpenSearchResult = (message: Message) => {
+    const owningThread = threads.find((t) => t.id === message.threadId);
+    if (owningThread) {
+      if (owningThread.channelId) setActiveChannelId(owningThread.channelId);
+      setActiveThreadId(owningThread.id);
+      setActiveTopicId(null);
+    } else {
+      const topicOwner = Object.values(messagesRef.current)
+        .flat()
+        .find((m) => m.topicData?.id === message.threadId);
+      if (topicOwner) {
+        if (topicOwner.channelId) setActiveChannelId(topicOwner.channelId);
+        setActiveThreadId(topicOwner.threadId);
+        setActiveTopicId(message.threadId);
+      } else if (message.channelId) {
+        setActiveChannelId(message.channelId);
+      }
+    }
+    setMainView('chat');
+    setQuotingMessage(null);
+    setSearchQuery('');
+    window.setTimeout(() => {
+      document
+        .getElementById(`chat-msg-${message.id}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 150);
+  };
+
   // Add Message to SubThread
   const handleSendSubMessage = (content: string) => {
     if (!activeSubThreadId || !activeSubThread || !activeThread) return;
@@ -5865,10 +5932,12 @@ export default function App() {
           agents={agents}
           activeExecutions={Object.values(activeExecutions)}
           teams={teams}
+          threads={threads}
           onOpenAgentTeamsModal={() => setIsAgentTeamsModalOpen(true)}
           onSelectDirectMessage={handleSelectDirectMessage}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
+          onOpenSearchResult={handleOpenSearchResult}
           isCollapsed={isSidebarCollapsed}
           onToggleCollapse={() => toggleSidebar(true)}
           activeThreadId={activeThreadId}
@@ -6086,6 +6155,7 @@ export default function App() {
                   onOpenMembersModal={activeThread.type === 'dm' ? undefined : () => handleOpenMembersModal(activeChannel?.id)}
                   onOpenDeleteChannelModal={activeThread.type === 'dm' ? undefined : () => handleOpenDeleteChannelModal(activeChannel?.id)}
                   onQuoteMessage={(msg) => setQuotingMessage(msg)}
+                  onRetryMessage={handleRetryMessage}
                   onEditTopic={(topic) => setEditingTopic(topic)}
                   isSidebarCollapsed={isSidebarCollapsed}
                   onToggleSidebar={() => toggleSidebar()}

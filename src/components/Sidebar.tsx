@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Channel, Agent, AgentTeam, ActiveAgentExecution } from '../types';
+import React, { useEffect, useState } from 'react';
+import { Channel, Agent, AgentTeam, ActiveAgentExecution, Message, Thread } from '../types';
 import { 
   Hash, 
   Lock, 
@@ -27,7 +27,18 @@ import { NinjaIcon } from './NinjaIcon';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ResizeHandle } from './ResizeHandle';
 import { useAllDrafts } from '../services/draftService';
+import { searchMessagesInDb } from '../services/dbClient';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
+
+/** 截取命中位置附近的一段正文，避免长消息撑破侧边栏。 */
+function buildSearchSnippet(content: string, query: string): string {
+  const text = content || '';
+  const index = text.toLowerCase().indexOf(query);
+  if (index < 0) return text.slice(0, 110);
+  const start = Math.max(0, index - 24);
+  const end = Math.min(text.length, index + query.length + 70);
+  return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
+}
 
 interface SidebarProps {
   channels: Channel[];
@@ -38,11 +49,13 @@ interface SidebarProps {
   onOpenDeleteChannelModal?: (channelId?: string) => void;
   agents: Agent[];
   teams: AgentTeam[];
+  threads: Thread[];
   activeExecutions?: ActiveAgentExecution[];
   onOpenAgentTeamsModal: () => void;
   onSelectDirectMessage: (agent: Agent) => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
+  onOpenSearchResult?: (message: Message) => void;
   activeThreadId?: string;
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
@@ -60,11 +73,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenDeleteChannelModal,
   agents,
   teams,
+  threads,
   activeExecutions = [],
   onOpenAgentTeamsModal,
   onSelectDirectMessage,
   searchQuery,
   onSearchChange,
+  onOpenSearchResult,
   activeThreadId,
   isCollapsed = false,
   onToggleCollapse,
@@ -89,6 +104,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
       (normalizedQuery.length === 0 ||
         channel.name.toLowerCase().includes(normalizedQuery))
   );
+
+  // 跨议题消息检索：250ms 防抖，避免每敲一个字符就扫一次全库。
+  const [messageResults, setMessageResults] = useState<Message[]>([]);
+  const [isSearchingMessages, setIsSearchingMessages] = useState(false);
+
+  useEffect(() => {
+    if (normalizedQuery.length < 2) {
+      setMessageResults([]);
+      setIsSearchingMessages(false);
+      return;
+    }
+    let cancelled = false;
+    setIsSearchingMessages(true);
+    const timer = window.setTimeout(() => {
+      searchMessagesInDb(normalizedQuery, 20)
+        .then((results) => {
+          if (!cancelled) setMessageResults(results);
+        })
+        .catch((err) => {
+          console.warn('[Sidebar] 历史消息检索失败', err);
+          if (!cancelled) setMessageResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setIsSearchingMessages(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [normalizedQuery]);
 
   return (
     <aside
@@ -274,6 +320,48 @@ export const Sidebar: React.FC<SidebarProps> = ({
               }))}
           </div>
         </div>
+
+        {/* 4.1 跨议题消息检索结果 */}
+        {normalizedQuery.length >= 2 && onOpenSearchResult && (
+          <div>
+            <div className="px-2.5 mb-1.5 flex items-center justify-between text-[11px] text-fg-muted uppercase tracking-wider font-semibold">
+              <span>Messages</span>
+              <span className="text-[10px] text-fg-muted font-mono">
+                {isSearchingMessages ? '检索中…' : `${messageResults.length} 条`}
+              </span>
+            </div>
+            <div className="space-y-0.5">
+              {!isSearchingMessages && messageResults.length === 0 && (
+                <div className="px-2.5 py-2 text-[11px] text-fg-muted">未找到匹配的历史消息</div>
+              )}
+              {messageResults.map((msg) => {
+                const ownerThread = threads.find((t) => t.id === msg.threadId);
+                return (
+                  <button
+                    key={msg.id}
+                    type="button"
+                    onClick={() => onOpenSearchResult(msg)}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-fg-secondary hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer min-w-0"
+                  >
+                    <div className="flex items-center gap-1 min-w-0">
+                      <MessageSquare className="w-3 h-3 shrink-0 text-fg-muted" />
+                      <span className="text-[11px] font-medium text-fg truncate">{msg.authorName}</span>
+                      <span className="text-[10px] text-fg-muted truncate">
+                        · {ownerThread?.title || ownerThread?.channelName || msg.threadId}
+                      </span>
+                      <span className="text-[10px] text-fg-muted font-mono shrink-0 ml-auto">
+                        {msg.timestamp}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-fg-secondary break-words line-clamp-2 mt-0.5">
+                      {buildSearchSnippet(msg.content, normalizedQuery)}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* 5. Alter-Egos & Agents Section (专属替身与专职 Agent) */}
         <div>

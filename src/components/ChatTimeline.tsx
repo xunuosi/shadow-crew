@@ -30,6 +30,8 @@ import {
   Lock,
   UserPlus,
   Quote,
+  RotateCcw,
+  Download,
   PanelLeft,
   FolderArchive,
   Loader2,
@@ -41,7 +43,12 @@ import { renderFormattedContent } from '../utils/formatMentions';
 import { isAgentOffline } from '../utils/agentRuntime';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
-import { openChannelArtifactsFolder, openAgentArtifactsFolder } from '../services/dbClient';
+import {
+  openChannelArtifactsFolder,
+  openAgentArtifactsFolder,
+  exportMessagesAsJsonFile,
+  exportMessagesAsMarkdownFile,
+} from '../services/dbClient';
 import { MessageAttachmentList } from './MessageAttachmentList';
 
 /** 仅用于展示的紧凑 token 计数；数值本身始终来自 ACP 上报。 */
@@ -78,6 +85,7 @@ interface ChatTimelineProps {
   onOpenMembersModal?: () => void;
   onOpenDeleteChannelModal?: () => void;
   onQuoteMessage?: (message: Message) => void;
+  onRetryMessage?: (message: Message) => void;
   onEditTopic?: (topic: TopicMessageData) => void;
   isSidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
@@ -105,6 +113,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   onOpenMembersModal,
   onOpenDeleteChannelModal,
   onQuoteMessage,
+  onRetryMessage,
   onEditTopic,
   isSidebarCollapsed = false,
   onToggleSidebar,
@@ -702,6 +711,30 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                   </button>
                 )}
 
+                <div className="my-1 border-t border-border/60" />
+                <button
+                  onClick={() => {
+                    const title = activeThread.title
+                      || (activeThread.type === 'dm' ? `DM with ${activeThread.authorName}` : `#${channel?.name || activeThread.channelName}`);
+                    exportMessagesAsMarkdownFile(messages, title);
+                    setShowMoreMenu(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-hover text-fg transition-colors cursor-pointer"
+                >
+                  <Download className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                  <span>导出当前会话 (Markdown)</span>
+                </button>
+                <button
+                  onClick={() => {
+                    exportMessagesAsJsonFile(messages);
+                    setShowMoreMenu(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-hover text-fg transition-colors cursor-pointer"
+                >
+                  <Download className="w-4 h-4 text-fg-muted shrink-0" />
+                  <span>导出当前会话 (JSON)</span>
+                </button>
+
                 {onOpenDeleteChannelModal && channel && (
                   <>
                     <div className="my-1 border-t border-border/60" />
@@ -1104,6 +1137,22 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
 
                 {/* Floating Quick Action Bar on Hover */}
                 <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-surface border border-border rounded-lg px-1.5 py-0.5 shadow-lg">
+                  {onRetryMessage
+                    && message.isAgent
+                    && !message.isPending
+                    && !message.topicData
+                    && !message.gameStage
+                    && !message.workflowStage
+                    && message.authorId !== 'system' && (
+                    <button
+                      onClick={() => onRetryMessage(message)}
+                      className="p-1 hover:text-blue-700 hover:bg-blue-500/10 dark:hover:text-blue-300 rounded transition-colors flex items-center gap-1 cursor-pointer"
+                      title="重试：仅向该 Agent 重发上一条用户指令"
+                    >
+                      <RotateCcw className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+                      <span className="text-[10px]">重试</span>
+                    </button>
+                  )}
                   {message.subThreadId && (
                     <button
                       onClick={() => onOpenSubThread?.(message.subThreadId!)}

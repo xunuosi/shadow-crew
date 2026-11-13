@@ -183,6 +183,39 @@ export async function loadMessagesFromDb(filter?: {
 }
 
 /**
+ * 跨议题/频道全文检索历史消息（按时间倒序，仅返回命中项）
+ */
+export async function searchMessagesInDb(query: string, limit = 30): Promise<Message[]> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      const res = await invoke('db_search_messages', { query: trimmed, limit });
+      if (!Array.isArray(res)) {
+        throw new Error(`db_search_messages 返回了非数组结果：${typeof res}`);
+      }
+      return res as Message[];
+    } catch (e) {
+      failClosed('db_search_messages', e);
+    }
+  }
+
+  try {
+    const raw = localStorage.getItem('shinobi_messages');
+    if (!raw) return [];
+    const list: Message[] = JSON.parse(raw);
+    const needle = trimmed.toLowerCase();
+    return list
+      .filter((m) => (m.content || '').toLowerCase().includes(needle))
+      .sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))
+      .slice(0, limit);
+  } catch (err) {
+    failClosed('localStorage 消息检索', err);
+  }
+}
+
+/**
  * 清空所有历史会话消息 (保留 Agent 长期私有记忆)
  */
 export async function clearAllMessagesFromDb(): Promise<number> {
@@ -292,6 +325,47 @@ export function exportMessagesAsJsonFile(messages: Message[]): void {
   const a = document.createElement('a');
   a.href = url;
   a.download = `shinobi_messages_backup_${Date.now()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * 将消息列表渲染为可读 Markdown（用于人工归档、评审留档与外部审阅）。
+ * 空内容消息（纯占位卡）会被跳过，避免导出噪音。
+ */
+export function buildMessagesMarkdown(messages: Message[], title: string): string {
+  const exportedAt = new Date().toLocaleString();
+  const usable = messages.filter((m) => (m.content || '').trim().length > 0);
+  const lines: string[] = [
+    `# ${title}`,
+    '',
+    `> 导出时间：${exportedAt} · 共 ${usable.length} 条消息`,
+    '',
+  ];
+  for (const message of usable) {
+    const badge = message.agentBadge ? ` · ${message.agentBadge}` : '';
+    const usage = message.tokenUsage
+      ? `\n\n*tokens: ${message.tokenUsage.totalTokens.toLocaleString()}*`
+      : '';
+    lines.push(`## ${message.authorName}${badge} · ${message.timestamp}`, '', message.content.trim(), usage, '', '---', '');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * 导出当前会话为 Markdown 文件。
+ */
+export function exportMessagesAsMarkdownFile(messages: Message[], title: string): void {
+  const safeTitle = title.replace(/[\\/:*?"<>|]+/g, '_').slice(0, 60) || 'conversation';
+  const blob = new Blob([buildMessagesMarkdown(messages, title)], {
+    type: 'text/markdown;charset=utf-8',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${safeTitle}_${Date.now()}.md`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

@@ -559,6 +559,39 @@ impl DatabaseManager {
         Ok(results)
     }
 
+    /// 跨议题全文检索：按正文子串匹配，返回最近的命中消息（新的在前）。
+    /// 用户输入中的 LIKE 通配符会被转义，避免 `%` / `_` 被当作模式解释。
+    pub fn search_messages(&self, query: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let escaped = trimmed
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("%{}%", escaped);
+        let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let mut stmt = conn.prepare(
+            "SELECT message_json FROM messages \
+             WHERE content LIKE ?1 ESCAPE '\\' \
+             ORDER BY timestamp DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![pattern, limit as i64], |row| {
+            let json_str: String = row.get(0)?;
+            Ok(json_str)
+        })?;
+
+        let mut results = Vec::new();
+        for r in rows.flatten() {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&r) {
+                results.push(val);
+            }
+        }
+        Ok(results)
+    }
+
     /// 删除指定线程或频道的历史消息
     pub fn delete_messages(&self, thread_id: Option<String>, channel_id: Option<String>) -> Result<usize> {
         let conn = self.conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1384,6 +1417,46 @@ fn migrate_workspace_binding_storage_paths(conn: &mut Connection) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_search_messages_matches_substring_and_escapes_wildcards() {
+        let mgr = DatabaseManager::new(":memory:").expect("Failed to create in-memory db");
+        let messages = vec![
+            serde_json::json!({
+                "id": "m1", "threadId": "t1", "authorId": "u1", "authorName": "U",
+                "timestamp": "2026-01-01 10:00:00", "content": "ACP 会话超时排查"
+            }),
+            serde_json::json!({
+                "id": "m2", "threadId": "t2", "authorId": "u1", "authorName": "U",
+                "timestamp": "2026-01-02 10:00:00", "content": "100% 覆盖率"
+            }),
+            serde_json::json!({
+                "id": "m3", "threadId": "t3", "authorId": "u1", "authorName": "U",
+                "timestamp": "2026-01-03 10:00:00", "content": "user_name 字段"
+            }),
+        ];
+        mgr.save_messages_batch(&messages).expect("save_messages_batch failed");
+
+        let hits = mgr.search_messages("会话", 10).expect("search failed");
+        assert_eq!(hits.len(), 1, "中文子串应命中唯一消息");
+        assert_eq!(hits[0]["id"], "m1");
+
+        let percent = mgr.search_messages("%", 10).expect("search failed");
+        assert_eq!(percent.len(), 1, "% 必须按字面匹配，不能通配全部消息");
+        assert_eq!(percent[0]["id"], "m2");
+
+        let underscore = mgr.search_messages("user_", 10).expect("search failed");
+        assert_eq!(underscore.len(), 1, "_ 必须按字面匹配，不能匹配任意单字符");
+        assert_eq!(underscore[0]["id"], "m3");
+
+        assert!(
+            mgr.search_messages("   ", 10).expect("search failed").is_empty(),
+            "空白查询不得返回任何消息"
+        );
+
+        let limited = mgr.search_messages("", 10).expect("search failed");
+        assert!(limited.is_empty(), "空查询不得返回任何消息");
+    }
 
     #[test]
     fn test_workspace_entities_persistence() {

@@ -37,8 +37,7 @@ import {
 interface MessageInputProps {
   onSendMessage: (
     content: string,
-    attachments?: MessageAttachmentInput[],
-    targetAgentId?: string
+    attachments?: MessageAttachmentInput[]
   ) => Promise<void> | void;
   activeAgents: Agent[];
   isGenerating?: boolean;
