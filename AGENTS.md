@@ -27,6 +27,8 @@ Shadow Crew —— 多 Agent 协同桌面应用（Tauri + React 19 + Vite）。
   - **定位**：CognoNexus × G-Frame 贝叶斯与团队博弈驱动的模块化分治编排规范与落地方案（阶段 0 拓扑拆解与跨模块只读《公共接口契约》、模块级上下文物理隔离沙箱、贝叶斯先验分流与后验动态升降级、模块爆炸半径硬冻结与 Wave 1~3 实施路线图）。
 - **[`docs/SPEC_NORMAL_MODE_BUZZ_CONTEXT_AND_CONCURRENT_ORCHESTRATION.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/SPEC_NORMAL_MODE_BUZZ_CONTEXT_AND_CONCURRENT_ORCHESTRATION.md)**
   - **定位**：普通协同模式（Channel 主消息流 & Topic 标准讨论模式 `discussionMode === 'standard'`）对标 `buzz-acp` 的增量上下文与并发协同编排设计规范（会话水位线 `<delta-events>` 未读增量提取与并发水位线不变量、冷启动 vs 热会话双态 Prompt 编译、首轮并发 Fan-out + `Promise.allSettled` Turn Barrier 轮次同步屏障、`aggregateTurnBarrierMentions` 跨回复 `@mention` 去重聚合与越界守卫）。
+- **[`docs/SPEC_WORKFLOW_ORCHESTRATION_MODES.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/SPEC_WORKFLOW_ORCHESTRATION_MODES.md)**
+  - **定位**：日常研发工作流模式（`discussionMode === 'workflow'`）规范：咨询产出（`consult`）/ 评审审查（`review`）/ 交付实施（`build`）三套声明式阶段规格、角色分离不变量（实现者 ≠ 验收者、并行评审互不可见、验收隔离实现者自述）、完整原文交接物总线、结构化评审/验收门禁（无证据降级、验收 fail-closed、返工上限）与运行期取消语义。维护工作流编排前必须先读此文档，禁止在 FSM 中继续堆叠场景分支。
 
 ---
 
@@ -43,7 +45,8 @@ src/
     ├── useResizablePanel.ts             # 布局交互：侧边栏与主分栏拖拽缩放
     ├── useTopicExecutionPipeline.ts     # 落地执行：G-Frame 模块拓扑流水线与工作区 Diff 物理合入
     ├── useArbitrationConcurrence.ts     # 仲裁合流：运筹一致性求解、全员无异议征询与 Living ADR
-    └── useGameTheoreticFsm.ts           # 博弈状态机：DIANOIA 4+1 阶段流转控制器 (Proposal->Arbiter)
+    ├── useGameTheoreticFsm.ts           # 博弈状态机：DIANOIA 4+1 阶段流转控制器 (Proposal->Arbiter)
+    └── useTopicWorkflow.ts              # 工作流编排：咨询/评审/交付三模式阶段推进、门禁与交接物
 ```
 
 ### 1. 各分治模块职责划分
@@ -56,6 +59,8 @@ src/
    - **职责**：封装综合裁定官发言完毕后的 MCDA 运筹求解、ColMAD 事实贡献报表、裁决草案持久化、全员无异议征询状态机推进、一致性硬门禁校验以及终局活体 ADR（Living ADR Canvas）生成。对外暴露 `processArbitrationConcurrence`。
 4. **`useGameTheoreticFsm.ts`（博弈状态机控制器 Hook）**：
    - **职责**：接管 Shinobi DIANOIA 4+1 博弈推演全周期状态流转控制器（Proposal 提案立论 → Challenge Free-MAD 质询 → Verification 原子接地实证 → Defense 答辩修正 → Arbitration 仲裁交接），严格维护 `inFlightHandoverRef` 并发交接锁与 `stageRefineRetriesRef` 有界重试。对外暴露 `triggerGameTheoreticStageHandover`。
+5. **`useTopicWorkflow.ts`（工作流编排 Hook）**：
+   - **职责**：消费 `src/services/workflow/*` 的声明式阶段规格，串行/并行派发 ACP 阶段任务，写入 `TopicWorkflowState` 与时间线消息，执行结构化门禁与返工上限，并在用户新消息或回合失效时取消旧运行。对外暴露 `runTopicWorkflow`、`cancelTopicWorkflow`、`isTopicWorkflowRunning`。
 
 ### 2. 状态与依赖拓扑设计
 
