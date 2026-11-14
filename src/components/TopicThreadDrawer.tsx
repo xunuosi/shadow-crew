@@ -76,6 +76,7 @@ import {
   prepareMessageAttachments,
 } from '../services/chatAttachmentService';
 import { MessageAttachmentList } from './MessageAttachmentList';
+import { TopicStatusOverviewPopover } from './TopicStatusOverviewPopover';
 
 interface TopicThreadDrawerProps {
   isOpen: boolean;
@@ -1227,6 +1228,15 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     <span>🟢 已达成共识 (Resolved)</span>
                   </span>
                 )
+              ) : isExecuting && topicExecutions.length > 0 ? (
+                <span className="text-purple-600 dark:text-purple-400 font-semibold flex items-center gap-1.5 shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+                  {topicExecutions.length === 1 ? (
+                    <span>🔄 {topicExecutions[0].agentName} 正在推演 ({((now - topicExecutions[0].startedAt) / 1000).toFixed(1)}s)</span>
+                  ) : (
+                    <span>🔄 {topicExecutions.length} 位 Agent 并发推演 ({topicExecutions.map((e) => e.agentName).join('、')})</span>
+                  )}
+                </span>
               ) : isDmDuel ? (
                 <span className="text-amber-700 dark:text-amber-300 font-semibold flex items-center gap-1 shrink-0">
                   <Swords className="w-3 h-3" />
@@ -1237,7 +1247,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   </span>
                 </span>
               ) : topic.discussionMode === 'game_theoretic' && topic.gameRoles ? (
-                <span className="text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1 shrink-0">
+                <span className="text-amber-700 dark:text-amber-300 font-semibold flex items-center gap-1 shrink-0">
                   <Swords className="w-3 h-3" />
                   <span>
                     🏛️ 提案 {topic.gameRoles.proposers?.length || 0} · ⚔️ 红队 {topic.gameRoles.challengers?.length || 0}
@@ -1245,19 +1255,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     {' '}· ⚖️ 综合 {topic.gameRoles.humanIsArbiter ? '👤+' : ''}{topic.gameRoles.arbiters?.length || 0}
                   </span>
                 </span>
-              ) : isExecuting && topicExecutions.length > 0 ? (
-                <span className="text-purple-500 font-semibold flex items-center gap-1.5 shrink-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
-                  {topicExecutions.length === 1 ? (
-                    <span>🟡 {topicExecutions[0].agentName} 正在推演 ({((now - topicExecutions[0].startedAt) / 1000).toFixed(1)}s)</span>
-                  ) : (
-                    <span>🟡 {topicExecutions.length} 位 Agent 正在并发推演 ({topicExecutions.map((e) => e.agentName).join('、')})</span>
-                  )}
-                </span>
               ) : (
-                <span className="text-purple-500 font-semibold flex items-center gap-1 shrink-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
-                  <span>🟡 深度推演中 · {participatingAgents.length} 位协作 Agent</span>
+                <span className="text-fg-muted font-medium flex items-center gap-1.5 shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                  <span>待命中 · {participatingAgents.length} 位协作 Agent</span>
                 </span>
               )}
             </div>
@@ -1265,6 +1266,40 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
+          <TopicStatusOverviewPopover
+            topic={topic}
+            messages={messages}
+            agents={agents}
+            activeExecutions={topicExecutions}
+            allActiveExecutions={allActiveExecutions}
+            topicExecutionDiffs={topicExecutionDiffs}
+            now={now}
+            isHeaderCollapsed={isHeaderCollapsed}
+            onToggleHeaderCollapsed={toggleHeaderCollapsed}
+            onAbortAgent={onAbortAgent}
+            onAbortAll={onAbortAll}
+            onSwitchDrawerView={setActiveDrawerView}
+            onOpenCodexDiff={() => {
+              if (topicExecutionDiffs.length > 0) {
+                onOpenCodexDiff({
+                  ...topicExecutionDiffs[0],
+                  topicId: topic.id,
+                  topicTitle: topic.title,
+                  allDiffs: topicExecutionDiffs,
+                  executionStatus: topic.gameTheoreticState?.executionStatus,
+                  artifactsDir: topic.gameTheoreticState?.executionArtifactsDir,
+                });
+              }
+            }}
+            onScrollToMessage={(targetMsgId) => {
+              setActiveDrawerView('stream');
+              setTimeout(() => scrollToTopicMessageTop(targetMsgId), 40);
+            }}
+            onScrollToRulingOrBottom={() => {
+              setActiveDrawerView('stream');
+              setTimeout(() => scrollToRulingCard('smooth'), 40);
+            }}
+          />
           <button
             type="button"
             onClick={toggleHeaderCollapsed}
