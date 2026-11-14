@@ -19,8 +19,8 @@
  */
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import {
   advanceModularOrchestration,
   estimateModulePriorRisk,
@@ -48,6 +48,37 @@ function warn(id: string, message: string) {
 function defect(id: string, message: string) {
   findings.push({ id, level: 'DEFECT', message });
   console.log(`  🔴 [${id}] ${message}`);
+}
+
+interface OrchestrationSourceFile {
+  path: string;
+  content: string;
+}
+
+function readHookOrAppSource(relativePath: string): string {
+  return readFileSync(resolve(process.cwd(), relativePath), 'utf8');
+}
+
+function loadAppOrchestrationFiles(): OrchestrationSourceFile[] {
+  const files: OrchestrationSourceFile[] = [
+    { path: 'src/App.tsx', content: readHookOrAppSource('src/App.tsx') },
+  ];
+  const hooksDir = resolve(process.cwd(), 'src/hooks');
+  const hookFileNames = readdirSync(hooksDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /\.(ts|tsx)$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+  for (const fileName of hookFileNames) {
+    const relativePath = join('src/hooks', fileName).replace(/\\/g, '/');
+    files.push({ path: relativePath, content: readHookOrAppSource(relativePath) });
+  }
+  return files;
+}
+
+function loadAppOrchestrationSource(): string {
+  return loadAppOrchestrationFiles()
+    .map((file) => `// === FILE: ${file.path} ===\n${file.content}`)
+    .join('\n\n');
 }
 
 function makeDraft(
@@ -87,13 +118,11 @@ console.log('--- GF-03 先验分流阈值边界 (fast_track < 0.45 <= deep_debat
 {
   const belowThreshold = estimateModulePriorRisk({
     complexityLevel: 'low_deterministic', // 0.20
-    allowedFilesCount: 3, // +0.05
-    responsibilityText: '并发安全鉴权边界校验', // +0.15 -> 0.40
+    allowedFilesCount: 6, // +0.20 -> 0.40
   });
   const atThreshold = estimateModulePriorRisk({
     complexityLevel: 'low_deterministic', // 0.20
-    allowedFilesCount: 4, // +0.10
-    responsibilityText: '并发安全鉴权边界校验', // +0.15 -> 0.45
+    allowedFilesCount: 7, // +0.25 -> 0.45
   });
   assert.equal(belowThreshold.priorRisk, 0.4);
   assert.equal(belowThreshold.routingMode, 'fast_track');
@@ -176,17 +205,19 @@ console.log('\n--- GF-16 沙箱 Prompt 负向隔离 (不泄露非依赖模块实
 }
 
 // ---------------------------------------------------------------- EDGE-02
-console.log('\n--- EDGE-02 模块数量不足下限 (K < 2) ---');
+console.log('\n--- EDGE-02 单模块轻量保留与空模块兜底补齐 ---');
 {
   const single = initializeModularOrchestrationState(
     makeDraft([
       { id: 'M1', title: '唯一模块', responsibility: '全部职责', files: ['src/all.ts'], dependsOn: [], level: 'low_deterministic' },
     ])
   );
-  assert.equal(single.modules.length, 2, '单模块输入应被自动补足为 2 个模块');
-  assert.deepEqual(single.modules[1].dependsOnModuleIds, ['M1'], '补齐的守卫模块应依赖原模块');
-  assert.ok(single.activeModuleId, '补齐后必须存在可调度的拓扑根模块');
-  pass('EDGE-02', `单模块输入被自动补足为 ${single.modules.length} 个（新增「${single.modules[1].title}」依赖 M1），activeModuleId=${single.activeModuleId}`);
+  assert.equal(single.modules.length, 1, '单模块输入应直接保留为 1 个轻量模块，不再强制拆出第 2 个模块');
+  assert.ok(single.activeModuleId, '单模块必须可直接调度');
+
+  const empty = initializeModularOrchestrationState(makeDraft([]));
+  assert.equal(empty.modules.length, 2, '空模块输入应自动兜底补足为 2 个模块');
+  pass('EDGE-02', `单模块输入保留 ${single.modules.length} 个（activeModuleId=${single.activeModuleId}），空模块兜底补足为 ${empty.modules.length} 个`);
 }
 
 // ---------------------------------------------------------------- EDGE-03
@@ -279,9 +310,9 @@ console.log('\n--- EDGE-05 反馈向量语义 (覆盖累计值 vs 增量累加) 
 }
 
 // ---------------------------------------------------------------- EDGE-06
-console.log('\n--- EDGE-06 答辩阶段实证计数硬编码 (静态契约扫描 src/App.tsx) ---');
+console.log('\n--- EDGE-06 答辩阶段实证计数硬编码 (静态契约扫描 App + src/hooks) ---');
 {
-  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  const appSource = loadAppOrchestrationSource();
 
   // 结构化匹配：定位 advanceModularOrchestration / stepModularStageTransition 调用块内是否存在数字字面量硬编码
   const hardcodedMatch = appSource.match(
@@ -292,7 +323,7 @@ console.log('\n--- EDGE-06 答辩阶段实证计数硬编码 (静态契约扫描
   if (hardcodedMatch) {
     defect(
       'EDGE-06',
-      `src/App.tsx 答辩阶段 advanceModularOrchestration 硬编码 { verifiedClaims: 2, refutedClaims: 0 }，` +
+      `App + src/hooks 答辩阶段 advanceModularOrchestration 硬编码 { verifiedClaims: 2, refutedClaims: 0 }，` +
         `导致规则 C (SCOPED_DEFENSE_REFINE) 在真实运行期不可达，后验风险 P_posterior 不反映真实证伪数，` +
         `与 SPEC「实时反馈捕获 Γ_k」存在偏差`
     );
@@ -310,7 +341,7 @@ console.log('\n--- EDGE-06 答辩阶段实证计数硬编码 (静态契约扫描
 console.log('\n--- E2E-03 集成仿真：完整模块生命周期与多模块循环闭环 ---');
 
 /**
- * 按 src/App.tsx 的调用序列复刻完整 FSM（含 fast_track 双轨）：
+ * 按 App + src/hooks（useGameTheoreticFsm / useTopicTurnOrchestrator）的调用序列复刻完整 FSM（含 fast_track 双轨）：
  * proposal -> (fast_track ? verification : challenge -> verification) -> [defense] -> FREEZE
  * - defense 判定 SCOPED_DEFENSE_REFINE 时回环 challenge（上限 1 轮）；
  * - fast_track 在 verification 零违规零证伪时直接 FREEZE（跳过红队与答辩）；
@@ -510,30 +541,51 @@ console.log('\n--- N3 目录前缀重叠误报 ---');
 }
 
 // ---------------------------------------------------------------- N1
-console.log('\n--- N1 App 层状态更新器副作用 (决策变量在 setState updater 内赋值) ---');
+console.log('\n--- N1 App + src/hooks 状态更新器副作用 (决策变量在 setState updater 内赋值) ---');
 {
-  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
-  const lines = appSource.split('\n');
-  const declIdx = lines.findIndex((l) => /let resolvedNextStage\s*:/.test(l));
-  const updaterIdx = lines.findIndex((l, i) => i > declIdx && /updateTopicDataInState\(topicId/.test(l));
-  const assignIdx = lines.findIndex((l, i) => i > updaterIdx && /resolvedNextStage\s*=\s*'challenge'/.test(l));
-  const useIdx = lines.findIndex((l) => /nextStage:\s*resolvedNextStage/.test(l));
-  const refSyncIdx = lines.findIndex((l) => /messagesRef\.current\s*=\s*next/.test(l));
+  const orchestrationFiles = loadAppOrchestrationFiles();
+  const n1Hits: Array<{ path: string; declLine: number; updaterLine: number; assignLine: number; useLine: number }> = [];
+  let refSyncHit: { path: string; line: number } | null = null;
 
-  const assignedInsideUpdater =
-    declIdx >= 0 && updaterIdx > declIdx && assignIdx > updaterIdx && useIdx > assignIdx;
-  if (assignedInsideUpdater) {
+  for (const file of orchestrationFiles) {
+    const lines = file.content.split('\n');
+    if (!refSyncHit) {
+      const refIdx = lines.findIndex((l) => /messagesRef\.current\s*=\s*next/.test(l));
+      if (refIdx >= 0) refSyncHit = { path: file.path, line: refIdx + 1 };
+    }
+    const declIdx = lines.findIndex((l) => /let resolvedNextStage\s*:/.test(l));
+    if (declIdx < 0) continue;
+    const updaterIdx = lines.findIndex((l, i) => i > declIdx && /updateTopicDataInState\(topicId/.test(l));
+    const assignIdx =
+      updaterIdx >= 0
+        ? lines.findIndex((l, i) => i > updaterIdx && /resolvedNextStage\s*=\s*'challenge'/.test(l))
+        : -1;
+    const useIdx = lines.findIndex((l) => /nextStage:\s*resolvedNextStage/.test(l));
+
+    if (updaterIdx > declIdx && assignIdx > updaterIdx && useIdx > assignIdx) {
+      n1Hits.push({
+        path: file.path,
+        declLine: declIdx + 1,
+        updaterLine: updaterIdx + 1,
+        assignLine: assignIdx + 1,
+        useLine: useIdx + 1,
+      });
+    }
+  }
+
+  if (n1Hits.length > 0) {
+    const hit = n1Hits[0];
     defect(
       'N1',
-      `src/App.tsx:${declIdx + 1} 声明 resolvedNextStage，却在第 ${updaterIdx + 1} 行的 setState 更新器内部（第 ${assignIdx + 1} 行）赋值，` +
-        `随后在第 ${useIdx + 1} 行读取并据此决定 nextStage。React 不保证更新器在调用点同步执行（仅命中 eager-state 优化时才会立即求值），` +
+      `${hit.path}:${hit.declLine} 声明 resolvedNextStage，却在第 ${hit.updaterLine} 行的 setState 更新器内部（第 ${hit.assignLine} 行）赋值，` +
+        `随后在第 ${hit.useLine} 行读取并据此决定 nextStage。React 不保证更新器在调用点同步执行（仅命中 eager-state 优化时才会立即求值），` +
         `一旦走异步渲染路径，resolvedNextStage 将保持初值 'arbitration'，多模块循环会静默退化回「只跑第一个模块」的旧行为。` +
-        (refSyncIdx >= 0
-          ? `同理 src/App.tsx:${refSyncIdx + 1} 的 messagesRef.current = next 也在更新器内部，可能让 getTopicData 读到过期模块状态。`
+        (refSyncHit
+          ? `同理 ${refSyncHit.path}:${refSyncHit.line} 的 messagesRef.current = next 也在更新器内部，可能让 getTopicData 读到过期模块状态。`
           : '')
     );
   } else {
-    pass('N1', 'App 层未见「更新器内赋值 + 外部读取」的决策耦合');
+    pass('N1', 'App + src/hooks 未见「更新器内赋值 + 外部读取」的决策耦合');
   }
 }
 
@@ -569,47 +621,56 @@ console.log('\n--- N5 拓扑去重会静默剥夺模块白名单 (静默过滤�
 }
 
 // ---------------------------------------------------------------- N6
-console.log('\n--- N6 updateTopicDataInState 更新器纯度扫描 (双重求值放大副作用) ---');
+console.log('\n--- N6 updateTopicDataInState 更新器纯度扫描 (双重求值放大副作用, App + src/hooks) ---');
 {
-  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  const orchestrationFiles = loadAppOrchestrationFiles();
   const callName = 'updateTopicDataInState(';
-  const callSites: Array<{ index: number; line: number; text: string }> = [];
+  const callSites: Array<{ path: string; index: number; line: number; text: string }> = [];
 
-  let searchFrom = 0;
-  for (;;) {
-    const idx = appSource.indexOf(callName, searchFrom);
-    if (idx < 0) break;
-    // 提取括号平衡的整段调用
-    let depth = 0;
-    let end = idx;
-    for (let i = appSource.indexOf('(', idx); i < appSource.length; i += 1) {
-      const ch = appSource[i];
-      if (ch === '(') depth += 1;
-      else if (ch === ')') {
-        depth -= 1;
-        if (depth === 0) {
-          end = i;
-          break;
+  for (const file of orchestrationFiles) {
+    const content = file.content;
+    let searchFrom = 0;
+    for (;;) {
+      const idx = content.indexOf(callName, searchFrom);
+      if (idx < 0) break;
+      const lineStart = content.lastIndexOf('\n', idx) + 1;
+      const linePrefix = content.slice(lineStart, idx);
+      if (/^\s*\/\//.test(linePrefix)) {
+        searchFrom = idx + callName.length;
+        continue;
+      }
+      // 提取括号平衡的整段调用
+      let depth = 0;
+      let end = idx;
+      for (let i = content.indexOf('(', idx); i < content.length; i += 1) {
+        const ch = content[i];
+        if (ch === '(') depth += 1;
+        else if (ch === ')') {
+          depth -= 1;
+          if (depth === 0) {
+            end = i;
+            break;
+          }
         }
       }
+      const text = content.slice(idx, end + 1);
+      const line = content.slice(0, idx).split('\n').length;
+      callSites.push({ path: file.path, index: idx, line, text });
+      searchFrom = end + 1;
     }
-    const text = appSource.slice(idx, end + 1);
-    const line = appSource.slice(0, idx).split('\n').length;
-    callSites.push({ index: idx, line, text });
-    searchFrom = end + 1;
   }
 
   const impureHits: string[] = [];
   for (const site of callSites) {
     const t = site.text;
-    if (/\.current\s*=/.test(t)) impureHits.push(`L${site.line}: 更新器内直接改写 ref.current`);
-    if (/delete\s+\w+\.current\[/.test(t)) impureHits.push(`L${site.line}: 更新器内 delete ref.current[...]`);
-    if (/\bDate\.now\(\)/.test(t)) impureHits.push(`L${site.line}: 更新器内调用 Date.now()（双重求值将产生不同时间戳/ID）`);
-    if (/\bMath\.random\(\)|randomUUID\(\)/.test(t)) impureHits.push(`L${site.line}: 更新器内使用随机数，双重求值将产生不同结果`);
-    if (/\bset[A-Z]\w*\(/.test(t)) impureHits.push(`L${site.line}: 更新器内嵌套调用其它 setState`);
+    if (/\.current\s*=/.test(t)) impureHits.push(`${site.path}:L${site.line}: 更新器内直接改写 ref.current`);
+    if (/delete\s+\w+\.current\[/.test(t)) impureHits.push(`${site.path}:L${site.line}: 更新器内 delete ref.current[...]`);
+    if (/\bDate\.now\(\)/.test(t)) impureHits.push(`${site.path}:L${site.line}: 更新器内调用 Date.now()（双重求值将产生不同时间戳/ID）`);
+    if (/\bMath\.random\(\)|randomUUID\(\)/.test(t)) impureHits.push(`${site.path}:L${site.line}: 更新器内使用随机数，双重求值将产生不同结果`);
+    if (/\bset[A-Z]\w*\(/.test(t)) impureHits.push(`${site.path}:L${site.line}: 更新器内嵌套调用其它 setState`);
   }
 
-  console.log(`    扫描到 ${callSites.length} 处 updateTopicDataInState 调用`);
+  console.log(`    扫描 App + src/hooks 共 ${callSites.length} 处 updateTopicDataInState 调用`);
   if (impureHits.length > 0) {
     impureHits.slice(0, 8).forEach((h) => console.log(`      · ${h}`));
     warn(
@@ -688,7 +749,7 @@ console.log('\n--- N8 贝叶斯 fast_track 快速通道是否真正省掉红队�
     deepModules.length > 0 &&
     fastModules.every((f) => f.sequence.length < deepModules[0].sequence.length);
 
-  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  const appSource = loadAppOrchestrationSource();
   const appWired = /fast_track|routingMode/.test(appSource);
   const proposalStageWired = /nextStage:\s*'proposal'/.test(appSource) || /'proposal'\s*\|/.test(appSource);
 
@@ -730,18 +791,20 @@ console.log('\n--- N9 每个模块是否都有独立提案轮次与专属靶点 
     `    各模块完整阶段序列: ${perModule.map((m) => `${m.id}=${m.sequence.join('→')}`).join('  ,  ')}`
   );
 
-  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
-  const moduleProposalTriggerWired = /nextStage:\s*'proposal'/.test(appSource);
+  const appSource = loadAppOrchestrationSource();
+  const moduleProposalTriggerWired =
+    (/nextStage:\s*'proposal'/.test(appSource) || /resolvedNextStage\s*=\s*'proposal'/.test(appSource)) &&
+    /if\s*\(\s*nextStage\s*===\s*'proposal'\s*\)/.test(appSource);
 
   if (modulesWithoutProposal.length === 0 && moduleProposalTriggerWired) {
     pass(
       'N9',
-      `每个模块均具备独立提案轮次：${perModule.map((m) => `${m.id}:${m.sequence.join('→')}`).join(' , ')}；模块切换经 App 层 'proposal' 阶段触发`
+      `每个模块均具备独立提案轮次：${perModule.map((m) => `${m.id}:${m.sequence.join('→')}`).join(' , ')}；模块切换经 App + src/hooks 'proposal' 阶段触发`
     );
   } else {
     defect(
       'N9',
-      `模块提案轮次缺失：App 层 proposal 触发=${moduleProposalTriggerWired}；首个阶段非 proposal 的模块 = [${modulesWithoutProposal
+      `模块提案轮次缺失：App + src/hooks proposal 触发=${moduleProposalTriggerWired}；首个阶段非 proposal 的模块 = [${modulesWithoutProposal
         .map((m) => `${m.id}:${m.sequence.join('→')}`)
         .join(', ')}]`
     );
@@ -761,14 +824,14 @@ console.log('\n--- N11 全 fast_track 议题的制衡方门禁是否被误判 --
     `    全 fast_track 议题阶段序列: ${Object.entries(run.stagesByModule).map(([k, v]) => `${k}=${v.join('→')}`).join('  ,  ')}（红队轮次出现: ${!challengeNeverRuns}）`
   );
 
-  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  const appSource = loadAppOrchestrationSource();
   // 定位验证阶段推进到 nextStage: resolvedVerNextStage 之间的更新块，检查是否回填制衡方响应标记
-  const verBlockMatch = appSource.match(/(?:stepModularStageTransition[\s\S]*?currentStage:\s*['"]verification['"][\s\S]*?nextStage:\s*resolvedVerNextStage)/);
+  const verBlockMatch = appSource.match(/(?:stepModularStageTransition\s*\(\s*\{(?:(?!stepModularStageTransition)[\s\S])*?currentStage:\s*['"]verification['"][\s\S]*?nextStage:\s*resolvedVerNextStage)/);
   const verBlock = verBlockMatch ? verBlockMatch[0] : '';
   const verBlockSetsChallenger = /isChallengerResponded/.test(verBlock);
   const fastTrackBypassMarker = /challengerBypassed|fastTrackBypassed|challengerSkippedByFastTrack/.test(appSource);
 
-  const drawerSource = readFileSync(resolve(process.cwd(), 'src/components/TopicThreadDrawer.tsx'), 'utf8');
+  const drawerSource = readHookOrAppSource('src/components/TopicThreadDrawer.tsx');
   const quorumGateUsesFlag = /isChallengerQuorumMet[\s\S]{0,160}?isChallengerResponded !== false/.test(drawerSource);
 
   if (challengeNeverRuns && quorumGateUsesFlag && !verBlockSetsChallenger && !fastTrackBypassMarker) {
@@ -806,18 +869,33 @@ console.log('\n--- N10 fast_track 分流是否校验验证官可用性 ---');
     downgradedStep.posteriorAction === 'ESCALATE_TO_RED_TEAM';
 
   // 2. 静态语法块扫描：定位提案阶段 stepModularStageTransition 调用是否传入 hasVerifiers
-  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
-  const proposalCallMatch = appSource.match(/stepModularStageTransition\s*\(\s*\{[\s\S]*?currentStage:\s*['"]proposal['"][\s\S]*?\}\s*\)/);
-  const proposalCallBlock = proposalCallMatch ? proposalCallMatch[0] : '';
-  const proposalChecksVerifier = /hasVerifiers\s*[:,\n]/.test(proposalCallBlock);
-
-  // 定位红队完成后的分流处理
-  const challengeChecksVerifier = /hasVerifiers/.test(
-    appSource.slice(Math.max(0, appSource.indexOf('const nextStageTarget') - 300), appSource.indexOf('const nextStageTarget') + 300)
+  const appSource = loadAppOrchestrationSource();
+  const proposalCallMatches = Array.from(
+    appSource.matchAll(
+      /stepModularStageTransition\s*\(\s*\{(?:(?!stepModularStageTransition)[\s\S])*?currentStage:\s*['"]proposal['"][\s\S]*?\}\s*\)/g
+    )
   );
+  const proposalChecksVerifier =
+    proposalCallMatches.length > 0 &&
+    proposalCallMatches.every((m) => /hasVerifiers\s*[:,\n]/.test(m[0]));
+
+  // 定位红队完成后的分流处理（安全校验 index >= 0，覆盖 App + src/hooks 全部触发点）
+  const nextStageTargetIndices: number[] = [];
+  let targetSearchFrom = 0;
+  for (;;) {
+    const idx = appSource.indexOf('const nextStageTarget', targetSearchFrom);
+    if (idx < 0) break;
+    nextStageTargetIndices.push(idx);
+    targetSearchFrom = idx + 'const nextStageTarget'.length;
+  }
+  const challengeChecksVerifier =
+    nextStageTargetIndices.length > 0 &&
+    nextStageTargetIndices.every((idx) =>
+      /hasVerifiers/.test(appSource.slice(Math.max(0, idx - 300), idx + 300))
+    );
 
   console.log(
-    `    纯函数缺少验证官安全降级: ${pureFuncCorrect}; App 提案调用传入 hasVerifiers: ${proposalChecksVerifier}; 红队分流校验验证官: ${challengeChecksVerifier}`
+    `    纯函数缺少验证官安全降级: ${pureFuncCorrect}; App + src/hooks 提案调用传入 hasVerifiers: ${proposalChecksVerifier} (${proposalCallMatches.length} 处); 红队分流校验验证官: ${challengeChecksVerifier} (${nextStageTargetIndices.length} 处)`
   );
 
   if (pureFuncCorrect && proposalChecksVerifier && challengeChecksVerifier) {
@@ -837,11 +915,16 @@ console.log('\n--- N10 fast_track 分流是否校验验证官可用性 ---');
 // ---------------------------------------------------------------- N12
 console.log('\n--- N12 fast_track 降级是否就地改写 React 状态对象 ---');
 {
-  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
-  const lines = appSource.split('\n');
-  const mutationHits = lines
-    .map((line, idx) => ({ line, idx }))
-    .filter(({ line }) => /\.belief\.(routingMode|priorRisk|posteriorRisk|status)\s*=(?!=)/.test(line));
+  const orchestrationFiles = loadAppOrchestrationFiles();
+  const appSource = loadAppOrchestrationSource();
+  const mutationHits: Array<{ path: string; lineNum: number; line: string }> = [];
+  for (const file of orchestrationFiles) {
+    file.content.split('\n').forEach((line, idx) => {
+      if (/\.belief\.(routingMode|priorRisk|posteriorRisk|status)\s*=(?!=)/.test(line)) {
+        mutationHits.push({ path: file.path, lineNum: idx + 1, line });
+      }
+    });
+  }
 
   // baseModular 可能直接引用上一轮 React 状态中的 modularState
   const baseAliasesPrevState =
@@ -851,10 +934,9 @@ console.log('\n--- N12 fast_track 降级是否就地改写 React 状态对象 --
     const hit = mutationHits[0];
     warn(
       'N12',
-      `fast_track 降级路径就地改写 React 状态中的嵌套对象：src/App.tsx:${hit.idx + 1} 执行 \`${hit.line.trim()}\`。` +
-        `该 activeMod 取自 updatedModular.modules，而 baseModular 可能是上一轮 gameTheoreticState.modularState（第 5013~5018 行），` +
-        `其 belief 与历史状态共享同一引用 —— 原地赋值会连带篡改历史快照，违反不可变契约。` +
-        `同一逻辑在模块提案路径（约 2339 行）已用 { ...m.belief, routingMode } 正确处理，两处实现不一致。`
+      `fast_track 降级路径就地改写 React 状态中的嵌套对象：${hit.path}:${hit.lineNum} 执行 \`${hit.line.trim()}\`。` +
+        `该 activeMod 取自 updatedModular.modules，而 baseModular 可能是上一轮 gameTheoreticState.modularState，` +
+        `其 belief 与历史状态共享同一引用 —— 原地赋值会连带篡改历史快照，违反不可变契约。`
     );
   } else {
     pass('N12', '模块 belief 更新均采用不可变写法');
@@ -864,9 +946,12 @@ console.log('\n--- N12 fast_track 降级是否就地改写 React 状态对象 --
 // ---------------------------------------------------------------- N13
 console.log('\n--- N13 全 fast_track 议题是否产生 SPRT 序贯收敛证据 ---');
 {
-  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+  const appSource = loadAppOrchestrationSource();
   const fastFreezeIdx = appSource.indexOf('Fast Track Frozen');
-  const fastBlock = fastFreezeIdx > 0 ? appSource.slice(fastFreezeIdx - 1500, fastFreezeIdx + 2000) : '';
+  const fastBlock =
+    fastFreezeIdx >= 0
+      ? appSource.slice(Math.max(0, fastFreezeIdx - 1500), fastFreezeIdx + 3500)
+      : '';
   const fastPathWritesSprt = /sprtState\s*[:,]/.test(fastBlock);
 
   const allFastDraft = makeDraft([

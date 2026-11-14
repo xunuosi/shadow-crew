@@ -32,35 +32,74 @@ Shadow Crew —— 多 Agent 协同桌面应用（Tauri + React 19 + Vite）。
 
 ## 前端架构与 App.tsx 模块化分治体系（App Slimming Architecture）
 
-为避免顶层入口 `src/App.tsx` 代码膨胀与关注点混杂，系统严格推行**「精简调度根 + 领域专用 Hook + 集中式弹窗容器」**的分治架构：
+为避免顶层入口 `src/App.tsx` 代码膨胀与关注点混杂，系统严格推行**「精简调度根 + 领域专用 Hook + 集中式弹窗容器」**的分治架构（Wave 2 全量模块化拆分，共 10 个 Hook + 1 个弹窗总控容器）：
 
 ```text
 src/
-├── App.tsx                              # 核心调度中枢：顶层状态树、会话生命周期与 Hook 组装
+├── App.tsx                              # 精简调度根（目标 <= 800 行）：顶层组装、领域 Hook 串联与主视图骨架
 ├── components/
-│   └── AppModalsContainer.tsx           # 全局弹窗容器：集中管理与 Suspense 按需加载所有业务弹窗
+│   └── AppModalsContainer.tsx           # 集中式弹窗容器：统一管理与 Suspense 按需加载所有业务弹窗
 └── hooks/
-    ├── useResizablePanel.ts             # 布局交互：侧边栏与主分栏拖拽缩放
-    ├── useTopicExecutionPipeline.ts     # 落地执行：G-Frame 模块拓扑流水线与工作区 Diff 物理合入
+    ├── useResizablePanel.ts             # 布局交互：侧边栏、主分栏与右侧抽屉拖拽缩放
+    ├── useWorkspacePersistence.ts       # 工作区持久化：状态初始化/清洗、SQLite/LS 同步与原子提交
+    ├── useSessionWarmState.ts           # 会话热状态：Standing Context/水位线、轮次代际与中断清理
+    ├── useAcpRuntimeLifecycle.ts        # 运行时生命周期：ACP 进程/WS 探活、Tauri 事件、权限与 Agent CRUD
+    ├── useChannelAndTopicCrud.ts        # 频道与议题 CRUD：频道/DM/Team、议题定案与子线程讨论
+    ├── useNormalModeTurnOrchestrator.ts # 普通协同编排：Channel/标准模式 Turn Barrier 与 @mention 级联
+    ├── useTopicTurnOrchestrator.ts      # 议题轮次调度：4+1 博弈首轮派发、G-Frame 校验与标准议题接力
+    ├── useTopicExecutionPipeline.ts     # 落地执行管线：G-Frame 模块拓扑流水线与工作区 Diff 物理合入
     ├── useArbitrationConcurrence.ts     # 仲裁合流：运筹一致性求解、全员无异议征询与 Living ADR
     └── useGameTheoreticFsm.ts           # 博弈状态机：DIANOIA 4+1 阶段流转控制器 (Proposal->Arbiter)
 ```
 
 ### 1. 各分治模块职责划分
 
-1. **`AppModalsContainer.tsx`（集中式弹窗容器）**：
+1. **`src/App.tsx`（精简调度根，目标 `<= 800` 行）**：
+   - **职责**：仅负责顶层视图状态挂载、10 个领域 Hook 的依赖注入串联、轻量派生属性拼装，以及三栏主工作区骨架与 `AppModalsContainer` 的渲染。
+2. **`src/components/AppModalsContainer.tsx`（集中式弹窗容器）**：
    - **职责**：将 Agent 团队管理（`AgentTeamsModal`、`CreateTeamModal`）、Agent 默认配置（`AgentDefaultsModal`）、ACP 权限仲裁与授权中心（`AcpPermissionModal`、`AcpPermissionCenterModal`）、本地 SQLite 存储缓存清理（`StorageSettingsModal`）、频道创建/成员/删除（`CreateChannelModal`、`ChannelMembersModal`、`DeleteChannelModal`）、ACP Agent 连接与配置（`ConnectAgentModal`）、议题新建与编辑（`NewTopicModal`、`EditTopicModal`）以及 Tauri 架构看板（`RustTauriArchitectureHub`）统一封装，主界面 JSX 彻底瘦身。
-2. **`useTopicExecutionPipeline.ts`（议题落地执行管线 Hook）**：
+3. **`useResizablePanel.ts`（布局拖拽缩放 Hook）**：
+   - **职责**：封装侧边栏、主工作区与议题抽屉的拖拽缩放交互、边界约束及宽度缓存持久化。
+4. **`useWorkspacePersistence.ts`（工作区持久化与原子提交 Hook）**：
+   - **职责**：接管工作区核心状态初始化与清洗（`sanitizeMessages`）、SQLite/LocalStorage 双向同步、`isWorkspaceHydratedRef` 防回退守卫、`migrateWorkspaceGraph` 迁移、TestChannel 修复、工作区/频道/Thread 派生上下文计算，以及同步更新 `messagesRef.current` 的 `commitMessages`、`getTopicData`、`updateTopicDataInState`。
+5. **`useSessionWarmState.ts`（会话热状态与中断清理 Hook）**：
+   - **职责**：接管 ACP 会话热状态（Standing Context 与水位线 `sessionWatermarksRef`）、轮次代际防串台追踪（`captureTurnEpoch`、`isTurnStale`）、并发执行/级联状态表（`activeExecutions`、`activeCascades`）、`inFlightHandoverRef` / `stageRefineRetriesRef` 状态锁，以及 `safelyClearAcpSessions`、`handleAbortAgent`、`handleAbortAll`、`handleClearAllMessages`。
+6. **`useAcpRuntimeLifecycle.ts`（ACP 运行时生命周期与 Agent 管理 Hook）**：
+   - **职责**：接管本地子进程拉起与后端运行态对齐（`syncRunningAgentsWithBackend`、`spawnLocalAcpAgent`）、远端 WS 健康探活（`runRemoteAgentProbe`、`cancelRemoteAgentProbe`）、Tauri 运行期事件订阅（权限请求/状态变更/心跳/流式分片/会话重置）、`logRpc` 日志、ACP 权限仲裁响应，以及 Agent CRUD（更新、连接、复制、专家包导入、启停、删除）。
+7. **`useTopicExecutionPipeline.ts`（议题落地执行管线 Hook）**：
    - **职责**：封装 G-Frame 模块化分治流水线串行落地（DAG 拓扑偏序、白名单受限提示词编译、多阶段 Diff 增量合并）、标准单轮落地执行以及基于 `applyTopicPatchToWorkspace` 的物理合入逻辑。对外暴露 `dispatchTopicExecution`、`handleExecuteTopicPatch`、`handleApplyTopicPatch`。
-3. **`useArbitrationConcurrence.ts`（仲裁合流与无异议征询 Hook）**：
+8. **`useChannelAndTopicCrud.ts`（频道、DM 与议题 CRUD Hook）**：
+   - **职责**：接管频道创建/成员更新/切换/删除、私聊 DM 与团队 Thread 启动、议题创建/编辑/打开/敲定（`handleResolveTopic`）/重开（`handleReopenTopic`）、子线程讨论同步（`handleSendSubMessage`、`handleSyncBackToMainThread`）及消息表情反馈（`handleAddReaction`）。
+9. **`useArbitrationConcurrence.ts`（仲裁合流与无异议征询 Hook）**：
    - **职责**：封装综合裁定官发言完毕后的 MCDA 运筹求解、ColMAD 事实贡献报表、裁决草案持久化、全员无异议征询状态机推进、一致性硬门禁校验以及终局活体 ADR（Living ADR Canvas）生成。对外暴露 `processArbitrationConcurrence`。
-4. **`useGameTheoreticFsm.ts`（博弈状态机控制器 Hook）**：
-   - **职责**：接管 Shinobi DIANOIA 4+1 博弈推演全周期状态流转控制器（Proposal 提案立论 → Challenge Free-MAD 质询 → Verification 原子接地实证 → Defense 答辩修正 → Arbitration 仲裁交接），严格维护 `inFlightHandoverRef` 并发交接锁与 `stageRefineRetriesRef` 有界重试。对外暴露 `triggerGameTheoreticStageHandover`。
+10. **`useGameTheoreticFsm.ts`（博弈状态机控制器 Hook）**：
+    - **职责**：接管 Shinobi DIANOIA 4+1 博弈推演全周期状态流转控制器（Proposal 提案立论 → Challenge Free-MAD 质询 → Verification 原子接地实证 → Defense 答辩修正 → Arbitration 仲裁交接），严格维护 `inFlightHandoverRef` 并发交接锁与 `stageRefineRetriesRef` 有界重试。对外暴露 `triggerGameTheoreticStageHandover`。
+11. **`useNormalModeTurnOrchestrator.ts`（普通协同模式轮次编排 Hook）**：
+    - **职责**：接管 Channel 主消息流与普通协同级联编排（`dispatchCascadingAgentResponse`、`handleSendMessage`），严格落实 `Promise.allSettled` Turn Barrier、跨回复 `@mention` 去重聚合、Channel Guard、`LoopGuard` 及水位线增量提取与同步提交。
+12. **`useTopicTurnOrchestrator.ts`（议题讨论轮次调度 Hook）**：
+    - **职责**：接管议题消息发送与博弈/标准双轨入口（`handleSendTopicMessage`），涵盖 DM Topic / DM 辩论、Channel Guard、4+1 博弈首轮派发与续跑、G-Frame 白名单正交审计通知（N5）、`fast_track` 验证官校验与不可变降级处理（N8/N10/N12），以及标准议题 Turn Barrier 级联交接。
 
 ### 2. 状态与依赖拓扑设计
 
-- **自下而上的清晰依赖链**：`useTopicExecutionPipeline`（输出执行能力）→ `handleResolveTopic`（敲定并可选触发派发）→ `useArbitrationConcurrence`（合流并触发定案敲定）→ `useGameTheoreticFsm`（博弈流转并在阶段 5 触发仲裁合流）。
-- **严格回归保护**：任何涉及上述编排 Hook 的重构与调整，均受已有 13 套自动化测试套件（`npm run test:cogno`）与 TypeScript 编译（`npm run lint`）的严格无缝校验。
+- **自下而上的单向 DAG 依赖链**：
+  `useWorkspacePersistence`（持久化底座与原子状态提交）
+  → `useSessionWarmState`（热态水位线、代际锁与中断能力）
+  → `useAcpRuntimeLifecycle`（ACP 运行时进程/探活与权限监听）
+  → `useTopicExecutionPipeline`（G-Frame 拓扑执行与物理合入能力）
+  → `useChannelAndTopicCrud`（频道/议题 CRUD 与敲定派发）
+  → `useArbitrationConcurrence`（仲裁运筹求解与无异议合流，触发 `handleResolveTopic`）
+  → `useGameTheoreticFsm`（4+1 阶段状态机接力，阶段 5 触发 `processArbitrationConcurrence`）
+  → `useNormalModeTurnOrchestrator`（普通协同 Turn Barrier 与 `@mention` 级联）
+  → `useTopicTurnOrchestrator`（议题入口调度，串联级联编排、博弈接力与仲裁合流）
+  （`useResizablePanel` 独立负责 UI 布局尺寸状态，`AppModalsContainer` 由 `App.tsx` 统一装配）。
+- **严格回归保护**：任何涉及上述编排 Hook 的重构与调整，均受已有 13 套自动化测试套件（`npm run test:cogno`）、边界探测套件（`npm run test:cogno:edge`）与 TypeScript 编译（`npm run lint`）的严格无缝校验。
+
+### 3. 单文件代码体量红线与模块化编码规范（File Size & Modularity Governance）
+
+1. **`src/App.tsx` 顶层调度根硬上限（`<= 800` 行）**：仅允许包含顶层状态挂载、领域 Hook 组装、轻量派生视图与三栏骨架 JSX；严禁在 `App.tsx` 中直接编写超过 30 行的业务事件处理函数、ACP 协议拼装、SQLite/LocalStorage 读写迁移或博弈状态机分支。
+2. **UI 组件（`src/components/*.tsx`）体量阈值（预警线 `600` 行，硬上限 `1,000` 行）**：超过阈值必须按「容器组件 + 独立子视图/卡片组件 + 局部交互 Hook」拆解，严禁在单文件内堆叠多个独立业务面板或内联复杂状态计算。
+3. **领域 Hook（`src/hooks/*.ts`）与服务层（`src/services/*.ts`）单一职责边界**：每个 Hook 必须聚焦单一业务域；纯算法、Prompt 编译与状态转换函数必须下沉至 `src/services/` 纯函数模块并配备独立可追溯测试，严禁将纯计算逻辑耦合在 React 组件或 Hook 闭包内。
+4. **禁止内联巨型 JSX 回调**：向子组件传递 Props 时，超过 15 行的业务逻辑必须提取为 Hook 内部的具名 `useCallback` / handler，禁止在 JSX 属性上直接编写长篇匿名异步函数。
 
 ---
 
