@@ -1316,8 +1316,8 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             </span>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            {topic.discussionMode === 'game_theoretic' && (
+          {topic.discussionMode === 'game_theoretic' && (
+            <div className="flex items-center gap-2 shrink-0">
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-surface border border-border text-fg-secondary">
                 {topic.gameStage === 'proposal' ? '🏛️ 立论 (1/5)' :
                  topic.gameStage === 'challenge' ? '⚔️ 压测 (2/5)' :
@@ -1325,12 +1325,8 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                  topic.gameStage === 'defense' ? '🛡️ 答辩 (4/5)' :
                  topic.gameStage === 'arbitration' || topic.gameStage === 'concluded' ? '⚖️ 仲裁 (5/5)' : '推演中'}
               </span>
-            )}
-            <span className="text-[11px] text-purple-600 dark:text-purple-400 font-medium group-hover:underline flex items-center gap-0.5">
-              <span>展开看板</span>
-              <ChevronDown className="w-3.5 h-3.5 transition-transform group-hover:translate-y-0.5" />
-            </span>
-          </div>
+            </div>
+          )}
         </div>
       ) : (
         <div className="max-h-[40vh] overflow-y-auto shrink-0">
