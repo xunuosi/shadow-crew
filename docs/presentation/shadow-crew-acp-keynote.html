@@ -145,7 +145,7 @@ body::after {
 }
 
 .slide::after {
-  content: attr(data-no) " / 28";
+  content: attr(data-no) " / 33";
   position: absolute; right: 44px; bottom: 30px; z-index: 2;
   font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
   color: var(--fg3);
@@ -950,6 +950,25 @@ kbd {
   .slide.is-active .reveal { animation: none !important; opacity: 1 !important; transform: none !important; }
   * { scroll-behavior: auto !important; }
 }
+
+/* ---------- appendix: ACP hands-on ---------- */
+.appx-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 28px; align-items: start; }
+.appx-grid.wide { grid-template-columns: 1.32fr .68fr; }
+.code.tiny { font-size: 10.5px; line-height: 1.6; padding: 12px 14px; }
+table.method { width: 100%; border-collapse: collapse; }
+table.method th { padding: 7px 9px; font-size: 9px; }
+table.method td { padding: 6px 9px; font-size: 11px; line-height: 1.4; }
+table.method .dir { font-family: var(--mono); font-size: 9px; color: var(--fg3); white-space: nowrap; }
+table.method .mth { font-family: var(--mono); font-size: 10px; color: var(--fg); white-space: nowrap; }
+table.method .req { font-family: var(--mono); font-size: 9px; color: var(--fg3); }
+table.method .req.b { color: var(--accent); }
+.checks { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.check { padding: 11px 13px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface2); font-size: 11.5px; line-height: 1.55; color: var(--fg2); }
+.check b { display: block; font-size: 12.5px; color: var(--fg); margin-bottom: 2px; }
+.check .no { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; color: var(--accent); }
+.check code { font-family: var(--mono); font-size: 10px; color: var(--accent); }
+.err-codes { display: flex; flex-wrap: wrap; gap: 6px; }
+.err-codes .chip { font-size: 10px; padding: 5px 9px; }
 </style>
 </head>
 <body>
@@ -1001,7 +1020,7 @@ kbd {
       <h1 class="reveal">连接 Agent，<br>连接<span class="grad">彼此</span>。</h1>
       <p class="lede reveal">不重复造 Agent。用 ACP 连接两样东西：<br>你常用的编程 Agent，和同事调优好的 Agent；<br>以及同事沉淀的 .scpack 经验包，让协作发生、经验流动。</p>
       <div class="cover-meta reveal">
-        <span class="chip accent"><span class="d" style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>28 页 · 约 28 分钟</span>
+        <span class="chip accent"><span class="d" style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>33 页 · 约 33 分钟</span>
         <span class="chip">技术峰会 / 架构师沙龙</span>
         <span class="chip">Agent Client Protocol</span>
       </div>
@@ -1236,7 +1255,7 @@ kbd {
 
 <!-- 06 ------------------------------------------------------------ -->
 <section class="slide" data-no="06" data-section="ACP · 协议" data-title="职责解耦与对等双向通信"
-  data-notes="这一页讲 ACP 的架构气质：它不是单向 RPC，而是对等双向。宿主正向派发任务，Agent 在执行中反向申请权限、推送流式更新。把这条“反向通道”讲透，后面权限代理才立得住。">
+  data-notes="这一页讲 ACP 的架构气质：它不是单向 RPC，而是对等双向。宿主正向派发任务，Agent 反向申请权限、推送流式更新。注意 v2 的 prompt 响应只是插入确认 { messageId }，终态走 state_update；v1 的 prompt 响应才结束回合。把这条反向通道讲透，后面权限代理才立得住。">
   <div class="slide-head">
     <div class="eyebrow reveal">05 / 协议</div>
     <h2 class="reveal">职责彻底解耦，通信真正对等</h2>
@@ -1257,11 +1276,12 @@ kbd {
       </div>
 
       <div class="lane-mid reveal">
+        <div class="rpc to-agent"><div class="lbl">handshake</div><div class="method">initialize</div><div class="ar">→</div></div>
         <div class="rpc to-agent"><div class="lbl">request</div><div class="method">session/new · session/prompt</div><div class="ar">→</div></div>
         <div class="rpc to-client"><div class="lbl">stream</div><div class="method">session/update</div><div class="ar">←</div></div>
         <div class="rpc to-client"><div class="lbl">reverse request</div><div class="method">session/request_permission</div><div class="ar">←</div></div>
-        <div class="rpc to-client"><div class="lbl">terminal</div><div class="method">turn_complete</div><div class="ar">←</div></div>
-        <div class="small" style="text-align:center;margin-top:2px">JSON-RPC 2.0<br>双向对等</div>
+        <div class="rpc to-client"><div class="lbl">ack / idle</div><div class="method">{ messageId } · state_update</div><div class="ar">←</div></div>
+        <div class="small" style="text-align:center;margin-top:2px">JSON-RPC 2.0<br>双向对等 · 一行一条消息</div>
       </div>
 
       <div class="lane agent reveal">
@@ -1271,7 +1291,7 @@ kbd {
           <li><b>自主推理</b><br>多轮 ReAct 与规划</li>
           <li><b>Tool Loop</b><br>读写文件、执行命令</li>
           <li><b>流式输出</b><br>逐字 Markdown 与进度</li>
-          <li><b>端点记忆</b><br>原生长期记忆由端点持有</li>
+          <li><b>端侧工具</b><br>读写与命令由端点执行</li>
         </ul>
         <div class="mt-24"><span class="badge purple">执行黑盒</span></div>
       </div>
@@ -1288,7 +1308,7 @@ kbd {
 
 <!-- 07 ------------------------------------------------------------ -->
 <section class="slide" data-no="07" data-section="ACP · 协议" data-title="ACP 七大能力支柱"
-  data-notes="七根柱子不要平均用力，重点讲三个：传输无关性（stdio 与 WebSocket 同一套语义）、滑动心跳（300 到 1800 秒动态续期，防长推理被误判）、反向权限代理。其余快速带过，给后面留时间。">
+  data-notes="七根柱子不要平均用力，重点讲三个：stdio 按行传输、会话生命周期、反向权限代理。注意：远程 WebSocket / Relay、300–1800s 心跳、agentCapabilities.nativeMemory 都是 Shadow Crew 的扩展，不是 ACP 核心；在台上要主动区分，避免被懂行的听众挑错。">
   <div class="slide-head">
     <div class="eyebrow reveal">06 / 协议</div>
     <h2 class="reveal">七根支柱，撑起工业级协同</h2>
@@ -1296,18 +1316,18 @@ kbd {
   </div>
   <div class="slide-body">
     <div class="pillars">
-      <div class="pillar reveal"><div class="pn">PILLAR 01</div><h4>传输无关性</h4><p>本地 stdio 子进程管道，与远程 WebSocket / Axum Relay 共享同一套会话语义。</p><div class="kv">stdio · ws · relay</div></div>
+      <div class="pillar reveal"><div class="pn">PILLAR 01</div><h4>stdio 传输</h4><p>客户端拉起子进程；stdin / stdout 按行传输 JSON-RPC，单条消息不得内嵌换行。</p><div class="kv">newline-delimited · utf-8</div></div>
       <div class="pillar reveal"><div class="pn">PILLAR 02</div><h4>双向对等 RPC</h4><p>正向派发任务，反向申请权限。JSON-RPC 2.0 全双工，不是单向调用。</p><div class="kv">json-rpc 2.0</div></div>
       <div class="pillar reveal"><div class="pn">PILLAR 03</div><h4>会话 × CWD 绑定</h4><p><span class="mono">session/new</span> 建立即锁定工作目录，任务上下文与物理路径强一致。</p><div class="kv">immutable cwd</div></div>
       <div class="pillar reveal"><div class="pn">PILLAR 04</div><h4>全双工流式</h4><p>逐字 Markdown、工具进度实时上屏，长任务不再“黑箱等待”。</p><div class="kv">streaming</div></div>
-      <div class="pillar reveal"><div class="pn">PILLAR 05</div><h4>空闲心跳防护</h4><p>动态滑动心跳续期 <b>300s ~ 1800s</b>，复杂推理不被误判超时，网络死锁可自愈。</p><div class="kv">idle heartbeat guard</div></div>
+      <div class="pillar reveal"><div class="pn">PILLAR 05</div><h4>会话生命周期</h4><p><span class="mono">session/new</span>、<span class="mono">list</span>、<span class="mono">resume</span>、<span class="mono">close</span>；v2 移除 <span class="mono">load</span>，改用 <span class="mono">replayFrom</span>。</p><div class="kv">session lifecycle</div></div>
       <div class="pillar reveal"><div class="pn">PILLAR 06</div><h4>能力协商</h4><p>探测 <span class="mono">nativeMemory</span>、<span class="mono">resume</span>、<span class="mono">prompt_image</span> 等能力掩码，按端点能力编排。</p><div class="kv">capability negotiation</div></div>
       <div class="pillar reveal"><div class="pn">PILLAR 07</div><h4>反向权限代理</h4><p>敏感操作由宿主拦截、审批、审计，给自主 Agent 装上确定性安全锁。</p><div class="kv">permission broker</div></div>
     </div>
 
     <div class="pillars-note mt-20 reveal">
-      <span class="small">七根支柱共同回答一个问题：<b style="color:var(--fg)">为什么宿主可以放心把执行交给外部进程。</b></span>
-      <span class="chip accent">协议即边界</span>
+      <span class="small">ACP 核心是 <b style="color:var(--fg)">stdio + JSON-RPC</b>；远程 WebSocket / Relay、心跳与 <b style="color:var(--fg)">nativeMemory</b> 属于 Shadow Crew 扩展。</span>
+      <span class="chip accent">核心 vs 扩展</span>
     </div>
   </div>
 </section>
@@ -1371,17 +1391,18 @@ kbd {
       <div class="steps reveal">
         <div class="step"><span class="sn">1</span><span><b>Agent 发起敏感操作</b> · 读写文件、执行命令、访问网络</span><span class="r">tool_call</span></div>
         <div class="step"><span class="sn">2</span><span><b>宿主拦截</b> · 解析工具调用的 <span class="mono">kind / name</span></span><span class="r">request_permission</span></div>
-        <div class="step"><span class="sn">3</span><span><b>归一化 6 大 Capability</b> · 把五花八门的工具名收敛成稳定能力面</span><span class="r">classify</span></div>
+        <div class="step"><span class="sn">3</span><span><b>归一化 6 大能力面（Shadow Crew）</b> · 把五花八门的工具名收敛成稳定能力面</span><span class="r">classify</span></div>
         <div class="step"><span class="sn">4</span><span><b>Rust 策略判定 + 人工审批</b> · 工作区白名单、越界路径、授权范围</span><span class="r">policy</span></div>
         <div class="step"><span class="sn">5</span><span><b>放行，或 Fail-Closed</b> · 超时、越界、未知能力一律拒绝</span><span class="r">decision</span></div>
       </div>
 
       <div class="reveal">
-        <div class="small" style="margin-bottom:10px">六类能力面</div>
+        <div class="small" style="margin-bottom:10px">六类能力面（Shadow Crew 映射）</div>
         <div class="flex wrap gap-8">
           <span class="chip mono">fs.read</span><span class="chip mono">fs.write</span><span class="chip mono">fs.delete</span>
           <span class="chip mono">shell.execute</span><span class="chip mono">network.access</span><span class="chip mono">other</span>
         </div>
+        <div class="small" style="margin-top:8px">ACP 原始：<span class="mono">ToolKind</span> + <span class="mono">PermissionOption.kind</span></div>
         <div class="small" style="margin:22px 0 10px">五级授权范围</div>
         <div class="flex wrap gap-8">
           <span class="chip">Once</span><span class="chip">Session</span><span class="chip">Channel</span><span class="chip">Topic</span><span class="chip">DM</span>
@@ -1401,25 +1422,25 @@ kbd {
 
 <!-- 10 ------------------------------------------------------------ -->
 <section class="slide" data-no="10" data-section="ACP · 协议" data-title="从 V1 到 V2 的演进跃迁"
-  data-notes="这一页不要陷入协议细节，讲“工程契约”四个字。V1 的问题不是不能用，而是每个宿主都要自己猜、自己兜底。V2 把版本、能力、凭据、终态、提示词、恢复全部标准化，宿主才能写确定性的代码。">
+  data-notes="V1 不是不能用，而是每个宿主都要自己兜底；V2 把 prompt 生命周期、能力模型、会话方法重写。重点不是字段，而是“谁在什么时候算完成”。V2 目前仍是 Draft，生产落地要双栈和特性开关。">
   <div class="slide-head">
     <div class="eyebrow reveal">09 / 协议</div>
-    <h2 class="reveal">从“能用”到“可工程化”</h2>
-    <p class="lede reveal">V2 不是版本号加一，而是把隐式约定重写成显式契约。</p>
+    <h2 class="reveal">从 V1 到 V2：一次生命周期重构</h2>
+    <p class="lede reveal">V2 不是版本号加一，而是把“回合”与“能力模型”重新定义了。注意：V2 目前仍是 Draft。</p>
   </div>
   <div class="slide-body">
     <div class="versus">
       <div class="vs-col v1 reveal">
-        <div class="vs-head"><span class="t">V1</span><span class="s">早期规范 / 试验期</span></div>
+        <div class="vs-head"><span class="t">V1</span><span class="s">Stable · 整数 1</span></div>
         <div class="tag-list">
-          <div class="row">版本标识是字符串或历史日期</div>
-          <div class="row">能力字段分散在多个结构里</div>
-          <div class="row">任务终态隐式同步回包</div>
-          <div class="row">停止原因靠隐式 EOF 判断</div>
-          <div class="row">系统提示词是长字符串拼接</div>
-          <div class="row">会话恢复重放全量历史</div>
+          <div class="row">版本：整数 1，Agent 返回自己支持的最新版</div>
+          <div class="row">能力：agentCapabilities / clientCapabilities，布尔标记</div>
+          <div class="row">Prompt：请求挂起到回合结束，响应即 stopReason</div>
+          <div class="row">客户端工具：fs / terminal 方法，由客户端执行</div>
+          <div class="row">恢复：session/load 全量重放；resume 可选</div>
+          <div class="row">认证：authenticate / logout（logout 需能力）</div>
         </div>
-        <div class="mt-20"><span class="badge bad">集成成本被转嫁给宿主</span></div>
+        <div class="mt-20"><span class="badge plain">STABLE</span></div>
       </div>
 
       <div class="vs-mid reveal">
@@ -1427,33 +1448,33 @@ kbd {
       </div>
 
       <div class="vs-col v2 reveal">
-        <div class="vs-head"><span class="t">V2</span><span class="s">标准化现行版本</span></div>
+        <div class="vs-head"><span class="t">V2</span><span class="s">Draft · 整数 2</span></div>
         <div class="tag-list">
-          <div class="row">规范化整数 <b class="mono">2</b>（SemVer 2.0.0）</div>
-          <div class="row">顶层统一 <b class="mono">capabilities</b> 结构体</div>
-          <div class="row"><b class="mono">messageId</b> Receipt + 显式 <b class="mono">turn_complete</b></div>
-          <div class="row"><b class="mono">stopReason</b> 强枚举契约</div>
-          <div class="row">结构化 <b class="mono">systemPrompt</b> Schema</div>
-          <div class="row"><b class="mono">session/resume</b> 轻量续接</div>
+          <div class="row">版本：整数 2，取 ≤ 请求的最高版；无匹配 -32022</div>
+          <div class="row">能力：capabilities + 必填 info，对象标记，session 基线</div>
+          <div class="row">Prompt：插入即 ack { messageId }；state_update 报 running/idle</div>
+          <div class="row">客户端工具：fs/terminal 移除；客户端工具改走 MCP</div>
+          <div class="row">恢复：load 移除；resume 必选 + replayFrom</div>
+          <div class="row">认证：auth/login + auth/logout；set_mode → set_config_option</div>
         </div>
-        <div class="mt-20"><span class="badge ok">宿主可以写确定性代码</span></div>
+        <div class="mt-20"><span class="badge warn">DRAFT</span></div>
       </div>
     </div>
 
     <div class="callout mt-24 reveal">
-      <span class="tag">本质</span>
-      <span>协议的价值不在于多一个字段，而在于 <b>失败可以被枚举、终态可以被追踪、能力可以被协商</b>。</span>
+      <span class="tag">结论</span>
+      <span>V2 的价值不是多几个字段，而是 <b>完成可以被追踪、能力可以被协商、版本可以被拒绝</b>；但它是 Draft，落地要双栈。</span>
     </div>
   </div>
 </section>
 
 <!-- 11 ------------------------------------------------------------ -->
 <section class="slide" data-no="11" data-section="ACP · 协议" data-title="六维核心差异全景对照"
-  data-notes="逐行讲太慢，挑三行：Receipt 凭据解决迟到消息与竞态；stopReason 让宿主区分交卷、报错和等待输入；resume 把冷启动恢复耗时降 80%。其余让听众看表。">
+  data-notes="挑三行：版本协商、prompt 生命周期、客户端工具。V2 的 prompt 响应不是完成，state_update 才是；fs/terminal 被移除，客户端工具改走 MCP；V2 仍是 Draft，不能当成已完全稳定的标准。">
   <div class="slide-head">
     <div class="eyebrow reveal">10 / 协议</div>
     <h2 class="reveal">六维差异，逐项对账</h2>
-    <p class="lede reveal">同一份能力，两代规范；差异不在功能，而在契约的确定性。</p>
+    <p class="lede reveal">同一份协议，两代生命周期；差异不在功能，而在“完成”与“能力”怎么定义。</p>
   </div>
   <div class="slide-body">
     <div class="tbl-wrap reveal">
@@ -1468,47 +1489,47 @@ kbd {
         </thead>
         <tbody>
           <tr>
-            <td class="row-h">版本标识</td>
-            <td class="dim">字符串或历史日期</td>
-            <td><strong>规范化整数 2</strong><span class="mini">SemVer 2.0.0</span></td>
-            <td><strong>双轨自适应</strong>：默认 V2，失败毫秒级同通道降级 V1</td>
+            <td class="row-h">版本协商</td>
+            <td class="dim">整数 1；Agent 返回自己支持的最新版</td>
+            <td><strong>整数 2；取 ≤ 请求的最高版</strong><span class="mini">无匹配返回 -32022（requested / supported）</span></td>
+            <td>先读版本，再校验参数；v1/v2 两套 handler</td>
           </tr>
           <tr>
-            <td class="row-h">能力声明</td>
-            <td class="dim">分散在 agent / session 等多处字段</td>
-            <td><strong>顶层 capabilities 统一汇聚</strong></td>
-            <td>适配层双向回写，抽象为高内聚能力树</td>
+            <td class="row-h">能力模型</td>
+            <td>agentCapabilities / clientCapabilities<span class="mini">布尔标记 + 分散的 session 能力</span></td>
+            <td><strong>capabilities + 必填 info</strong><span class="mini">对象存在即支持；session 为基线</span></td>
+            <td>存在性判断，不做布尔等值；按连接选版本</td>
           </tr>
           <tr>
-            <td class="row-h">任务终态</td>
-            <td class="dim">隐式同步回包，无法确定性追踪</td>
-            <td><strong>messageId Receipt</strong><span class="mini">{ messageId, status: 'accepted' } + turn_complete</span></td>
-            <td>MessageId 追踪链路，防迟到消息与竞态</td>
-          </tr>
-          <tr>
-            <td class="row-h">停止原因</td>
-            <td class="dim">隐式 EOF 或未定义状态</td>
-            <td><strong>stopReason 强枚举</strong><span class="mini">end_turn / completed / error</span></td>
-            <td>精准区分交卷、报错中断、等待输入</td>
-          </tr>
-          <tr>
-            <td class="row-h">系统提示词</td>
-            <td class="dim">纯文本长字符串拼接</td>
-            <td><strong>结构化 Schema</strong><span class="mini">{ mode: 'append', content: [{ type: 'text' }] }</span></td>
-            <td>清洗空内容，消除 -32602 校验报错</td>
+            <td class="row-h">Prompt 生命周期</td>
+            <td>session/prompt 挂起到回合结束<span class="mini">响应 { stopReason }</span></td>
+            <td><strong>插入即 ack { messageId }</strong><span class="mini">running / idle 走 state_update</span></td>
+            <td>UI 不能把 prompt 响应当完成；终态看 idle</td>
           </tr>
           <tr>
             <td class="row-h">会话恢复</td>
-            <td class="dim">session/load 重放全量历史</td>
-            <td><strong>session/resume 轻量续接</strong><span class="mini">基于 Thread ID 恢复上下文</span></td>
-            <td><strong>恢复耗时降低 80%</strong>，冷启动更短</td>
+            <td>session/load 全量重放；resume 可选<span class="mini">按 sessionCapabilities 探测</span></td>
+            <td><strong>load 移除；resume 必选</strong><span class="mini">replayFrom + replay_complete</span></td>
+            <td>迁移到 resume；处理重放边界与截断</td>
+          </tr>
+          <tr>
+            <td class="row-h">客户端工具</td>
+            <td>fs/read_text_file、fs/write_text_file、terminal/*<span class="mini">Client 执行，能力布尔</span></td>
+            <td><strong>fs/terminal 移除</strong><span class="mini">工具在 Agent 执行；客户端工具走 MCP</span></td>
+            <td>删除 fs/terminal 调用；用 MCP 提供客户端工具</td>
+          </tr>
+          <tr>
+            <td class="row-h">认证与模式</td>
+            <td>authenticate、logout、session/set_mode<span class="mini">logout 需 agentCapabilities.auth.logout</span></td>
+            <td><strong>auth/login、auth/logout</strong><span class="mini">set_mode → session/set_config_option</span></td>
+            <td>方法重命名；模式改配置项</td>
           </tr>
         </tbody>
       </table>
     </div>
     <div class="flex items-center between mt-16 reveal">
-      <span class="small">V2 的另一条主线：<b style="color:var(--fg)">记忆治理</b>，见下一页。</span>
-      <span class="chip">双轨兼容 = 向上的标准 + 向下的现实</span>
+      <span class="small">V2 仍为 <b style="color:var(--fg)">Draft</b>；以上为稳定基线 <span class="mono">schema/v2</span>，实验特性不在范围内。</span>
+      <span class="chip">来源：agentclientprotocol.com</span>
     </div>
   </div>
 </section>
@@ -1519,6 +1540,7 @@ kbd {
   <div class="slide-head">
     <div class="eyebrow reveal">11 / 协议</div>
     <h2 class="reveal">尊重端点，拒绝“伪兼容”的记忆拼贴</h2>
+    <p class="lede reveal">ACP 不规定长期记忆；<b class="mono">agentCapabilities.nativeMemory</b> 是 Shadow Crew 的扩展能力。</p>
   </div>
   <div class="slide-body">
     <div class="grid cols-2 gap-24">
@@ -1544,59 +1566,63 @@ kbd {
       </div>
     </div>
 
-    <div class="code mt-24 reveal"><span class="c">// 端点能力探测（握手时重新确认，不复用上次进程的旧状态）</span>
+    <div class="code mt-24 reveal"><span class="c">// Shadow Crew 扩展：握手时探测 nativeMemory（标准 ACP 无此字段）</span>
 <span class="k">agentCapabilities</span>.nativeMemory === <span class="n">true</span>  <span class="c">→ 尊重端点索引</span>
 <span class="k">agentCapabilities</span>.nativeMemory === <span class="n">false</span> <span class="c">→ spawn(--disable memories)，绝不越权</span></div>
 
-    <div class="quote mt-20 reveal" style="font-size:16px">记忆的所有权属于端点，调度权属于宿主。</div>
+    <div class="flex items-center between mt-16 reveal"><span class="small">未声明时按 <b class="mono">unsupported</b> 处理，不猜测、不缓存。</span><span class="badge purple">Shadow Crew 扩展</span></div>
+    <div class="quote mt-16 reveal" style="font-size:16px">记忆的所有权属于端点，调度权属于宿主。</div>
   </div>
 </section>
 
 <!-- 13 ------------------------------------------------------------ -->
-<section class="slide" data-no="13" data-section="ACP · 协议" data-title="双轨自适应协商"
-  data-notes="双轨不是“同时说两套协议”，而是先试标准、失败即刻降级。关键在于同一通道、毫秒级、用户无感。这保证了新产品能吃到 V2 红利，同时不会因为老 Agent 掉队。">
+<section class="slide" data-no="13" data-section="ACP · 协议" data-title="双栈协商"
+  data-notes="双栈不是同时说两套，而是一个连接选一个版本。Client 请求最新；Agent 选不超过请求的最高版本；无匹配返回 -32022；v1-only 端点返回 1，Client 用 v1 形状重来或重连。V2 还是 Draft，生产用特性开关。">
   <div class="slide-head">
     <div class="eyebrow reveal">12 / 协议</div>
-    <h2 class="reveal">向下兼容历史，向上拥抱标准</h2>
-    <p class="lede reveal">默认 V2；遇到老端点，同一通道毫秒级降级重发 V1。</p>
+    <h2 class="reveal">双栈：一个连接，只讲一个版本</h2>
+    <p class="lede reveal">先请求 V2；Agent 返回它能支持的最高版本。不匹配就明确失败，不猜。</p>
   </div>
   <div class="slide-body">
     <div class="grid" style="grid-template-columns:1.1fr .9fr;gap:34px">
       <div class="hs reveal">
         <div class="hs-row">
-          <div class="hs-box"><div><div class="h">尝试 V2 握手</div><div class="m">version: 2 · capabilities 汇聚</div></div><span class="badge info">DEFAULT</span></div>
+          <div class="hs-box"><div><div class="h">Client 发送 initialize</div><div class="m">protocolVersion: 2 · capabilities + info</div></div><span class="badge info">REQUEST</span></div>
         </div>
         <div class="hs-row">
           <div class="hs-arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M6 14l6 6 6-6"/></svg></div>
-          <div class="hs-label">ACCEPTED / 拒绝 / 超时</div>
+          <div class="hs-label">AGENT 选择版本</div>
         </div>
         <div class="hs-row">
-          <div class="hs-box ok"><div><div class="h">V2 会话建立</div><div class="m">完整能力面 · Receipt · resume</div></div><span class="badge ok">FAST PATH</span></div>
+          <div class="hs-box ok"><div><div class="h">返回 2 · 走 V2</div><div class="m">capabilities.session 基线 · state_update</div></div><span class="badge ok">V2</span></div>
         </div>
         <div class="hs-row"><div class="divider" style="width:100%"></div></div>
         <div class="hs-row">
-          <div class="hs-box bad"><div><div class="h">降级：同通道重发 V1</div><div class="m">不换连接 · 不重启进程 · 毫秒级</div></div><span class="badge bad">FALLBACK</span></div>
+          <div class="hs-box"><div><div class="h">返回 1 · 走 V1</div><div class="m">clientCapabilities + clientInfo + fs/terminal</div></div><span class="badge plain">V1</span></div>
+        </div>
+        <div class="hs-row">
+          <div class="hs-box bad"><div><div class="h">无匹配 · -32022</div><div class="m">requested / supported；连接不初始化</div></div><span class="badge bad">REJECT</span></div>
         </div>
         <div class="hs-row">
           <div class="hs-arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M6 14l6 6 6-6"/></svg></div>
-          <div class="hs-label">TRANSPARENT TO USER</div>
+          <div class="hs-label">按选中版本继续</div>
         </div>
         <div class="hs-row">
-          <div class="hs-box"><div><div class="h">会话继续执行</div><div class="m">UI 无感 · 任务不中断</div></div><span class="badge plain">SAME CHANNEL</span></div>
+          <div class="hs-box"><div><div class="h">同一连接，只跑一个版本</div><div class="m">v1 或 v2 handler；不做消息翻译</div></div><span class="badge purple">ONE</span></div>
         </div>
       </div>
 
       <div class="reveal">
         <ul class="lst">
-          <li><b>默认走新标准</b><br>新端点自动获得 capabilities、Receipt 与 resume</li>
-          <li><b>失败只降级、不重试风暴</b><br>一次判定，同通道回退，避免重复建连</li>
-          <li><b>兼容性可回归</b><br>13 套自动化测试覆盖双轨与降级路径</li>
-          <li><b>端点能力不缓存冒充</b><br>每次握手重新探测，旧状态不沿用</li>
+          <li><b>请求最新</b><br>Client 必须带自己支持的最高 <span class="mono">protocolVersion</span></li>
+          <li><b>Agent 选 ≤ 请求</b><br>v2-only 对 v1 请求返回 <span class="mono">-32022</span>，不静默降级</li>
+          <li><b>v1 形状重来</b><br>需要 fs/terminal 时，用 v1 参数重新 initialize（v2 Agent 允许）；v1-only 端点则重连</li>
+          <li><b>双栈不是结构体互转</b><br>两套 handler + 共享业务逻辑，按连接选版本</li>
         </ul>
-        <div class="card tint mt-24">
+        <div class="card tint mt-20">
           <div class="card-k">GUARANTEE</div>
-          <div class="card-t">100% 回归保护</div>
-          <div class="card-d">老 Agent 不需要改一行代码，新 Agent 直接享受 V2 的确定性契约。</div>
+          <div class="card-t">版本是连接级选择</div>
+          <div class="card-d">一旦 initialize 成功，后续所有消息只按选中版本解释；V2 仍是 Draft，生产用特性开关。</div>
         </div>
       </div>
     </div>
@@ -1623,7 +1649,7 @@ kbd {
       <div class="arch-layer reveal" style="align-items:start">
         <div class="lab" style="padding-top:6px">Control<br>Planes</div>
         <div class="sys-grid">
-          <div class="sys"><div class="no">01</div><b>双模直连</b><span>本地 stdio + 跨机 WebSocket / Relay</span></div>
+          <div class="sys"><div class="no">01</div><b>双模直连</b><span>本地 stdio + 扩展 WS / Relay</span></div>
           <div class="sys"><div class="no">02</div><b>记忆资产</b><span>.scpack 经验包 · 验签 · 只读卡带</span></div>
           <div class="sys"><div class="no">03</div><b>敏捷协同</b><span>增量上下文 · Fan-out · Turn Barrier</span></div>
           <div class="sys"><div class="no">04</div><b>博弈治理</b><span>4+1 · BWM 仲裁 · 少数派异议</span></div>
@@ -1634,7 +1660,7 @@ kbd {
       <div class="arch-layer bus reveal">
         <div class="lab">ACP Bus</div>
         <div class="flex items-center between wrap gap-12">
-          <span class="mono" style="font-size:12px;color:var(--accent)">JSON-RPC 2.0 · stdio ⇄ WebSocket</span>
+          <span class="mono" style="font-size:12px;color:var(--accent)">JSON-RPC 2.0 · stdio（核心）+ WS（扩展）</span>
           <div class="endpoint-row">
             <span class="chip">Local Agent</span><span class="chip">Remote Agent</span><span class="chip">Relay Hub</span><span class="chip">ReadOnly Guard</span>
           </div>
@@ -1651,11 +1677,11 @@ kbd {
 
 <!-- 15 ------------------------------------------------------------ -->
 <section class="slide" data-no="15" data-section="能力版图" data-title="跨机互联：连接同事的 Agent"
-  data-notes="这一幕很有画面感：张工调优了半年的 Claude Code，你不需要复制，只需要连接。讲清三种网络路径，并强调远程默认 ReadOnly Guard。连接的不是一个冷冰冰的端点，而是同事积累下来的工作方式。现场若网络受限，后面 Demo 页有单机模拟方案。">
+  data-notes="这一幕很有画面感：张工调优了半年的 Claude Code，你不需要复制，只需要连接。讲清三种网络路径，并强调远程默认 ReadOnly Guard；WebSocket / Relay 是 Shadow Crew 的扩展传输，不是 ACP 核心。连接的不是一个冷冰冰的端点，而是同事积累下来的工作方式。现场若网络受限，后面 Demo 页有单机模拟方案。">
   <div class="slide-head">
     <div class="eyebrow reveal">14 / 版图</div>
     <h2 class="reveal">把同事调优好的 Agent，接进同一个工作台</h2>
-    <p class="lede reveal">从单机 stdio，到局域网、Tailscale 与 Relay Hub，让同事的 Agent 和你的 Agent 一起工作。</p>
+    <p class="lede reveal">ACP 核心是 stdio；Shadow Crew 在其上扩展 WebSocket / Relay，让同事的 Agent 和你的 Agent 一起工作。</p>
   </div>
   <div class="slide-body">
     <div class="topo">
@@ -1975,7 +2001,7 @@ kbd {
         <tbody>
           <tr>
             <td class="row-h">协议标准</td>
-            <td class="hero"><strong>100% ACP 双轨</strong><span class="mini">stdio + WebSocket / Relay</span></td>
+            <td class="hero"><strong>100% ACP 双栈</strong><span class="mini">stdio 核心 + WS 扩展</span></td>
             <td>标准 ACP<span class="mini">Nostr 中继桥接</span></td>
             <td>私有 CLI + WS<span class="mini">PTY 进程驱动</span></td>
             <td>私有 EventStream<span class="mini">+ MCP 工具</span></td>
@@ -2013,7 +2039,7 @@ kbd {
       </table>
     </div>
     <div class="grid cols-4 gap-12 mt-16 reveal">
-      <div class="take"><span class="tk">PROTOCOL</span><span><b>纯 ACP 双轨</b></span></div>
+      <div class="take"><span class="tk">PROTOCOL</span><span><b>纯 ACP 双栈</b></span></div>
       <div class="take"><span class="tk">COLLAB</span><span><b>增量流 + 4+1</b></span></div>
       <div class="take"><span class="tk">MEMORY</span><span><b>可分发 .scpack</b></span></div>
       <div class="take"><span class="tk">SAFETY</span><span><b>Rust 反向代理</b></span></div>
@@ -2038,7 +2064,7 @@ kbd {
       <div class="moat reveal" data-g="01">
         <div class="mn">MOAT 01</div><h4>解耦彻底</h4>
         <p>100% ACP 纯执行面。不内嵌 Agent，不绑定模型，执行体可随时替换。</p>
-        <div class="proof">EVIDENCE · ACP 双轨 + 13 套回归</div>
+        <div class="proof">EVIDENCE · ACP 双栈 + 13 套回归</div>
         <div class="vs">别人：把 Agent 焊死在宿主里</div>
       </div>
       <div class="moat reveal" data-g="02">
@@ -2257,7 +2283,273 @@ kbd {
     <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 2 39 25 62 32 39 39 32 62 25 39 2 32 25 25Z" fill="var(--accent)"/></svg>
     <span class="mono" style="font-size:12px;letter-spacing:.3em;color:var(--fg2)">SHADOW CREW · THANK YOU</span>
   </div>
-  <div class="end-note">连接 · 协作 · 共享 · Q &amp; A</div>
+  <div class="end-note">连接 · 协作 · 共享 · 附录 A1–A5：ACP 实操</div>
+</section>
+
+
+<!-- 29 ------------------------------------------------------------ -->
+<section class="slide" data-no="29" data-section="附录 · ACP" data-title="一次 ACP 调用，从头到尾"
+  data-notes="这是全流程地图：先握手，再建会话，再发 prompt，然后靠 session/update 流式回传，必要时反向审批，最后以 idle 收口。强调 v1 与 v2 的终点不同：v1 的 prompt 响应才结束回合，v2 的 prompt 响应只是插入确认。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">附录 A1 / 实操</div>
+    <h2 class="reveal">一次 ACP 调用，从头到尾</h2>
+    <p class="lede reveal">initialize 握手 → session/new 锁定工作区 → session/prompt 投递 → session/update 流式回传 → permission 反向审批 → idle 收口。</p>
+  </div>
+  <div class="slide-body">
+    <div class="appx-grid">
+      <div class="reveal">
+        <div class="steps">
+          <div class="step"><span class="sn">1</span><span><b>initialize</b> · protocolVersion / capabilities / info</span><span class="r">C → A</span></div>
+          <div class="step"><span class="sn">2</span><span><b>auth</b> · authMethods 非空时；v2 <span class="mono">auth/login</span>，v1 <span class="mono">authenticate</span></span><span class="r">C → A</span></div>
+          <div class="step"><span class="sn">3</span><span><b>session/new</b> · cwd + mcpServers → sessionId</span><span class="r">C → A</span></div>
+          <div class="step"><span class="sn">4</span><span><b>session/prompt</b> · ContentBlock[]；v2 立即 ack <span class="mono">{ messageId }</span></span><span class="r">C → A</span></div>
+          <div class="step"><span class="sn">5</span><span><b>session/update</b> · 消息 / 工具 / state_update；需要时 <span class="mono">request_permission</span></span><span class="r">A → C</span></div>
+          <div class="step"><span class="sn">6</span><span><b>idle</b> · v2 <span class="mono">state_update { stopReason }</span>；v1 prompt 响应 <span class="mono">{ stopReason }</span></span><span class="r">A → C</span></div>
+        </div>
+      </div>
+
+      <div class="reveal">
+        <div class="card" style="padding:16px 18px">
+          <div class="card-k">V1 · 回合制</div>
+          <div class="card-t" style="font-size:15px">prompt 挂起到回合结束</div>
+          <div class="card-d"><span class="mono">session/prompt</span> 的响应就是终态：<span class="mono">{ stopReason }</span>。</div>
+        </div>
+        <div class="card mt-12" style="padding:16px 18px;border-color:var(--accent-line);background:var(--accent-soft)">
+          <div class="card-k" style="color:var(--accent)">V2 · 插入即确认</div>
+          <div class="card-t" style="font-size:15px">prompt 只 ack 插入</div>
+          <div class="card-d">响应是 <span class="mono">{ messageId }</span>；前台进度与终态走 <span class="mono">state_update</span>。</div>
+        </div>
+        <div class="card mt-12" style="padding:16px 18px">
+          <div class="card-k">三条分支</div>
+          <div class="flex wrap gap-6 mt-8">
+            <span class="chip mono">session/cancel</span>
+            <span class="chip mono">session/resume</span>
+            <span class="chip mono">session/close</span>
+          </div>
+          <div class="card-d" style="margin-top:8px">取消等 <span class="mono">idle(cancelled)</span>；恢复可带 <span class="mono">replayFrom</span>；关闭先取消再释放。</div>
+        </div>
+      </div>
+    </div>
+    <div class="flex items-center between mt-20 reveal">
+      <span class="small">先记住这条主干；A2 / A3 展开方法，A4 给出可直接照抄的报文。</span>
+      <span class="chip">来源：agentclientprotocol.com</span>
+    </div>
+  </div>
+</section>
+
+<!-- 30 ------------------------------------------------------------ -->
+<section class="slide" data-no="30" data-section="附录 · ACP" data-title="V1 方法地图与能力"
+  data-notes="V1 的基线很小：initialize、session/new、session/prompt、session/cancel，加上客户端的 session/request_permission。fs 与 terminal 是可选能力，让客户端替 Agent 执行。逐行讲的时候，强调‘基线 vs 能力门控’。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">附录 A2 / ACP V1</div>
+    <h2 class="reveal">V1 方法地图：基线很小，能力可选</h2>
+    <p class="lede reveal">先看方法属于谁、是否需要能力；再看能力是布尔还是对象。</p>
+  </div>
+  <div class="slide-body">
+    <div class="appx-grid wide">
+      <div class="reveal">
+        <div class="tbl-wrap">
+          <table class="tbl method">
+            <thead><tr><th style="width:9%">方向</th><th style="width:30%">方法</th><th style="width:20%">必需性 / 能力</th><th style="width:41%">用途</th></tr></thead>
+            <tbody>
+              <tr><td class="dir">C → A</td><td class="mth">initialize</td><td class="req b">基线</td><td>版本、能力、客户端信息</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">authenticate</td><td class="req">authMethods</td><td>认证（v2 改名 auth/login）</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/new</td><td class="req b">基线</td><td>cwd + mcpServers → sessionId</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/prompt</td><td class="req b">基线</td><td>ContentBlock[]；响应 { stopReason }</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/load</td><td class="req">loadSession</td><td>全量重放会话历史</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/resume</td><td class="req">sessionCapabilities.resume</td><td>恢复上下文，不重放</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/close</td><td class="req">sessionCapabilities.close</td><td>取消工作并释放会话</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/set_mode</td><td class="req">可选</td><td>切换 Agent 模式</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">logout</td><td class="req">auth.logout</td><td>登出</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/cancel</td><td class="req">通知</td><td>取消当前回合</td></tr>
+              <tr><td class="dir">A → C</td><td class="mth">session/update</td><td class="req">通知</td><td>消息块 / 工具 / 计划 / 状态</td></tr>
+              <tr><td class="dir">A → C</td><td class="mth">session/request_permission</td><td class="req b">基线</td><td>反向申请审批</td></tr>
+              <tr><td class="dir">A → C</td><td class="mth">fs/read_text_file<br>fs/write_text_file</td><td class="req">fs.*</td><td>客户端文件读写（可选）</td></tr>
+              <tr><td class="dir">A → C</td><td class="mth">terminal/*<span class="mini">create · output · wait_for_exit · kill · release</span></td><td class="req">terminal</td><td>客户端终端执行（可选）</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small mt-8">V1 的 prompt 响应在回合结束时返回 <span class="mono">stopReason</span>；客户端工具是可选项，不是基线。</p>
+      </div>
+
+      <div class="reveal">
+        <div class="card">
+          <div class="card-k">AGENT CAPABILITIES</div>
+          <div class="flex wrap gap-6 mt-12">
+            <span class="chip mono">loadSession</span>
+            <span class="chip mono">promptCapabilities.image</span>
+            <span class="chip mono">audio</span>
+            <span class="chip mono">embeddedContext</span>
+            <span class="chip mono">mcpCapabilities.http</span>
+            <span class="chip mono">sse</span>
+            <span class="chip mono">sessionCapabilities.resume</span>
+            <span class="chip mono">close</span>
+            <span class="chip mono">systemPrompt</span>
+          </div>
+        </div>
+        <div class="card mt-12">
+          <div class="card-k">CLIENT CAPABILITIES</div>
+          <div class="flex wrap gap-6 mt-12">
+            <span class="chip mono">fs.readTextFile</span>
+            <span class="chip mono">fs.writeTextFile</span>
+            <span class="chip mono">terminal</span>
+            <span class="chip mono">auth.terminal</span>
+            <span class="chip mono">elicitation</span>
+          </div>
+        </div>
+        <div class="callout mt-12" style="font-size:11.5px"><span class="tag">规则</span><span>省略即不支持；只调用对端在 initialize 里明确声明过的能力。</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 31 ------------------------------------------------------------ -->
+<section class="slide" data-no="31" data-section="附录 · ACP" data-title="V2 方法地图与断点"
+  data-notes="v2 的基线更大：只要 advertise capabilities.session，就必须实现 new/list/resume/close/prompt/cancel/update。客户端变薄：fs/terminal 移除，客户端工具改走 MCP。右边六个断点是迁移时最容易踩的坑。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">附录 A3 / ACP V2 (Draft)</div>
+    <h2 class="reveal">V2 方法地图：基线更大，客户端更薄</h2>
+    <p class="lede reveal">一个连接只跑一个版本；先看基线，再看六个断点。</p>
+  </div>
+  <div class="slide-body">
+    <div class="appx-grid wide">
+      <div class="reveal">
+        <div class="tbl-wrap">
+          <table class="tbl method">
+            <thead><tr><th style="width:10%">方向</th><th style="width:34%">方法</th><th style="width:18%">必需性</th><th style="width:38%">用途</th></tr></thead>
+            <tbody>
+              <tr><td class="dir">C → A</td><td class="mth">initialize</td><td class="req b">基线</td><td>版本 / capabilities / info</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">auth/login · auth/logout</td><td class="req">authMethods</td><td>认证；非空则两者都必须实现</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/new</td><td class="req b">基线</td><td>cwd + mcpServers + systemPrompt</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/list · resume · close</td><td class="req b">基线</td><td>列出 / 恢复 / 关闭</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/prompt</td><td class="req b">基线</td><td>ContentBlock[] → { messageId }</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/cancel</td><td class="req">通知</td><td>取消前台工作</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/set_config_option</td><td class="req">按能力</td><td>配置项；取代 set_mode</td></tr>
+              <tr><td class="dir">A → C</td><td class="mth">session/update</td><td class="req">通知</td><td>消息 / 工具 / state_update / plan</td></tr>
+              <tr><td class="dir">A → C</td><td class="mth">session/request_permission</td><td class="req b">基线</td><td>title + subject + options</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">tool_call/cancel · terminal/cancel</td><td class="req">按能力</td><td>单独取消某个工具 / 终端</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small mt-8">v2 基线方法更多，但客户端不再实现 <span class="mono">fs/*</span> 与 <span class="mono">terminal/*</span>。</p>
+      </div>
+
+      <div class="reveal">
+        <div class="card-k" style="margin-bottom:8px">V1 → V2 六个断点</div>
+        <ul class="lst tight">
+          <li><b>Prompt</b>：响应只 ack <span class="mono">{ messageId }</span>；终态看 <span class="mono">state_update</span></li>
+          <li><b>恢复</b>：<span class="mono">load</span> 移除；<span class="mono">resume</span> + <span class="mono">replayFrom</span></li>
+          <li><b>客户端工具</b>：<span class="mono">fs/terminal</span> 移除；客户端工具走 MCP</li>
+          <li><b>能力</b>：统一 <span class="mono">capabilities</span> + 必填 <span class="mono">info</span>；对象标记</li>
+          <li><b>认证</b>：<span class="mono">authenticate/logout</span> → <span class="mono">auth/login/logout</span></li>
+          <li><b>工具报告</b>：<span class="mono">tool_call</span> 移除；<span class="mono">tool_call_update</span> upsert</li>
+        </ul>
+        <div class="card mt-16" style="border-color:var(--warn-line);background:var(--warn-soft)">
+          <div class="card-k" style="color:var(--warn)">STATUS</div>
+          <div class="card-t" style="color:var(--warn)">V2 仍是 Draft</div>
+          <div class="card-d">把 v2 放在特性开关后；v1 端点继续保留。不要用结构体互转伪装双栈。</div>
+        </div>
+      </div>
+    </div>
+    <div class="callout mt-16 reveal">
+      <span class="tag">基线</span>
+      <span>声明 <b class="mono">capabilities.session</b> 就必须实现 <b class="mono">new / list / resume / close / prompt / cancel / update</b>；缺一不可。</span>
+    </div>
+  </div>
+</section>
+
+<!-- 32 ------------------------------------------------------------ -->
+<section class="slide" data-no="32" data-section="附录 · ACP" data-title="最小接入：四段报文跑通"
+  data-notes="这页是可以直接照抄的最小闭环：握手、建会话、发 prompt、收口与审批。以 stdio + v2 为例；v1 的差异在页脚：clientCapabilities/clientInfo，以及 prompt 响应在结束时才返回 stopReason。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">附录 A4 / 接入</div>
+    <h2 class="reveal">最小接入：四段报文跑通 ACP</h2>
+    <p class="lede reveal">以 stdio + v2 为例。直接照抄，先让一条消息走通，再补能力。</p>
+  </div>
+  <div class="slide-body">
+    <div class="grid cols-2 gap-12">
+      <div class="card reveal" style="padding:14px 16px">
+        <div class="card-k">1 · INITIALIZE</div>
+        <div class="code tiny mt-8"><span class="c">// 先版本，后能力</span>
+→ {"jsonrpc":"2.0","id":0,"method":"initialize","params":{
+    "protocolVersion":2,
+    "info":{"name":"my-client","version":"1.0.0"},
+    "capabilities":{}}}
+← {"jsonrpc":"2.0","id":0,"result":{
+    "protocolVersion":2,"capabilities":{"session":{}},
+    "info":{"name":"my-agent","version":"1.0.0"},"authMethods":[]}}</div>
+      </div>
+
+      <div class="card reveal" style="padding:14px 16px">
+        <div class="card-k">2 · SESSION / NEW</div>
+        <div class="code tiny mt-8"><span class="c">// cwd 必须是绝对路径</span>
+→ {"jsonrpc":"2.0","id":1,"method":"session/new","params":{
+    "cwd":"/repo","mcpServers":[]}}
+← {"jsonrpc":"2.0","id":1,"result":{"sessionId":"sess_1"}}</div>
+      </div>
+
+      <div class="card reveal" style="padding:14px 16px">
+        <div class="card-k">3 · PROMPT</div>
+        <div class="code tiny mt-8"><span class="c">// v2：插入即 ack，不等回合结束</span>
+→ {"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{
+    "sessionId":"sess_1",
+    "prompt":[{"type":"text","text":"review this"}]}}
+← {"jsonrpc":"2.0","id":2,"result":{"messageId":"msg_1"}}</div>
+      </div>
+
+      <div class="card reveal" style="padding:14px 16px">
+        <div class="card-k">4 · UPDATE + PERMISSION</div>
+        <div class="code tiny mt-8"><span class="c">// 终态；需要时反向审批</span>
+A→C {"jsonrpc":"2.0","method":"session/update","params":{
+    "sessionId":"sess_1","update":{"sessionUpdate":"state_update",
+    "state":"idle","stopReason":"end_turn"}}}
+A→C {"jsonrpc":"2.0","id":5,"method":"session/request_permission",
+  "params":{"sessionId":"sess_1","title":"Allow edit?",
+   "subject":{"type":"tool_call","toolCall":{"toolCallId":"call_1"}},
+   "options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"}]}}
+C→A {"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}</div>
+      </div>
+    </div>
+
+    <div class="flex items-center between mt-12 reveal">
+      <span class="small">stdio：每行一个 JSON-RPC 对象，UTF-8，禁止内嵌换行；stdout 只写 ACP 消息，日志走 stderr。</span>
+      <span class="chip">V1 差异：clientCapabilities + clientInfo；prompt 响应在结束时返回 stopReason</span>
+    </div>
+  </div>
+</section>
+
+<!-- 33 ------------------------------------------------------------ -->
+<section class="slide" data-no="33" data-section="附录 · ACP" data-title="接入检查清单"
+  data-notes="最后给一张检查清单：传输、版本、能力、会话、内容、流式、权限、取消、恢复、双栈。每一条都对应一个真实踩坑点，讲完这一页，听众回去就能接。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">附录 A5 / 落地</div>
+    <h2 class="reveal">接入检查清单：从握手到收口</h2>
+    <p class="lede reveal">十项检查，覆盖传输、版本、能力、会话、流式、权限与恢复。</p>
+  </div>
+  <div class="slide-body">
+    <div class="checks">
+      <div class="check reveal"><span class="no">01 / TRANSPORT</span><b>stdio 按行传输</b>每行一个 JSON-RPC 对象；stdout 只写 ACP；日志走 stderr；不发送 batch。</div>
+      <div class="check reveal"><span class="no">02 / VERSION</span><b>先读 protocolVersion</b>v2 取 ≤ 请求的最高版；无匹配 <code>-32022</code>；一个连接只跑一个版本。</div>
+      <div class="check reveal"><span class="no">03 / CAPABILITIES</span><b>只发对端声明的能力</b>v2 看对象是否存在；v1 看布尔；省略即不支持。</div>
+      <div class="check reveal"><span class="no">04 / SESSION</span><b>cwd 是契约</b>必须绝对路径；resume 重发同一个 cwd 与完整 mcpServers 列表。</div>
+      <div class="check reveal"><span class="no">05 / CONTENT</span><b>基线只有 text / resource_link</b>image、audio、resource 需要 prompt 能力；空 prompt 直接拒绝。</div>
+      <div class="check reveal"><span class="no">06 / STREAM</span><b>按序应用 session/update</b>v2 upsert：省略=不变，<code>null</code>=清空，chunk=追加。</div>
+      <div class="check reveal"><span class="no">07 / PERMISSION</span><b>审批要有上下文</b><code>title</code> 必填；<code>subject</code> 用 tool_call / command；至少一个 option。</div>
+      <div class="check reveal"><span class="no">08 / CANCEL</span><b>取消不是错误</b><code>session/cancel</code> 是通知；等 <code>idle stopReason=cancelled</code>，不要展示为失败。</div>
+      <div class="check reveal"><span class="no">09 / RESUME</span><b>重放要有边界</b><code>replayFrom:start</code> → <code>replay_complete</code> → 当前 <code>state_update</code> → response。</div>
+      <div class="check reveal"><span class="no">10 / DUAL-STACK</span><b>两套 handler + 特性开关</b>v2 仍是 Draft；不要用消息翻译伪装兼容，v1 端点继续保留。</div>
+    </div>
+    <div class="flex items-center between mt-16 reveal">
+      <div class="err-codes">
+        <span class="chip mono">-32601 方法不存在</span>
+        <span class="chip mono">-32602 参数错误</span>
+        <span class="chip mono">-32002 会话不存在</span>
+        <span class="chip mono">-32022 版本不支持</span>
+        <span class="chip mono">-32800 请求取消</span>
+      </div>
+      <span class="small">来源：agentclientprotocol.com · v1 / v2</span>
+    </div>
+  </div>
 </section>
 
 </main>
@@ -2282,7 +2574,7 @@ kbd {
 <div class="overlay" id="overview" role="dialog" aria-modal="true" aria-label="幻灯片总览">
   <div class="ov-inner">
     <div class="ov-head">
-      <h2>全部 28 页</h2>
+      <h2>全部 33 页</h2>
       <span class="small">点击跳转 · Esc 关闭 · ← / → 翻页</span>
     </div>
     <div class="ov-grid" id="ov-grid"></div>

@@ -1,6 +1,6 @@
 # Shadow Crew · ACP 技术宣讲（HTML Keynote）
 
-> 单文件、离线、16:9、28 页。用 PPT 的节奏讲，用 HTML 的方式分发。
+> 单文件、离线、16:9、33 页（28 页正文 + 5 页 ACP 实操附录）。用 PPT 的节奏讲，用 HTML 的方式分发。
 >
 > 核心主张：不重复造 Agent，把常用的编程 Agent、同事调优好的 Agent 与 `.scpack` 经验包连接在同一个工作台，让 Agent 之间协作，也让经验开始流动。
 
@@ -17,9 +17,9 @@ open docs/presentation/shadow-crew-acp-keynote.html
 ## 为什么用“幻灯片模式的 HTML”，而不是纯滚动长页
 
 - **讲**：一屏一个观点，节奏由讲者控制；字号按 1600×900 舞台设计，投屏不散。
-- **读**：`O` 打开 28 页总览，可当作目录跳转；地址栏 `#12` 可深链到指定页。
-- **带走**：`⌘P` / `Ctrl+P` 直接导出 28 页 PDF，自动切浅色打印主题并隐藏控件。
-- **分发**：一个约 140KB 的 HTML，无 CDN、无外部字体、无构建步骤，发给同事即可打开。
+- **读**：`O` 打开 33 页总览，可当作目录跳转；地址栏 `#12` 可深链到指定页。
+- **带走**：`⌘P` / `Ctrl+P` 直接导出 33 页 PDF，自动切浅色打印主题并隐藏控件。
+- **分发**：一个约 165KB 的 HTML，无 CDN、无外部字体、无构建步骤，发给同事即可打开。
 
 纯滚动长页更适合“会后异步阅读 / 全文检索 / 嵌入交互 Demo”。若需要，可基于同一份内容另出一版长文。
 
@@ -45,24 +45,26 @@ open docs/presentation/shadow-crew-acp-keynote.html
 | :--- | :--- |
 | 01–04 | 开场、三阶段演进、三堵高墙、Thin Control Plane |
 | 05–09 | ACP 协议定位、对等架构、七大支柱、CWD 约束、权限代理 |
-| 10–13 | V1 → V2、六维对照、Native Memory First、双轨自适应 |
+| 10–13 | V1 → V2、六维对照、Native Memory First、双栈协商 |
 | 14–17 | 五大控制面、跨机互联、`.scpack`、零污染卡带 |
 | 18–20 | 增量协同流、4+1 博弈、BWM 运筹仲裁 |
 | 21–23 | 生态四代、四维矩阵、五条护城河 |
 | 24–27 | Live Demo、防从众治理、ROI、Roadmap |
 | 28 | 结语 |
+| 29–33 | ACP 实操附录：全流程、V1/V2 方法地图、最小报文、接入检查清单 |
 
 每页的讲师话术来自 [`TECH_PRESENTATION_SHADOW_CREW_ACP.md`](./TECH_PRESENTATION_SHADOW_CREW_ACP.md)，按“先结论、再展开”的节奏改写，直接按 `N` 即可看到。
 
 ## 编辑指南
 
 - 每页是一个 `<section class="slide" data-no="01" data-section="开场" data-title="..." data-notes="...">`。
-- 增删页面时，需要同步三处总数：CSS 中 `.slide::after` 的 `/ 28`、总览标题「全部 28 页」、封面 chip「28 页 · 约 28 分钟」。
+- 增删页面时，需要同步三处总数：CSS 中 `.slide::after` 的 `/ 33`、总览标题「全部 33 页」、封面 chip「33 页 · 约 33 分钟」。
 - 主题令牌集中在文件顶部：`:root`（暗夜）与 `html[data-theme="light"]`（白昼），打印样式在 `@media print` 中强制浅色。
 - 品牌标记目前是内联四角星 SVG，可替换为 `public/ninja_icon.svg` 或产品正式 Logo。
 - 页面按 1600×900 设计，由 JS 等比缩放适配窗口，新增内容请保持 16:9 画布内不溢出。
 
 ## 数据口径
 
-- 文案、数字与对标结论均取自 [`TECH_PRESENTATION_SHADOW_CREW_ACP.md`](./TECH_PRESENTATION_SHADOW_CREW_ACP.md)。
+- 文案、数字与对标结论均取自 [`TECH_PRESENTATION_SHADOW_CREW_ACP.md`](./TECH_PRESENTATION_SHADOW_CREW_ACP.md)；ACP 方法与能力按官方 v1 / v2 规范整理。
+- ACP V2 目前仍为 Draft；附录页已标注，正式对外前请再核对版本状态与 schema。
 - ROI 页已显式标注「单场架构研讨 Demo 实测与项目内测数据」，对外演讲前请按最新版本复核模型名、版本号与收益数字。
