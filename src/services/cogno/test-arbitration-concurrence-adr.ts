@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import React from 'react';
+import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   advanceRoleConcurrenceItem,
+  buildArbiterBlockedConcurrenceInquiryDirective,
   buildArbiterStage5Directive,
   buildFinalRulingFromConcurrence,
   buildRoleConcurrencePrompt,
@@ -10,18 +12,26 @@ import {
   compileHumanReadableLivingAdr,
   computeRoleConcurrenceSolutionDigest,
   escapeTableCell,
+  evaluateArbitrationConcurrenceSkip,
   evaluateRulingGates,
+  formatConcurrenceBlockingSummary,
   formatFullDateTime,
+  hasExplicitArbitrationRulingContract,
   normalizeMentionHandle,
   prepareConcurrenceState,
+  shouldSkipRedundantArbitrationConcurrence,
   validateArbiterConcurrenceMentions,
 } from './arbitrationConcurrenceGovernor';
 import { extractRoleConcurrenceFromAcpResponse } from '../acpClient';
+import { buildScopedModulePrompt, buildTopicPrompt } from '../agentCollaboration';
+import { useArbitrationConcurrence } from '../../hooks/useArbitrationConcurrence';
 import { generateAdrMarkdown, LivingAdrCanvas } from '../../components/LivingAdrCanvas';
 import {
   Agent,
   ArbitrationRulingDraft,
+  Channel,
   GameRoleConcurrenceState,
+  Message,
   RoleConcurrenceSubmission,
   RulingRecord,
   TopicMessageData,
@@ -698,8 +708,611 @@ assert.equal(displayNameValidation.isValid, true);
 assert.deepEqual(displayNameValidation.missingHandles, []);
 console.log('✓ 裁定官兼任时正文自 @ 豁免、内在无异议初始化与 @AgentName 显示名兼容校验全部通过');
 
+// ============================================================================
+// 测试 10：3 个 conditional 票阻塞期间 `@all 到哪步了？` 追问：摘要、裁定官答疑指令与 Prompt 注入
+// ============================================================================
+console.log('[10] 验证 3 个 conditional 票阻塞期间 `@all 到哪步了？` 追问摘要与 Prompt 注入...');
+let blockedState = prepareConcurrenceState({
+  topic: mockTopic,
+  candidateAgents: mockAgents,
+  arbiterDraft: draft,
+  arbiterReplyText: `终局裁决草案：采纳两层防线权衡方案。${arbiterMentions}`,
+  solutionDigest,
+  arbiterAgentId: 'agent-arbiter',
+});
+
+const blockedConditionMap: Record<string, { role: 'proposer' | 'challenger' | 'verifier'; cond: string; stmt: string }> = {
+  'agent-proposer': {
+    role: 'proposer',
+    cond: '需补充静态 HTML 单文件负向边界锁定说明，禁止引入额外表单与 fetch 请求',
+    stmt: '仅在满足静态页面零脚本扩展前提下同意方案。',
+  },
+  'agent-challenger': {
+    role: 'challenger',
+    cond: '需明确高并发锁过期时的幂等补偿退避策略',
+    stmt: '若补齐幂等退避窗口边界条件则不再异议。',
+  },
+  'agent-verifier': {
+    role: 'verifier',
+    cond: '需在接地实证 JSON 中显式给出布尔字段 truth_value 并通过验证',
+    stmt: '等待真实构建与接地真值布尔判定落盘。',
+  },
+};
+
+for (const [agentId, cfg] of Object.entries(blockedConditionMap)) {
+  blockedState = advanceRoleConcurrenceItem(blockedState, agentId, {
+    submission: makeSubmission(agentId, cfg.role, solutionDigest, {
+      status: 'conditional',
+      rationale: cfg.stmt,
+      conditions: [cfg.cond],
+    }),
+  });
+}
+assert.equal(blockedState.isConcurrencePhaseActive, true);
+assert.equal(blockedState.allConcurred, false);
+assert.equal(checkAllRolesConcurred(blockedState), false);
+
+const blockingSummary = formatConcurrenceBlockingSummary(blockedState);
+assert.ok(blockingSummary.includes('Architect_Linus') && blockingSummary.includes('@arch-linus'));
+assert.ok(blockingSummary.includes('RedTeam_Sentinel') && blockingSummary.includes('@red-sentinel'));
+assert.ok(blockingSummary.includes('QA_Grounding') && blockingSummary.includes('@qa-verifier'));
+assert.ok(blockingSummary.includes('条件保留') && blockingSummary.includes('conditional'));
+for (const cfg of Object.values(blockedConditionMap)) {
+  assert.ok(blockingSummary.includes(cfg.cond), `阻塞摘要必须包含条件: ${cfg.cond}`);
+}
+
+const blockedInquiryDirective = buildArbiterBlockedConcurrenceInquiryDirective(blockedState);
+assert.ok(blockedInquiryDirective.includes('阶段 5 阻塞答疑与状态说明守则'));
+assert.ok(blockedInquiryDirective.includes('默认模式 · 仅解释当前进展与阻塞条件'));
+assert.ok(blockedInquiryDirective.includes('重跑完整的阶段 5 综合仲裁流程'));
+assert.ok(blockedInquiryDirective.includes('勿加 `@` 符号'));
+
+const blockedInquiryPrompt = buildTopicPrompt({
+  topic: {
+    topicId: mockTopic.id,
+    title: mockTopic.title,
+    description: mockTopic.description,
+    channelName: 'arch-review',
+    status: 'open',
+    discussionMode: 'game_theoretic',
+    gameRoles: mockTopic.gameRoles,
+    gameStage: 'arbitration',
+    concurrenceState: blockedState,
+    participatingAgents: mockAgents,
+  },
+  userContent: '@all 到哪步了？',
+  targetAgent: mockAgents[3],
+  availableAgents: mockAgents,
+});
+assert.ok(blockedInquiryPrompt.includes(blockedConditionMap['agent-proposer'].cond));
+assert.ok(blockedInquiryPrompt.includes(blockedConditionMap['agent-challenger'].cond));
+assert.ok(blockedInquiryPrompt.includes(blockedConditionMap['agent-verifier'].cond));
+assert.ok(blockedInquiryPrompt.includes('默认模式 · 仅解释当前进展与阻塞条件'));
+assert.ok(!blockedInquiryPrompt.includes('你必须先调用 MCP 工具 `submit_arbitration_ruling`'));
+
+// 兼任提案官与裁定官的智能体在 arbitration 阶段收到阻塞态时，也必须命中仲裁阶段阻塞追问指令，而不是提案阶段指令
+const dualRoleBlockedPrompt = buildTopicPrompt({
+  topic: {
+    topicId: dualRoleTopic.id,
+    title: dualRoleTopic.title,
+    description: dualRoleTopic.description,
+    channelName: 'arch-review',
+    status: 'open',
+    discussionMode: 'game_theoretic',
+    gameRoles: dualRoleTopic.gameRoles,
+    gameStage: 'arbitration',
+    concurrenceState: blockedState,
+    participatingAgents: mockAgents,
+  },
+  userContent: '@all 到哪步了？',
+  targetAgent: mockAgents[0],
+  availableAgents: mockAgents,
+});
+assert.ok(dualRoleBlockedPrompt.includes('阶段 5 阻塞答疑与状态说明守则'));
+assert.ok(!dualRoleBlockedPrompt.includes('作为提案立论官，请提出架构级最优解方案'));
+
+// 对照组：concurrenceState 未激活或已全票通过时，仍注入常规第 5 阶段仲裁指令
+const normalStage5Prompt = buildTopicPrompt({
+  topic: {
+    topicId: mockTopic.id,
+    title: mockTopic.title,
+    description: mockTopic.description,
+    channelName: 'arch-review',
+    status: 'open',
+    discussionMode: 'game_theoretic',
+    gameRoles: mockTopic.gameRoles,
+    gameStage: 'arbitration',
+    concurrenceState: { ...blockedState, allConcurred: true },
+    participatingAgents: mockAgents,
+  },
+  userContent: '请给出最终裁决',
+  targetAgent: mockAgents[3],
+  availableAgents: mockAgents,
+});
+assert.ok(normalStage5Prompt.includes('submit_arbitration_ruling'));
+assert.ok(!normalStage5Prompt.includes('阶段 5 阻塞答疑与状态说明守则'));
+console.log('✓ 3 个 conditional 票阻塞摘要、裁定官答疑防重入指令与 Stage 5 Prompt 条件切换全部通过');
+
+// ============================================================================
+// 测试 11：shouldSkipRedundantArbitrationConcurrence / evaluateArbitrationConcurrenceSkip 门禁边界矩阵
+// ============================================================================
+console.log('[11] 验证冗余无异议征询跳过门禁与显式新裁决契约重开判定...');
+const skipSameDigest = shouldSkipRedundantArbitrationConcurrence({
+  existingConcurrenceState: blockedState,
+  nextSolutionDigest: blockedState.solutionDigest,
+  hasExplicitNewRulingContract: false,
+});
+assert.equal(skipSameDigest.skip, true);
+assert.ok(skipSameDigest.reason && skipSameDigest.reason.length > 0);
+
+const noSkipDigestChanged = shouldSkipRedundantArbitrationConcurrence({
+  existingConcurrenceState: blockedState,
+  nextSolutionDigest: 'sha256:materially-different-solution',
+  hasExplicitNewRulingContract: false,
+});
+assert.equal(noSkipDigestChanged.skip, false);
+
+const noSkipExplicitContract = shouldSkipRedundantArbitrationConcurrence({
+  existingConcurrenceState: blockedState,
+  nextSolutionDigest: blockedState.solutionDigest,
+  hasExplicitNewRulingContract: true,
+});
+assert.equal(noSkipExplicitContract.skip, false);
+
+const noSkipAlreadyConcurred = shouldSkipRedundantArbitrationConcurrence({
+  existingConcurrenceState: { ...blockedState, allConcurred: true },
+  nextSolutionDigest: blockedState.solutionDigest,
+  hasExplicitNewRulingContract: false,
+});
+assert.equal(noSkipAlreadyConcurred.skip, false);
+
+const noSkipInactive = shouldSkipRedundantArbitrationConcurrence({
+  existingConcurrenceState: { ...blockedState, isConcurrencePhaseActive: false },
+  nextSolutionDigest: blockedState.solutionDigest,
+  hasExplicitNewRulingContract: false,
+});
+assert.equal(noSkipInactive.skip, false);
+
+assert.equal(hasExplicitArbitrationRulingContract({ textResponse: '目前仍在等待 3 位角色解除阻塞条件。' }), false);
+assert.equal(hasExplicitArbitrationRulingContract({ textResponse: '更新草案如下：\n<<<RULING_DRAFT>>>\n{"summary":"x"}\n<<<END_RULING_DRAFT>>>' }), true);
+assert.equal(hasExplicitArbitrationRulingContract({ textResponse: '三方案对比：\n<<<RULING_DRAFT_OPTIONS>>>\n{}' }), true);
+assert.equal(
+  hasExplicitArbitrationRulingContract({
+    textResponse: '已提交裁决',
+    mcpToolCalls: [{ name: 'mcp__shadow_crew__submit_arbitration_ruling', status: 'success' }],
+  }),
+  true
+);
+assert.equal(
+  hasExplicitArbitrationRulingContract({
+    textResponse: '调用失败',
+    mcpToolCalls: [{ name: 'submit_arbitration_ruling', status: 'error', isError: true }],
+  }),
+  false
+);
+assert.equal(hasExplicitArbitrationRulingContract({ textResponse: '新裁决对象', rulingDraft: draft }), true);
+
+const blockedTopicWithDraft: TopicMessageData = {
+  ...mockTopic,
+  gameStage: 'arbitration',
+  gameTheoreticState: {
+    currentStage: 'arbitration',
+    rulingDraft: draft,
+    concurrenceState: blockedState,
+  },
+};
+
+const skipEvalOnPlainInquiry = await evaluateArbitrationConcurrenceSkip({
+  topic: blockedTopicWithDraft,
+  acpResp: {
+    textResponse: '目前推进到第 5 阶段：尚有 3 位成员投出 conditional，阻塞条件分别涉及静态 HTML 边界、幂等退避与布尔值实证。',
+    mcpToolCalls: [],
+  },
+});
+assert.equal(skipEvalOnPlainInquiry.hasExplicitNewRulingContract, false);
+assert.equal(skipEvalOnPlainInquiry.nextSolutionDigest, blockedState.solutionDigest);
+assert.equal(skipEvalOnPlainInquiry.skip, true);
+
+const noSkipEvalWhenExplicitContract = await evaluateArbitrationConcurrenceSkip({
+  topic: blockedTopicWithDraft,
+  acpResp: {
+    textResponse: `已针对全部 3 项条件修订最终裁决。${arbiterMentions}`,
+    rulingDraft: {
+      ...draft,
+      summary: '修订终局裁决：静态 HTML 零脚本实现 + 补齐全部 3 项条件约束。',
+    },
+    mcpToolCalls: [{ name: 'submit_arbitration_ruling', status: 'success' }],
+  },
+});
+assert.equal(noSkipEvalWhenExplicitContract.hasExplicitNewRulingContract, true);
+assert.equal(noSkipEvalWhenExplicitContract.skip, false);
+
+const topicWithChangedDefense: TopicMessageData = {
+  ...blockedTopicWithDraft,
+  gameTheoreticState: {
+    ...blockedTopicWithDraft.gameTheoreticState,
+    targetDefenseContent: '答辩新增：明确移除所有动态 JS、form 提交与持久化调用，仅保留静态 HTML。',
+  },
+};
+const noSkipEvalWhenMaterialChange = await evaluateArbitrationConcurrenceSkip({
+  topic: topicWithChangedDefense,
+  acpResp: {
+    textResponse: '根据答辩增量更新进入复核。',
+  },
+});
+assert.notEqual(noSkipEvalWhenMaterialChange.nextSolutionDigest, blockedState.solutionDigest);
+assert.equal(noSkipEvalWhenMaterialChange.skip, false);
+console.log('✓ shouldSkipRedundantArbitrationConcurrence 与 evaluateArbitrationConcurrenceSkip 完整决策矩阵通过');
+
+// ============================================================================
+// 测试 12：Anti-Scope-Drift 负向边界 Prompt 与 Verifier truth_value/truthValue JSON 提醒
+// ============================================================================
+console.log('[12] 验证模块化/答辩防范围漂移负向边界约束与 Verifier truth_value 提醒...');
+const scopedPrompt = buildScopedModulePrompt({
+  activeModule: {
+    moduleId: 'mod-static-landing',
+    title: '静态展示页模块',
+    responsibility: '实现纯静态 HTML+CSS 单文件着陆页（禁止 JS、表单、fetch 或本地持久化）',
+    allowedFiles: ['public/index.html'],
+    dependsOnModuleIds: [],
+    complexityLevel: 'low_deterministic',
+    status: 'proposing',
+    belief: {
+      priorRisk: 0.1,
+      posteriorRisk: 0.1,
+      routingMode: 'fast_track',
+      feedbackVector: {
+        contractViolations: 0,
+        verifiedClaims: 1,
+        refutedClaims: 0,
+        edgeCaseCount: 0,
+        dssScore: 0,
+      },
+      lastUpdatedAt: new Date().toISOString(),
+    },
+    scopedMessageIds: [],
+  },
+  sharedContract: {
+    contractVersion: 1,
+    summary: '纯静态 HTML+CSS 单文件着陆页（严禁引入 JavaScript、<form>、fetch 或持久化）',
+    typeSignatures: '<!-- static HTML/CSS only -->',
+    invariants: ['仅允许语义化 HTML 与 CSS，严禁动态脚本'],
+    lockedAt: new Date().toISOString(),
+  },
+});
+assert.ok(scopedPrompt.includes('防范围漂移与负向边界铁律'));
+assert.ok(scopedPrompt.includes('纯静态 HTML+CSS') && scopedPrompt.includes('严禁私自引入 JS'));
+assert.ok(scopedPrompt.includes('fetch') && scopedPrompt.includes('<form>'));
+
+const defensePrompt = buildTopicPrompt({
+  topic: {
+    topicId: mockTopic.id,
+    title: '纯静态 HTML 展示页（禁止 JS / 表单 / fetch / 持久化）',
+    channelName: 'frontend',
+    status: 'open',
+    discussionMode: 'game_theoretic',
+    gameRoles: mockTopic.gameRoles,
+    gameStage: 'defense',
+    targetChallengeText: '质疑边界条件',
+    participatingAgents: mockAgents,
+  },
+  userContent: '请答辩',
+  targetAgent: mockAgents[0],
+  availableAgents: mockAgents,
+});
+assert.ok(defensePrompt.includes('防范围漂移与负向边界铁律'));
+assert.ok(defensePrompt.includes('纯静态 HTML+CSS') && defensePrompt.includes('JavaScript') && defensePrompt.includes('fetch'));
+
+const verifierPrompt = buildTopicPrompt({
+  topic: {
+    topicId: mockTopic.id,
+    title: mockTopic.title,
+    channelName: 'arch-review',
+    status: 'open',
+    discussionMode: 'game_theoretic',
+    gameRoles: mockTopic.gameRoles,
+    gameStage: 'verification',
+    targetProposalText: '提案内容',
+    targetChallengeText: '红队质询内容',
+    participatingAgents: mockAgents,
+  },
+  userContent: '请完成接地实证',
+  targetAgent: mockAgents[2],
+  availableAgents: mockAgents,
+});
+assert.ok(verifierPrompt.includes('truth_value') && verifierPrompt.includes('truthValue'));
+assert.ok(verifierPrompt.includes('布尔字段'));
+console.log('✓ buildScopedModulePrompt、defense 防范围漂移约束与 verifier truth_value/truthValue 提醒校验通过');
+
+// ============================================================================
+// 测试 13：真实 React 19 Hook 集成校验 useArbitrationConcurrence 跳过保护与状态完整保留
+// ============================================================================
+console.log('[13] 验证 React 19 Hook (useArbitrationConcurrence) 在阻塞态追问下跳过重开且完整保留投票状态...');
+{
+  const g = globalThis as Record<string, unknown>;
+  const prevDoc = g.document;
+  const prevWin = g.window;
+  const prevActEnv = g.IS_REACT_ACT_ENVIRONMENT;
+  const prevIframe = g.HTMLIFrameElement;
+
+  if (!g.HTMLIFrameElement) {
+    g.HTMLIFrameElement = class HTMLIFrameElement {};
+  }
+  const createMinimalDomNode = (tag: string) => ({
+    nodeType: 1,
+    tagName: tag.toUpperCase(),
+    nodeName: tag.toUpperCase(),
+    style: {},
+    childNodes: [] as unknown[],
+    ownerDocument: null as unknown,
+    appendChild(c: unknown) {
+      this.childNodes.push(c);
+      return c;
+    },
+    removeChild(c: unknown) {
+      const idx = this.childNodes.indexOf(c);
+      if (idx >= 0) this.childNodes.splice(idx, 1);
+      return c;
+    },
+    insertBefore(c: unknown) {
+      this.childNodes.push(c);
+      return c;
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    setAttribute() {},
+    removeAttribute() {},
+  });
+  const doc = {
+    nodeType: 9,
+    createElement: (tag: string) => {
+      const el = createMinimalDomNode(tag);
+      el.ownerDocument = doc;
+      return el;
+    },
+    createTextNode: (text: string) => ({ nodeType: 3, nodeValue: text, ownerDocument: null }),
+    addEventListener() {},
+    removeEventListener() {},
+    activeElement: null,
+    body: createMinimalDomNode('body'),
+  };
+  g.document = doc;
+  g.window = { event: undefined, document: doc, HTMLIFrameElement: g.HTMLIFrameElement };
+  g.IS_REACT_ACT_ENVIRONMENT = true;
+
+  let root: ReturnType<typeof createRoot> | null = null;
+  try {
+    let topicStateRef: TopicMessageData = JSON.parse(JSON.stringify(blockedTopicWithDraft));
+    const topicCardMessage: Message = {
+      id: 'msg-topic-card-1',
+      threadId: 'thread-ch-1',
+      channelId: 'ch-1',
+      authorId: 'user-1',
+      authorName: 'TechLead',
+      authorHandle: '@techlead',
+      authorAvatar: '👤',
+      isAgent: false,
+      timestamp: '10:00',
+      content: '发起议题',
+      type: 'topic',
+      topicData: topicStateRef,
+    };
+    const initialArbiterMsg: Message = {
+      id: 'msg-arbiter-initial',
+      threadId: topicStateRef.id,
+      channelId: 'ch-1',
+      authorId: mockAgents[3].id,
+      authorName: mockAgents[3].name,
+      authorHandle: mockAgents[3].handle,
+      authorAvatar: mockAgents[3].avatar,
+      isAgent: true,
+      timestamp: '10:05',
+      content: `终局方案草案。${arbiterMentions}`,
+      gameStage: 'arbitration',
+      gameRole: 'arbiter',
+    };
+    const pendingInquiryMsg: Message = {
+      id: 'msg-arbiter-inquiry-pending',
+      threadId: topicStateRef.id,
+      channelId: 'ch-1',
+      authorId: mockAgents[3].id,
+      authorName: mockAgents[3].name,
+      authorHandle: mockAgents[3].handle,
+      authorAvatar: mockAgents[3].avatar,
+      isAgent: true,
+      isPending: true,
+      timestamp: '10:12',
+      content: '',
+      gameStage: 'arbitration',
+      gameRole: 'arbiter',
+    };
+
+    let messagesState: Record<string, Message[]> = {
+      'thread-ch-1': [topicCardMessage],
+      [topicStateRef.id]: [initialArbiterMsg, pendingInquiryMsg],
+    };
+    let updateTopicCallCount = 0;
+    let activeExecUpdateCount = 0;
+    let resolveTopicCalled = false;
+    let staleOnNextCheck = false;
+    const inFlightHandover = new Set<string>(['handover-inquiry']);
+    const agentsRefObj = { current: mockAgents };
+
+    const setMessagesMock: React.Dispatch<React.SetStateAction<Record<string, Message[]>>> = (updater) => {
+      messagesState = typeof updater === 'function' ? updater(messagesState) : updater;
+    };
+
+    const topicChannel: Channel = {
+      id: 'ch-1',
+      workspaceBindingId: 'ws-1',
+      name: 'arch-review',
+      description: 'Architecture Review',
+      creatorId: 'user-1',
+      status: 'active',
+      isPrivate: false,
+      iconName: 'hash',
+      unreadCount: 0,
+      memberIds: mockAgents.map((a) => a.id),
+      assignedAgentIds: mockAgents.map((a) => a.id),
+    };
+
+    let capturedProcessArbitration:
+      | ReturnType<typeof useArbitrationConcurrence>['processArbitrationConcurrence']
+      | null = null;
+
+    function HookHarness() {
+      const { processArbitrationConcurrence } = useArbitrationConcurrence({
+        getTopicData: () => topicStateRef,
+        activeTopicData: topicStateRef,
+        updateTopicDataInState: (_tId, updater) => {
+          updateTopicCallCount += 1;
+          topicStateRef = updater(topicStateRef);
+          staleOnNextCheck = true;
+        },
+        setMessages: setMessagesMock,
+        setIsGenerating: () => {},
+        setActiveExecutions: () => {
+          activeExecUpdateCount += 1;
+        },
+        setAgents: () => {},
+        agentsRef: agentsRefObj,
+        inFlightHandoverRef: { current: inFlightHandover },
+        isTurnStale: () => staleOnNextCheck,
+        getTopicWorkspaceBinding: () => undefined,
+        handleResolveTopic: () => {
+          resolveTopicCalled = true;
+        },
+      });
+      capturedProcessArbitration = processArbitrationConcurrence;
+      return null;
+    }
+
+    const container = doc.createElement('div') as unknown as Element;
+    root = createRoot(container);
+    await React.act(async () => {
+      root!.render(React.createElement(HookHarness));
+    });
+    assert.ok(capturedProcessArbitration);
+
+    const inquiryReplyMsg: Message = {
+      id: 'msg-arbiter-inquiry-reply',
+      threadId: topicStateRef.id,
+      channelId: 'ch-1',
+      authorId: mockAgents[3].id,
+      authorName: mockAgents[3].name,
+      authorHandle: mockAgents[3].handle,
+      authorAvatar: mockAgents[3].avatar,
+      isAgent: true,
+      timestamp: '10:12',
+      content: '当前处于第 5 阶段征询阻塞态：3 位参研成员均给出 conditional，待解除对应条件后再推进敲定。',
+      gameStage: 'arbitration',
+      gameRole: 'arbiter',
+    };
+
+    await capturedProcessArbitration!({
+      topicId: topicStateRef.id,
+      arbiterAgent: mockAgents[3],
+      acpResp: {
+        textResponse: inquiryReplyMsg.content,
+        mcpToolCalls: [],
+        isEmptyTurn: false,
+        isError: false,
+      } as any,
+      turnSnapshot: { epoch: 1, sessionEpoch: 1, threadId: topicStateRef.id } as any,
+      candidateAgents: mockAgents,
+      topicChannel,
+      arbiterPendingId: pendingInquiryMsg.id,
+      arbiterReply: inquiryReplyMsg,
+      handoverKey: 'handover-inquiry',
+    });
+
+    assert.equal(updateTopicCallCount, 0, '追问跳过时禁止覆写 concurrenceState');
+    assert.equal(activeExecUpdateCount, 0, '追问跳过时禁止拉起参研角色轮询执行');
+    assert.equal(resolveTopicCalled, false);
+    assert.equal(inFlightHandover.has('handover-inquiry'), false, 'handoverKey 应在 finally 中正常清理');
+    assert.equal(topicStateRef.gameTheoreticState?.concurrenceState?.isConcurrencePhaseActive, true);
+    assert.equal(topicStateRef.gameTheoreticState?.concurrenceState?.allConcurred, false);
+    assert.equal(
+      topicStateRef.gameTheoreticState?.concurrenceState?.solutionDigest,
+      blockedState.solutionDigest
+    );
+    assert.equal(
+      topicStateRef.gameTheoreticState?.concurrenceState?.items.filter((i) => i.status === 'conditional').length,
+      3,
+      '既有 3 票 conditional 与阻塞条件必须完整保留'
+    );
+    for (const [agentId, cfg] of Object.entries(blockedConditionMap)) {
+      const preserved = topicStateRef.gameTheoreticState?.concurrenceState?.items.find(
+        (i) => i.agentId === agentId
+      );
+      assert.deepEqual(preserved?.conditions, [cfg.cond]);
+    }
+    const msgsAfterInquiry = messagesState[topicStateRef.id] || [];
+    assert.equal(msgsAfterInquiry.length, 2, '仅应替换 pending 为裁定官答疑，不得追加系统征询通知');
+    assert.ok(msgsAfterInquiry.some((m) => m.id === inquiryReplyMsg.id));
+    assert.ok(!msgsAfterInquiry.some((m) => m.id === pendingInquiryMsg.id));
+    assert.ok(!msgsAfterInquiry.some((m) => m.agentBadge === 'Concurrence Verification'));
+    const updatedCard = messagesState['thread-ch-1']?.[0]?.topicData;
+    assert.equal(updatedCard?.repliesCount, 2);
+    assert.equal(updatedCard?.latestReplyPreview, inquiryReplyMsg.content.slice(0, 60));
+
+    // 对照验证：当仲裁官提交了显式新裁决契约 (acpResp.rulingDraft) 时，正常重开新一轮无异议征询并发送系统通知
+    const revisedDraft: ArbitrationRulingDraft = {
+      ...draft,
+      summary: '修订方案：完整回应 3 项阻塞条件并锁定静态 HTML 边界。',
+      solution: '锁定静态 HTML 单文件实现，补充幂等退避窗口与接地真值布尔校验。',
+    };
+    const revisedArbiterMsg: Message = {
+      ...inquiryReplyMsg,
+      id: 'msg-arbiter-revised-reply',
+      content: `已根据 3 项条件修订方案。${arbiterMentions}`,
+    };
+    await capturedProcessArbitration!({
+      topicId: topicStateRef.id,
+      arbiterAgent: mockAgents[3],
+      acpResp: {
+        textResponse: revisedArbiterMsg.content,
+        rulingDraft: revisedDraft,
+        mcpToolCalls: [{ name: 'submit_arbitration_ruling', status: 'success' }],
+        isEmptyTurn: false,
+        isError: false,
+      } as any,
+      turnSnapshot: { epoch: 2, sessionEpoch: 1, threadId: topicStateRef.id } as any,
+      candidateAgents: mockAgents,
+      topicChannel,
+      arbiterReply: revisedArbiterMsg,
+    });
+
+    assert.equal(updateTopicCallCount, 1, '提交显式新裁决契约时必须正常更新征询状态');
+    assert.notEqual(
+      topicStateRef.gameTheoreticState?.concurrenceState?.solutionDigest,
+      blockedState.solutionDigest,
+      '新裁决契约必须绑定新的方案摘要'
+    );
+    assert.equal(
+      topicStateRef.gameTheoreticState?.concurrenceState?.items.filter((i) => i.status === 'pending').length,
+      3,
+      '新方案重开征询时各参研角色应恢复 pending 等待独立审视'
+    );
+    const msgsAfterRevision = messagesState[topicStateRef.id] || [];
+    assert.ok(msgsAfterRevision.some((m) => m.id === revisedArbiterMsg.id));
+    assert.ok(msgsAfterRevision.some((m) => m.agentBadge === 'Concurrence Verification'));
+  } finally {
+    if (root) {
+      await React.act(async () => {
+        root!.unmount();
+      });
+    }
+    g.document = prevDoc;
+    g.window = prevWin;
+    g.IS_REACT_ACT_ENVIRONMENT = prevActEnv;
+    g.HTMLIFrameElement = prevIframe;
+  }
+}
+console.log('✓ useArbitrationConcurrence 阻塞态防重入跳过与新契约正常重开集成测试通过');
+
 console.log('\n================================================================================');
-console.log('🎉 结构化无异议票 P0 回归全部通过：自然语言零授权，条件/异议/错绑/缺 @ 全部阻塞');
+console.log('🎉 结构化无异议票 P0/P1 回归全部通过：自然语言零授权，阻塞追问防重入，范围漂移受控');
 console.log('================================================================================');
 
 function fullDateTestStr(): string {

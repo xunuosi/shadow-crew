@@ -6,6 +6,7 @@ import {
   Thread,
   Message,
   DiscussionMode, 
+  GameRoleConcurrenceState,
   GameRolesConfig, 
   GameRoleType, 
   GameTheoreticStage,
@@ -64,6 +65,7 @@ import {
   computeEntropyReductionRatio,
   buildDefaultDecompositionFromTopic,
   buildArbiterStage5Directive,
+  buildArbiterBlockedConcurrenceInquiryDirective,
   buildRoleConcurrencePrompt,
 } from './cogno';
 
@@ -473,6 +475,7 @@ export interface TopicPromptContext {
   modularState?: ModularOrchestrationState;
   participatingAgents?: Agent[];
   recentHistory?: Array<{ author: string; content: string; isAgent?: boolean }>;
+  concurrenceState?: GameRoleConcurrenceState;
   concurrenceVerificationContext?: {
     arbiterName: string;
     arbiterText: string;
@@ -539,7 +542,8 @@ ${scopeFilesLine}• 贝叶斯风险信念: P_prior=${activeModule.belief.priorR
 • 【上下文物理隔离铁律 (Entropy & KL-Divergence Control)】:
   1. 你当前处于模块「${activeModule.title}」的独立隔离沙箱中，只需专注解决本模块的单一职责；
   2. 严禁越界展开或篡改其他模块（${otherModulesExcluded || '非本模块'}）的专属职责与受保护范畴；
-  3. 跨模块协同必须 100% 遵循上方《公共契约》中的共识与不变量。`;
+  3. 跨模块协同必须 100% 遵循上方《公共契约》中的共识与不变量；
+  4. 【防范围漂移与负向边界铁律 (Anti-Scope-Drift & Negative Boundaries)】：必须严格恪守原始任务及《公共契约》声明的负向禁令与技术栈约束（例如：明确要求纯静态 HTML+CSS 时，严禁私自引入 JS / \`<script>\`、\`<form>\`、\`fetch\`、网络请求或任何持久化存储），绝不擅自扩充实现范围。`;
 }
 
 /**
@@ -617,14 +621,31 @@ export function buildTopicPrompt(options: {
 
   let gameModeDirective = '';
   if (topic.discussionMode === 'game_theoretic' && topic.gameRoles) {
-    const role = getAgentGameRole(targetAgent.id, topic.gameRoles);
-    const stage = topic.gameStage || (role === 'proposer' ? 'proposal' : role === 'challenger' ? 'challenge' : role === 'verifier' ? 'verification' : 'arbitration');
+    const baseRole = getAgentGameRole(targetAgent.id, topic.gameRoles);
+    const stage = topic.gameStage || (baseRole === 'proposer' ? 'proposal' : baseRole === 'challenger' ? 'challenge' : baseRole === 'verifier' ? 'verification' : 'arbitration');
+    const role: GameRoleType | null =
+      stage === 'arbitration' && (topic.gameRoles.arbiters || []).includes(targetAgent.id)
+        ? 'arbiter'
+        : (stage === 'decomposition' || stage === 'proposal' || stage === 'defense') && (topic.gameRoles.proposers || []).includes(targetAgent.id)
+        ? 'proposer'
+        : stage === 'challenge' && (topic.gameRoles.challengers || []).includes(targetAgent.id)
+        ? 'challenger'
+        : stage === 'verification' && (topic.gameRoles.verifiers || []).includes(targetAgent.id)
+        ? 'verifier'
+        : baseRole;
 
     const verificationSection = topic.targetVerificationText
       ? `\n\n【🔍 接地验证实证检验结论 (Grounding Truth)】:\n<<<GROUNDING_VERIFICATION_START>>>\n${topic.targetVerificationText}\n<<<GROUNDING_VERIFICATION_END>>>`
       : '';
 
-    if (role === 'proposer') {
+    if (
+      stage === 'arbitration' &&
+      topic.concurrenceState?.isConcurrencePhaseActive &&
+      !topic.concurrenceState.allConcurred &&
+      (role === 'arbiter' || !(topic.gameRoles.arbiters && topic.gameRoles.arbiters.length > 0))
+    ) {
+      gameModeDirective = buildArbiterBlockedConcurrenceInquiryDirective(topic.concurrenceState);
+    } else if (role === 'proposer') {
       if (stage === 'decomposition') {
         gameModeDirective = `\n\n【博弈编排 - 🧭 阶段 0: G-Frame 模块拓扑拆解与接口契约锚定 (Decomposition)】:
 你是本议题的技术主导工程师 (Proposer)。请根据本研发任务的边界，将其拆解为 1~4 个职责单一、物理隔离的原子子模块（若任务本身单一聚焦如单文件静态页面或局部小改，可仅拆解为 1 个模块；复杂多域任务拆解为 2~4 个模块），并锁定跨模块只读《公共接口契约 (SharedInterfaceContract)》，杜绝跨模块依赖混乱与接口不兼容。
@@ -660,11 +681,14 @@ export function buildTopicPrompt(options: {
 红队挑战者已指出具体漏洞与失效场景，且接地实证工程师已提供检验结论（见下方靶点数据）。
 【答辩守则 · 用代码补丁说话】:
 严禁无原则全盘妥协或空洞认错，严禁空谈理论！必须以客观工程事实、防御补丁（Patch）或架构权衡进行自洽答辩。
+【防范围漂移与负向边界铁律 (Anti-Scope-Drift Bounds)】:
+- 必须严格恪守原始议题与需求中的全部负向边界（例如：明确要求仅纯静态 HTML+CSS 时，严禁为了迎合红队而引入 JavaScript / \`<script>\`、\`<form>\`、\`fetch\`、网络请求或 \`localStorage\` 等任何持久化机制）；
+- 答辩期间绝不允许借修复之名擅自扩充需求范围或增加任务之外的功能模块；若挑战者提出了违反负向边界或超出任务范围的要求，必须明确依据需求边界予以驳回，仅在合法作用域内交付最小精确防御补丁！
 【输出铁律 · 纯净结论与直出补丁】:
 1. 严禁冗长的内心独白与思考过程废话；
 2. 【💡 最终答辩结论】(≤ 80 字通俗结论：认可/反驳挑战方哪些推演，核心修正收益是什么)；
-3. 【📋 修复与重构清单】(明确架构补丁方案、容灾降级、互斥加锁机制与性能/复杂度折中说明)；
-4. 【📦 架构补丁代码 / Unified Diff】(直接给出修复后的代码差异、接口修正或防御补丁)。
+3. 【📋 修复与重构清单】(明确架构补丁方案、容灾降级、互斥加锁机制、负向边界恪守说明与性能/复杂度折中)；
+4. 【📦 架构补丁代码 / Unified Diff】(直接给出修复后的代码差异、接口修正或防御补丁，严禁越界添加禁用技术或超纲特性)。
 无需在正文 @ 任何人，平台状态机将自动汇总攻防论据并提交仲裁。
 
 【红队反例质询 (攻击靶点)】:
@@ -728,11 +752,11 @@ ${topic.targetProposalText || '（暂未提取到前序提案方案，请围绕�
 3. 【📋 实证检验项与证据】(给出具体检验工具如 ast_grep/sandbox、测试用例代码与实际执行输出摘要)；
 4. 【📦 结构化证据契约 (强制工具契约优先)】：
    - 【首选执行（强制优先）】：直接调用宿主 MCP 工具 \`submit_grounding_evidence\`，传入 evidences 数组（包含 source_tool, input_query_or_code, raw_output, truth_value, confidence, verifier_report）；
-   - 【容灾备选（仅限无工具环境）】：在回复末尾附带紧凑证据块：
+   - 【容灾备选（仅限无工具环境）】：在回复末尾附带紧凑证据块（注意：输出 JSON 容灾块时，每个证据项必须一致且明确地包含布尔字段 \`truth_value\` 或 \`truthValue\`，取值为 \`true\` 或 \`false\`，切勿省略真值字段或仅用文字描述 PASS/FAIL 代替）：
 \`\`\`json
 {
   "evidences": [
-    { "sourceTool": "ast_grep", "truthValue": true, "confidence": 0.9, "verifierReport": "实证检验结论" }
+    { "sourceTool": "ast_grep", "truthValue": true, "truth_value": true, "confidence": 0.9, "verifierReport": "实证检验结论" }
   ]
 }
 \`\`\`

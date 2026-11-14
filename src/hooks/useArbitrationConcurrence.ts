@@ -32,8 +32,59 @@ import {
   checkAllRolesConcurred,
   buildFinalRulingFromConcurrence,
   evaluateRulingGates,
+  evaluateArbitrationConcurrenceSkip,
   formatFullDateTime,
 } from '../services/cogno';
+
+/**
+ * 将综合裁定官回复安全合入议题消息流，并同步更新父频道议题卡片摘要。
+ */
+function buildUpdatedTopicMessagesWithArbiterReply(
+  prev: Record<string, Message[]>,
+  topicId: string,
+  arbiterPendingId: string | undefined,
+  arbiterReply: Message,
+  extraNotice?: Message
+): Record<string, Message[]> {
+  const existing = prev[topicId] || [];
+  const hasPending = arbiterPendingId ? existing.some((m) => m.id === arbiterPendingId) : false;
+  const hasReply = existing.some((m) => m.id === arbiterReply.id);
+  const baseMsgs = hasPending
+    ? existing.map((m) => (m.id === arbiterPendingId ? arbiterReply : m))
+    : hasReply
+    ? existing
+    : [...existing, arbiterReply];
+  const nextTopicMsgs = extraNotice ? [...baseMsgs, extraNotice] : baseMsgs;
+
+  let parentThreadId: string | null = null;
+  for (const [tId, msgList] of Object.entries(prev) as [string, Message[]][]) {
+    if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+      parentThreadId = tId;
+      break;
+    }
+  }
+  const updatedChannelMsgs = parentThreadId
+    ? (prev[parentThreadId] || []).map((m) => {
+        if (m.type === 'topic' && m.topicData?.id === topicId) {
+          return {
+            ...m,
+            topicData: {
+              ...m.topicData,
+              repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
+              latestReplyPreview: arbiterReply.content.slice(0, 60),
+            },
+          };
+        }
+        return m;
+      })
+    : [];
+
+  return {
+    ...prev,
+    [topicId]: nextTopicMsgs,
+    ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
+  };
+}
 import { isAgentOnline } from '../utils/agentRuntime';
 
 export interface UseArbitrationConcurrenceParams {
@@ -126,6 +177,21 @@ export function useArbitrationConcurrence({
       const latestTopicForArbitration = currentTopic;
 
       try {
+        // 阻塞征询态防重入守卫：当处于活跃但未全票通过的征询阶段且本轮无显式新裁决契约、方案摘要未变时，仅保留裁定官说明回复，严禁重启征询轮询
+        const earlySkipCheck = await evaluateArbitrationConcurrenceSkip({
+          topic: latestTopicForArbitration,
+          acpResp,
+        });
+        if (earlySkipCheck.skip) {
+          console.log(
+            `[GameTheoretic] 跳过重复仲裁无异议征询 (topic=${topicId}, arbiter=${arbiterAgent.id}): ${earlySkipCheck.reason}`
+          );
+          setMessages((prev) =>
+            buildUpdatedTopicMessagesWithArbiterReply(prev, topicId, arbiterPendingId, arbiterReply)
+          );
+          return;
+        }
+
         // 契约门禁校验
         const contractValidation = validateStageContract('arbitration', acpResp.textResponse, arbiterAgent.name, acpResp.mcpToolCalls);
         logGameTheoreticTelemetry('stage_contract_validation', topicId, {
@@ -179,6 +245,22 @@ export function useArbitrationConcurrence({
           authorName: arbiterAgent.name,
         });
         const extractedRulingDraft = acpResp.rulingDraft || extractedRulingOptions.primaryDraft;
+        if (!latestTopicForArbitration.gameTheoreticState?.rulingDraft) {
+          const fallbackSkipCheck = await evaluateArbitrationConcurrenceSkip({
+            topic: latestTopicForArbitration,
+            acpResp,
+            fallbackDraft: extractedRulingDraft,
+          });
+          if (fallbackSkipCheck.skip) {
+            console.log(
+              `[GameTheoretic] 跳过重复仲裁无异议征询(兜底摘要命中) (topic=${topicId}, arbiter=${arbiterAgent.id}): ${fallbackSkipCheck.reason}`
+            );
+            setMessages((prev) =>
+              buildUpdatedTopicMessagesWithArbiterReply(prev, topicId, arbiterPendingId, arbiterReply)
+            );
+            return;
+          }
+        }
         const concurrenceSolutionDigest = await computeRoleConcurrenceSolutionDigest({
           topic: latestTopicForArbitration,
           arbiterDraft: extractedRulingDraft,
@@ -231,44 +313,15 @@ export function useArbitrationConcurrence({
           content: `🤝 **[全员无异议审视征询已启动]** 综合裁定官已就终局架构方案完成综合权衡并 @ 参研关键角色（提案方、红队对抗方、接地实证方）。平台正在自动调度各角色进行独立专业审视，保证回复无异议后，由综合裁定官正式敲定方案并出具最后的活体决策看板 (Living ADR Canvas)。`,
         };
 
-        setMessages((prev) => {
-          const existing = prev[topicId] || [];
-          const hasPending = arbiterPendingId ? existing.some((m) => m.id === arbiterPendingId) : false;
-          const hasReply = existing.some((m) => m.id === arbiterReply.id);
-          const baseMsgs = hasPending
-            ? existing.map((m) => (m.id === arbiterPendingId ? arbiterReply : m))
-            : hasReply
-            ? existing
-            : [...existing, arbiterReply];
-          const nextTopicMsgs = [...baseMsgs, humanNotice];
-          let parentThreadId: string | null = null;
-          for (const [tId, msgList] of Object.entries(prev) as [string, Message[]][]) {
-            if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
-              parentThreadId = tId;
-              break;
-            }
-          }
-          const updatedChannelMsgs = parentThreadId
-            ? (prev[parentThreadId] || []).map((m) => {
-                if (m.type === 'topic' && m.topicData?.id === topicId) {
-                  return {
-                    ...m,
-                    topicData: {
-                      ...m.topicData,
-                      repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
-                      latestReplyPreview: arbiterReply.content.slice(0, 60),
-                    },
-                  };
-                }
-                return m;
-              })
-            : [];
-          return {
-            ...prev,
-            [topicId]: nextTopicMsgs,
-            ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
-          };
-        });
+        setMessages((prev) =>
+          buildUpdatedTopicMessagesWithArbiterReply(
+            prev,
+            topicId,
+            arbiterPendingId,
+            arbiterReply,
+            humanNotice
+          )
+        );
 
         // 启动各参研角色的无异议复核确认与终局敲定出具活体看板流程 (同步 await 保持交接锁互斥完整覆盖)
         if (initialConcurrence.items.length > 0) {

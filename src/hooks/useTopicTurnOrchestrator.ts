@@ -44,6 +44,7 @@ import {
   stepModularStageTransition,
 } from '../services/agentCollaboration';
 import { isAgentOffline, isAgentOnline } from '../utils/agentRuntime';
+import { evaluateArbitrationConcurrenceSkip } from '../services/cogno';
 import type { ProcessArbitrationConcurrenceOptions } from './useArbitrationConcurrence';
 import type { GameTheoreticStageHandoverOptions } from './useGameTheoreticFsm';
 import type { DispatchCascadingAgentResponseOptions } from './useNormalModeTurnOrchestrator';
@@ -657,6 +658,9 @@ export function useTopicTurnOrchestrator({
           } else if (currentTopicStage === 'arbitration') {
             const arbiterIds = currentTopicObj?.gameRoles?.arbiters || [];
             respondingAgents = candidateAgents.filter((a) => arbiterIds.includes(a.id));
+            if (respondingAgents.length === 0 && arbiterIds.length > 0) {
+              respondingAgents = channelAssigned.filter((a) => arbiterIds.includes(a.id));
+            }
             targetRoleType = 'arbiter';
             executionStage = 'arbitration';
           }
@@ -775,7 +779,8 @@ export function useTopicTurnOrchestrator({
       );
 
       // 提取议题前序研讨记录（若启用 G-Frame 模块化隔离且当前模块已有专属消息，则仅注入本模块沙箱内的历史）
-      const activeModState = currentTopicObj?.gameTheoreticState?.modularState;
+      const activeGameState = (getTopicData(topicId) || currentTopicObj)?.gameTheoreticState;
+      const activeModState = activeGameState?.modularState;
       const activeModSlice =
         activeModState?.enabled && activeModState.activeModuleId
           ? activeModState.modules.find((m) => m.moduleId === activeModState.activeModuleId)
@@ -811,6 +816,7 @@ export function useTopicTurnOrchestrator({
         discussionMode: currentTopicObj?.discussionMode,
         gameRoles: currentTopicObj?.gameRoles,
         gameStage: isGameTheoretic ? executionStage : undefined,
+        concurrenceState: isGameTheoretic ? activeGameState?.concurrenceState : undefined,
         targetProposalText:
           isGameTheoretic &&
           (executionStage === 'challenge' ||
@@ -1500,28 +1506,40 @@ export function useTopicTurnOrchestrator({
                   console.warn('Arbiter returned empty/error turn, pausing concurrence handover.');
                 } else {
                   const currentTopicObj = getTopicData(topicId) || activeTopicData;
-                  await processArbitrationConcurrence({
-                    topicId,
-                    arbiterAgent: agent,
-                    acpResp,
-                    turnSnapshot,
-                    targetProposalText:
-                      fallbackProposalText ||
-                      currentTopicObj?.gameTheoreticState?.targetProposalContent,
-                    targetChallengeText:
-                      fallbackChallengeText ||
-                      currentTopicObj?.gameTheoreticState?.targetChallengeContent,
-                    targetVerificationText:
-                      fallbackVerificationText ||
-                      currentTopicObj?.gameTheoreticState?.targetVerificationContent,
-                    targetDefenseText:
-                      fallbackDefenseText ||
-                      currentTopicObj?.gameTheoreticState?.targetDefenseContent,
-                    candidateAgents,
-                    topicChannel,
-                    arbiterPendingId: pendingId,
-                    arbiterReply: agentReply,
-                  });
+                  const skipEvaluation: { skip: boolean; reason?: string } = currentTopicObj
+                    ? await evaluateArbitrationConcurrenceSkip({
+                        topic: currentTopicObj,
+                        acpResp,
+                      })
+                    : { skip: false };
+                  if (skipEvaluation.skip) {
+                    console.log(
+                      `[GameTheoretic] 仲裁追问答疑轮次跳过重复无异议征询 (topic=${topicId}, arbiter=${agent.id}): ${skipEvaluation.reason}`
+                    );
+                  } else {
+                    await processArbitrationConcurrence({
+                      topicId,
+                      arbiterAgent: agent,
+                      acpResp,
+                      turnSnapshot,
+                      targetProposalText:
+                        fallbackProposalText ||
+                        currentTopicObj?.gameTheoreticState?.targetProposalContent,
+                      targetChallengeText:
+                        fallbackChallengeText ||
+                        currentTopicObj?.gameTheoreticState?.targetChallengeContent,
+                      targetVerificationText:
+                        fallbackVerificationText ||
+                        currentTopicObj?.gameTheoreticState?.targetVerificationContent,
+                      targetDefenseText:
+                        fallbackDefenseText ||
+                        currentTopicObj?.gameTheoreticState?.targetDefenseContent,
+                      candidateAgents,
+                      topicChannel,
+                      arbiterPendingId: pendingId,
+                      arbiterReply: agentReply,
+                    });
+                  }
                 }
               }
             } else {
