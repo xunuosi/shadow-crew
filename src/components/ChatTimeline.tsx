@@ -32,9 +32,6 @@ import {
   Quote,
   PanelLeft,
   FolderArchive,
-  Loader2,
-  Clock,
-  AlertTriangle,
   CheckCircle2
 } from 'lucide-react';
 import { renderFormattedContent } from '../utils/formatMentions';
@@ -281,8 +278,8 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     return () => clearInterval(interval);
   }, [currentThreadExecutions.length]);
 
-  // Compute parallel landing topics and blast-radius file overlap map across the channel
-  const { parallelLandingTopics, topicOverlapMap } = useMemo(() => {
+  // Compute blast-radius file overlap map across unapplied topics in the channel
+  const topicOverlapMap = useMemo(() => {
     const topics = messages
       .filter((m) => m.type === 'topic' && m.topicData)
       .map((m) => m.topicData!);
@@ -317,14 +314,8 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
       }
     }
 
-    const landingList = topics.filter((t) => {
-      if (t.status !== 'resolved') return false;
-      const st = t.gameTheoreticState?.executionStatus;
-      return st === 'running' || st === 'queued' || st === 'completed' || st === 'failed';
-    });
-
-    return { parallelLandingTopics: landingList, topicOverlapMap: overlapMap };
-  }, [messages, activeThread?.type]);
+    return overlapMap;
+  }, [messages]);
 
   const filteredMessages = messages.filter((m) => {
     if (activeThread?.type === 'dm') {
@@ -696,83 +687,6 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
           </div>
         </div>
       </header>
-
-      {/* 1.5 Top Parallel Landings Bar (并行工程落地看板) */}
-      {parallelLandingTopics.length > 0 && (
-        <div className="px-4 py-2 border-b border-border bg-surface-subtle/90 backdrop-blur-xs shrink-0 flex items-center justify-between gap-3 overflow-x-auto text-xs select-none">
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="inline-flex items-center gap-1.5 font-bold text-fg text-[11px] px-2 py-0.5 rounded-md bg-accent/15 text-accent border border-accent/30">
-              <Wrench className="w-3 h-3" />
-              <span>⚡ 并行落地看板 ({parallelLandingTopics.length})</span>
-            </span>
-            {Object.keys(topicOverlapMap).length > 0 && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">
-                <AlertTriangle className="w-3 h-3 text-amber-500" />
-                <span>检测到跨议题文件重叠</span>
-              </span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2 overflow-x-auto py-0.5">
-            {parallelLandingTopics.map((t) => {
-              const st = t.gameTheoreticState?.executionStatus || 'idle';
-              const exAgentId = t.gameTheoreticState?.assignedExecutorId || t.rulingRecord?.executorId || t.decisionRecord?.executorId;
-              const exAgent = exAgentId ? agents.find((a) => a.id === exAgentId) : undefined;
-              const diffs = t.gameTheoreticState?.executionDiffs || [];
-              const addCount = diffs.reduce((s, d) => s + d.additions, 0);
-              const delCount = diffs.reduce((s, d) => s + d.deletions, 0);
-              const hasOverlap = (topicOverlapMap[t.id] || []).length > 0;
-
-              return (
-                <div
-                  key={t.id}
-                  onClick={() => onOpenTopic?.(t.id)}
-                  className={`flex items-center gap-2 px-2.5 py-1 rounded-xl border text-[11px] cursor-pointer transition-all shrink-0 shadow-2xs ${
-                    st === 'running'
-                      ? 'bg-blue-500/10 hover:bg-blue-500/20 border-blue-500/35 text-blue-700 dark:text-blue-300'
-                      : st === 'queued'
-                      ? 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/35 text-amber-700 dark:text-amber-300'
-                      : st === 'completed'
-                      ? 'bg-cyan-500/10 hover:bg-cyan-500/20 border-cyan-500/35 text-cyan-700 dark:text-cyan-300'
-                      : 'bg-rose-500/10 hover:bg-rose-500/20 border-rose-500/35 text-rose-700 dark:text-rose-300'
-                  }`}
-                >
-                  {st === 'running' ? (
-                    <Loader2 className="w-3 h-3 text-blue-500 animate-spin shrink-0" />
-                  ) : st === 'queued' ? (
-                    <Clock className="w-3 h-3 text-amber-500 animate-pulse shrink-0" />
-                  ) : st === 'completed' ? (
-                    <Sparkles className="w-3 h-3 text-cyan-500 shrink-0" />
-                  ) : (
-                    <AlertTriangle className="w-3 h-3 text-rose-500 shrink-0" />
-                  )}
-
-                  <span className="font-semibold text-fg truncate max-w-[140px]">{t.title}</span>
-
-                  {exAgent && (
-                    <span className="text-[10px] font-mono opacity-80">@{exAgent.name}</span>
-                  )}
-
-                  {st === 'running' && <span className="text-[10px] font-mono">执行中</span>}
-                  {st === 'queued' && <span className="text-[10px] font-mono">排队中</span>}
-                  {st === 'completed' && (
-                    <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-surface/80 border border-border/60">
-                      {diffs.length > 0
-                        ? `+${addCount}/-${delCount} 待合入`
-                        : t.gameTheoreticState?.executionUiMeta?.podTitle || '已交付'}
-                    </span>
-                  )}
-                  {hasOverlap && (
-                    <span title={`重叠文件: ${topicOverlapMap[t.id].join(', ')}`} className="text-amber-500 font-bold">
-                      ⚠️
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
       {/* 2. Message Conversation Stream */}
       <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6 space-y-6 min-w-0">
