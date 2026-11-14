@@ -95,6 +95,15 @@ export function useTopicExecutionPipeline({
         return;
       }
 
+      // Same-Topic Re-entry Guard: 防止同一议题同一执行官被重复并发派发（如双击或重入）
+      const alreadyRunningSameTopic = Object.values(activeExecutionsRef.current).some(
+        (e) => (e.topicId === topicId || e.threadId === topicId) && e.agentId === executorAgent.id
+      );
+      if (alreadyRunningSameTopic) {
+        console.log(`[Execution] Skipping duplicate dispatchTopicExecution for topic=${topicId}, agent=${executorAgent.id}`);
+        return;
+      }
+
       const topicChannel = channels.find((c) => c.id === currentTopic.channelId) || activeChannel;
 
       if (isAgentOffline(executorAgent)) {
@@ -159,7 +168,14 @@ export function useTopicExecutionPipeline({
 
         let waitLoops = 0;
         while (isBusyElsewhere() && waitLoops < 150) {
-          if (isTurnStale(turnSnapshot)) return;
+          if (isTurnStale(turnSnapshot)) {
+            updateTopicDataInState(topicId, (old) =>
+              old.gameTheoreticState?.executionStatus === 'queued'
+                ? { ...old, gameTheoreticState: { ...old.gameTheoreticState, executionStatus: 'failed' } }
+                : old
+            );
+            return;
+          }
           await new Promise((r) => setTimeout(r, 800));
           waitLoops++;
         }
@@ -192,31 +208,6 @@ export function useTopicExecutionPipeline({
             }
           : old.rulingRecord,
       }));
-
-      // Update the channel rollup notice in-place to reflect live execution start
-      setMessages((prev) => {
-        let parentThreadId: string | null = null;
-        for (const [tId, msgList] of Object.entries(prev) as [string, Message[]][]) {
-          if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
-            parentThreadId = tId;
-            break;
-          }
-        }
-        if (!parentThreadId) return prev;
-        return {
-          ...prev,
-          [parentThreadId]: (prev[parentThreadId] || []).map((m) => {
-            if (m.relatedTopicId === topicId && m.id.startsWith('msg-rollup-')) {
-              const baseContent = m.content.split('\n\n---\n')[0];
-              return {
-                ...m,
-                content: `${baseContent}\n\n---\n⏳ **决议落地进度**：已委派 **${executorAgent.name}** (${executorAgent.handle}) 正在推进定案决议落地...`,
-              };
-            }
-            return m;
-          }),
-        };
-      });
 
       const execKey = `${topicId}:${executorAgent.id}`;
       setIsGenerating(true);
@@ -263,32 +254,9 @@ export function useTopicExecutionPipeline({
         const executionPlan = computeTopologicalExecutionOrder(modularState.modules);
         const totalSteps = executionPlan.length;
 
-        // 更新主频道 Rollup 提示：进入模块化分治流水线
-        setMessages((prev) => {
-          let parentThreadId: string | null = null;
-          for (const [tId, msgList] of Object.entries(prev) as [string, Message[]][]) {
-            if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
-              parentThreadId = tId;
-              break;
-            }
-          }
-          if (!parentThreadId) return prev;
-          return {
-            ...prev,
-            [parentThreadId]: (prev[parentThreadId] || []).map((m) => {
-              if (m.relatedTopicId === topicId && m.id.startsWith('msg-rollup-')) {
-                const baseContent = m.content.split('\n\n---\n')[0];
-                return {
-                  ...m,
-                  content: `${baseContent}\n\n---\n⏳ **G-Frame 模块分治落地中**：已委派 **${executorAgent.name}** (${executorAgent.handle}) 按 DAG 拓扑流水线串行落地 ${totalSteps} 个原子模块...`,
-                };
-              }
-              return m;
-            }),
-          };
-        });
-
-        let accumulatedDiffs: TopicPatchDiffItem[] = [];
+        let accumulatedDiffs: TopicPatchDiffItem[] = currentTopic.gameTheoreticState?.executionDiffs
+          ? [...currentTopic.gameTheoreticState.executionDiffs]
+          : [];
         const priorMilestones: Array<{
           moduleId: string;
           title: string;
@@ -299,6 +267,18 @@ export function useTopicExecutionPipeline({
         try {
           for (let stepIdx = 0; stepIdx < totalSteps; stepIdx++) {
             const currentSlice = executionPlan[stepIdx];
+            if (currentSlice.executionStatus === 'completed') {
+              if (currentSlice.executionDiffs && currentSlice.executionDiffs.length > 0) {
+                accumulatedDiffs = mergeTopicPatchDiffs(accumulatedDiffs, currentSlice.executionDiffs);
+              }
+              priorMilestones.push({
+                moduleId: currentSlice.moduleId,
+                title: currentSlice.title,
+                summary: currentSlice.executionSummary || '前置已完成',
+                touchedFiles: (currentSlice.executionDiffs || []).map((d) => d.filename),
+              });
+              continue;
+            }
             if (isTurnStale(turnSnapshot)) {
               console.log('[App] Aborting modular execution pipeline because turn was invalidated');
               return;
@@ -467,7 +447,7 @@ export function useTopicExecutionPipeline({
               };
             });
 
-            // 6. 更新 topic 状态中该模块的 completed 属性
+            // 6. 更新 topic 状态中该模块的 completed 属性，并增量持久化已累计的 executionDiffs
             updateTopicDataInState(topicId, (old) => {
               const mState = old.gameTheoreticState?.modularState;
               if (!mState) return old;
@@ -475,6 +455,7 @@ export function useTopicExecutionPipeline({
                 ...old,
                 gameTheoreticState: {
                   ...old.gameTheoreticState!,
+                  executionDiffs: accumulatedDiffs,
                   executionSummary: `已完成 [${stepIdx + 1}/${totalSteps}: ${currentSlice.title}]，${stepIdx + 1 < totalSteps ? `准备推进下一个模块...` : '所有模块已就绪！'}`,
                   modularState: {
                     ...mState,
@@ -564,15 +545,6 @@ export function useTopicExecutionPipeline({
                       },
                     };
                   }
-                  if (m.relatedTopicId === topicId && m.id.startsWith('msg-rollup-')) {
-                    const baseContent = m.content.split('\n\n---\n')[0];
-                    return {
-                      ...m,
-                      diffView: accumulatedDiffs.length > 0 ? accumulatedDiffs[0] : m.diffView,
-                      diffViews: accumulatedDiffs.length > 0 ? accumulatedDiffs : m.diffViews,
-                      content: `${baseContent}\n\n---\n✅ **G-Frame 模块化分治落地已完成 (${finalCompletedAt})**：由 **${executorAgent.name}** 串行完成了全部 ${totalSteps} 个原子模块，累计交付 **${accumulatedDiffs.length} 个文件变更 (+${totalAdd} / -${totalDel})**，可在议题卡片或审查视图中一键核对并合入本地工作区。`,
-                    };
-                  }
                   return m;
                 })
               : [];
@@ -610,7 +582,30 @@ export function useTopicExecutionPipeline({
             return next;
           });
 
-          if (isTurnStale(turnSnapshot)) return;
+          if (isTurnStale(turnSnapshot)) {
+            updateTopicDataInState(topicId, (old) => {
+              if (old.gameTheoreticState?.executionStatus !== 'running') return old;
+              return {
+                ...old,
+                gameTheoreticState: {
+                  ...old.gameTheoreticState,
+                  executionStatus: 'failed',
+                  executionSummary: 'G-Frame 落地执行已中断',
+                  executionDiffs: accumulatedDiffs.length > 0 ? accumulatedDiffs : old.gameTheoreticState?.executionDiffs,
+                  modularState: old.gameTheoreticState.modularState
+                    ? {
+                        ...old.gameTheoreticState.modularState,
+                        activeExecutionModuleId: undefined,
+                        modules: old.gameTheoreticState.modularState.modules.map((m) =>
+                          m.executionStatus === 'running' ? { ...m, executionStatus: 'failed' as const } : m
+                        ),
+                      }
+                    : old.gameTheoreticState.modularState,
+                },
+              };
+            });
+            return;
+          }
 
           console.error('Modular executor execution failed:', err);
           const errText = err instanceof Error ? err.message : String(err);
@@ -649,6 +644,7 @@ export function useTopicExecutionPipeline({
               modularState: old.gameTheoreticState?.modularState
                 ? {
                     ...old.gameTheoreticState.modularState,
+                    activeExecutionModuleId: undefined,
                     modules: old.gameTheoreticState.modularState.modules.map((m) =>
                       m.moduleId === old.gameTheoreticState?.modularState?.activeExecutionModuleId
                         ? { ...m, executionStatus: 'failed' as const }
@@ -803,18 +799,6 @@ export function useTopicExecutionPipeline({
                     },
                   };
                 }
-                if (m.relatedTopicId === topicId && m.id.startsWith('msg-rollup-')) {
-                  const baseContent = m.content.split('\n\n---\n')[0];
-                  return {
-                    ...m,
-                    diffView: extractedDiffs.length > 0 ? extractedDiffs[0] : m.diffView,
-                    diffViews: extractedDiffs.length > 0 ? extractedDiffs : m.diffViews,
-                    content:
-                      extractedDiffs.length > 0
-                        ? `${baseContent}\n\n---\n✅ **${execMeta?.podTitle || '决议落地变更已就绪'} (${completedAt})**：由 **${executorAgent.name}** 完成了 **${execMeta?.statusSummary || `${extractedDiffs.length} 个文件变更 (+${totalAdd} / -${totalDel})`}**，可在议题卡片或审查视图中一键核对并合入本地工作区。`
-                        : `${baseContent}\n\n---\n✅ **${execMeta?.podTitle || '决议落地已完成'} (${completedAt})**：**${executorAgent.name}** 已在议题抽屉内完成交付（${execMeta?.statusSummary || '详见抽屉内执行报告'}）。`,
-                  };
-                }
                 return m;
               })
             : [];
@@ -834,6 +818,17 @@ export function useTopicExecutionPipeline({
 
         if (isTurnStale(turnSnapshot)) {
           console.log('[App] Dropping topic execution error because turn was aborted or invalidated');
+          updateTopicDataInState(topicId, (old) => {
+            if (old.gameTheoreticState?.executionStatus !== 'running') return old;
+            return {
+              ...old,
+              gameTheoreticState: {
+                ...old.gameTheoreticState,
+                executionStatus: 'failed',
+                executionSummary: '决议落地执行已中断',
+              },
+            };
+          });
           return;
         }
 
@@ -920,13 +915,24 @@ export function useTopicExecutionPipeline({
     async (topicId?: string, customDiffs?: TopicPatchDiffItem[]) => {
       const targetTopicId = topicId || activeDiff?.topicId || activeTopicId;
       const currentTopic = targetTopicId ? getTopicData(targetTopicId) : null;
+      const modularFallbackDiffs: TopicPatchDiffItem[] =
+        currentTopic?.gameTheoreticState?.modularState?.modules?.flatMap((m) => m.executionDiffs || []) || [];
       const diffsToApply: TopicPatchDiffItem[] =
         customDiffs && customDiffs.length > 0
           ? customDiffs
-          : currentTopic?.gameTheoreticState?.executionDiffs ||
-            (activeDiff?.allDiffs && activeDiff.allDiffs.length > 0 ? activeDiff.allDiffs : activeDiff ? [activeDiff] : []);
+          : currentTopic?.gameTheoreticState?.executionDiffs && currentTopic.gameTheoreticState.executionDiffs.length > 0
+          ? currentTopic.gameTheoreticState.executionDiffs
+          : modularFallbackDiffs.length > 0
+          ? modularFallbackDiffs
+          : activeDiff?.allDiffs && activeDiff.allDiffs.length > 0
+          ? activeDiff.allDiffs
+          : activeDiff
+          ? [activeDiff]
+          : [];
 
-      if (!diffsToApply || diffsToApply.length === 0) return;
+      if (!diffsToApply || diffsToApply.length === 0) {
+        throw new Error('当前议题没有可合入的文件变更 (executionDiffs 为空)');
+      }
 
       const topicChannel =
         (currentTopic?.channelId ? channels.find((c) => c.id === currentTopic.channelId) : null) ||
@@ -988,30 +994,9 @@ export function useTopicExecutionPipeline({
 
         setMessages((prev) => {
           const existingTopicMsgs = prev[targetTopicId] || [];
-          let parentThreadId: string | null = null;
-          for (const [tId, msgList] of Object.entries(prev) as [string, Message[]][]) {
-            if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === targetTopicId)) {
-              parentThreadId = tId;
-              break;
-            }
-          }
-          const updatedParentMsgs = parentThreadId
-            ? (prev[parentThreadId] || []).map((m) => {
-                if (m.relatedTopicId === targetTopicId && m.id.startsWith('msg-rollup-')) {
-                  const baseContent = m.content.split('\n\n---\n')[0];
-                  return {
-                    ...m,
-                    content: `${baseContent}\n\n---\n🎉 **${execMeta?.podTitle || '决议交付'}已合入工作区 (${appliedAt})**：${res.summary}（归档于 \`${res.artifactsDir}\`）`,
-                  };
-                }
-                return m;
-              })
-            : [];
-
           return {
             ...prev,
             [targetTopicId]: [...existingTopicMsgs, applyConfirmMsg],
-            ...(parentThreadId ? { [parentThreadId]: updatedParentMsgs } : {}),
           };
         });
       }

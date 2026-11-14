@@ -249,6 +249,33 @@ fn migrate_remove_project_concept(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+/// 一次性清理历史上写入主频道的独立 Rollup 裁决总结气泡（现已统一收敛至 TopicMessageCard 内呈现）。
+fn migrate_remove_legacy_topic_rollup_messages(conn: &mut Connection) -> Result<()> {
+    let migration_name = "20261114_remove_legacy_topic_rollup_messages";
+    let already_applied: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = ?1)",
+        params![migration_name],
+        |row| row.get(0),
+    )?;
+    if already_applied {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    tx.execute(
+        "DELETE FROM messages
+         WHERE id LIKE 'msg-rollup-%'
+            OR json_extract(message_json, '$.kind') = 'rollup'",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO schema_migrations (name) VALUES (?1)",
+        params![migration_name],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 impl DatabaseManager {
     /// 初始化 SQLite 数据库连接并确保必要数据表与索引就绪
     pub fn new(db_path: &str) -> Result<Self> {
@@ -384,6 +411,7 @@ impl DatabaseManager {
         );
         migrate_remove_project_concept(&mut conn)?;
         migrate_workspace_binding_storage_paths(&mut conn)?;
+        migrate_remove_legacy_topic_rollup_messages(&mut conn)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -508,7 +536,7 @@ impl DatabaseManager {
             params_vec.push(Box::new(cid.clone()));
         }
 
-        query.push_str(" ORDER BY timestamp ASC");
+        query.push_str(" ORDER BY created_at ASC, rowid ASC");
 
         if let Some(l) = limit {
             query.push_str(&format!(" LIMIT {}", l));
@@ -1829,5 +1857,104 @@ mod tests {
             .unwrap();
         assert_eq!(applied_count, 1);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn get_messages_preserves_chronological_insertion_order_over_display_timestamp() {
+        let db = DatabaseManager::new(":memory:").unwrap();
+
+        // 1. 先插入一条昨天 22:10 的普通消息
+        db.save_message(&serde_json::json!({
+            "id": "m-old",
+            "threadId": "ch-1",
+            "channelId": "ch-1",
+            "authorId": "u1",
+            "authorName": "User",
+            "timestamp": "22:10",
+            "content": "earlier message"
+        }))
+        .unwrap();
+
+        // 2. 再插入一条今天 09:05 的议题消息（字符串 "09:05" < "22:10"）
+        db.save_message(&serde_json::json!({
+            "id": "m-topic",
+            "threadId": "ch-1",
+            "channelId": "ch-1",
+            "type": "topic",
+            "authorId": "u1",
+            "authorName": "User",
+            "timestamp": "09:05",
+            "content": "",
+            "topicData": { "id": "t1", "status": "discussing" }
+        }))
+        .unwrap();
+
+        // 3. 议题结案更新（ON CONFLICT DO UPDATE）不应改变其在频道中的原始插入顺序
+        db.save_message(&serde_json::json!({
+            "id": "m-topic",
+            "threadId": "ch-1",
+            "channelId": "ch-1",
+            "type": "topic",
+            "authorId": "u1",
+            "authorName": "User",
+            "timestamp": "09:05",
+            "content": "",
+            "topicData": { "id": "t1", "status": "resolved" }
+        }))
+        .unwrap();
+
+        let msgs = db
+            .get_messages(Some("ch-1".to_string()), None, None, None)
+            .unwrap();
+        let ids: Vec<&str> = msgs
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(ids, vec!["m-old", "m-topic"]);
+    }
+
+    #[test]
+    fn migrate_removes_legacy_rollup_messages_and_preserves_topics() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE messages (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                channel_id TEXT,
+                author_id TEXT NOT NULL,
+                author_name TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                content TEXT NOT NULL,
+                message_json TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE schema_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO messages (id, thread_id, channel_id, author_id, author_name, timestamp, content, message_json)
+            VALUES
+              ('m-topic-1', 'ch-1', 'ch-1', 'u1', 'User', '09:00', '', '{\"id\":\"m-topic-1\",\"type\":\"topic\",\"topicData\":{\"id\":\"t1\",\"status\":\"resolved\"}}'),
+              ('msg-rollup-t1', 'ch-1', 'ch-1', 'system', 'Arbiter', '09:30', 'summary', '{\"id\":\"msg-rollup-t1\",\"kind\":\"rollup\",\"relatedTopicId\":\"t1\"}');
+            ",
+        )
+        .unwrap();
+
+        migrate_remove_legacy_topic_rollup_messages(&mut conn).unwrap();
+
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1);
+
+        let topic_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE id = 'm-topic-1')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(topic_exists);
     }
 }

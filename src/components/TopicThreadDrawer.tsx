@@ -103,7 +103,7 @@ interface TopicThreadDrawerProps {
   }) => void;
   onReopenTopic?: (topicId: string) => void;
   onExecuteTopicPatch?: (topicId: string, executorId: string) => void;
-  onApplyTopicPatch?: (topicId: string) => Promise<void> | void;
+  onApplyTopicPatch?: (topicId: string, customDiffs?: TopicPatchDiffItem[]) => Promise<void> | void;
   onOpenCodexDiff: (diff: any) => void;
   onEditTopic?: () => void;
   workspaceCwd?: string;
@@ -929,7 +929,12 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
     if (!onApplyTopicPatch || !topic?.id) return;
     setIsApplyingPatch(true);
     try {
-      await onApplyTopicPatch(topic.id);
+      await onApplyTopicPatch(topic.id, topicExecutionDiffs);
+    } catch (err) {
+      console.error('Apply topic patch failed:', err);
+      if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+        window.alert(err instanceof Error ? err.message : '合入工作区失败，请检查工作区绑定或变更内容');
+      }
     } finally {
       setIsApplyingPatch(false);
     }
@@ -2969,9 +2974,20 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                       </span>
                     )}
                     {topic.gameTheoreticState?.executionStatus === 'running' && (
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 font-sans">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-600 dark:bg-amber-400 animate-ping" />
-                        正在执行决议...
+                      activeExecutions.length > 0 ? (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 font-sans">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-600 dark:bg-amber-400 animate-ping" />
+                          正在执行决议...
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30 font-sans font-medium">
+                          执行已中断
+                        </span>
+                      )
+                    )}
+                    {topic.gameTheoreticState?.executionStatus === 'failed' && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30 font-sans font-medium">
+                        执行中断/异常
                       </span>
                     )}
                     {topic.gameTheoreticState?.executionStatus === 'completed' && (
