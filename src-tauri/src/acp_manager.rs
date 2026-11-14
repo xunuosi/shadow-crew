@@ -1616,8 +1616,20 @@ pub fn is_auto_approved_governance_tool(params_or_tool_call: &serde_json::Value)
 }
 
 /// 解析内置 `shadow-crew-dev-mcp` 二进制的绝对路径
-pub fn resolve_dev_mcp_binary_path(cwd: &str, host_cwd: &str) -> Option<String> {
-    let mut candidates: Vec<PathBuf> = vec![
+pub fn resolve_dev_mcp_binary_path_with_overrides(
+    cwd: &str,
+    host_cwd: &str,
+    env_overrides: &[Option<&str>],
+) -> Option<String> {
+    let mut candidates: Vec<PathBuf> = env_overrides
+        .iter()
+        .flatten()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+
+    candidates.extend([
         PathBuf::from(cwd).join("target/debug/shadow-crew-dev-mcp"),
         PathBuf::from(cwd).join("target/release/shadow-crew-dev-mcp"),
         PathBuf::from(host_cwd).join("target/debug/shadow-crew-dev-mcp"),
@@ -1628,7 +1640,7 @@ pub fn resolve_dev_mcp_binary_path(cwd: &str, host_cwd: &str) -> Option<String> 
         PathBuf::from("target/release/shadow-crew-dev-mcp"),
         PathBuf::from("../target/debug/shadow-crew-dev-mcp"),
         PathBuf::from("../../target/debug/shadow-crew-dev-mcp"),
-    ];
+    ]);
 
     if let Some(workspace_root) = Path::new(env!("CARGO_MANIFEST_DIR")).parent() {
         candidates.push(workspace_root.join("target/debug/shadow-crew-dev-mcp"));
@@ -1663,6 +1675,17 @@ pub fn resolve_dev_mcp_binary_path(cwd: &str, host_cwd: &str) -> Option<String> 
         }
     }
     None
+}
+
+/// 解析内置 `shadow-crew-dev-mcp` 二进制的绝对路径（优先读取显式环境变量覆盖）
+pub fn resolve_dev_mcp_binary_path(cwd: &str, host_cwd: &str) -> Option<String> {
+    let env_primary = std::env::var("SHADOW_CREW_DEV_MCP_PATH").ok();
+    let env_legacy = std::env::var("SHINOBI_DEV_MCP_PATH").ok();
+    resolve_dev_mcp_binary_path_with_overrides(
+        cwd,
+        host_cwd,
+        &[env_primary.as_deref(), env_legacy.as_deref()],
+    )
 }
 
 /// 构造挂载到 ACP session (`session/new` / `session/load` / `session/resume`) 的 `mcpServers` 载荷。
@@ -2086,13 +2109,16 @@ impl AcpProcessManager {
         // 智能路径探测: codex-acp 适配器命令
         let home = std::env::var("HOME").unwrap_or_default();
         if command_line.contains("codex-acp") {
-            let possible_bins = [
+            let mut possible_bins = vec![
                 format!("{}/bin/codex-acp", cwd),
                 format!("{}/bin/codex-acp", host_cwd),
                 "bin/codex-acp".to_string(),
                 "../bin/codex-acp".to_string(),
-                format!("{}/.local/bin/codex-acp", home),
             ];
+            if let Some(workspace_root) = Path::new(env!("CARGO_MANIFEST_DIR")).parent() {
+                possible_bins.push(workspace_root.join("bin/codex-acp").to_string_lossy().to_string());
+            }
+            possible_bins.push(format!("{}/.local/bin/codex-acp", home));
             for b in &possible_bins {
                 if let Ok(canonical) = std::fs::canonicalize(b) {
                     if canonical.is_file() {
@@ -6732,6 +6758,51 @@ mod runtime_status_tests {
         assert_eq!(v2_arr.len(), 1);
         assert_eq!(v2_arr[0]["type"], "stdio");
         assert_eq!(v2_arr[0]["name"], "shadow-crew-dev-mcp");
+    }
+
+    #[test]
+    fn test_resolve_dev_mcp_binary_path_precedence_and_fallback() {
+        use super::resolve_dev_mcp_binary_path_with_overrides;
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "sc-dev-mcp-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let override_bin = temp_dir.join("custom-dev-mcp");
+        std::fs::write(&override_bin, "#!/bin/sh\nexit 0\n").unwrap();
+
+        let overridden = resolve_dev_mcp_binary_path_with_overrides(
+            "/nonexistent-cwd",
+            "/nonexistent-host",
+            &[Some(override_bin.to_string_lossy().as_ref()), None],
+        );
+        assert_eq!(
+            overridden.as_deref(),
+            Some(std::fs::canonicalize(&override_bin).unwrap().to_string_lossy().as_ref()),
+            "Explicit SHADOW_CREW_DEV_MCP_PATH override must resolve before workspace fallbacks"
+        );
+
+        let fallback = resolve_dev_mcp_binary_path_with_overrides(
+            "/nonexistent-cwd",
+            "/nonexistent-host",
+            &[Some("/nonexistent/override/binary"), None],
+        );
+        if let Some(workspace_root) = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent() {
+            let target_debug = workspace_root.join("target/debug/shadow-crew-dev-mcp");
+            if target_debug.is_file() {
+                assert_eq!(
+                    fallback.as_deref(),
+                    Some(std::fs::canonicalize(&target_debug).unwrap().to_string_lossy().as_ref()),
+                    "Missing override should fall back to CARGO_MANIFEST_DIR workspace binary"
+                );
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
