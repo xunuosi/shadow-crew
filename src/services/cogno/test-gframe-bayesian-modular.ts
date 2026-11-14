@@ -11,6 +11,12 @@ import {
   updateModuleBeliefWithFeedback,
 } from './bayesianModuleGovernor';
 import { validateModuleScopeContract } from './stageContractGate';
+import {
+  extractGroundedTrueRatio,
+  parseVerifierOutput,
+  processVerifierEvidenceChain,
+  resolveEvidenceTruthValue,
+} from './tieredGroundingGovernor';
 import { buildScopedModulePrompt } from '../agentCollaboration';
 import { extractModuleDecompositionFromAcpResponse } from '../acpClient';
 import {
@@ -973,7 +979,386 @@ console.log('--- [Test 15] Clean Defense Resolves Prior Verification Refutations
   console.log('✅ [15/15] Clean Defense Convergence Passed\n');
 }
 
-console.log('🎉 [G-Frame Complete] All 15 test suites passed 100%!');
+// =========================================================================
+// Test 16: Verifier snake_case `truth_value: true` (4 PASS items) in Fast-Track
+// =========================================================================
+console.log('--- [Test 16] Verifier 4-Item snake_case truth_value=true PASS Payload & Fast-Track Freeze ---');
+{
+  const fourPassVerifierPayload = `
+已完成对单模块静态页 \`demo/index.html\` 的四项物理接地核验：
+\`\`\`json
+{
+  "evidences": [
+    {
+      "evidence_id": "ev-data01-1",
+      "source_tool": "read_file",
+      "input_query_or_code": "read demo/index.html",
+      "raw_output": "<!doctype html><html><style>...</style><body>...</body></html>",
+      "truth_value": true,
+      "confidence": 0.95,
+      "claim_id": "claim-pure-html",
+      "verifier_report": "仅包含纯静态 HTML 与内嵌 CSS，结构合法"
+    },
+    {
+      "evidence_id": "ev-data01-2",
+      "source_tool": "ast_grep",
+      "input_query_or_code": "grep -E '<script|<form' demo/index.html",
+      "raw_output": "0 matches",
+      "truth_value": true,
+      "confidence": 0.92,
+      "claim_id": "claim-no-script-form",
+      "verifier_report": "未检测到 <script> 或 <form> 标签"
+    },
+    {
+      "evidence_id": "ev-data01-3",
+      "source_tool": "static_analyzer",
+      "input_query_or_code": "grep -E 'fetch\\\\(|XMLHttpRequest|localStorage|sessionStorage' demo/index.html",
+      "raw_output": "0 matches",
+      "truth_value": true,
+      "confidence": 0.90,
+      "claim_id": "claim-no-network-storage",
+      "verifier_report": "无任何 fetch 网络请求与浏览器持久化逻辑"
+    },
+    {
+      "evidence_id": "ev-data01-4",
+      "source_tool": "git_diff_summary",
+      "input_query_or_code": "git status --short",
+      "raw_output": "M demo/index.html",
+      "truth_value": true,
+      "confidence": 0.95,
+      "claim_id": "claim-single-file",
+      "verifier_report": "变更白名单严格收敛于 demo/index.html"
+    }
+  ]
+}
+\`\`\`
+结论：4 项实证检验全部 PASS。
+`;
+
+  const parsedEvidences = parseVerifierOutput(fourPassVerifierPayload);
+  assert.equal(parsedEvidences.length, 4, 'Must parse all 4 snake_case evidence items');
+  assert.equal(
+    parsedEvidences.filter((e) => e.truthValue).length,
+    4,
+    'All 4 { "truth_value": true } items must resolve to truthValue=true'
+  );
+  assert.equal(
+    parsedEvidences.filter((e) => !e.truthValue).length,
+    0,
+    'Zero falsifications expected for 4 PASS items'
+  );
+  assert.equal(parsedEvidences[0].evidenceId, 'ev-data01-1');
+  assert.equal(parsedEvidences[0].sourceTool, 'read_file');
+  assert.equal(parsedEvidences[0].inputQueryOrCode, 'read demo/index.html');
+  assert.equal(parsedEvidences[0].claimId, 'claim-pure-html');
+  assert.equal(parsedEvidences[1].sourceTool, 'ast_grep');
+
+  const chainRes = processVerifierEvidenceChain({
+    topicId: 'topic-data01-regression',
+    verifierText: fourPassVerifierPayload,
+    isSafetyCharterSigned: false,
+    disputePacket: {
+      disputeId: 'disp-data01',
+      claimTopic: 'DATA-01 单文件纯静态边界校验',
+      proposerClaim: '仅修改 demo/index.html，无 JS/表单/持久化',
+      challengerCritique: 'Fast-Track 旁路待实证',
+      rootCause: '静态合规核验',
+      groundingStatus: 'unverified',
+    },
+  });
+
+  const verifiedClaims = chainRes.evidences.filter((e) => e.truthValue).length;
+  const refutedClaims = chainRes.evidences.filter((e) => !e.truthValue).length;
+  assert.equal(verifiedClaims, 4, 'verifiedClaims must equal 4');
+  assert.equal(refutedClaims, 0, 'Zero falsifications required');
+  assert.ok(
+    chainRes.weightedTrueRatio > 0.5,
+    `weightedTrueRatio must be > 0.5 (got ${chainRes.weightedTrueRatio})`
+  );
+  assert.equal(chainRes.updatedDispute?.groundingStatus, 'verified_true');
+
+  const extractedRatio = extractGroundedTrueRatio(fourPassVerifierPayload);
+  assert.ok(
+    extractedRatio > 0.5,
+    `extractGroundedTrueRatio must be > 0.5 (got ${extractedRatio})`
+  );
+
+  // 驱动单模块 DATA-01 fast_track 状态机，验证不会误触发 ESCALATE_TO_RED_TEAM
+  const data01Draft: ModuleDecompositionDraft = {
+    sharedContract: {
+      summary: 'DATA-01 单文件纯 HTML+CSS 静态展示页契约',
+      typeSignatures: '',
+      invariants: ['仅允许修改 demo/index.html', '严禁包含 <script>、<form>、fetch 与持久化'],
+    },
+    modules: [
+      {
+        moduleId: 'only-static-page',
+        title: '单文件静态产品展示页',
+        responsibility: '纯 HTML+CSS 静态展示页实现',
+        allowedFiles: ['demo/index.html'],
+        dependsOn: [],
+        complexityLevel: 'low_deterministic',
+        requiresRedTeam: false,
+        routingRationale: '单文件、无持久化、无并发、无不可逆副作用',
+      },
+    ],
+  };
+
+  let data01State = initializeModularOrchestrationState(data01Draft);
+  assert.equal(data01State.modules[0].belief.routingMode, 'fast_track');
+
+  const propStep = stepModularStageTransition({
+    state: data01State,
+    currentStage: 'proposal',
+    feedbackDelta: {},
+    proposalOrDefenseSnippet: 'Pure HTML+CSS demo/index.html',
+    hasVerifiers: true,
+  });
+  assert.equal(propStep.nextGameStage, 'verification');
+
+  const verStep = stepModularStageTransition({
+    state: propStep.nextState,
+    currentStage: 'verification',
+    feedbackDelta: {
+      verifiedClaims,
+      refutedClaims,
+      contractViolations: 0,
+    },
+  });
+  assert.notEqual(
+    verStep.posteriorAction,
+    'ESCALATE_TO_RED_TEAM',
+    '4 PASS truth_value=true items must NEVER trigger ESCALATE_TO_RED_TEAM in fast_track'
+  );
+  assert.equal(verStep.posteriorAction, 'FREEZE_MODULE');
+  assert.equal(verStep.allModulesFrozen, true);
+  assert.equal(verStep.nextGameStage, 'arbitration');
+
+  console.log('✅ [16/17] 4-Item truth_value=true PASS Payload & Fast-Track Freeze Passed\n');
+}
+
+// =========================================================================
+// Test 17: resolveEvidenceTruthValue Matrix, Mixed Aliases, Multi-Block JSON & Text Fallback
+// =========================================================================
+console.log('--- [Test 17] TruthValue Matrix, Mixed Keys, Multi-Block JSON & Branch 2 Fallback ---');
+{
+  // 17.1 resolveEvidenceTruthValue 矩阵（含显式 false/"false" 绝不被 PASS 覆盖）
+  assert.equal(resolveEvidenceTruthValue({ truthValue: true }), true);
+  assert.equal(resolveEvidenceTruthValue({ truth_value: true }), true);
+  assert.equal(resolveEvidenceTruthValue({ truthValue: 'true' }), true);
+  assert.equal(resolveEvidenceTruthValue({ truth_value: 'TRUE' }), true);
+  assert.equal(resolveEvidenceTruthValue({ truth_value: ' True ' }), true);
+  assert.equal(resolveEvidenceTruthValue({ truthValue: null, truth_value: 'True' }), true);
+
+  assert.equal(resolveEvidenceTruthValue({ truthValue: false }), false);
+  assert.equal(resolveEvidenceTruthValue({ truth_value: false }), false);
+  assert.equal(
+    resolveEvidenceTruthValue({ truthValue: false, status: 'PASS', verdict: 'PASS' }),
+    false,
+    'Explicit truthValue=false must NEVER be overridden by PASS status/verdict'
+  );
+  assert.equal(
+    resolveEvidenceTruthValue({ truth_value: false, status: 'PASS' }),
+    false,
+    'Explicit truth_value=false must NEVER be overridden by PASS status'
+  );
+  assert.equal(
+    resolveEvidenceTruthValue({ truth_value: 'false', verdict: 'PASS' }),
+    false,
+    'Explicit truth_value="false" must NEVER be overridden by PASS verdict'
+  );
+  assert.equal(
+    resolveEvidenceTruthValue({ truthValue: 'FALSE', status: 'PASS' }),
+    false,
+    'Explicit truthValue="FALSE" must NEVER be overridden by PASS status'
+  );
+  assert.equal(
+    resolveEvidenceTruthValue({ truthValue: null, truth_value: 'false', status: 'PASS' }),
+    false,
+    'Explicit snake truth_value="false" with null truthValue must stay false'
+  );
+
+  // 仅当 truthValue 与 truth_value 均未提供/为 null 时才回退至 PASS
+  assert.equal(resolveEvidenceTruthValue({ status: 'PASS' }), true);
+  assert.equal(resolveEvidenceTruthValue({ verdict: 'PASS' }), true);
+  assert.equal(resolveEvidenceTruthValue({ status: 'pass' }), true);
+  assert.equal(resolveEvidenceTruthValue({ status: 'FAIL' }), false);
+  assert.equal(resolveEvidenceTruthValue({}), false);
+
+  // 17.2 多 fenced 块 + 前置非 JSON 代码块 + 无关 JSON 块 + 混合 camelCase/snake_case 别名键
+  const multiBlockText = `
+先列出校验命令：
+\`\`\`bash
+grep -rn "<script" demo/index.html
+\`\`\`
+
+样本配置（非证据 JSON，不得伪造为失败证据）：
+\`\`\`json
+{ "product": "Widget", "price": 99 }
+\`\`\`
+
+第一批实证：
+\`\`\`json
+[
+  {
+    "evidence_id": "id-snake-1",
+    "tool_name": "ast_grep",
+    "query": "grep <script",
+    "result": "0 matches",
+    "truth_value": true,
+    "conclusion": "无脚本标签"
+  },
+  {
+    "evidenceId": "id-camel-2",
+    "toolName": "read_file",
+    "code": "cat demo/index.html",
+    "output": "pure html",
+    "truthValue": "True",
+    "report": "纯静态页面",
+    "claim_id": "c-static"
+  }
+]
+\`\`\`
+
+第二批实证（混合显式 "false" 拒绝与 status PASS 回退）：
+\`\`\`json
+{
+  "evidences": [
+    {
+      "tool": "static_analyzer",
+      "input": "check forms",
+      "rawOutput": "no form",
+      "status": "PASS",
+      "verifier_report": "无表单元素",
+      "claimId": "c-no-form"
+    },
+    {
+      "sourceTool": "rag_search",
+      "input_query_or_code": "check fetch",
+      "raw_output": "found fetch('/api')",
+      "truth_value": "false",
+      "status": "PASS",
+      "verifierReport": "显式字符串 false 不得被 status PASS 覆盖"
+    }
+  ]
+}
+\`\`\`
+`;
+
+  const multiEvidences = parseVerifierOutput(multiBlockText);
+  assert.equal(multiEvidences.length, 4, 'Must extract all 4 evidence items across multiple ```json blocks');
+  assert.equal(multiEvidences[0].evidenceId, 'id-snake-1');
+  assert.equal(multiEvidences[0].sourceTool, 'ast_grep');
+  assert.equal(multiEvidences[0].inputQueryOrCode, 'grep <script');
+  assert.equal(multiEvidences[0].rawOutput, '0 matches');
+  assert.equal(multiEvidences[0].verifierReport, '无脚本标签');
+  assert.equal(multiEvidences[0].truthValue, true);
+
+  assert.equal(multiEvidences[1].evidenceId, 'id-camel-2');
+  assert.equal(multiEvidences[1].sourceTool, 'read_file');
+  assert.equal(multiEvidences[1].inputQueryOrCode, 'cat demo/index.html');
+  assert.equal(multiEvidences[1].rawOutput, 'pure html');
+  assert.equal(multiEvidences[1].verifierReport, '纯静态页面');
+  assert.equal(multiEvidences[1].claimId, 'c-static');
+  assert.equal(multiEvidences[1].truthValue, true);
+
+  assert.equal(multiEvidences[2].sourceTool, 'static_analyzer');
+  assert.equal(multiEvidences[2].inputQueryOrCode, 'check forms');
+  assert.equal(multiEvidences[2].rawOutput, 'no form');
+  assert.equal(multiEvidences[2].verifierReport, '无表单元素');
+  assert.equal(multiEvidences[2].claimId, 'c-no-form');
+  assert.equal(multiEvidences[2].truthValue, true);
+
+  assert.equal(multiEvidences[3].sourceTool, 'rag_search');
+  assert.equal(multiEvidences[3].inputQueryOrCode, 'check fetch');
+  assert.equal(multiEvidences[3].rawOutput, "found fetch('/api')");
+  assert.equal(multiEvidences[3].truthValue, false, 'Explicit "false" string must resolve to false');
+
+  // 17.3 MCP submit_grounding_evidence 通道对字符串 "false" 的精确解析与多次调用聚合
+  const mcpStringFalseEvidences = parseVerifierOutput('MCP fallback check', [
+    {
+      tool_name: 'submit_grounding_evidence',
+      arguments: {
+        evidences: [
+          {
+            source_tool: 'static_analyzer',
+            input_query_or_code: 'scan script',
+            raw_output: '<script> detected',
+            truth_value: 'false',
+            status: 'PASS',
+            verifier_report: 'MCP string "false" must stay false',
+          },
+        ],
+      },
+    },
+    {
+      tool_name: 'submit_grounding_evidence',
+      arguments: {
+        evidences: [
+          {
+            tool_name: 'ast_grep',
+            code: 'scan form',
+            result: '0 forms',
+            truth_value: 'TRUE',
+            conclusion: 'No forms found',
+          },
+        ],
+      },
+    },
+  ]);
+  assert.equal(mcpStringFalseEvidences.length, 2);
+  assert.equal(mcpStringFalseEvidences[0].truthValue, false);
+  assert.equal(mcpStringFalseEvidences[1].truthValue, true);
+  assert.equal(mcpStringFalseEvidences[1].sourceTool, 'ast_grep');
+
+  // 17.4 Branch 2 结构化文本兜底：支持 snake_case 与否定汉语词（未通过/不成立）防误判
+  const structuredSnakePass = parseVerifierOutput(`
+- **source_tool**: ast_grep
+- **input_query_or_code**: grep "<script" demo/index.html
+- **raw_output**: 0 matches
+- **truth_value**: true
+- **verifier_report**: 静态检查全部通过
+`);
+  assert.equal(structuredSnakePass.length, 1);
+  assert.equal(structuredSnakePass[0].sourceTool, 'ast_grep');
+  assert.equal(structuredSnakePass[0].truthValue, true);
+  assert.equal(structuredSnakePass[0].rawOutput, '0 matches');
+
+  const structuredNegatedFail = parseVerifierOutput(`
+【验证工具】：static_analyzer
+【真值判定】：未通过
+【实证报告】：静态规则校验不成立
+`);
+  assert.equal(structuredNegatedFail.length, 1);
+  assert.equal(
+    structuredNegatedFail[0].truthValue,
+    false,
+    'Negated Chinese verdict "未通过" must never match as true'
+  );
+
+  // 17.5 JSON 内包含未转义正则反斜杠（如 fetch\(、\s+）时的自动容错恢复
+  const unescapedRegexJson = `
+\`\`\`json
+[
+  {
+    "source_tool": "ast_grep",
+    "input_query_or_code": "grep -E 'fetch\\(|\\s+' demo/index.html",
+    "raw_output": "0 matches\\\\nline1",
+    "truth_value": true,
+    "verifier_report": "正则未双反斜杠转义仍可正常解析"
+  }
+]
+\`\`\`
+`;
+  const recoveredEvidences = parseVerifierOutput(unescapedRegexJson);
+  assert.equal(recoveredEvidences.length, 1);
+  assert.equal(recoveredEvidences[0].truthValue, true);
+  assert.equal(recoveredEvidences[0].sourceTool, 'ast_grep');
+
+  console.log('✅ [17/17] TruthValue Matrix, Mixed Aliases, Multi-Block JSON & Text Fallback Passed\n');
+}
+
+console.log('🎉 [G-Frame Complete] All 17 test suites passed 100%!');
 
 
 

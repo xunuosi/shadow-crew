@@ -176,14 +176,28 @@ git commit -m "manual test baseline"
 #### DATA-01：单模块、快速通道
 
 ```text
-任务：创建一个单文件静态产品介绍页，仅修改 demo/index.html。
+任务：创建一个单文件纯 HTML + CSS 静态产品展示页，仅修改 demo/index.html。
+
+严格边界约束（禁止越界）：
+- 仅使用纯静态 HTML 结构与内嵌 <style> CSS 样式实现产品展示；
+- 严禁包含任何 JavaScript（禁止 <script> 标签、内联脚本或事件属性）；
+- 严禁包含 <form> 表单元素；
+- 严禁发起 fetch、XHR 或任何外部网络请求；
+- 严禁引入任何持久化机制（禁止 localStorage、sessionStorage、IndexedDB、Cookie 或后端存储）；
+- 仅修改 demo/index.html，严禁新建或改动其他文件。
 
 请优先调用 submit_module_decomposition，并严格满足：
 1. 只提交 1 个模块，不要为了凑数生成第二个模块或 guard 模块；
-2. complexity_level 使用 low_deterministic；
-3. requires_red_team 使用 false；
-4. routing_rationale 写明“单文件、无持久化、无并发、无不可逆副作用”。
+2. allowed_files 仅包含 ["demo/index.html"]；
+3. complexity_level 使用 low_deterministic；
+4. requires_red_team 使用 false；
+5. routing_rationale 写明“单文件纯 HTML+CSS 静态展示页、无 JS/表单/网络请求、无持久化、无并发、无不可逆副作用”。
 ```
+
+**DATA-01 范围与交付断言**：
+- 变更白名单严格收敛为 `demo/index.html`（单文件纯 HTML+CSS，无外部脚本或持久化文件）；
+- 提案、验证输出与落地产物中不得包含 `<script>`、`<form>`、`fetch`、外部网络请求或任何持久化代码；
+- 接地验证通过后应直接锁定 `fast_track` 冻结（`verifiedClaims >= 1`、`refutedClaims = 0`），不得误触发 `ESCALATE_TO_RED_TEAM`。
 
 #### DATA-02：单模块、LLM 强制红队
 
@@ -269,8 +283,8 @@ git commit -m "manual test baseline"
 | :--- | :--- |
 | 优先级 | P0 |
 | 前置 | GFM-01 的 `requiresRedTeam=false`、`low_deterministic` |
-| 操作 | 1. 观察阶段流转。<br>2. 等待提案完成。<br>3. 检查是否跳过红队挑战。 |
-| 预期 | 提案后进入验证阶段；红队没有针对该模块发言；模块标识显示快速通道或 `fast_track`。 |
+| 操作 | 1. 观察阶段流转。<br>2. 等待提案完成。<br>3. 检查是否跳过红队挑战与接地验证后是否直接冻结。 |
+| 预期 | 提案后进入验证阶段；红队没有针对该模块发言；模块标识显示快速通道或 `fast_track`；验证官给出正向实证后直接冻结收敛，不误触发 `ESCALATE_TO_RED_TEAM`；提案与产物严格保持单文件纯 HTML+CSS（无 `<script>`、`<form>`、`fetch`、网络请求或持久化逻辑），仅修改 `demo/index.html`。 |
 | 实际结果 |  |
 | 证据 |  |
 
