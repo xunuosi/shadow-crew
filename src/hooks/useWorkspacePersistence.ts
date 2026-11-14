@@ -33,6 +33,9 @@ import {
   saveTeamsToDb,
   saveWorkspaceStateToDb,
   isTauriEnvironment,
+  filterPersistableMessages,
+  reconcileAndSanitizeMessages,
+  deleteMessagesByIdsFromDb,
 } from '../services/dbClient';
 import {
   findWorkspaceBinding,
@@ -78,31 +81,34 @@ export function useWorkspacePersistence({
   const isWorkspaceHydratedRef = useRef(false);
   const workspaceBindingSchemaPersistedRef = useRef(false);
   const syncRunningAgentsWithBackendRef = useRef<(() => Promise<void>) | null>(null);
+  const purgedLocalPendingIdsRef = useRef<string[]>([]);
 
-  const sanitizeMessages = useCallback((list: Message[]): Message[] => {
-    return list.map((message) => {
-      const migrated = { ...message } as Message & { projectId?: string };
-      delete migrated.projectId;
-      if (migrated.isPending) {
-        migrated.isPending = false;
-      }
-      if (
-        migrated.type === 'topic' &&
-        migrated.topicData?.gameTheoreticState &&
-        (migrated.topicData.gameTheoreticState.executionStatus === 'running' ||
-          migrated.topicData.gameTheoreticState.executionStatus === 'queued')
-      ) {
-        const gState = migrated.topicData.gameTheoreticState;
-        migrated.topicData = {
-          ...migrated.topicData,
-          gameTheoreticState: markTopicExecutionInterrupted(gState, {
-            summary: '上次落地执行在完成前已中断',
-          }),
-        };
-      }
-      return migrated;
-    });
-  }, []);
+  const sanitizeMessages = useCallback(
+    (list: Message[]): { sanitized: Message[]; purgedPendingIds: string[] } => {
+      const { sanitized, purgedPendingIds } = reconcileAndSanitizeMessages(list);
+      const migratedList = sanitized.map((message) => {
+        const migrated = { ...message } as Message & { projectId?: string };
+        delete migrated.projectId;
+        if (
+          migrated.type === 'topic' &&
+          migrated.topicData?.gameTheoreticState &&
+          (migrated.topicData.gameTheoreticState.executionStatus === 'running' ||
+            migrated.topicData.gameTheoreticState.executionStatus === 'queued')
+        ) {
+          const gState = migrated.topicData.gameTheoreticState;
+          migrated.topicData = {
+            ...migrated.topicData,
+            gameTheoreticState: markTopicExecutionInterrupted(gState, {
+              summary: '上次落地执行在完成前已中断',
+            }),
+          };
+        }
+        return migrated;
+      });
+      return { sanitized: migratedList, purgedPendingIds };
+    },
+    []
+  );
 
   useEffect(() => {
     try {
@@ -317,6 +323,26 @@ export function useWorkspacePersistence({
       const saved = localStorage.getItem('shinobi_messages');
       if (saved) {
         const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const { sanitized, purgedPendingIds } = sanitizeMessages(
+            parsed as Message[]
+          );
+          if (purgedPendingIds.length > 0) {
+            purgedLocalPendingIdsRef.current.push(...purgedPendingIds);
+          }
+          const grouped: Record<string, Message[]> = {};
+          for (const msg of sanitized) {
+            const key = msg.threadId || msg.channelId || 'general';
+            if (!grouped[key]) grouped[key] = [];
+            grouped[key].push(msg);
+          }
+          if (purgedPendingIds.length > 0) {
+            try {
+              localStorage.setItem('shinobi_messages', JSON.stringify(grouped));
+            } catch {}
+          }
+          return grouped;
+        }
         if (parsed && typeof parsed === 'object') {
           for (const k of Object.keys(parsed)) {
             if (MOCK_THREAD_IDS.has(k) || MOCK_CHANNEL_IDS.has(k)) {
@@ -324,7 +350,8 @@ export function useWorkspacePersistence({
             } else if (k.startsWith('thread-dm-')) {
               // 自动清洗误入私聊会话的频道历史消息、议题卡片与共识决议卡片
               const agentId = k.replace('thread-dm-', '');
-              parsed[k] = (parsed[k] || []).filter((m: Message) => {
+              const threadList = Array.isArray(parsed[k]) ? parsed[k] : [];
+              parsed[k] = threadList.filter((m: Message) => {
                 if (
                   m.kind === 'rollup' ||
                   m.kind === 'guard' ||
@@ -338,12 +365,24 @@ export function useWorkspacePersistence({
               });
             }
           }
-          return Object.fromEntries(
-            Object.entries(parsed).map(([threadId, threadMessages]) => [
-              threadId,
-              sanitizeMessages((threadMessages || []) as Message[]),
-            ])
-          );
+          const cleanedEntries: Array<[string, Message[]]> = [];
+          let localPurgedAny = false;
+          for (const [threadId, threadMessages] of Object.entries(parsed)) {
+            const safeList = Array.isArray(threadMessages) ? (threadMessages as Message[]) : [];
+            const { sanitized, purgedPendingIds } = sanitizeMessages(safeList);
+            if (purgedPendingIds.length > 0) {
+              purgedLocalPendingIdsRef.current.push(...purgedPendingIds);
+              localPurgedAny = true;
+            }
+            cleanedEntries.push([threadId, sanitized]);
+          }
+          const cleanedMap = Object.fromEntries(cleanedEntries);
+          if (localPurgedAny) {
+            try {
+              localStorage.setItem('shinobi_messages', JSON.stringify(cleanedMap));
+            } catch {}
+          }
+          return cleanedMap;
         }
       }
     } catch {}
@@ -467,8 +506,24 @@ export function useWorkspacePersistence({
 
         const dbMsgs = await loadMessagesFromDb();
         if (!isMounted) return;
-        const messagesFromDatabase = dbMsgs?.length ? sanitizeMessages(dbMsgs) : [];
-        if (dbMsgs && dbMsgs.length > 0) {
+        const {
+          sanitized: messagesFromDatabase,
+          purgedPendingIds: dbPurgedPendingIds,
+        } = dbMsgs?.length
+          ? sanitizeMessages(dbMsgs)
+          : { sanitized: [], purgedPendingIds: [] };
+        const pendingIdsToPurge = Array.from(
+          new Set([...purgedLocalPendingIdsRef.current, ...dbPurgedPendingIds])
+        );
+        purgedLocalPendingIdsRef.current = [];
+        if (pendingIdsToPurge.length > 0) {
+          try {
+            await deleteMessagesByIdsFromDb(pendingIdsToPurge);
+          } catch (purgeErr) {
+            console.error('[App] Failed to purge stale pending messages from DB:', purgeErr);
+          }
+        }
+        if (messagesFromDatabase.length > 0) {
           setMessages((prev) => {
             const next = { ...prev };
             const copiedKeys = new Set<string>();
@@ -482,8 +537,18 @@ export function useWorkspacePersistence({
                 next[key] = [...next[key]];
                 copiedKeys.add(key);
               }
-              if (!next[key].some((m) => m.id === msg.id)) {
+              const existingIdx = next[key].findIndex((m) => m.id === msg.id);
+              if (existingIdx === -1) {
                 next[key].push(msg);
+                hasNew = true;
+              } else if (
+                typeof next[key][existingIdx].startedAt !== 'number' &&
+                typeof msg.startedAt === 'number'
+              ) {
+                next[key][existingIdx] = {
+                  ...next[key][existingIdx],
+                  startedAt: msg.startedAt,
+                };
                 hasNew = true;
               }
             }
@@ -546,17 +611,24 @@ export function useWorkspacePersistence({
     };
   }, [sanitizeMessages]);
 
-  // 消息持久化 (原生 SQLite 优先，同步防护 LocalStorage)
+  // 消息持久化 (原生 SQLite 优先，同步防护 LocalStorage；严禁写入瞬态 Pending 占位)
   useEffect(() => {
     const allMsgs = Object.values(messages).flat();
-    if (allMsgs.length > 0) {
-      saveMessagesBatchToDb(allMsgs).catch((e) => {
+    const persistableMsgs = filterPersistableMessages(allMsgs);
+    if (persistableMsgs.length > 0) {
+      saveMessagesBatchToDb(persistableMsgs).catch((e) => {
         console.error('[App] SQLite saveMessagesBatchToDb failed:', e);
       });
     }
     if (!isTauriEnvironment()) {
       try {
-        localStorage.setItem('shinobi_messages', JSON.stringify(messages));
+        const persistableByThread = Object.fromEntries(
+          Object.entries(messages).map(([threadId, threadMessages]) => [
+            threadId,
+            filterPersistableMessages(threadMessages),
+          ])
+        );
+        localStorage.setItem('shinobi_messages', JSON.stringify(persistableByThread));
       } catch (err) {
         console.warn('[App] LocalStorage quota exceeded, SQLite persistence safely active.');
       }

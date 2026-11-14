@@ -791,6 +791,15 @@ fn db_delete_messages(
     state.db_manager.delete_messages(thread_id, channel_id).map_err(|e| e.to_string())
 }
 
+/// Tauri Command: 按消息 ID 列表批量删除消息记录
+#[tauri::command]
+fn db_delete_messages_by_ids(
+    ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    state.db_manager.delete_messages_by_ids(&ids).map_err(|e| e.to_string())
+}
+
 /// Tauri Command: 清空所有历史消息 (保留 acp_memories 核心记忆)
 #[tauri::command]
 fn db_clear_all_messages(state: State<'_, AppState>) -> Result<usize, String> {
@@ -2113,6 +2122,7 @@ async fn main() {
             db_save_messages_batch,
             db_get_messages,
             db_delete_messages,
+            db_delete_messages_by_ids,
             db_clear_all_messages,
             db_get_storage_stats,
             db_clear_safe_cache,

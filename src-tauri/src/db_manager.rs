@@ -276,6 +276,20 @@ fn migrate_remove_legacy_topic_rollup_messages(conn: &mut Connection) -> Result<
     Ok(())
 }
 
+/// 判断消息 JSON 是否为流式/推演期间的瞬态占位快照；
+/// 已标记 `agentBadge == "已终止"` 的手动终止记录受保护豁免，不被视为瞬态占位。
+pub fn is_transient_pending_message_json(msg: &serde_json::Value) -> bool {
+    let badge = msg.get("agentBadge").and_then(|v| v.as_str()).unwrap_or("");
+    if badge == "已终止" {
+        return false;
+    }
+    if msg.get("isPending").and_then(|v| v.as_bool()) == Some(true) {
+        return true;
+    }
+    let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    id.starts_with("topic-pending-") || id.starts_with("msg-pending-")
+}
+
 impl DatabaseManager {
     /// 初始化 SQLite 数据库连接并确保必要数据表与索引就绪
     pub fn new(db_path: &str) -> Result<Self> {
@@ -419,11 +433,14 @@ impl DatabaseManager {
         })
     }
 
-    /// 插入或更新单条消息
+    /// 插入或更新单条消息（自动跳过瞬态 Pending 占位快照）
     pub fn save_message(&self, val: &serde_json::Value) -> Result<()> {
         let id = val.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
         if id.is_empty() {
             return Err(anyhow::anyhow!("Message id is required"));
+        }
+        if is_transient_pending_message_json(val) {
+            return Ok(());
         }
 
         let thread_id = val.get("threadId").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -461,11 +478,22 @@ impl DatabaseManager {
         Ok(())
     }
 
-    /// 批量事务写入消息（用于首次启动从 localStorage 平滑迁移）
+    /// 批量事务写入消息（跳过瞬态 Pending 占位并事务性清理 SQLite 内残留的未终止 Pending 快照）
     pub fn save_messages_batch(&self, messages: &[serde_json::Value]) -> Result<usize> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let mut count = 0;
+
+        tx.execute(
+            "DELETE FROM messages
+             WHERE COALESCE(json_extract(message_json, '$.agentBadge'), '') != '已终止'
+               AND (
+                 json_type(message_json, '$.isPending') = 'true'
+                 OR substr(id, 1, 14) = 'topic-pending-'
+                 OR substr(id, 1, 12) = 'msg-pending-'
+               )",
+            [],
+        )?;
 
         {
             let mut stmt = tx.prepare(
@@ -482,6 +510,9 @@ impl DatabaseManager {
             )?;
 
             for val in messages {
+                if is_transient_pending_message_json(val) {
+                    continue;
+                }
                 if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
                     if id.is_empty() {
                         continue;
@@ -494,7 +525,7 @@ impl DatabaseManager {
                     let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
                     let message_json = serde_json::to_string(val)?;
 
-                    let _ = stmt.execute(params![
+                    stmt.execute(params![
                         id,
                         thread_id,
                         channel_id,
@@ -503,7 +534,7 @@ impl DatabaseManager {
                         timestamp,
                         content,
                         message_json
-                    ]);
+                    ])?;
                     count += 1;
                 }
             }
@@ -576,6 +607,30 @@ impl DatabaseManager {
             count += conn.execute("DELETE FROM messages WHERE channel_id = ?1", params![cid])?;
         }
 
+        Ok(count)
+    }
+
+    /// 按消息 ID 列表批量删除历史消息，返回实际删除的行数
+    pub fn delete_messages_by_ids(&self, ids: &[String]) -> Result<usize> {
+        let clean_ids: Vec<&str> = ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .collect();
+        if clean_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut count = 0usize;
+        {
+            let mut stmt = tx.prepare("DELETE FROM messages WHERE id = ?1")?;
+            for id in clean_ids {
+                count += stmt.execute(params![id])?;
+            }
+        }
+        tx.commit()?;
         Ok(count)
     }
 
@@ -1956,5 +2011,191 @@ mod tests {
             )
             .unwrap();
         assert!(topic_exists);
+    }
+
+    #[test]
+    fn test_pending_snapshots_are_purged_when_final_replies_persist() {
+        // 1. 校验 is_transient_pending_message_json 的瞬态判定与「已终止」豁免规则
+        assert!(is_transient_pending_message_json(&serde_json::json!({
+            "id": "topic-pending-100-agent-a",
+            "isPending": true,
+            "agentBadge": "Local · 思考中..."
+        })));
+        assert!(is_transient_pending_message_json(&serde_json::json!({
+            "id": "msg-pending-200-agent-b",
+            "isPending": false,
+            "agentBadge": "Local · 思考中..."
+        })));
+        assert!(is_transient_pending_message_json(&serde_json::json!({
+            "id": "custom-streaming-id",
+            "isPending": true
+        })));
+        assert!(!is_transient_pending_message_json(&serde_json::json!({
+            "id": "msg-pending-aborted-a",
+            "isPending": false,
+            "agentBadge": "已终止"
+        })));
+        assert!(!is_transient_pending_message_json(&serde_json::json!({
+            "id": "topic-pending-aborted-b",
+            "isPending": true,
+            "agentBadge": "已终止"
+        })));
+        assert!(!is_transient_pending_message_json(&serde_json::json!({
+            "id": "topic-reply-100-agent-a",
+            "isPending": false,
+            "agentBadge": "Local · 🏛️ 方案立论"
+        })));
+
+        // 2. 模拟 16 pending + 16 final + 8 system notices = 40 条消息批次写入 -> 仅落盘 24 行
+        let db = DatabaseManager::new(":memory:").unwrap();
+
+        // save_message 单条写入也必须跳过瞬态 Pending 快照
+        db.save_message(&serde_json::json!({
+            "id": "topic-pending-single-skip",
+            "threadId": "topic-1",
+            "channelId": "ch-1",
+            "authorId": "agent-a",
+            "authorName": "Agent A",
+            "timestamp": "10:00",
+            "content": "streaming...",
+            "isPending": true
+        }))
+        .unwrap();
+        assert_eq!(db.get_messages(None, None, None, None).unwrap().len(), 0);
+
+        let mut batch = Vec::with_capacity(40);
+        for i in 0..16 {
+            batch.push(serde_json::json!({
+                "id": format!("topic-pending-{}-agent-{}", 1000 + i, i % 4),
+                "threadId": "topic-1",
+                "channelId": "ch-1",
+                "authorId": format!("agent-{}", i % 4),
+                "authorName": format!("Agent {}", i % 4),
+                "timestamp": "10:01",
+                "content": "partial chunk...",
+                "isPending": true,
+                "agentBadge": "Local · 思考中..."
+            }));
+        }
+        for i in 0..16 {
+            batch.push(serde_json::json!({
+                "id": format!("topic-reply-{}-agent-{}", 2000 + i, i % 4),
+                "threadId": "topic-1",
+                "channelId": "ch-1",
+                "authorId": format!("agent-{}", i % 4),
+                "authorName": format!("Agent {}", i % 4),
+                "timestamp": "10:02",
+                "content": format!("final answer {}", i),
+                "isPending": false,
+                "agentBadge": "Local · 🏛️ 方案立论"
+            }));
+        }
+        for i in 0..8 {
+            batch.push(serde_json::json!({
+                "id": format!("msg-fast-track-{}", 3000 + i),
+                "threadId": "topic-1",
+                "channelId": "ch-1",
+                "authorId": "system",
+                "authorName": "System",
+                "timestamp": "10:03",
+                "content": format!("system notice {}", i),
+                "kind": "system_control"
+            }));
+        }
+        assert_eq!(batch.len(), 40);
+
+        let persisted_count = db.save_messages_batch(&batch).unwrap();
+        assert_eq!(persisted_count, 24);
+        let stored = db.get_messages(Some("topic-1".to_string()), None, None, None).unwrap();
+        assert_eq!(stored.len(), 24);
+        assert!(stored.iter().all(|m| !is_transient_pending_message_json(m)));
+
+        // 3. 验证遗留在 SQLite 中的历史瞬态 Pending 行会被事务性清扫，同时保留「已终止」记录
+        {
+            let conn = db.conn.lock().unwrap();
+            let stale_pending_1 = serde_json::json!({
+                "id": "topic-pending-legacy-1",
+                "threadId": "topic-1",
+                "channelId": "ch-1",
+                "authorId": "agent-1",
+                "authorName": "Agent 1",
+                "timestamp": "09:50",
+                "content": "stale streaming",
+                "isPending": true
+            });
+            let stale_pending_2 = serde_json::json!({
+                "id": "msg-pending-legacy-2",
+                "threadId": "ch-1",
+                "channelId": "ch-1",
+                "authorId": "agent-2",
+                "authorName": "Agent 2",
+                "timestamp": "09:51",
+                "content": "flipped by old sanitize",
+                "isPending": false,
+                "agentBadge": "Local · 思考中..."
+            });
+            let aborted_pending = serde_json::json!({
+                "id": "msg-pending-aborted-keep",
+                "threadId": "ch-1",
+                "channelId": "ch-1",
+                "authorId": "agent-a",
+                "authorName": "Agent A",
+                "timestamp": "09:52",
+                "content": "partial\n\n*(已由用户手动终止推演)*",
+                "isPending": false,
+                "agentBadge": "已终止"
+            });
+            for (id, thread_id, ch_id, author_id, val) in [
+                ("topic-pending-legacy-1", "topic-1", "ch-1", "agent-1", stale_pending_1),
+                ("msg-pending-legacy-2", "ch-1", "ch-1", "agent-2", stale_pending_2),
+                ("msg-pending-aborted-keep", "ch-1", "ch-1", "agent-a", aborted_pending),
+            ] {
+                conn.execute(
+                    "INSERT INTO messages (id, thread_id, channel_id, author_id, author_name, timestamp, content, message_json)
+                     VALUES (?1, ?2, ?3, ?4, 'Agent', '09:50', '', ?5)",
+                    params![id, thread_id, ch_id, author_id, serde_json::to_string(&val).unwrap()],
+                )
+                .unwrap();
+            }
+        }
+
+        // 再写入一条终态消息触发 save_messages_batch 事务清扫
+        db.save_messages_batch(&[serde_json::json!({
+            "id": "msg-reply-after-legacy",
+            "threadId": "ch-1",
+            "channelId": "ch-1",
+            "authorId": "agent-a",
+            "authorName": "Agent A",
+            "timestamp": "10:05",
+            "content": "fresh reply",
+            "isPending": false
+        })])
+        .unwrap();
+
+        let all_after_sweep = db.get_messages(None, None, None, None).unwrap();
+        let all_ids: Vec<&str> = all_after_sweep
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|v| v.as_str()))
+            .collect();
+        assert!(!all_ids.contains(&"topic-pending-legacy-1"));
+        assert!(!all_ids.contains(&"msg-pending-legacy-2"));
+        assert!(all_ids.contains(&"msg-pending-aborted-keep"));
+        assert!(all_ids.contains(&"msg-reply-after-legacy"));
+        assert_eq!(all_after_sweep.len(), 26); // 24 + msg-pending-aborted-keep + msg-reply-after-legacy
+
+        // 4. 验证 delete_messages_by_ids 精准按 ID 删除并返回实际删除行数
+        let deleted = db
+            .delete_messages_by_ids(&[
+                "msg-reply-after-legacy".to_string(),
+                "non-existent-id".to_string(),
+                "".to_string(),
+            ])
+            .unwrap();
+        assert_eq!(deleted, 1);
+        let remaining = db.get_messages(None, None, None, None).unwrap();
+        assert_eq!(remaining.len(), 25);
+        assert!(remaining
+            .iter()
+            .any(|m| m.get("id").and_then(|v| v.as_str()) == Some("msg-pending-aborted-keep")));
     }
 }
