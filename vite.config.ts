@@ -4,6 +4,32 @@ import fs from 'fs';
 import path from 'path';
 import {defineConfig, Plugin} from 'vite';
 
+const frontendWatchIgnored = [
+  '**/.agents/**',
+  '**/.codex/**',
+  '**/.git/**',
+  '**/.shadow-crew/**',
+  '**/backups/**',
+  '**/bin/**',
+  '**/Cargo.lock',
+  '**/Cargo.toml',
+  '**/crates/**',
+  '**/dist/**',
+  '**/docs/**',
+  '**/logs/**',
+  '**/metadata.json',
+  '**/node_modules/**',
+  '**/screenshots/**',
+  '**/scripts/**',
+  '**/src-tauri/**',
+  '**/target/**',
+  '**/test-*.ts',
+  '**/verify-*.ts',
+  '**/*.log',
+  '**/*.md',
+  '**/.DS_Store',
+];
+
 // LINT.IfChange(aistudio_media_plugin)
 function aistudioMediaPlugin(): Plugin {
   return {
@@ -447,8 +473,11 @@ export default defineConfig(() => {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      // Keep HMR focused on frontend runtime files instead of project-wide edits.
+      watch:
+        process.env.DISABLE_HMR === 'true'
+          ? null
+          : {ignored: frontendWatchIgnored},
     },
   };
 });
