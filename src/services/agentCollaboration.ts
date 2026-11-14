@@ -647,7 +647,9 @@ export function buildTopicPrompt(options: {
       "responsibility": "定义核心领域模型与抽象接口",
       "allowed_files": ["src/types/index.ts"],
       "depends_on": [],
-      "complexity_level": "low_deterministic"
+      "complexity_level": "low_deterministic",
+      "requires_red_team": false,
+      "routing_rationale": "单一确定性文件修改，无并发、持久化或不可逆风险"
     }
   ]
 }
@@ -678,7 +680,7 @@ ${topic.targetChallengeText || '（详见前序讨论脉络中的挑战者发言
 3. 【📋 核心设计与变更文件清单】(明确文件路径如 \`src/...\`、核心架构组件、关键函数/类与边界保证)；
 4. 【📦 核心代码草案或 Unified Diff】(直接呈现关键类型签名与核心代码块)；
 5. 【🧭 模块拆解与红队路由自主决策 (强制工具优先)】：
-   - 请优先调用宿主 MCP 工具 \`submit_module_decomposition\`，将本方案拆解为 1~4 个模块（若任务本身单一聚焦如单文件静态页面、局部小改，仅提交 1 个原子模块即可，严禁为了凑数强行拆出多个模块；复杂任务拆解为 2~4 个模块），并由你结合议题风险与语义**自主决定**每个模块的 \`complexity_level\`（\`low_deterministic\` / \`medium_standard\` / \`high_critical\`）及 \`requires_red_team\`（\`true\`=必须经红方对抗压测，\`false\`=极低风险确定性模块可直通验证）；
+   - 请优先调用宿主 MCP 工具 \`submit_module_decomposition\`，将本方案拆解为 1~4 个模块（若任务本身单一聚焦如单文件静态页面、局部小改，仅提交 1 个原子模块即可，严禁为了凑数强行拆出多个模块；复杂任务拆解为 2~4 个模块），并由你结合议题风险与语义**自主决定**每个模块的 \`complexity_level\`（\`low_deterministic\` / \`medium_standard\` / \`high_critical\`）、\`requires_red_team\`（\`true\`=必须经红方对抗压测，\`false\`=极低风险确定性模块可直通验证）与 \`routing_rationale\`（简明说明该路由判断依据）；
    - 若当前环境无 MCP 工具，请在回复末尾附带紧凑 \`<<<MODULE_DECOMPOSITION>>>...<<<MODULE_DECOMPOSITION_END>>>\` JSON 块。未显式声明时，系统默认全部模块进入红方对抗。
 无需在正文 @ 任何人，平台状态机将自动递交方案。`;
       }

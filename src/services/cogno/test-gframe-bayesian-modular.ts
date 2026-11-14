@@ -255,6 +255,8 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
                 allowed_files: ['src/types.ts'],
                 depends_on: [],
                 complexity_level: 'low_deterministic',
+                requires_red_team: false,
+                routing_rationale: '纯类型与接口定义，无运行时副作用',
               },
               {
                 module_id: 'mod-b',
@@ -263,6 +265,8 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
                 allowed_files: ['src/engine.ts'],
                 depends_on: ['mod-a'],
                 complexity_level: 'high_critical',
+                requires_red_team: true,
+                routing_rationale: '涉及并发核心状态机与不可逆副作用',
               },
             ],
           },
@@ -274,7 +278,51 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
   assert.ok(extracted, 'Must extract ModuleDecompositionDraft from MCP tool call');
   assert.equal(extracted?.modules.length, 2);
   assert.equal(extracted?.modules[0].moduleId, 'mod-a');
+  assert.equal(extracted?.modules[0].requiresRedTeam, false);
+  assert.equal(extracted?.modules[0].routingRationale, '纯类型与接口定义，无运行时副作用');
   assert.equal(extracted?.modules[1].complexityLevel, 'high_critical');
+  assert.equal(extracted?.modules[1].requiresRedTeam, true);
+
+  // 原生 MCP 与结构化 JSON 两条通路都必须接受单模块载荷。
+  const singleMcpPayload = {
+    shared_contract: {
+      summary: '单模块聚焦契约',
+      type_signatures: '',
+      invariants: ['只允许修改 demo/index.html'],
+    },
+    modules: [
+      {
+        module_id: 'only-module',
+        title: '单文件静态页',
+        responsibility: '创建单一静态页面',
+        allowed_files: ['demo/index.html'],
+        depends_on: [],
+        complexity_level: 'low_deterministic',
+        requires_red_team: false,
+        routing_rationale: '单文件确定性交付，无需红队深潜',
+      },
+    ],
+  };
+  const singleFromMcp = extractModuleDecompositionFromAcpResponse({
+    textResponse: '单模块拆解',
+    mcpToolCalls: [
+      {
+        server_name: 'shadow-crew-dev-mcp',
+        tool_name: 'submit_module_decomposition',
+        status: 'completed',
+        arguments: singleMcpPayload,
+      },
+    ],
+  });
+  assert.ok(singleFromMcp, 'Single-module native MCP payload must not be dropped');
+  assert.equal(singleFromMcp?.modules.length, 1);
+  assert.equal(singleFromMcp?.modules[0].routingRationale, '单文件确定性交付，无需红队深潜');
+
+  const singleFromBlock = extractModuleDecompositionFromAcpResponse({
+    textResponse: `<<<MODULE_DECOMPOSITION>>>${JSON.stringify(singleMcpPayload)}<<<MODULE_DECOMPOSITION_END>>>`,
+  });
+  assert.ok(singleFromBlock, 'Single-module structured JSON block must not be dropped');
+  assert.equal(singleFromBlock?.modules.length, 1);
 
   console.log('✅ [6/10] MCP submit_module_decomposition Contract Extractor Passed');
 }
@@ -315,12 +363,16 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
         allowedFiles: [],
         dependsOn: [],
         complexityLevel: 'medium_standard',
+        requiresRedTeam: true,
+        routingRationale: '单模块但涉及不可逆业务决策，保守进入红队对抗',
       },
     ],
   };
   const paddedState = initializeModularOrchestrationState(singleModDraft);
   assert.equal(paddedState.modules.length, 1, 'EDGE-02: Single-module draft must be preserved without forced multi-module padding');
   assert.equal(paddedState.activeModuleId, 'only-one');
+  assert.equal(paddedState.modules[0].requiresRedTeam, true);
+  assert.equal(paddedState.modules[0].routingRationale, '单模块但涉及不可逆业务决策，保守进入红队对抗');
 
   const emptyDraft: ModuleDecompositionDraft = {
     sharedContract: { summary: '空模块输入兜底测试', typeSignatures: '', invariants: [] },

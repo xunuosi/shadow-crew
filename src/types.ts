@@ -635,6 +635,7 @@ export interface TaskModuleSlice {
   dependsOnModuleIds: string[];     // 依赖的上游模块 ID 列表 (构成 Module DAG)
   complexityLevel: ModuleComplexityLevel;
   requiresRedTeam?: boolean;        // 由大模型自主评估是否必须经过红队对抗质询
+  routingRationale?: string;        // 大模型对红队路由决策的可追溯理由
   status: 'pending' | 'proposing' | 'challenging' | 'verifying' | 'defending' | 'frozen' | 'failed';
   belief: BayesianModuleBelief;     // 贝叶斯先验-反馈-后验状态
   scopedMessageIds: string[];       // 物理隔离：仅属于本模块沙箱的消息 ID 集合
@@ -663,6 +664,7 @@ export interface ModuleDecompositionDraft {
     dependsOn: string[];
     complexityLevel: ModuleComplexityLevel;
     requiresRedTeam?: boolean;
+    routingRationale?: string;
   }>;
   submittedBy?: string;
   submittedAt?: string;
@@ -683,7 +685,7 @@ export interface WhitelistDeduplicationRecord {
 export interface ModularOrchestrationState {
   enabled: boolean;                 // 是否启用 G-Frame 模块化隔离分治
   sharedContract?: SharedInterfaceContract;
-  modules: TaskModuleSlice[];       // K 个原子模块切片 (2 ≤ K ≤ 4)
+  modules: TaskModuleSlice[];       // K 个原子模块切片 (1 ≤ K ≤ 4)
   activeModuleId?: string;          // 当前正在推演或聚焦的模块沙箱 ID
   overallEntropyReductionRatio?: number; // 相比全量上下文的 Token/信息熵压缩比 (0~1)
   whitelistDeduplications?: WhitelistDeduplicationRecord[]; // 白名单拓扑偏序收敛与去重审计记录 (N5)

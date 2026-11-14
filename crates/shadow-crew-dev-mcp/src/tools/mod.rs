@@ -764,8 +764,11 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
             let modules = arguments["modules"]
                 .as_array()
                 .ok_or_else(|| anyhow!("缺少必填参数 modules 数组"))?;
-            if modules.len() < 2 || modules.len() > 4 {
-                return Err(anyhow!("G-Frame 模块化拆解要求模块数在 2~4 个之间，当前为 {}", modules.len()));
+            if modules.is_empty() || modules.len() > 4 {
+                return Err(anyhow!(
+                    "G-Frame 模块化拆解要求模块数在 1~4 个之间，当前为 {}",
+                    modules.len()
+                ));
             }
 
             let formatted_modules = modules
@@ -776,9 +779,23 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
                     let level = m["complexity_level"].as_str().unwrap_or("medium_standard");
                     let red_team = m["requires_red_team"]
                         .as_bool()
-                        .map(|v| if v { ", requires_red_team=true" } else { ", requires_red_team=false" })
+                        .map(|v| {
+                            if v {
+                                ", requires_red_team=true"
+                            } else {
+                                ", requires_red_team=false"
+                            }
+                        })
                         .unwrap_or("");
-                    format!("  • [{}] {} ({}{})", id, title, level, red_team)
+                    let routing_rationale = m["routing_rationale"]
+                        .as_str()
+                        .filter(|value| !value.trim().is_empty())
+                        .map(|value| format!(", routing_rationale={}", value.trim()))
+                        .unwrap_or_default();
+                    format!(
+                        "  • [{}] {} ({}{}{})",
+                        id, title, level, red_team, routing_rationale
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -934,6 +951,29 @@ mod tests {
         assert!(names.contains(&"submit_execution_deliverable"));
         assert!(names.contains(&"submit_challenge_critique"));
         assert!(names.contains(&"validate_workspace_diff"));
+
+        let decomposition = arr
+            .iter()
+            .find(|tool| tool["name"] == "submit_module_decomposition")
+            .expect("submit_module_decomposition must exist");
+        assert_eq!(
+            decomposition["inputSchema"]["properties"]["modules"]["minItems"],
+            json!(1)
+        );
+        assert_eq!(
+            decomposition["inputSchema"]["properties"]["modules"]["maxItems"],
+            json!(4)
+        );
+        assert!(
+            decomposition["inputSchema"]["properties"]["modules"]["items"]["properties"]
+                .get("requires_red_team")
+                .is_some()
+        );
+        assert!(
+            decomposition["inputSchema"]["properties"]["modules"]["items"]["properties"]
+                .get("routing_rationale")
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -1121,6 +1161,80 @@ mod tests {
         assert!(res.contains("✓ 【G-Frame 模块拓扑与公共接口契约】已成功锁定"));
         assert!(res.contains("mod-1"));
         assert!(res.contains("mod-2"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_submit_single_module_decomposition() {
+        let args = json!({
+            "shared_contract": {
+                "summary": "单一静态页交付",
+                "type_signatures": "",
+                "invariants": ["只允许修改 demo/index.html"]
+            },
+            "modules": [
+                {
+                    "module_id": "only-module",
+                    "title": "单文件静态页",
+                    "responsibility": "创建单一静态页面",
+                    "allowed_files": ["demo/index.html"],
+                    "depends_on": [],
+                    "complexity_level": "low_deterministic",
+                    "requires_red_team": false,
+                    "routing_rationale": "单文件确定性交付，无需红队深潜"
+                }
+            ]
+        });
+        let res = dispatch_tool_call("submit_module_decomposition", &args)
+            .await
+            .unwrap();
+        assert!(res.contains("原子模块切片 (1 个)"));
+        assert!(res.contains("requires_red_team=false"));
+        assert!(res.contains("routing_rationale=单文件确定性交付，无需红队深潜"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_submit_module_decomposition_rejects_empty_and_over_limit() {
+        let base = json!({
+            "shared_contract": {
+                "summary": "边界测试",
+                "type_signatures": "",
+                "invariants": []
+            }
+        });
+        let empty_args = {
+            let mut value = base.clone();
+            value["modules"] = json!([]);
+            value
+        };
+        assert!(
+            dispatch_tool_call("submit_module_decomposition", &empty_args)
+                .await
+                .is_err(),
+            "空模块数组必须被拒绝"
+        );
+
+        let five_args = {
+            let mut value = base;
+            value["modules"] = json!(
+                (1..=5)
+                    .map(|idx| json!({
+                        "module_id": format!("mod-{}", idx),
+                        "title": format!("模块 {}", idx),
+                        "responsibility": "边界测试",
+                        "allowed_files": [],
+                        "depends_on": [],
+                        "complexity_level": "low_deterministic"
+                    }))
+                    .collect::<Vec<_>>()
+            );
+            value
+        };
+        assert!(
+            dispatch_tool_call("submit_module_decomposition", &five_args)
+                .await
+                .is_err(),
+            "超过 4 个模块必须被拒绝"
+        );
     }
 
     #[tokio::test]

@@ -817,6 +817,7 @@ export function extractModuleDecompositionFromAcpResponse(
           ? rawLevel
           : 'medium_standard';
       const rawRedTeam = m.requires_red_team ?? m.requiresRedTeam;
+      const rawRoutingRationale = m.routing_rationale ?? m.routingRationale;
       return {
         moduleId: String(m.module_id || m.moduleId || `mod-${idx + 1}`).trim(),
         title: String(m.title || `模块 ${idx + 1}`).trim(),
@@ -829,6 +830,10 @@ export function extractModuleDecompositionFromAcpResponse(
           : [],
         complexityLevel,
         requiresRedTeam: typeof rawRedTeam === 'boolean' ? rawRedTeam : undefined,
+        routingRationale:
+          typeof rawRoutingRationale === 'string' && rawRoutingRationale.trim()
+            ? rawRoutingRationale.trim()
+            : undefined,
       };
     });
   };
@@ -850,7 +855,7 @@ export function extractModuleDecompositionFromAcpResponse(
       const args = decompCall.arguments || decompCall.args;
       const sc = args.shared_contract || args.sharedContract || {};
       const mods = Array.isArray(args.modules) ? normalizeModules(args.modules) : [];
-      if (mods.length >= 2) {
+      if (mods.length >= 1) {
         return {
           sharedContract: {
             summary: String(sc.summary || '跨模块公共接口契约').trim(),
@@ -875,7 +880,7 @@ export function extractModuleDecompositionFromAcpResponse(
       const parsed = JSON.parse(blockMatch[1].trim());
       const sc = parsed.shared_contract || parsed.sharedContract || {};
       const mods = Array.isArray(parsed.modules) ? normalizeModules(parsed.modules) : [];
-      if (mods.length >= 2) {
+      if (mods.length >= 1) {
         return {
           sharedContract: {
             summary: String(sc.summary || '跨模块公共接口契约').trim(),

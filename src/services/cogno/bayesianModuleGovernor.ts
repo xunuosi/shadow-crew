@@ -222,6 +222,7 @@ export function initializeModularOrchestrationState(
       dependsOnModuleIds: raw.dependsOn || [],
       complexityLevel: raw.complexityLevel,
       requiresRedTeam: raw.requiresRedTeam,
+      routingRationale: raw.routingRationale,
       status: 'pending',
       belief,
       scopedMessageIds: [],

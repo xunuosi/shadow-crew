@@ -132,7 +132,7 @@ console.log('--- GF-03 先验分流阈值边界 (fast_track < 0.45 <= deep_debat
 }
 
 // ---------------------------------------------------------------- GF-05 / EDGE-01
-console.log('\n--- GF-05 / EDGE-01 模块数量硬上限 (2 <= K <= 4) ---');
+console.log('\n--- GF-05 / EDGE-01 模块数量边界 (1 <= K <= 4) ---');
 {
   const five = makeDraft(
     ['M1', 'M2', 'M3', 'M4', 'M5'].map((id, idx) => ({
