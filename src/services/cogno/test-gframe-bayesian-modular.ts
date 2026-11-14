@@ -36,7 +36,7 @@ console.log('🧪 [G-Frame Test] Starting Bayesian Modular Governor & Context Is
     allowedFilesCount: 4,
     responsibilityText: '实现高并发互斥锁与 SQLite 事务幂等状态机迁移',
   });
-  assert.ok(highModule.priorRisk >= 0.85, `Expected high critical prior >= 0.85, got ${highModule.priorRisk}`);
+  assert.equal(highModule.priorRisk, 0.8, `Expected high critical prior 0.8, got ${highModule.priorRisk}`);
   assert.equal(highModule.routingMode, 'deep_debate', 'High risk module should route to deep_debate');
 
   console.log('✅ [1/10] Bayesian Prior Estimation & Fast-Track/Deep-Debate Routing Passed');
@@ -165,7 +165,10 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
 
   const fallbackDraft = buildDefaultDecompositionFromTopic('并发数据库迁移与状态同步引擎');
   assert.equal(fallbackDraft.modules.length, 3);
-  assert.equal(fallbackDraft.modules[1].complexityLevel, 'high_critical');
+  assert.equal(fallbackDraft.modules[0].complexityLevel, 'medium_standard');
+  assert.equal(fallbackDraft.modules[0].requiresRedTeam, true);
+  assert.equal(fallbackDraft.modules[1].complexityLevel, 'medium_standard');
+  assert.equal(fallbackDraft.modules[1].requiresRedTeam, true);
 
   console.log('✅ [4/10] Full Module DAG Progression, Blast-Radius Freezing & Scoped Prompt Isolation Passed');
 }
@@ -287,7 +290,16 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
   assert.equal(bizDraft.sharedContract.typeSignatures, '', 'Pure business topic must not inject fake TypeScript interfaces');
   assert.deepEqual(bizDraft.modules[0].allowedFiles, [], 'Pure business topic must not hardcode src/types.ts');
   assert.ok(bizDraft.modules[0].title.includes('阶梯定价与毛利测算模型'));
-  assert.equal(bizDraft.modules[1].complexityLevel, 'high_critical', 'Compliance/compensation module must be recognized as high_critical');
+  assert.equal(bizDraft.modules[0].complexityLevel, 'medium_standard', 'Fallback without LLM tool call must default to medium_standard');
+  assert.equal(bizDraft.modules[1].requiresRedTeam, true, 'Fallback without LLM tool call must default to requiresRedTeam=true');
+
+  // 验证大模型显式通过 requires_red_team=true 时即使 complexity_level=low_deterministic 也强制进入 deep_debate
+  const llmForcedRedTeam = estimateModulePriorRisk({
+    complexityLevel: 'low_deterministic',
+    allowedFilesCount: 1,
+    requiresRedTeam: true,
+  });
+  assert.equal(llmForcedRedTeam.routingMode, 'deep_debate', 'LLM requiresRedTeam=true must force deep_debate');
   console.log('✅ [7/10] Domain-Agnostic Business Discussion Decomposition (Zero R&D Hardcoding) Passed');
 }
 
@@ -307,8 +319,15 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
     ],
   };
   const paddedState = initializeModularOrchestrationState(singleModDraft);
-  assert.equal(paddedState.modules.length, 2, 'EDGE-02: Single-module draft must be padded to minimum 2 modules');
+  assert.equal(paddedState.modules.length, 1, 'EDGE-02: Single-module draft must be preserved without forced multi-module padding');
   assert.equal(paddedState.activeModuleId, 'only-one');
+
+  const emptyDraft: ModuleDecompositionDraft = {
+    sharedContract: { summary: '空模块输入兜底测试', typeSignatures: '', invariants: [] },
+    modules: [],
+  };
+  const emptyPaddedState = initializeModularOrchestrationState(emptyDraft);
+  assert.equal(emptyPaddedState.modules.length, 2, 'EDGE-02: Empty-module draft must be padded to fallback 2 modules');
 
   // EDGE-05: 连续两次增量传入 verifiedClaims: 1 或 refutedClaims: 1，应累加为 2，且传入 refutedClaims: 0 不得覆盖历史证伪数
   const initialMod = paddedState.modules[0];
@@ -830,7 +849,79 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
   console.log('✅ [14/14] Bayesian Fast-Track Routing & Dynamic Posterior Escalation (N8) Passed\n');
 }
 
-console.log('🎉 [G-Frame Complete] All 14 test suites passed 100%!');
+// =========================================================================
+// Test 15: Clean Defense Resolves Prior Verification Refutations (No Redundant Bounce)
+// =========================================================================
+console.log('--- [Test 15] Clean Defense Resolves Prior Verification Refutations ---');
+{
+  const cleanDefDraft: ModuleDecompositionDraft = {
+    sharedContract: {
+      summary: 'Clean defense contract',
+      typeSignatures: '',
+      invariants: [],
+    },
+    modules: [
+      {
+        moduleId: 'm-clean-def',
+        title: 'Clean Defense Module',
+        responsibility: 'Verify clean defense freezes without redundant SCOPED_DEFENSE_REFINE',
+        allowedFiles: ['src/clean.ts'],
+        dependsOn: [],
+        complexityLevel: 'medium_standard',
+        requiresRedTeam: true,
+      },
+    ],
+  };
+
+  let cdState = initializeModularOrchestrationState(cleanDefDraft);
+  let cdStep = stepModularStageTransition({
+    state: cdState,
+    currentStage: 'proposal',
+    feedbackDelta: {},
+    proposalOrDefenseSnippet: 'Initial Proposal',
+  });
+  cdStep = stepModularStageTransition({
+    state: cdStep.nextState,
+    currentStage: 'challenge',
+    feedbackDelta: { edgeCaseCount: 1 },
+  });
+  cdStep = stepModularStageTransition({
+    state: cdStep.nextState,
+    currentStage: 'verification',
+    feedbackDelta: { verifiedClaims: 1, refutedClaims: 1 },
+  });
+  assert.equal(cdStep.nextGameStage, 'defense');
+
+  // 15.1 答辩产生正向实证 (verifiedClaims: 1) 且无新增证伪/越界 -> 应直接冻结，不回弹 SCOPED_DEFENSE_REFINE
+  const cdFreezeStep = stepModularStageTransition({
+    state: cdStep.nextState,
+    currentStage: 'defense',
+    feedbackDelta: { verifiedClaims: 1, refutedClaims: 0, contractViolations: 0 },
+    proposalOrDefenseSnippet: 'Resolved all prior verification claims cleanly',
+    currentModuleRefineCount: 0,
+  });
+  assert.equal(cdFreezeStep.posteriorAction, 'FREEZE_MODULE');
+  assert.equal(cdFreezeStep.frozenModuleId, 'm-clean-def');
+  assert.ok(!cdFreezeStep.triggeredScopedRefine, 'Clean defense must not trigger SCOPED_DEFENSE_REFINE');
+  assert.equal(cdFreezeStep.allModulesFrozen, true);
+  assert.equal(cdFreezeStep.nextGameStage, 'arbitration');
+
+  // 15.2 若答辩本身仍产生新证伪 (refutedClaims: 1) -> 仍应触发 SCOPED_DEFENSE_REFINE
+  const cdRefineStep = stepModularStageTransition({
+    state: cdStep.nextState,
+    currentStage: 'defense',
+    feedbackDelta: { verifiedClaims: 0, refutedClaims: 1, contractViolations: 0 },
+    proposalOrDefenseSnippet: 'Defense still refuted',
+    currentModuleRefineCount: 0,
+  });
+  assert.equal(cdRefineStep.posteriorAction, 'SCOPED_DEFENSE_REFINE');
+  assert.equal(cdRefineStep.triggeredScopedRefine, true);
+  assert.equal(cdRefineStep.nextGameStage, 'challenge');
+
+  console.log('✅ [15/15] Clean Defense Convergence Passed\n');
+}
+
+console.log('🎉 [G-Frame Complete] All 15 test suites passed 100%!');
 
 
 

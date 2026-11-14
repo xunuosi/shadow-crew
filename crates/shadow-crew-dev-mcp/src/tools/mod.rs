@@ -313,7 +313,7 @@ pub fn get_tools_list() -> Value {
         },
         {
             "name": "submit_module_decomposition",
-            "description": "在 G-Frame 博弈阶段 0 (decomposition) 提交任务模块化拆解清单与跨模块公共契约。将复杂任务（支持通用业务战略、产品规划或软件研发任务）拆解为 2~4 个职责正交、上下文物理隔离的原子模块。",
+            "description": "在 G-Frame 博弈阶段 0 (decomposition) 提交任务模块化拆解清单与跨模块公共契约。将任务（支持通用业务战略、产品规划或软件研发任务）拆解为 1~4 个职责正交、上下文物理隔离的原子模块（简单或单一职责任务可仅提交 1 个模块，复杂多域任务拆解为 2~4 个模块）。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -338,7 +338,7 @@ pub fn get_tools_list() -> Value {
                     },
                     "modules": {
                         "type": "array",
-                        "minItems": 2,
+                        "minItems": 1,
                         "maxItems": 4,
                         "items": {
                             "type": "object",
@@ -360,6 +360,14 @@ pub fn get_tools_list() -> Value {
                                     "type": "string",
                                     "enum": ["low_deterministic", "medium_standard", "high_critical"],
                                     "description": "模块复杂度/风险自评，用于初始化贝叶斯先验风险 P_prior"
+                                },
+                                "requires_red_team": {
+                                    "type": "boolean",
+                                    "description": "由大模型结合议题全局语义自主判断该模块是否需要红队对抗质询（true=强制进入红方 deep_debate，false=低风险确定性模块可走 fast_track 快速验证）"
+                                },
+                                "routing_rationale": {
+                                    "type": "string",
+                                    "description": "（可选）大模型自主判定是否需要红队对抗的简要依据"
                                 }
                             },
                             "required": ["module_id", "title", "responsibility", "depends_on", "complexity_level"]
@@ -766,7 +774,11 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
                     let id = m["module_id"].as_str().unwrap_or("mod");
                     let title = m["title"].as_str().unwrap_or("未命名模块");
                     let level = m["complexity_level"].as_str().unwrap_or("medium_standard");
-                    format!("  • [{}] {} ({})", id, title, level)
+                    let red_team = m["requires_red_team"]
+                        .as_bool()
+                        .map(|v| if v { ", requires_red_team=true" } else { ", requires_red_team=false" })
+                        .unwrap_or("");
+                    format!("  • [{}] {} ({}{})", id, title, level, red_team)
                 })
                 .collect::<Vec<_>>()
                 .join("\n");

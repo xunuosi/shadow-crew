@@ -816,6 +816,7 @@ export function extractModuleDecompositionFromAcpResponse(
         rawLevel === 'low_deterministic' || rawLevel === 'medium_standard' || rawLevel === 'high_critical'
           ? rawLevel
           : 'medium_standard';
+      const rawRedTeam = m.requires_red_team ?? m.requiresRedTeam;
       return {
         moduleId: String(m.module_id || m.moduleId || `mod-${idx + 1}`).trim(),
         title: String(m.title || `模块 ${idx + 1}`).trim(),
@@ -827,6 +828,7 @@ export function extractModuleDecompositionFromAcpResponse(
           ? (m.depends_on || m.dependsOn).map(String).filter(Boolean)
           : [],
         complexityLevel,
+        requiresRedTeam: typeof rawRedTeam === 'boolean' ? rawRedTeam : undefined,
       };
     });
   };

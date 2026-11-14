@@ -634,6 +634,7 @@ export interface TaskModuleSlice {
   allowedFiles: string[];           // 本模块允许读写的文件路径白名单 (爆炸半径硬约束)
   dependsOnModuleIds: string[];     // 依赖的上游模块 ID 列表 (构成 Module DAG)
   complexityLevel: ModuleComplexityLevel;
+  requiresRedTeam?: boolean;        // 由大模型自主评估是否必须经过红队对抗质询
   status: 'pending' | 'proposing' | 'challenging' | 'verifying' | 'defending' | 'frozen' | 'failed';
   belief: BayesianModuleBelief;     // 贝叶斯先验-反馈-后验状态
   scopedMessageIds: string[];       // 物理隔离：仅属于本模块沙箱的消息 ID 集合
@@ -661,6 +662,7 @@ export interface ModuleDecompositionDraft {
     allowedFiles: string[];
     dependsOn: string[];
     complexityLevel: ModuleComplexityLevel;
+    requiresRedTeam?: boolean;
   }>;
   submittedBy?: string;
   submittedAt?: string;
