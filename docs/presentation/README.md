@@ -1,6 +1,8 @@
 # Shadow Crew · ACP 技术宣讲（HTML Keynote）
 
 > 单文件、离线、16:9、28 页。用 PPT 的节奏讲，用 HTML 的方式分发。
+>
+> 核心主张：不重复造 Agent，把常用的编程 Agent、同事调优好的 Agent 与 `.scpack` 经验包连接在同一个工作台，让 Agent 之间协作，也让经验开始流动。
 
 ![封面预览](./preview.jpg)
 
@@ -50,7 +52,7 @@ open docs/presentation/shadow-crew-acp-keynote.html
 | 24–27 | Live Demo、防从众治理、ROI、Roadmap |
 | 28 | 结语 |
 
-每页的讲师话术来自 [`docs/TECH_PRESENTATION_SHADOW_CREW_ACP.md`](../TECH_PRESENTATION_SHADOW_CREW_ACP.md)，按“先结论、再展开”的节奏改写，直接按 `N` 即可看到。
+每页的讲师话术来自 [`TECH_PRESENTATION_SHADOW_CREW_ACP.md`](./TECH_PRESENTATION_SHADOW_CREW_ACP.md)，按“先结论、再展开”的节奏改写，直接按 `N` 即可看到。
 
 ## 编辑指南
 
@@ -62,5 +64,5 @@ open docs/presentation/shadow-crew-acp-keynote.html
 
 ## 数据口径
 
-- 文案、数字与对标结论均取自 `docs/TECH_PRESENTATION_SHADOW_CREW_ACP.md`。
+- 文案、数字与对标结论均取自 [`TECH_PRESENTATION_SHADOW_CREW_ACP.md`](./TECH_PRESENTATION_SHADOW_CREW_ACP.md)。
 - ROI 页已显式标注「单场架构研讨 Demo 实测与项目内测数据」，对外演讲前请按最新版本复核模型名、版本号与收益数字。

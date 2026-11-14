@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="dark light" />
-<title>Shadow Crew · 用 ACP 连接一支影子团队</title>
+<title>Shadow Crew · 连接 Agent，连接彼此</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M32 2 39 25 62 32 39 39 32 62 25 39 2 32 25 25Z' fill='%2334d399'/%3E%3C/svg%3E" />
 <style>
 /* ============================================================
@@ -993,13 +993,13 @@ kbd {
 <main id="stage" aria-label="Shadow Crew ACP 技术宣讲">
 
 <!-- 01 ------------------------------------------------------------ -->
-<section class="slide cover is-active" data-no="01" data-section="开场" data-title="单人，拥有一支影子团队"
-  data-notes="开场不要急着讲技术。先让听众代入一个画面：你一个人坐在指挥席上，身后是来自全公司、甚至来自同事电脑里的专家 Agent。今天讲的不是又一个多 Agent 框架，而是一条把现有 Agent 连接起来的协议路径。">
+<section class="slide cover is-active" data-no="01" data-section="开场" data-title="连接 Agent，连接彼此"
+  data-notes="开场不要急着讲技术。先让听众代入一个画面：每天在用的 Claude Code、Codex，还有同事电脑里调优好的 Agent，现在都能在同一个工作台里彼此看见、一起讨论。今天讲的不是又一个多 Agent 框架，而是用一条协议把它们连接起来，让 Agent 之间能协作，也让同事的经验能接进来。">
   <div class="cover-inner">
     <div class="cover-copy">
       <div class="eyebrow reveal">Shadow Crew · ACP Keynote</div>
-      <h1 class="reveal">单人，<br>拥有一支<span class="grad">影子团队</span></h1>
-      <p class="lede reveal">基于 ACP 协议，连接本机与身边同事的 Agent 记忆能力。不重复造 Agent 轮子，把世界上最顶级的执行体，编成一支纪律严明的专家舰队。</p>
+      <h1 class="reveal">连接 Agent，<br>连接<span class="grad">彼此</span>。</h1>
+      <p class="lede reveal">不重复造 Agent。用 ACP 连接两样东西：<br>你常用的编程 Agent，和同事调优好的 Agent；<br>以及同事沉淀的 .scpack 经验包，让协作发生、经验流动。</p>
       <div class="cover-meta reveal">
         <span class="chip accent"><span class="d" style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>28 页 · 约 28 分钟</span>
         <span class="chip">技术峰会 / 架构师沙龙</span>
@@ -1047,18 +1047,18 @@ kbd {
     </div>
   </div>
   <div class="cover-foot">
-    <span>Shinobi / Shadow Crew · 本地优先的多 Agent 协同工作台</span>
+    <span>Shinobi / Shadow Crew · 本地优先的 Agent 连接与协作工作台</span>
     <span class="right">2026 · v1.0</span>
   </div>
 </section>
 
 <!-- 02 ------------------------------------------------------------ -->
 <section class="slide" data-no="02" data-section="演进" data-title="AI 辅助编码的三个阶段"
-  data-notes="这条时间轴要讲清一个判断：单兵 Agent 已经很强，但组织协同才是下一阶段。前两阶段的瓶颈是模型能力，第三阶段的瓶颈是协议与治理。这也是我们今天不谈模型参数的原因。">
+  data-notes="这条时间轴要讲清一个判断：单个 Agent 已经很强，但连接与协作才是下一阶段。前两阶段的瓶颈是模型能力，第三阶段的瓶颈是协议与治理。这也是我们今天不谈模型参数的原因。">
   <div class="slide-head">
     <div class="eyebrow reveal">01 / 演进</div>
-    <h2 class="reveal">从代码补全，到组织协同</h2>
-    <p class="lede reveal">每一次跃迁，改变的不是“模型会不会写代码”，而是“谁来决定、谁来验证、谁来收敛”。</p>
+    <h2 class="reveal">从代码补全，到连接协作</h2>
+    <p class="lede reveal">每一次跃迁，改变的不是“模型会不会写代码”，而是“谁能参与、谁能验证、谁来收敛”。</p>
   </div>
   <div class="slide-body">
     <div class="tl">
@@ -1072,20 +1072,20 @@ kbd {
         </div>
       </div>
       <div class="tl-item reveal">
-        <div class="tl-era">2024 — 2025 · 单兵</div>
+        <div class="tl-era">2024 — 2025 · 单 Agent</div>
         <div class="tl-card">
           <span class="badge info">阶段二</span>
-          <h3>单兵 Agent</h3>
+          <h3>单个 Agent</h3>
           <p class="desc">Cursor / Claude Code / Codex 接管任务：自己读仓库、改文件、跑测试，端到端交付。</p>
           <div class="meta"><span class="chip">任务级自主</span><span class="chip">单模型绑定</span></div>
         </div>
       </div>
       <div class="tl-item now reveal">
-        <div class="tl-era">2026 → · 舰队</div>
+        <div class="tl-era">2026 → · 连接</div>
         <div class="tl-card">
           <span class="badge ok">阶段三</span>
-          <h3>组织协同</h3>
-          <p class="desc">异构 Agent 按协议接入，跨机共享记忆，用博弈与运筹完成确定性收敛。</p>
+          <h3>连接协作</h3>
+          <p class="desc">常用的 Agent 按协议接入，跨机共享经验，让协作跨过工位与机器。</p>
           <div class="meta"><span class="chip accent">ACP</span><span class="chip accent">Shadow Crew</span></div>
         </div>
       </div>
@@ -1093,7 +1093,7 @@ kbd {
 
     <div class="callout mt-28 reveal">
       <span class="tag">判断</span>
-      <span>第三阶段的瓶颈不在模型智力，而在 <b>协作协议</b> 与 <b>决策治理</b> —— 谁能把多个强模型组织成一支不内耗的团队。</span>
+      <span>第三阶段的瓶颈不在模型智力，而在 <b>连接协议</b> 与 <b>协作治理</b> —— 谁能把多个强模型连接成一张不内耗的协作网。</span>
     </div>
   </div>
 </section>
@@ -1104,7 +1104,7 @@ kbd {
   <div class="slide-head">
     <div class="eyebrow reveal">02 / 痛点</div>
     <h2 class="reveal">繁荣背后的三堵“隐形高墙”</h2>
-    <p class="lede reveal">工具越来越多，团队却依然卡在同一个地方：单兵很强，组织很弱。</p>
+    <p class="lede reveal">工具越来越多，协作却依然卡在同一个地方：单个 Agent 很强，连接很弱。</p>
   </div>
   <div class="slide-body">
     <div class="grid cols-3">
@@ -1137,11 +1137,11 @@ kbd {
 
 <!-- 04 ------------------------------------------------------------ -->
 <section class="slide" data-no="04" data-section="破局" data-title="Thin Control Plane"
-  data-notes="强调“不造轮子”不是偷懒，而是架构判断。执行面已经被最强的团队做到了极致，宿主的价值在于工作区、权限、协同与记忆调度。控制面越薄，越能跟上 Agent 的迭代速度。">
+  data-notes="强调“不造轮子”不是偷懒，而是架构判断。单个 Agent 已经被最强的团队做到了极致，宿主的价值在于把它们连起来，并管好工作区、权限、协同与记忆调度。控制面越薄，越能跟上 Agent 的迭代速度。">
   <div class="slide-head">
     <div class="eyebrow reveal">03 / 破局</div>
-    <h2 class="reveal">不造 Agent 轮子，做最强的组织指挥官</h2>
-    <p class="lede reveal">执行面交给最强的团队，控制面留给自己。</p>
+    <h2 class="reveal">不造 Agent 轮子，做 Agent 之间的协作枢纽</h2>
+    <p class="lede reveal">执行交给成熟的 Agent，连接与协作交给工作台。</p>
   </div>
   <div class="slide-body">
     <div class="grid cols-2 gap-32">
@@ -1175,7 +1175,7 @@ kbd {
           <div class="agent-box"><div class="nm">Codex</div><div class="sub">LOCAL STDIO</div></div>
           <div class="agent-box"><div class="nm">同事 Agent</div><div class="sub">REMOTE WS</div></div>
         </div>
-        <p class="small mt-16">执行黑盒外置。宿主不碰推理循环，只负责组织与边界。</p>
+        <p class="small mt-16">执行黑盒外置。宿主不碰推理循环，只负责连接、协作与边界。</p>
       </div>
     </div>
 
@@ -1257,10 +1257,10 @@ kbd {
       </div>
 
       <div class="lane-mid reveal">
-        <div class="rpc to-agent"><div class="lbl">request</div><div class="method">session/new · session/prompt</div><div class="ar">⟶</div></div>
-        <div class="rpc to-client"><div class="lbl">stream</div><div class="method">session/update</div><div class="ar">⟵</div></div>
-        <div class="rpc to-client"><div class="lbl">reverse request</div><div class="method">session/request_permission</div><div class="ar">⟵</div></div>
-        <div class="rpc to-client"><div class="lbl">terminal</div><div class="method">turn_complete</div><div class="ar">⟵</div></div>
+        <div class="rpc to-agent"><div class="lbl">request</div><div class="method">session/new · session/prompt</div><div class="ar">→</div></div>
+        <div class="rpc to-client"><div class="lbl">stream</div><div class="method">session/update</div><div class="ar">←</div></div>
+        <div class="rpc to-client"><div class="lbl">reverse request</div><div class="method">session/request_permission</div><div class="ar">←</div></div>
+        <div class="rpc to-client"><div class="lbl">terminal</div><div class="method">turn_complete</div><div class="ar">←</div></div>
         <div class="small" style="text-align:center;margin-top:2px">JSON-RPC 2.0<br>双向对等</div>
       </div>
 
@@ -1624,7 +1624,7 @@ kbd {
         <div class="lab" style="padding-top:6px">Control<br>Planes</div>
         <div class="sys-grid">
           <div class="sys"><div class="no">01</div><b>双模直连</b><span>本地 stdio + 跨机 WebSocket / Relay</span></div>
-          <div class="sys"><div class="no">02</div><b>记忆资产</b><span>.scpack 专家包 · 验签 · 只读卡带</span></div>
+          <div class="sys"><div class="no">02</div><b>记忆资产</b><span>.scpack 经验包 · 验签 · 只读卡带</span></div>
           <div class="sys"><div class="no">03</div><b>敏捷协同</b><span>增量上下文 · Fan-out · Turn Barrier</span></div>
           <div class="sys"><div class="no">04</div><b>博弈治理</b><span>4+1 · BWM 仲裁 · 少数派异议</span></div>
           <div class="sys"><div class="no">05</div><b>权限中心</b><span>Rust 反向代理 · 五级授权 · Fail-Closed</span></div>
@@ -1651,11 +1651,11 @@ kbd {
 
 <!-- 15 ------------------------------------------------------------ -->
 <section class="slide" data-no="15" data-section="能力版图" data-title="跨机互联：连接同事的 Agent"
-  data-notes="这一幕很有画面感：张工调优了半年的 Claude Code，你不需要复制，只需要连接。讲清三种网络路径，并强调远程默认 ReadOnly Guard。现场若网络受限，后面 Demo 页有单机模拟方案。">
+  data-notes="这一幕很有画面感：张工调优了半年的 Claude Code，你不需要复制，只需要连接。讲清三种网络路径，并强调远程默认 ReadOnly Guard。连接的不是一个冷冰冰的端点，而是同事积累下来的工作方式。现场若网络受限，后面 Demo 页有单机模拟方案。">
   <div class="slide-head">
     <div class="eyebrow reveal">14 / 版图</div>
-    <h2 class="reveal">张工的 Agent，就是你的后盾</h2>
-    <p class="lede reveal">从单机 stdio，到局域网、Tailscale 与 Relay Hub，同一套会话语义。</p>
+    <h2 class="reveal">把同事调优好的 Agent，接进同一个工作台</h2>
+    <p class="lede reveal">从单机 stdio，到局域网、Tailscale 与 Relay Hub，让同事的 Agent 和你的 Agent 一起工作。</p>
   </div>
   <div class="slide-body">
     <div class="topo">
@@ -1670,11 +1670,10 @@ kbd {
       </div>
 
       <div class="route reveal">
-        <span class="ar">⟶</span>
+        <span class="small" style="text-align:center;letter-spacing:.14em;color:var(--fg3)">跨机路径</span>
         <span class="r">手机热点 172.20.10.x</span>
         <span class="r">Tailscale 100.x.y.z</span>
         <span class="r">Axum Relay Hub</span>
-        <span class="ar">⟶</span>
         <span class="small" style="text-align:center">40ms RTT 探针</span>
       </div>
 
@@ -1702,11 +1701,11 @@ kbd {
 
 <!-- 16 ------------------------------------------------------------ -->
 <section class="slide" data-no="16" data-section="能力版图" data-title="团队记忆资产化 .scpack"
-  data-notes="把 .scpack 讲成“可携带的专家能力包”。重点不是压缩，而是三件事：六源一致、密码学验签、硬脱敏。再补一个工程细节：企业网关 503 时，Rollout 补偿提取能救回专家经验。">
+  data-notes="把 .scpack 讲成“可以带走的经验包”。重点不是压缩，而是三件事：六源一致、密码学验签、硬脱敏。再补一个工程细节：企业网关 503 时，Rollout 补偿提取能救回同事的经验。">
   <div class="slide-head">
     <div class="eyebrow reveal">15 / 版图</div>
-    <h2 class="reveal">把老工程师的经验，装进一个文件</h2>
-    <p class="lede reveal">工业级完整性校验、规范化签名与硬脱敏，让专家资产可以安全流转。</p>
+    <h2 class="reveal">把同事调优好的经验，装进一个文件</h2>
+    <p class="lede reveal">工业级完整性校验、规范化签名与硬脱敏，让经验可以安全地连接与流转。</p>
   </div>
   <div class="slide-body">
     <div class="grid" style="grid-template-columns:1.05fr .95fr;gap:32px">
@@ -1720,7 +1719,7 @@ kbd {
         <div class="pkg-row"><span class="k">INTEGRITY</span><span><b>BLAKE3-256</b> · 256 位内容哈希，篡改即拒载</span></div>
         <div class="pkg-row"><span class="k">SIGNATURE</span><span><b>RFC 8785 JCS</b> · 规范化 JSON 签名，跨实现可验证</span></div>
         <div class="pkg-row"><span class="k">REDACTION</span><span><b>硬脱敏网关</b> · 剔除密钥、内网 Token，绝对路径相对化</span></div>
-        <div class="pkg-row"><span class="k">FALLBACK</span><span><b>503 补偿提取</b> · 企业网关失败时，从 Rollout 轨迹还原专家经验</span></div>
+        <div class="pkg-row"><span class="k">FALLBACK</span><span><b>503 补偿提取</b> · 企业网关失败时，从 Rollout 轨迹还原同事的经验</span></div>
       </div>
 
       <div class="reveal">
@@ -1926,8 +1925,8 @@ kbd {
       </div>
       <div class="gen reveal" data-g="02" style="height:276px">
         <div class="gno">GENERATION 02</div>
-        <h4>IDE 单兵扩展</h4>
-        <p>编辑器里的单 Agent，靠 MCP 接工具。执行强，但没有组织协同。</p>
+        <h4>IDE 单 Agent 扩展</h4>
+        <p>编辑器里的单 Agent，靠 MCP 接工具。执行强，但协作仍留在本地。</p>
         <div class="who">Cline · Goose</div>
       </div>
       <div class="gen reveal" data-g="03" style="height:332px">
@@ -2044,7 +2043,7 @@ kbd {
       </div>
       <div class="moat reveal" data-g="02">
         <div class="mn">MOAT 02</div><h4>跨机记忆</h4>
-        <p>.scpack 把专家经验变成可验签、可分发、可只读挂载的资产。</p>
+        <p>.scpack 把同事调优好的经验变成可验签、可分发、可只读挂载的资产。</p>
         <div class="proof">EVIDENCE · BLAKE3 + RFC 8785</div>
         <div class="vs">别人：记忆留在本地文件里</div>
       </div>
@@ -2068,7 +2067,7 @@ kbd {
       </div>
     </div>
 
-    <div class="quote mt-24 reveal">把最锋利的执行体交给最严格的边界，才敢让它替你做决定。</div>
+    <div class="quote mt-24 reveal">把成熟的 Agent 放进清晰的边界，才敢让它参与你的工作。</div>
   </div>
 </section>
 
@@ -2085,12 +2084,12 @@ kbd {
       <div class="demo-step reveal">
         <div class="tm">01:00</div><div class="no">STEP 01</div>
         <h4>启动与拓扑装载</h4>
-        <p>启动本地 Codex，输入同事 IP，挂载远程专家 Agent。</p>
+        <p>启动本地 Codex，输入同事 IP，连接同事调优好的远程 Agent。</p>
         <div class="see">屏幕：Remote ACP 蓝标 + 40ms RTT 探针</div>
       </div>
       <div class="demo-step reveal">
         <div class="tm">01:00</div><div class="no">STEP 02</div>
-        <h4>导入专家卡带</h4>
+        <h4>导入同事的经验包</h4>
         <p>拖入 <span class="mono">redis-redlock-expert.scpack</span>，只读挂载。</p>
         <div class="see">屏幕：BLAKE3 验签通过 / Zero Contamination</div>
       </div>
@@ -2168,7 +2167,7 @@ kbd {
 
 <!-- 26 ------------------------------------------------------------ -->
 <section class="slide" data-no="26" data-section="落地" data-title="企业落地 ROI 全景量化"
-  data-notes="给管理者算账：单场架构研讨从 12 万 Token 压到 3.2 万，降 73%；专家经验复用从周级变秒级。最后一定要说数据边界：这是特定任务分布下的实测，不是所有场景的承诺。">
+  data-notes="给管理者算账：单场架构研讨从 12 万 Token 压到 3.2 万，降 73%；经验复用从周级变秒级。最后一定要说数据边界：这是特定任务分布下的实测，不是所有场景的承诺。">
   <div class="slide-head">
     <div class="eyebrow reveal">25 / 落地</div>
     <h2 class="reveal">降本 73%，传承从周级到秒级</h2>
@@ -2195,7 +2194,7 @@ kbd {
       <div class="reveal">
         <div class="grid gap-12">
           <div class="card"><div class="stat"><b>51–80<span class="u">%</span></b><span>日常协同增量 Token 节省</span></div></div>
-          <div class="card"><div class="stat"><b>周 → 秒</b><span>专家经验复用周期（2 周 → 秒级分发）</span></div></div>
+          <div class="card"><div class="stat"><b>周 → 秒</b><span>经验复用周期（2 周 → 秒级分发）</span></div></div>
           <div class="card"><div class="stat"><b>100<span class="u">%</span></b><span>Prefix KV Cache 命中，前缀复用不重算</span></div></div>
         </div>
       </div>
@@ -2249,16 +2248,16 @@ kbd {
 </section>
 
 <!-- 28 ------------------------------------------------------------ -->
-<section class="slide closing" data-no="28" data-section="结语" data-title="让每个人都拥有自己的影子舰队"
-  data-notes="收尾要慢。停在‘协议打破孤岛，博弈趋近真理’这句话上，然后给出行动号召：把身边的 Agent 接进来，把调优好的记忆打包。谢谢之后留出 Q&A。">
+<section class="slide closing" data-no="28" data-section="结语" data-title="让 Agent 彼此连接，让经验彼此流动"
+  data-notes="收尾要慢。停在“让 Agent 彼此连接，让经验彼此流动”这句话上，然后给出行动号召：把常用的 Agent 接进来，把同事调优好的经验包分享出去。谢谢之后留出 Q&A。">
   <div class="eyebrow reveal">27 / 结语</div>
-  <h1 class="reveal">协议打破孤岛，<br><span class="grad">博弈趋近真理。</span></h1>
-  <p class="lede reveal">未来属于拥有影子舰队的超级工程师。<br>而你，只需要成为那个坐在指挥席上的人。</p>
+  <h1 class="reveal">让 Agent 彼此连接，<br><span class="grad">让经验彼此流动。</span></h1>
+  <p class="lede reveal">不重复造 Agent。把常用的、调优好的、身边的经验连成一张协作网。<br>你不必拥有所有答案，只需要把对的人和对的 Agent 连在一起。</p>
   <div class="end-mark reveal">
     <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 2 39 25 62 32 39 39 32 62 25 39 2 32 25 25Z" fill="var(--accent)"/></svg>
     <span class="mono" style="font-size:12px;letter-spacing:.3em;color:var(--fg2)">SHADOW CREW · THANK YOU</span>
   </div>
-  <div class="end-note">让每个人都拥有自己的影子舰队 · Q &amp; A</div>
+  <div class="end-note">连接 · 协作 · 共享 · Q &amp; A</div>
 </section>
 
 </main>
