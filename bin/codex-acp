@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
 import * as os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 const HOME = os.homedir();
 
@@ -427,6 +428,246 @@ function normalizeOfficialSystemPromptParam(params) {
   };
 }
 
+function normalizeMcpEnvEntries(env) {
+  if (Array.isArray(env)) {
+    return env
+      .filter((entry) => entry && typeof entry === 'object' && entry.name)
+      .map((entry) => ({
+        name: String(entry.name),
+        value: String(entry.value ?? ''),
+      }));
+  }
+  if (env && typeof env === 'object') {
+    return Object.entries(env)
+      .filter(([key]) => Boolean(key))
+      .map(([key, value]) => ({
+        name: String(key),
+        value: String(value ?? ''),
+      }));
+  }
+  return [];
+}
+
+function resolveDevMcpBinaryPath() {
+  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+  const repoRoot = path.resolve(scriptDir, '..');
+  const candidates = [
+    process.env.SHADOW_CREW_DEV_MCP_PATH,
+    path.join(repoRoot, 'target', 'debug', 'shadow-crew-dev-mcp'),
+    path.join(repoRoot, 'target', 'release', 'shadow-crew-dev-mcp'),
+    path.join(process.cwd(), 'target', 'debug', 'shadow-crew-dev-mcp'),
+    path.join(process.cwd(), 'target', 'release', 'shadow-crew-dev-mcp'),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const resolved = resolveExecutable(candidate);
+    if (resolved) {
+      return resolved;
+    }
+  }
+  return null;
+}
+
+function resolveDefaultDevMcpServers(protocolVersion = 1, params = null) {
+  const binPath = resolveDevMcpBinaryPath();
+  if (!binPath) {
+    return [];
+  }
+  const envKeys = [
+    'SHADOW_CREW_HOME',
+    'SHADOW_CREW_ARTIFACT_ROOT',
+    'SHINOBI_ARTIFACT_ROOT',
+    'SHADOW_CREW_CHANNEL_ID',
+    'SHADOW_CREW_WORKSPACE',
+    'SHINOBI_WORKSPACE',
+  ];
+  const envEntries = [];
+  for (const key of envKeys) {
+    const val = process.env[key];
+    if (typeof val === 'string' && val.trim().length > 0) {
+      envEntries.push({ name: key, value: val });
+    }
+  }
+  const hasWorkspaceEnv = envEntries.some(
+    (entry) => entry.name === 'SHADOW_CREW_WORKSPACE' || entry.name === 'SHINOBI_WORKSPACE'
+  );
+  if (!hasWorkspaceEnv && typeof params?.cwd === 'string' && params.cwd.trim().length > 0) {
+    envEntries.push({
+      name: 'SHADOW_CREW_WORKSPACE',
+      value: path.isAbsolute(params.cwd) ? params.cwd : path.resolve(params.cwd),
+    });
+  }
+  const server = {
+    name: 'shadow-crew-dev-mcp',
+    command: binPath,
+    args: [],
+    env: envEntries,
+  };
+  if (Number(protocolVersion) >= 2) {
+    server.type = 'stdio';
+  }
+  return [server];
+}
+
+function normalizeMcpServersForBridge(servers, protocolVersion = 1, params = null) {
+  if (!Array.isArray(servers) || servers.length === 0) {
+    return resolveDefaultDevMcpServers(protocolVersion, params);
+  }
+  const normalized = [];
+  for (const srv of servers) {
+    if (!srv || typeof srv !== 'object') continue;
+    if (srv.type === 'http' || srv.type === 'sse' || (!srv.command && srv.url)) {
+      normalized.push({ ...srv });
+      continue;
+    }
+    const rawCmd = typeof srv.command === 'string' ? srv.command.trim() : '';
+    if (!rawCmd) continue;
+    const resolvedCmd = path.isAbsolute(rawCmd) ? rawCmd : path.resolve(rawCmd);
+    const entry = {
+      name:
+        typeof srv.name === 'string' && srv.name.trim()
+          ? srv.name.trim()
+          : 'shadow-crew-dev-mcp',
+      command: resolvedCmd,
+      args: Array.isArray(srv.args) ? srv.args.map(String) : [],
+      env: normalizeMcpEnvEntries(srv.env),
+    };
+    if (Number(protocolVersion) >= 2) {
+      entry.type = 'stdio';
+    }
+    normalized.push(entry);
+  }
+  return normalized.length > 0 ? normalized : resolveDefaultDevMcpServers(protocolVersion, params);
+}
+
+function formatTomlKey(key) {
+  return /^[A-Za-z0-9_-]+$/.test(key) ? key : JSON.stringify(key);
+}
+
+function formatTomlInlineTable(entries) {
+  return (
+    '{ ' +
+    entries
+      .map(([k, v]) => `${formatTomlKey(k)} = ${JSON.stringify(String(v ?? ''))}`)
+      .join(', ') +
+    ' }'
+  );
+}
+
+function buildCodexMcpConfigArgs(mcpServers) {
+  const configArgs = [];
+  if (!Array.isArray(mcpServers)) return configArgs;
+  for (const srv of mcpServers) {
+    if (!srv || typeof srv !== 'object') continue;
+    const rawName = typeof srv.name === 'string' && srv.name.trim() ? srv.name.trim() : '';
+    if (!rawName) continue;
+    const tomlKey = formatTomlKey(rawName);
+    if (typeof srv.command === 'string' && srv.command.trim()) {
+      configArgs.push('-c', `mcp_servers.${tomlKey}.command=${JSON.stringify(srv.command.trim())}`);
+      if (Array.isArray(srv.args) && srv.args.length > 0) {
+        configArgs.push('-c', `mcp_servers.${tomlKey}.args=${JSON.stringify(srv.args.map(String))}`);
+      }
+      const envEntries = normalizeMcpEnvEntries(srv.env);
+      if (envEntries.length > 0) {
+        configArgs.push(
+          '-c',
+          `mcp_servers.${tomlKey}.env=${formatTomlInlineTable(
+            envEntries.map((e) => [e.name, e.value])
+          )}`
+        );
+      }
+    } else if (typeof srv.url === 'string' && srv.url.trim()) {
+      configArgs.push('-c', `mcp_servers.${tomlKey}.url=${JSON.stringify(srv.url.trim())}`);
+    }
+  }
+  return configArgs;
+}
+
+function isMcpToolCallItem(item) {
+  const itemType = String(item?.type || '').toLowerCase();
+  return itemType === 'mcp_tool_call' || itemType === 'mcptoolcall';
+}
+
+function parseMaybeJsonObject(raw) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw;
+  }
+  if (typeof raw === 'string' && raw.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      return { raw };
+    }
+  }
+  return null;
+}
+
+function upsertBuiltinMcpToolCall(trackedMap, item, forcedStatus) {
+  const toolCallId = String(
+    item?.id || item?.call_id || item?.callId || `mcp-call-${trackedMap.size + 1}`
+  );
+  const prev = trackedMap.get(toolCallId);
+  const isNew = !prev;
+
+  let server =
+    typeof (item?.server ?? item?.server_name ?? item?.serverName) === 'string'
+      ? String(item.server ?? item.server_name ?? item.serverName).trim()
+      : prev?.server || '';
+  let toolName = String(
+    item?.tool ?? item?.tool_name ?? item?.toolName ?? item?.name ?? prev?.tool_name ?? ''
+  ).trim();
+
+  if (toolName.startsWith('mcp__')) {
+    const rest = toolName.slice('mcp__'.length);
+    const sepIdx = rest.indexOf('__');
+    if (sepIdx > 0) {
+      if (!server) server = rest.slice(0, sepIdx);
+      toolName = rest.slice(sepIdx + 2);
+    }
+  } else if (toolName.startsWith('mcp.')) {
+    const rest = toolName.slice('mcp.'.length);
+    const sepIdx = rest.indexOf('.');
+    if (sepIdx > 0) {
+      if (!server) server = rest.slice(0, sepIdx);
+      toolName = rest.slice(sepIdx + 1);
+    }
+  }
+
+  const parsedArgs = parseMaybeJsonObject(
+    item?.arguments ?? item?.args ?? item?.input ?? item?.rawInput
+  );
+  const hasNonEmptyArgs = parsedArgs && Object.keys(parsedArgs).length > 0;
+  const argumentsObj = hasNonEmptyArgs
+    ? parsedArgs
+    : prev?.arguments || parsedArgs || {};
+
+  const errorText =
+    item?.error?.message ||
+    (typeof item?.error === 'string' ? item.error : null) ||
+    (item?.result?.isError ? 'MCP tool returned isError' : null) ||
+    prev?.error ||
+    null;
+
+  let status = forcedStatus || String(item?.status || prev?.status || 'in_progress').toLowerCase();
+  if (errorText || status === 'error') {
+    status = 'failed';
+  }
+
+  const record = {
+    id: toolCallId,
+    tool_name: toolName,
+    server,
+    arguments: argumentsObj,
+    status,
+    ...(errorText ? { error: errorText } : {}),
+  };
+  trackedMap.set(toolCallId, record);
+  return { record, isNew };
+}
+
 function startOfficialAdapterBridge(codexBin) {
   const childEnv = codexChildEnv();
   if (codexBin) {
@@ -514,6 +755,11 @@ function startOfficialAdapterBridge(codexBin) {
             msg.method = 'session/resume';
             msg.params.replayFrom = msg.params.replayFrom || { type: 'start' };
           }
+          msg.params.mcpServers = normalizeMcpServersForBridge(
+            msg.params.mcpServers,
+            bridgeNegotiatedProtocolVersion,
+            msg.params
+          );
           officialChild.stdin.write(JSON.stringify(msg) + '\n');
           return;
         }
@@ -723,6 +969,7 @@ function startBuiltinAdapter() {
       additionalDirectories: Array.isArray(params?.additionalDirectories)
         ? params.additionalDirectories.filter(Boolean)
         : [],
+      mcpServers: normalizeMcpServersForBridge(params?.mcpServers, 1, params),
       systemPrompt: extractSystemPromptText(params),
       codexThreadId: null,
       createdAt: Date.now(),
@@ -754,6 +1001,11 @@ function startBuiltinAdapter() {
     }
     if (Array.isArray(params?.additionalDirectories)) {
       session.additionalDirectories = params.additionalDirectories.filter(Boolean);
+    }
+    if (Array.isArray(params?.mcpServers) && params.mcpServers.length > 0) {
+      session.mcpServers = normalizeMcpServersForBridge(params.mcpServers, 1, params);
+    } else if (!Array.isArray(session.mcpServers) || session.mcpServers.length === 0) {
+      session.mcpServers = resolveDefaultDevMcpServers(1, { cwd: session.cwd });
     }
     const updatedSp = extractSystemPromptText(params);
     if (updatedSp) {
@@ -812,6 +1064,7 @@ function startBuiltinAdapter() {
         additionalDirectories: Array.isArray(params?.additionalDirectories)
           ? params.additionalDirectories.filter(Boolean)
           : [],
+        mcpServers: normalizeMcpServersForBridge(params?.mcpServers, 1, params),
         systemPrompt: extractSystemPromptText(params),
         codexThreadId: null,
         createdAt: Date.now(),
@@ -826,6 +1079,11 @@ function startBuiltinAdapter() {
     }
     if (Array.isArray(params?.additionalDirectories)) {
       session.additionalDirectories = params.additionalDirectories.filter(Boolean);
+    }
+    if (Array.isArray(params?.mcpServers) && params.mcpServers.length > 0) {
+      session.mcpServers = normalizeMcpServersForBridge(params.mcpServers, 1, params);
+    } else if (!Array.isArray(session.mcpServers) || session.mcpServers.length === 0) {
+      session.mcpServers = resolveDefaultDevMcpServers(1, { cwd: session.cwd });
     }
 
     const rawPrompt = params?.prompt;
@@ -912,6 +1170,15 @@ function startBuiltinAdapter() {
       args.push('-c', 'sandbox_mode="workspace-write"');
     }
 
+    const effectiveMcpServers =
+      Array.isArray(session.mcpServers) && session.mcpServers.length > 0
+        ? session.mcpServers
+        : resolveDefaultDevMcpServers(1, { cwd: session.cwd });
+    const mcpConfigArgs = buildCodexMcpConfigArgs(effectiveMcpServers);
+    if (mcpConfigArgs.length > 0) {
+      args.push(...mcpConfigArgs);
+    }
+
     args.push('--skip-git-repo-check', '--json');
 
     if (!hasThread) {
@@ -930,6 +1197,37 @@ function startBuiltinAdapter() {
     let hasSentChunk = false;
     let turnFinished = false;
     let turnFinishTimer = null;
+    const mcpToolCallsMap = new Map();
+
+    function emitMcpToolCallUpdate(item, forcedStatus) {
+      const { record, isNew } = upsertBuiltinMcpToolCall(
+        mcpToolCallsMap,
+        item,
+        forcedStatus
+      );
+      const title = record.server
+        ? `mcp.${record.server}.${record.tool_name}`
+        : record.tool_name || 'mcp_tool_call';
+      const rawInput = record.server
+        ? {
+            server: record.server,
+            tool: record.tool_name,
+            arguments: record.arguments,
+          }
+        : record.arguments;
+      sendNotification('session/update', {
+        sessionId: session.sessionId,
+        update: {
+          sessionUpdate: isNew ? 'tool_call' : 'tool_call_update',
+          toolCallId: record.id,
+          title,
+          kind: 'other',
+          status: record.status,
+          rawInput,
+          ...(record.error ? { rawOutput: { error: record.error } } : {}),
+        },
+      });
+    }
 
     const child = spawn(CODEX_BIN, args, {
       cwd: session.cwd && fs.existsSync(session.cwd) ? session.cwd : undefined,
@@ -957,6 +1255,7 @@ function startBuiltinAdapter() {
         : isError
         ? `⚠️ Codex 执行退出 (exit code: 1)\n${stderrBuffer.trim()}`
         : fullOutput || '（Codex 执行完成，无输出文本）';
+      const collectedMcpToolCalls = Array.from(mcpToolCallsMap.values());
 
       // 1. 发送 ACP v2 异步 turn_complete 通知
       sendNotification('session/update', {
@@ -984,6 +1283,9 @@ function startBuiltinAdapter() {
         agentCapabilities: {
           nativeMemory: promptNativeMemoryCapability,
         },
+        ...(collectedMcpToolCalls.length > 0
+          ? { mcp_tool_calls: collectedMcpToolCalls }
+          : {}),
       });
 
       // 如果子进程因外部命令 (如 cargo test、subshell) 未关闭句柄残留，主动收割避免僵尸进程
@@ -1024,7 +1326,9 @@ function startBuiltinAdapter() {
         // 1. 工具调用与命令执行进度事件：实时流式回传，保持管道活跃并刷新宿主活跃水位线
         if (event.type === 'item.started' && event.item) {
           const itemType = String(event.item.type || '').toLowerCase();
-          if (itemType.includes('command') || itemType.includes('exec') || event.item.command) {
+          if (isMcpToolCallItem(event.item)) {
+            emitMcpToolCallUpdate(event.item, 'in_progress');
+          } else if (itemType.includes('command') || itemType.includes('exec') || event.item.command) {
             const cmd = event.item.command || event.item.cmd || '执行命令';
             const progressText = `\n> ⚙️ 正在执行: \`${cmd}\`\n`;
             sendNotification('session/update', {
@@ -1051,7 +1355,9 @@ function startBuiltinAdapter() {
           }
         } else if (event.type === 'item.completed' && event.item) {
           const itemType = String(event.item.type || '').toLowerCase();
-          if (itemType === 'agent_message' && event.item.text) {
+          if (isMcpToolCallItem(event.item)) {
+            emitMcpToolCallUpdate(event.item, 'completed');
+          } else if (itemType === 'agent_message' && event.item.text) {
             const text = event.item.text;
             fullOutput += (fullOutput ? '\n\n' : '') + text;
             hasSentChunk = true;
@@ -1080,7 +1386,9 @@ function startBuiltinAdapter() {
             });
           }
         } else if (event.type === 'item.updated' && event.item) {
-          if (String(event.item.type || '').toLowerCase() === 'agent_message' && event.delta) {
+          if (isMcpToolCallItem(event.item)) {
+            emitMcpToolCallUpdate(event.item);
+          } else if (String(event.item.type || '').toLowerCase() === 'agent_message' && event.delta) {
             fullOutput += event.delta;
             hasSentChunk = true;
             sendNotification('session/update', {

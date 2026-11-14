@@ -360,6 +360,98 @@ export function setOnAcpNativeMemoryCapabilityUpdated(
   onNativeMemoryCapabilityUpdated = listener;
 }
 
+function normalizeMcpToolNameCandidate(rawName: unknown): string {
+  if (typeof rawName !== 'string') {
+    return '';
+  }
+  const trimmed = rawName.trim();
+  if (!trimmed) {
+    return '';
+  }
+  if (trimmed.startsWith('mcp__')) {
+    const rest = trimmed.slice('mcp__'.length);
+    const sepIdx = rest.indexOf('__');
+    if (sepIdx > 0) {
+      return rest.slice(sepIdx + 2).trim();
+    }
+  }
+  if (trimmed.startsWith('mcp.')) {
+    const rest = trimmed.slice('mcp.'.length);
+    const sepIdx = rest.indexOf('.');
+    if (sepIdx > 0) {
+      return rest.slice(sepIdx + 1).trim();
+    }
+  }
+  if (trimmed.startsWith('Tool:')) {
+    const afterPrefix = trimmed.slice('Tool:'.length).trim();
+    const slashIdx = afterPrefix.indexOf('/');
+    if (slashIdx > 0) {
+      return afterPrefix.slice(slashIdx + 1).trim();
+    }
+    return afterPrefix;
+  }
+  return trimmed;
+}
+
+/**
+ * 匹配规范化后的 MCP 工具名（兼容裸名、`mcp__<server>__<tool>` 与 `mcp.<server>.<tool>` 前缀形式）。
+ */
+export function matchesMcpToolName(call: any, expectedToolName: string): boolean {
+  if (!call || typeof call !== 'object' || !expectedToolName) {
+    return false;
+  }
+  const candidates = [
+    call.tool_name,
+    call.tool,
+    call.name,
+    call.title,
+    call._meta?.claudeCode?.toolName,
+    call.rawInput?.tool,
+    call.rawInput?.tool_name,
+    call.rawInput?.name,
+  ];
+  return candidates.some((candidate) => normalizeMcpToolNameCandidate(candidate) === expectedToolName);
+}
+
+/**
+ * 提取 MCP 工具调用参数（兼容 `arguments`、`args`、字符串 JSON 与 Codex `{ server, tool, arguments }` 包装）。
+ */
+export function extractMcpToolCallArguments(call: any): any {
+  if (!call || typeof call !== 'object') {
+    return undefined;
+  }
+  let rawArgs = call.arguments ?? call.args;
+  if (rawArgs === undefined || rawArgs === null) {
+    rawArgs = call.rawInput;
+  }
+  if (typeof rawArgs === 'string') {
+    try {
+      rawArgs = JSON.parse(rawArgs);
+    } catch {
+      return rawArgs;
+    }
+  }
+  if (
+    rawArgs &&
+    typeof rawArgs === 'object' &&
+    !Array.isArray(rawArgs) &&
+    'server' in rawArgs &&
+    'tool' in rawArgs &&
+    'arguments' in rawArgs
+  ) {
+    let innerArgs = rawArgs.arguments;
+    if (typeof innerArgs === 'string') {
+      try {
+        innerArgs = JSON.parse(innerArgs);
+      } catch {
+        return innerArgs;
+      }
+    }
+    return innerArgs;
+  }
+  return rawArgs;
+}
+
 /**
  * 从执行 Agent 响应正文中解析结构化 UI 描述契约块 <<<EXECUTION_META>>>...<<<EXECUTION_META_END>>>
  * 并自动剥离原始契约标签，确保展示给用户的 Markdown 正文干净无协议噪音
@@ -374,14 +466,11 @@ export function extractExecutionMetaFromAcpResponse(
   // 1. 优先尝试从原生 MCP 工具调用 submit_execution_deliverable 中直接提取
   let executionMetaFromTool: TopicExecutionUiMeta | undefined;
   if (Array.isArray(mcpToolCalls) && mcpToolCalls.length > 0) {
-    const toolCall = mcpToolCalls.find(
-      (c: any) =>
-        c?.tool_name === 'submit_execution_deliverable' ||
-        c?.tool === 'submit_execution_deliverable' ||
-        c?.name === 'submit_execution_deliverable'
+    const toolCall = mcpToolCalls.find((c: any) =>
+      matchesMcpToolName(c, 'submit_execution_deliverable')
     );
     if (toolCall) {
-      let args = toolCall.arguments ?? toolCall.args;
+      let args = extractMcpToolCallArguments(toolCall);
       if (typeof args === 'string') {
         try {
           args = JSON.parse(args);
@@ -460,21 +549,15 @@ export function extractArbitrationRulingFromAcpResponse(
   const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   // 1. 优先从 MCP Tool 调用记录或 raw 中提取 submit_arbitration_ruling 参数
-  if (acpResp.raw && typeof acpResp.raw === 'object') {
-    const rawCalls =
-      acpResp.raw.mcp_tool_calls ||
-      acpResp.raw.result?.mcp_tool_calls ||
-      acpResp.mcpToolCalls ||
-      [];
+  if (acpResp && typeof acpResp === 'object') {
+    const rawCalls = collectAcpMcpToolCalls(acpResp);
     if (Array.isArray(rawCalls)) {
-      const rulingCall = rawCalls.find(
-        (c: any) =>
-          c.tool_name === 'submit_arbitration_ruling' ||
-          c.tool === 'submit_arbitration_ruling' ||
-          c.name === 'submit_arbitration_ruling'
+      const rulingCall = rawCalls.find((c: any) =>
+        matchesMcpToolName(c, 'submit_arbitration_ruling')
       );
-      if (rulingCall && (rulingCall.arguments || rulingCall.args)) {
-        const args = rulingCall.arguments || rulingCall.args;
+      const rulingArgs = rulingCall ? extractMcpToolCallArguments(rulingCall) : undefined;
+      if (rulingCall && rulingArgs !== undefined) {
+        const args = rulingArgs;
         const rawDecision = args.decision_type || args.decisionType || 'trade_off_matrix';
         const validDecision: RulingDecisionType =
           rawDecision === 'adopt_proposer' || rawDecision === 'reject_rebuild' || rawDecision === 'trade_off_matrix'
@@ -719,9 +802,7 @@ export function extractRoleConcurrenceFromAcpResponse(
 
   const toolCalls = collectAcpMcpToolCalls(acpResp);
   const roleCalls = toolCalls.filter((call: any) =>
-    call?.tool_name === 'submit_role_concurrence' ||
-    call?.tool === 'submit_role_concurrence' ||
-    call?.name === 'submit_role_concurrence'
+    matchesMcpToolName(call, 'submit_role_concurrence')
   );
 
   const toolCandidates: RoleConcurrenceSubmission[] = [];
@@ -731,7 +812,7 @@ export function extractRoleConcurrenceFromAcpResponse(
       toolErrors.push(`submit_role_concurrence 工具调用状态异常: ${roleCall?.status}`);
       continue;
     }
-    const rawToolArguments = roleCall?.arguments ?? roleCall?.args;
+    const rawToolArguments = extractMcpToolCallArguments(roleCall);
     if (rawToolArguments === undefined || rawToolArguments === null) {
       continue;
     }
@@ -839,20 +920,14 @@ export function extractModuleDecompositionFromAcpResponse(
   };
 
   // 1. 优先从原生 MCP Tool 调用记录提取 submit_module_decomposition 参数
-  const rawCalls =
-    acpResp.raw?.mcp_tool_calls ||
-    acpResp.raw?.result?.mcp_tool_calls ||
-    acpResp.mcpToolCalls ||
-    [];
+  const rawCalls = collectAcpMcpToolCalls(acpResp);
   if (Array.isArray(rawCalls)) {
-    const decompCall = rawCalls.find(
-      (c: any) =>
-        c.tool_name === 'submit_module_decomposition' ||
-        c.tool === 'submit_module_decomposition' ||
-        c.name === 'submit_module_decomposition'
+    const decompCall = rawCalls.find((c: any) =>
+      matchesMcpToolName(c, 'submit_module_decomposition')
     );
-    if (decompCall && (decompCall.arguments || decompCall.args)) {
-      const args = decompCall.arguments || decompCall.args;
+    const decompArgs = decompCall ? extractMcpToolCallArguments(decompCall) : undefined;
+    if (decompCall && decompArgs !== undefined) {
+      const args = decompArgs;
       const sc = args.shared_contract || args.sharedContract || {};
       const mods = Array.isArray(args.modules) ? normalizeModules(args.modules) : [];
       if (mods.length >= 1) {
@@ -919,16 +994,13 @@ export function extractChallengeCritiqueFromAcpResponse(
   cleanedText: string;
 } {
   const toolCalls = collectAcpMcpToolCalls(acpResp);
-  const critiqueCall = toolCalls.find(
-    (c: any) =>
-      c?.tool_name === 'submit_challenge_critique' ||
-      c?.tool === 'submit_challenge_critique' ||
-      c?.name === 'submit_challenge_critique'
+  const critiqueCall = toolCalls.find((c: any) =>
+    matchesMcpToolName(c, 'submit_challenge_critique')
   );
 
   let critiquePayload: ChallengeCritiquePayload | undefined;
   if (critiqueCall) {
-    let args = critiqueCall.arguments ?? critiqueCall.args;
+    let args = extractMcpToolCallArguments(critiqueCall);
     if (typeof args === 'string') {
       try {
         args = JSON.parse(args);

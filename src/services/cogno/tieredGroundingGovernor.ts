@@ -7,6 +7,7 @@
  */
 
 import { GroundingEvidence, DisputeSpanPacket, ArgumentNode } from '../../types';
+import { extractMcpToolCallArguments, matchesMcpToolName } from '../acpClient';
 
 export type ToolTier = 'T1' | 'T2';
 
@@ -162,14 +163,11 @@ class TieredGroundingGovernor {
 
     // 0. 优先从原生 MCP 工具调用 submit_grounding_evidence 中直接提取
     if (Array.isArray(mcpToolCalls) && mcpToolCalls.length > 0) {
-      const toolCall = mcpToolCalls.find(
-        (c: any) =>
-          c?.tool_name === 'submit_grounding_evidence' ||
-          c?.tool === 'submit_grounding_evidence' ||
-          c?.name === 'submit_grounding_evidence'
+      const toolCall = mcpToolCalls.find((c: any) =>
+        matchesMcpToolName(c, 'submit_grounding_evidence')
       );
       if (toolCall) {
-        let args = toolCall.arguments ?? toolCall.args;
+        let args = extractMcpToolCallArguments(toolCall);
         if (typeof args === 'string') {
           try {
             args = JSON.parse(args);

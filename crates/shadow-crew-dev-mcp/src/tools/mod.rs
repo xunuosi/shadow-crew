@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 /// 返回当前内置原生 MCP 工具集元数据 (符合 MCP JSON Schema 规范)
 pub fn get_tools_list() -> Value {
-    json!([
+    let mut tools = json!([
         {
             "name": "shell",
             "description": "在宿主操作员环境下执行命令行命令 (如 cargo check, git status, npm run lint, 测试等)。支持指定工作目录与执行超时保护。",
@@ -526,7 +526,44 @@ pub fn get_tools_list() -> Value {
                 "required": ["patches"]
             }
         }
-    ])
+    ]);
+
+    if let Some(arr) = tools.as_array_mut() {
+        for tool in arr.iter_mut() {
+            let name = tool["name"].as_str().unwrap_or_default();
+            let (read_only, destructive, idempotent, open_world) = match name {
+                "read_file"
+                | "list_dir"
+                | "search_code"
+                | "submit_arbitration_ruling"
+                | "submit_role_concurrence"
+                | "submit_module_decomposition"
+                | "submit_grounding_evidence"
+                | "submit_execution_deliverable"
+                | "submit_challenge_critique"
+                | "validate_workspace_diff" => (true, false, true, false),
+                "write_file"
+                | "str_replace"
+                | "write_channel_artifact"
+                | "write_agent_artifact" => (false, false, true, false),
+                "shell" => (false, false, false, false),
+                _ => (false, false, false, false),
+            };
+            if let Some(obj) = tool.as_object_mut() {
+                obj.insert(
+                    "annotations".to_string(),
+                    json!({
+                        "readOnlyHint": read_only,
+                        "destructiveHint": destructive,
+                        "idempotentHint": idempotent,
+                        "openWorldHint": open_world
+                    }),
+                );
+            }
+        }
+    }
+
+    tools
 }
 
 /// 执行指定的 MCP 工具调用并返回文本输出
@@ -1327,6 +1364,35 @@ mod tests {
         assert!(res.contains("Clean: 1"));
 
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[test]
+    fn test_tools_list_annotations() {
+        let list = get_tools_list();
+        let arr = list.as_array().expect("tools list must be array");
+        let governance_tools = [
+            "submit_arbitration_ruling",
+            "submit_role_concurrence",
+            "submit_module_decomposition",
+            "submit_grounding_evidence",
+            "submit_execution_deliverable",
+            "submit_challenge_critique",
+            "validate_workspace_diff",
+        ];
+        for tool_name in governance_tools {
+            let tool = arr
+                .iter()
+                .find(|t| t["name"] == tool_name)
+                .unwrap_or_else(|| panic!("missing governance tool {}", tool_name));
+            assert_eq!(tool["annotations"]["readOnlyHint"], json!(true));
+            assert_eq!(tool["annotations"]["destructiveHint"], json!(false));
+            assert_eq!(tool["annotations"]["idempotentHint"], json!(true));
+            assert_eq!(tool["annotations"]["openWorldHint"], json!(false));
+        }
+
+        let write_tool = arr.iter().find(|t| t["name"] == "write_file").unwrap();
+        assert_eq!(write_tool["annotations"]["readOnlyHint"], json!(false));
+        assert_eq!(write_tool["annotations"]["destructiveHint"], json!(false));
     }
 }
 

@@ -7,6 +7,7 @@
  */
 
 import { GameTheoreticStage, SharedInterfaceContract, TaskModuleSlice } from '../../types';
+import { extractMcpToolCallArguments, matchesMcpToolName } from '../acpClient';
 import { detectSycophanticSurrender } from './sycophancyGovernor';
 
 export interface StageContractValidationResult {
@@ -39,18 +40,10 @@ export function validateStageContract(
 
   const hasSubstantialToolCall = Array.isArray(mcpToolCalls) && mcpToolCalls.some(
     (c: any) =>
-      c?.tool_name === 'submit_challenge_critique' ||
-      c?.tool_name === 'submit_grounding_evidence' ||
-      c?.tool_name === 'submit_execution_deliverable' ||
-      c?.tool_name === 'submit_arbitration_ruling' ||
-      c?.tool === 'submit_challenge_critique' ||
-      c?.tool === 'submit_grounding_evidence' ||
-      c?.tool === 'submit_execution_deliverable' ||
-      c?.tool === 'submit_arbitration_ruling' ||
-      c?.name === 'submit_challenge_critique' ||
-      c?.name === 'submit_grounding_evidence' ||
-      c?.name === 'submit_execution_deliverable' ||
-      c?.name === 'submit_arbitration_ruling'
+      matchesMcpToolName(c, 'submit_challenge_critique') ||
+      matchesMcpToolName(c, 'submit_grounding_evidence') ||
+      matchesMcpToolName(c, 'submit_execution_deliverable') ||
+      matchesMcpToolName(c, 'submit_arbitration_ruling')
   );
 
   // 通用底线：绝不允许极短敷衍回复或空回复 (若已调用实质性 MCP 工具契约则豁免纯文本字数底线)
@@ -100,14 +93,11 @@ export function validateStageContract(
       // 0. 优先检验原生 MCP 工具 submit_challenge_critique
       let hasValidCritiqueTool = false;
       if (Array.isArray(mcpToolCalls) && mcpToolCalls.length > 0) {
-        const critiqueCall = mcpToolCalls.find(
-          (c: any) =>
-            c?.tool_name === 'submit_challenge_critique' ||
-            c?.tool === 'submit_challenge_critique' ||
-            c?.name === 'submit_challenge_critique'
+        const critiqueCall = mcpToolCalls.find((c: any) =>
+          matchesMcpToolName(c, 'submit_challenge_critique')
         );
         if (critiqueCall) {
-          let args = critiqueCall.arguments ?? critiqueCall.args;
+          let args = extractMcpToolCallArguments(critiqueCall);
           if (typeof args === 'string') {
             try {
               args = JSON.parse(args);
@@ -164,10 +154,7 @@ export function validateStageContract(
         missingRequirements.push('接地实证报告篇幅不足 (字符数 < 40)');
       }
       const hasEvidenceToolCall = Array.isArray(mcpToolCalls) && mcpToolCalls.some(
-        (c: any) =>
-          c?.tool_name === 'submit_grounding_evidence' ||
-          c?.tool === 'submit_grounding_evidence' ||
-          c?.name === 'submit_grounding_evidence'
+        (c: any) => matchesMcpToolName(c, 'submit_grounding_evidence')
       );
       const hasVerifiableVerdict = hasEvidenceToolCall || /(验证|检验|实证|测试|通过|未通过|失败|证伪|证实|成立|不成立|属实|PASS|FAIL|TRUE|FALSE|结论|核查|核算|passed|failed)/i.test(trimmed);
       const hasEvidenceArtifact = hasEvidenceToolCall || trimmed.includes('"evidences"') || trimmed.includes('"truthValue"') || trimmed.includes('submit_grounding_evidence');
@@ -202,10 +189,7 @@ export function validateStageContract(
         missingRequirements.push('仲裁建言篇幅不足 (字符数 < 40)');
       }
       const hasArbitrationToolCall = Array.isArray(mcpToolCalls) && mcpToolCalls.some(
-        (c: any) =>
-          c?.tool_name === 'submit_arbitration_ruling' ||
-          c?.tool === 'submit_arbitration_ruling' ||
-          c?.name === 'submit_arbitration_ruling'
+        (c: any) => matchesMcpToolName(c, 'submit_arbitration_ruling')
       );
       const hasTradeoffOrRuling = hasArbitrationToolCall || /(仲裁|权衡|裁决|采纳|建议|平衡|折中|结论|定案|实施|取舍|优先级|决议|arbitration|ruling|tradeoff|decision|adopt|reject)/i.test(trimmed) || trimmed.includes('<<<RULING_DRAFT_OPTIONS>>>') || trimmed.includes('submit_arbitration_ruling');
       if (!hasTradeoffOrRuling) {

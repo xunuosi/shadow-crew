@@ -15,6 +15,7 @@ import {
   McdaDecisionPayload,
   RulingDecisionType,
 } from '../../types';
+import { extractMcpToolCallArguments, matchesMcpToolName } from '../acpClient';
 
 /**
  * 从长文本中提取核心技术主张与论据切片，剔除 Markdown 标题、多余空行及礼貌套话
@@ -239,20 +240,18 @@ export function extractArbitrationRulingOptionsFromAcpResponse(
 
   // 1. 尝试从 MCP 工具调用 `submit_arbitration_ruling` 中提取
   if (acpResp && typeof acpResp === 'object') {
-    const rawCalls =
-      acpResp.raw?.mcp_tool_calls ||
-      acpResp.raw?.result?.mcp_tool_calls ||
-      acpResp.mcpToolCalls ||
-      [];
+    const rawCalls = [
+      ...(Array.isArray(acpResp.raw?.mcp_tool_calls) ? acpResp.raw.mcp_tool_calls : []),
+      ...(Array.isArray(acpResp.raw?.result?.mcp_tool_calls) ? acpResp.raw.result.mcp_tool_calls : []),
+      ...(Array.isArray(acpResp.mcpToolCalls) ? acpResp.mcpToolCalls : []),
+    ];
     if (Array.isArray(rawCalls)) {
-      const rulingCall = rawCalls.find(
-        (c: any) =>
-          c.tool_name === 'submit_arbitration_ruling' ||
-          c.tool === 'submit_arbitration_ruling' ||
-          c.name === 'submit_arbitration_ruling'
+      const rulingCall = rawCalls.find((c: any) =>
+        matchesMcpToolName(c, 'submit_arbitration_ruling')
       );
-      if (rulingCall && (rulingCall.arguments || rulingCall.args)) {
-        let args = rulingCall.arguments || rulingCall.args;
+      const extractedArgs = rulingCall ? extractMcpToolCallArguments(rulingCall) : undefined;
+      if (rulingCall && extractedArgs !== undefined) {
+        let args = extractedArgs;
         if (typeof args === 'string') {
           try {
             args = JSON.parse(args);

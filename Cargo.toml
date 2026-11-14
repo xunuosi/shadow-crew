@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-default-members = ["src-tauri"]
+default-members = ["src-tauri", "crates/shadow-crew-dev-mcp"]
 members = [
     "crates/shadow-crew-protocol",
     "crates/shadow-crew-server",
