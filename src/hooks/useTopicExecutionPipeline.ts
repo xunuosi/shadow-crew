@@ -11,10 +11,7 @@ import type {
   WorkspaceBinding,
 } from '../types';
 import { isAgentOffline } from '../utils/agentRuntime';
-import {
-  computeTopologicalExecutionOrder,
-  mergeTopicPatchDiffs,
-} from '../services/cogno';
+import { mergeTopicPatchDiffs } from '../services/cogno';
 import {
   buildModularExecutionPrompt,
   buildExecutionPrompt,
@@ -28,6 +25,13 @@ import {
   applyTopicPatchToWorkspace,
   buildThinkingProcessFromAcp,
 } from '../services/acpClient';
+import {
+  buildModularExecutionResumeState,
+  isExecutorBusyElsewhere,
+  isSameTopicExecutionInFlight,
+  markTopicExecutionInterrupted,
+  removeTopicExecutionLock,
+} from '../services/topicExecutionGovernance';
 
 export interface UseTopicExecutionPipelineParams {
   getTopicData: (topicId: string) => TopicMessageData | null;
@@ -95,9 +99,54 @@ export function useTopicExecutionPipeline({
         return;
       }
 
+      const execKey = `${topicId}:${executorAgent.id}`;
+      const markInterrupted = (
+        summary: string,
+        executionDiffs?: TopicPatchDiffItem[]
+      ) => {
+        const nextExecutions = removeTopicExecutionLock(
+          activeExecutionsRef.current,
+          topicId,
+          executorAgent.id
+        );
+        setActiveExecutions(nextExecutions);
+        if (Object.keys(nextExecutions).length === 0) setIsGenerating(false);
+        setMessages((prev) => {
+          const topicMessages = prev[topicId] || [];
+          if (!topicMessages.some((message) => message.isPending)) return prev;
+          return {
+            ...prev,
+            [topicId]: topicMessages.map((message) =>
+              message.isPending
+                ? {
+                    ...message,
+                    isPending: false,
+                    agentBadge: '执行已中断',
+                    content: `${message.content || ''}\n\n*(执行轮次已中断，可重新委派重试)*`.trim(),
+                  }
+                : message
+            ),
+          };
+        });
+        updateTopicDataInState(topicId, (old) => {
+          const status = old.gameTheoreticState?.executionStatus;
+          if (status !== 'running' && status !== 'queued') return old;
+          return {
+            ...old,
+            gameTheoreticState: markTopicExecutionInterrupted(old.gameTheoreticState, {
+              summary,
+              executionDiffs,
+              fallbackStage: 'concluded',
+            }),
+          };
+        });
+      };
+
       // Same-Topic Re-entry Guard: 防止同一议题同一执行官被重复并发派发（如双击或重入）
-      const alreadyRunningSameTopic = Object.values(activeExecutionsRef.current).some(
-        (e) => (e.topicId === topicId || e.threadId === topicId) && e.agentId === executorAgent.id
+      const alreadyRunningSameTopic = isSameTopicExecutionInFlight(
+        activeExecutionsRef.current,
+        topicId,
+        executorAgent.id
       );
       if (alreadyRunningSameTopic) {
         console.log(`[Execution] Skipping duplicate dispatchTopicExecution for topic=${topicId}, agent=${executorAgent.id}`);
@@ -138,9 +187,7 @@ export function useTopicExecutionPipeline({
 
       // Multi-Topic Concurrency Guard: If this executor agent is currently busy on another topic, queue first
       const isBusyElsewhere = () =>
-        Object.values(activeExecutionsRef.current).some(
-          (e) => e.agentId === executorAgent.id && e.topicId !== topicId && e.threadId !== topicId
-        );
+        isExecutorBusyElsewhere(activeExecutionsRef.current, topicId, executorAgent.id);
 
       if (isBusyElsewhere()) {
         updateTopicDataInState(topicId, (old) => ({
@@ -169,17 +216,16 @@ export function useTopicExecutionPipeline({
         let waitLoops = 0;
         while (isBusyElsewhere() && waitLoops < 150) {
           if (isTurnStale(turnSnapshot)) {
-            updateTopicDataInState(topicId, (old) =>
-              old.gameTheoreticState?.executionStatus === 'queued'
-                ? { ...old, gameTheoreticState: { ...old.gameTheoreticState, executionStatus: 'failed' } }
-                : old
-            );
+            markInterrupted('排队中的落地执行已取消');
             return;
           }
           await new Promise((r) => setTimeout(r, 800));
           waitLoops++;
         }
-        if (isTurnStale(turnSnapshot)) return;
+        if (isTurnStale(turnSnapshot)) {
+          markInterrupted('排队中的落地执行已取消');
+          return;
+        }
       }
 
       const startTimeMs = Date.now();
@@ -209,7 +255,6 @@ export function useTopicExecutionPipeline({
           : old.rulingRecord,
       }));
 
-      const execKey = `${topicId}:${executorAgent.id}`;
       setIsGenerating(true);
       setActiveExecutions((prev) => ({
         ...prev,
@@ -251,36 +296,23 @@ export function useTopicExecutionPipeline({
       // G-Frame 模块化分治流水线执行 (单一独立 Agent 串行多阶段任务沙箱)
       // =========================================================================
       if (isModularExecution && modularState) {
-        const executionPlan = computeTopologicalExecutionOrder(modularState.modules);
+        const resumeState = buildModularExecutionResumeState(
+          modularState.modules,
+          currentTopic.gameTheoreticState?.executionDiffs || []
+        );
+        const executionPlan = resumeState.orderedModules;
         const totalSteps = executionPlan.length;
 
-        let accumulatedDiffs: TopicPatchDiffItem[] = currentTopic.gameTheoreticState?.executionDiffs
-          ? [...currentTopic.gameTheoreticState.executionDiffs]
-          : [];
-        const priorMilestones: Array<{
-          moduleId: string;
-          title: string;
-          summary: string;
-          touchedFiles: string[];
-        }> = [];
+        let accumulatedDiffs: TopicPatchDiffItem[] = resumeState.accumulatedDiffs;
+        const priorMilestones = [...resumeState.priorMilestones];
 
         try {
           for (let stepIdx = 0; stepIdx < totalSteps; stepIdx++) {
             const currentSlice = executionPlan[stepIdx];
-            if (currentSlice.executionStatus === 'completed') {
-              if (currentSlice.executionDiffs && currentSlice.executionDiffs.length > 0) {
-                accumulatedDiffs = mergeTopicPatchDiffs(accumulatedDiffs, currentSlice.executionDiffs);
-              }
-              priorMilestones.push({
-                moduleId: currentSlice.moduleId,
-                title: currentSlice.title,
-                summary: currentSlice.executionSummary || '前置已完成',
-                touchedFiles: (currentSlice.executionDiffs || []).map((d) => d.filename),
-              });
-              continue;
-            }
+            if (resumeState.completedModuleIds.has(currentSlice.moduleId)) continue;
             if (isTurnStale(turnSnapshot)) {
               console.log('[App] Aborting modular execution pipeline because turn was invalidated');
+              markInterrupted('G-Frame 落地执行已中断', accumulatedDiffs);
               return;
             }
 
@@ -380,6 +412,7 @@ export function useTopicExecutionPipeline({
 
             if (isTurnStale(turnSnapshot)) {
               console.log('[App] Dropping modular stage reply because turn was aborted or invalidated');
+              markInterrupted('G-Frame 落地执行已中断', accumulatedDiffs);
               return;
             }
 
@@ -583,27 +616,10 @@ export function useTopicExecutionPipeline({
           });
 
           if (isTurnStale(turnSnapshot)) {
-            updateTopicDataInState(topicId, (old) => {
-              if (old.gameTheoreticState?.executionStatus !== 'running') return old;
-              return {
-                ...old,
-                gameTheoreticState: {
-                  ...old.gameTheoreticState,
-                  executionStatus: 'failed',
-                  executionSummary: 'G-Frame 落地执行已中断',
-                  executionDiffs: accumulatedDiffs.length > 0 ? accumulatedDiffs : old.gameTheoreticState?.executionDiffs,
-                  modularState: old.gameTheoreticState.modularState
-                    ? {
-                        ...old.gameTheoreticState.modularState,
-                        activeExecutionModuleId: undefined,
-                        modules: old.gameTheoreticState.modularState.modules.map((m) =>
-                          m.executionStatus === 'running' ? { ...m, executionStatus: 'failed' as const } : m
-                        ),
-                      }
-                    : old.gameTheoreticState.modularState,
-                },
-              };
-            });
+            markInterrupted(
+              'G-Frame 落地执行已中断',
+              accumulatedDiffs.length > 0 ? accumulatedDiffs : undefined
+            );
             return;
           }
 
@@ -710,17 +726,18 @@ export function useTopicExecutionPipeline({
           discussionMode: 'game_theoretic',
         });
 
+        if (isTurnStale(turnSnapshot)) {
+          console.log('[App] Dropping topic execution reply because turn was aborted or invalidated');
+          markInterrupted('决议落地执行已中断');
+          return;
+        }
+
         setActiveExecutions((prev) => {
           const next = { ...prev };
           delete next[execKey];
           if (Object.keys(next).length === 0) setIsGenerating(false);
           return next;
         });
-
-        if (isTurnStale(turnSnapshot)) {
-          console.log('[App] Dropping topic execution reply because turn was aborted or invalidated');
-          return;
-        }
 
         if (acpResp.isEmptyTurn || acpResp.isError || !acpResp.textResponse.trim()) {
           throw new Error(acpResp.isError ? acpResp.textResponse : '执行 Agent 返回空响应，未生成有效交付内容。');
@@ -818,17 +835,7 @@ export function useTopicExecutionPipeline({
 
         if (isTurnStale(turnSnapshot)) {
           console.log('[App] Dropping topic execution error because turn was aborted or invalidated');
-          updateTopicDataInState(topicId, (old) => {
-            if (old.gameTheoreticState?.executionStatus !== 'running') return old;
-            return {
-              ...old,
-              gameTheoreticState: {
-                ...old.gameTheoreticState,
-                executionStatus: 'failed',
-                executionSummary: '决议落地执行已中断',
-              },
-            };
-          });
+          markInterrupted('决议落地执行已中断');
           return;
         }
 

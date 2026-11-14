@@ -41,6 +41,7 @@ import {
 } from '../services/workspaceBindings';
 import { setGlobalModelConfig } from '../services/llmService';
 import { normalizeAgentHandle } from '../services/agentCollaboration';
+import { markTopicExecutionInterrupted } from '../services/topicExecutionGovernance';
 
 // Mock data ID blacklist to purge contaminated cache from previous sessions
 const MOCK_CHANNEL_IDS = new Set([
@@ -94,20 +95,9 @@ export function useWorkspacePersistence({
         const gState = migrated.topicData.gameTheoreticState;
         migrated.topicData = {
           ...migrated.topicData,
-          gameTheoreticState: {
-            ...gState,
-            executionStatus: 'failed',
-            executionSummary: gState.executionSummary || '上次落地执行在完成前已中断',
-            modularState: gState.modularState
-              ? {
-                  ...gState.modularState,
-                  activeExecutionModuleId: undefined,
-                  modules: gState.modularState.modules.map((m) =>
-                    m.executionStatus === 'running' ? { ...m, executionStatus: 'failed' as const } : m
-                  ),
-                }
-              : gState.modularState,
-          },
+          gameTheoreticState: markTopicExecutionInterrupted(gState, {
+            summary: '上次落地执行在完成前已中断',
+          }),
         };
       }
       return migrated;
