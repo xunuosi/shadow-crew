@@ -1285,6 +1285,63 @@ export interface Message {
     filename: string;
     code: string;
   }>;
+  swarmMission?: SwarmMissionData;
+}
+
+export type SwarmMissionStatus =
+  | 'awaiting_approval'
+  | 'running_workers'
+  | 'reducing'
+  | 'completed'
+  | 'cancelled';
+
+export type SwarmSubTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'aborted'
+  | 'skipped';
+
+export type SwarmMissionTriggerMode = 'explicit' | 'autonomous';
+
+export interface SwarmSubTask {
+  taskId: string;
+  title: string;
+  description: string;
+  assignedAgentId: string;
+  originalAgentId?: string;
+  enabled: boolean;
+  allowedFiles?: string[];
+  overlappingFiles?: string[];
+  status: SwarmSubTaskStatus;
+  subThreadId?: string;
+  resultSummary?: string;
+  generatedDiffs?: TopicPatchDiffItem[];
+  startedAt?: number;
+  finishedAt?: number;
+  durationMs?: number;
+  errorMessage?: string;
+}
+
+export interface SwarmMissionData {
+  missionId: string;
+  roomId: string;
+  channelId?: string;
+  originalTask: string;
+  triggerMode: SwarmMissionTriggerMode;
+  leadAgentId: string;
+  sharedContractSummary: string;
+  status: SwarmMissionStatus;
+  subTasks: SwarmSubTask[];
+  finalSynthesis?: string;
+  aggregatedDiffs?: TopicPatchDiffItem[];
+  patchApplied?: boolean;
+  patchApplySummary?: string;
+  createdAt: number;
+  dispatchedAt?: number;
+  completedAt?: number;
+  reduceError?: string;
 }
 
 // 三级子话题 / 细节分支讨论

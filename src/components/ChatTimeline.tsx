@@ -37,6 +37,9 @@ import {
 import { renderFormattedContent } from '../utils/formatMentions';
 import { isAgentOffline } from '../utils/agentRuntime';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
+import { SwarmMissionCard } from './SwarmMissionCard';
+import type { SwarmMissionActions } from '../hooks/useSwarmOrchestrator';
+import { isSwarmChildRoomId } from '../services/swarmOrchestration';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { openChannelArtifactsFolder, openAgentArtifactsFolder } from '../services/dbClient';
 import { MessageAttachmentList } from './MessageAttachmentList';
@@ -48,7 +51,8 @@ interface ChatTimelineProps {
   agents: Agent[];
   activeExecutions?: ActiveAgentExecution[];
   onApplyTopicPatch?: (topicId: string, customDiffs?: TopicPatchDiffItem[]) => Promise<void> | void;
-  onAbortAgent?: (agentId: string) => void;
+  onAbortAgent?: (agentId: string, threadId?: string) => void;
+  swarmActions?: SwarmMissionActions;
   onAddReaction: (messageId: string, emoji: string) => void;
   onInspectAgent: (agentId: string) => void;
   onOpenTopic?: (topicId: string) => void;
@@ -73,6 +77,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   activeExecutions = [],
   onApplyTopicPatch,
   onAbortAgent,
+  swarmActions,
   onAddReaction,
   onInspectAgent,
   onOpenTopic,
@@ -191,7 +196,10 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     : undefined;
 
   const currentThreadExecutions = activeExecutions.filter(
-    (e) => e.threadId === activeThread?.id || (activeThread?.type === 'thread' && (!e.threadId || e.threadId === activeThread?.id))
+    (e) =>
+      e.threadId === activeThread?.id ||
+      (activeThread?.id ? isSwarmChildRoomId(activeThread.id, e.threadId) : false) ||
+      (activeThread?.type === 'thread' && (!e.threadId || e.threadId === activeThread?.id))
   );
 
   const isTargetAgentActiveElsewhere = dmTargetAgent
@@ -1077,6 +1085,23 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
 
                 {/* Main Markdown Text with Code Formatting */}
                 <MarkdownRenderer content={message.content} />
+
+                {message.swarmMission && (
+                  <SwarmMissionCard
+                    roomId={message.threadId}
+                    messageId={message.id}
+                    mission={message.swarmMission}
+                    agents={agents}
+                    channelAgents={
+                      channel
+                        ? agents.filter((a) => channel.memberIds.includes(a.id))
+                        : agents
+                    }
+                    swarmActions={swarmActions}
+                    onOpenSubThread={onOpenSubThread}
+                    onOpenCodexDiff={onOpenCodexDiff}
+                  />
+                )}
 
                 <MessageAttachmentList attachments={message.attachments} />
 

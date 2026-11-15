@@ -19,6 +19,8 @@ import { useChannelAndTopicCrud } from './hooks/useChannelAndTopicCrud';
 import { useArbitrationConcurrence } from './hooks/useArbitrationConcurrence';
 import { useGameTheoreticFsm } from './hooks/useGameTheoreticFsm';
 import { useNormalModeTurnOrchestrator } from './hooks/useNormalModeTurnOrchestrator';
+import { useSwarmOrchestrator } from './hooks/useSwarmOrchestrator';
+import { isSwarmChildRoomId } from './services/swarmOrchestration';
 import { useTopicTurnOrchestrator } from './hooks/useTopicTurnOrchestrator';
 import { MIN_MAIN_TIMELINE_WIDTH } from './config/layout';
 
@@ -261,9 +263,34 @@ export default function App() {
     () => agents.find((a) => a.id === selectedAgentId) || agents[0],
     [agents, selectedAgentId]
   );
+  const swarmActions = useSwarmOrchestrator({
+    agents,
+    agentsRef,
+    setAgents,
+    channels,
+    activeChannel,
+    messagesRef,
+    commitMessages,
+    setSubThreads,
+    setActiveExecutions,
+    setIsGenerating,
+    turnEpochTrackerRef,
+    captureTurnEpoch,
+    isTurnStale,
+    getChannelWorkspaceBinding,
+    logRpc,
+  });
+
   const activeExecutionsList = useMemo(() => Object.values(activeExecutions), [activeExecutions]);
   const isCurrentThreadGenerating = useMemo(
-    () => (activeThread ? activeExecutionsList.some((e) => e.threadId === activeThread.id) : false),
+    () =>
+      activeThread
+        ? activeExecutionsList.some(
+            (e) =>
+              e.threadId === activeThread.id ||
+              isSwarmChildRoomId(activeThread.id, e.threadId)
+          )
+        : false,
     [activeThread, activeExecutionsList]
   );
   const activeWorkspaceCwd = activeChannel
@@ -472,7 +499,13 @@ export default function App() {
                     agents={agents}
                     activeExecutions={activeExecutionsList}
                     onApplyTopicPatch={handleApplyTopicPatch}
-                    onAbortAgent={(agentId) => activeThread && handleAbortAgent(agentId, activeThread.id)}
+                    swarmActions={swarmActions}
+                    onAbortAgent={(agentId, execThreadId) => {
+                      if (execThreadId && swarmActions.abortSwarmByExecution(agentId, execThreadId)) {
+                        return;
+                      }
+                      if (activeThread) handleAbortAgent(agentId, activeThread.id);
+                    }}
                     onAddReaction={handleAddReaction}
                     onInspectAgent={handleInspectAgent}
                     onOpenTopic={handleOpenTopic}
@@ -491,7 +524,11 @@ export default function App() {
 
                   <MessageInput
                     onSendMessage={handleSendMessage}
-                    onAbort={() => activeThread && handleAbortAll(activeThread.id)}
+                    onAbort={() => {
+                      if (!activeThread) return;
+                      handleAbortAll(activeThread.id);
+                      swarmActions.abortSwarmMissionsInThread(activeThread.id);
+                    }}
                     activeAgents={composerActiveAgents}
                     isGenerating={isCurrentThreadGenerating}
                     channelName={activeThread.type === 'dm' ? (activeThread.authorName || 'Agent') : (activeChannel?.name || 'chat')}
@@ -581,7 +618,13 @@ export default function App() {
               onClose={() => setIsCodexDiffOpen(false)}
               activeDiff={activeDiff}
               workspaceFiles={workspaceFiles}
-              onApplyDiff={handleApplyTopicPatch}
+              onApplyDiff={async (topicId, diffs) => {
+                if (activeDiff?.swarmMessageId) {
+                  await swarmActions.handleApplySwarmPatch(activeDiff.swarmMessageId, diffs);
+                  return;
+                }
+                await handleApplyTopicPatch(topicId, diffs);
+              }}
             />
           )}
 

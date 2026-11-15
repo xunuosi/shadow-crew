@@ -45,6 +45,7 @@ import {
 import { setGlobalModelConfig } from '../services/llmService';
 import { normalizeAgentHandle } from '../services/agentCollaboration';
 import { markTopicExecutionInterrupted } from '../services/topicExecutionGovernance';
+import { sanitizeHydratedSwarmMission } from '../services/swarmOrchestration';
 
 // Mock data ID blacklist to purge contaminated cache from previous sessions
 const MOCK_CHANNEL_IDS = new Set([
@@ -102,6 +103,9 @@ export function useWorkspacePersistence({
               summary: '上次落地执行在完成前已中断',
             }),
           };
+        }
+        if (migrated.swarmMission) {
+          migrated.swarmMission = sanitizeHydratedSwarmMission(migrated.swarmMission);
         }
         return migrated;
       });

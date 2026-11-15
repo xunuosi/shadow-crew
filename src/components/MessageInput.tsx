@@ -34,7 +34,7 @@ interface MessageInputProps {
   onSendMessage: (
     content: string,
     attachments?: MessageAttachmentInput[],
-    targetAgentId?: string
+    sendOptions?: { swarmMode?: boolean }
   ) => Promise<void> | void;
   activeAgents: Agent[];
   isGenerating?: boolean;
@@ -66,7 +66,15 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   draftId,
 }) => {
   const [content, setContent] = useState('');
+  const [isSwarmMode, setIsSwarmMode] = useState(false);
   const [isMentionOpen, setIsMentionOpen] = useState(false);
+
+  const hasSlashSwarmPrefix = /^\/swarm(?:\s|$)/i.test(content.trim());
+  const isSwarmActive = !isDm && (isSwarmMode || hasSlashSwarmPrefix);
+
+  useEffect(() => {
+    setIsSwarmMode(false);
+  }, [isDm, draftId]);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -281,8 +289,14 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               draftAttachments.map((attachment) => attachment.file)
             )
           : [];
-      await onSendMessage(finalContent, preparedAttachments);
+      const shouldUseSwarm = !isDm && isSwarmMode;
+      await onSendMessage(
+        finalContent,
+        preparedAttachments,
+        shouldUseSwarm ? { swarmMode: true } : undefined
+      );
       setContent('');
+      setIsSwarmMode(false);
       if (draftType && draftId) {
         clearDraft(draftType, draftId);
       }
@@ -613,6 +627,34 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           <div className="flex items-center justify-between pt-2 border-t border-border mt-1 select-none">
             {/* Left Action Icons */}
             <div className="flex items-center gap-1 text-fg-muted flex-wrap">
+              {!isDm && (
+                <button
+                  type="button"
+                  data-testid="composer-swarm-toggle"
+                  aria-pressed={isSwarmActive}
+                  onClick={() => {
+                    if (hasSlashSwarmPrefix) return;
+                    setIsSwarmMode((prev) => !prev);
+                  }}
+                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium border transition-colors ${
+                    isSwarmActive
+                      ? 'bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-500/35'
+                      : 'border-transparent hover:border-border hover:bg-surface-hover text-fg-secondary hover:text-fg'
+                  }`}
+                  title="开启 Swarm 协同模式：由单个 Lead Agent 拆解任务并暂停等待您确认后并发派发（也支持 /swarm 前缀）"
+                >
+                  <span>🐝</span>
+                  <span>Swarm</span>
+                </button>
+              )}
+              {isSwarmActive && (
+                <span
+                  data-testid="composer-swarm-active-banner"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-500/25"
+                >
+                  Lead 拆解 → 人工确认 → 并行隔离执行
+                </span>
+              )}
               {!isDm ? (
                 <button 
                   onClick={handleToolbarAtClick}

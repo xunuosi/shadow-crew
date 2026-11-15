@@ -15,6 +15,7 @@ import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ResizeHandle } from './ResizeHandle';
 
 export interface ActiveCodexDiffPayload extends TopicPatchDiffItem {
+  swarmMessageId?: string;
   topicId?: string;
   topicTitle?: string;
   allDiffs?: TopicPatchDiffItem[];

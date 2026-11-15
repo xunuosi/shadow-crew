@@ -42,6 +42,13 @@ import {
   isAllMention,
   parseAgentMentions,
 } from '../services/agentCollaboration';
+import {
+  buildFallbackSwarmPlan,
+  buildSwarmDecompositionPrompt,
+  detectSwarmTriggerIntent,
+  extractSwarmPlanFromText,
+  resolveSwarmLeadAndWorkers,
+} from '../services/swarmOrchestration';
 import { isAgentOffline } from '../utils/agentRuntime';
 
 /**
@@ -120,7 +127,8 @@ export interface UseNormalModeTurnOrchestratorReturn {
   ) => Promise<void>;
   handleSendMessage: (
     content: string,
-    pendingAttachments?: MessageAttachmentInput[]
+    pendingAttachments?: MessageAttachmentInput[],
+    sendOptions?: { swarmMode?: boolean }
   ) => Promise<void>;
 }
 
@@ -855,11 +863,24 @@ export function useNormalModeTurnOrchestrator({
 
   // Send Message in active thread
   const handleSendMessage = useCallback(
-    async (content: string, pendingAttachments: MessageAttachmentInput[] = []): Promise<void> => {
+    async (
+      content: string,
+      pendingAttachments: MessageAttachmentInput[] = [],
+      sendOptions?: { swarmMode?: boolean }
+    ): Promise<void> => {
       if ((!content.trim() && pendingAttachments.length === 0) || !activeThread) return;
 
       const currentThreadId = activeThread.id;
       const isDmThread = activeThread.type === 'dm';
+      const swarmIntent = detectSwarmTriggerIntent(content, sendOptions?.swarmMode);
+      const isExplicitSwarmDispatch = swarmIntent.isSwarmTrigger && !isDmThread;
+      if (
+        isExplicitSwarmDispatch &&
+        !swarmIntent.taskText &&
+        pendingAttachments.length === 0
+      ) {
+        return;
+      }
 
       const targetChannelId = isDmThread ? undefined : activeChannel?.id;
       const userMessageId = `msg-${Date.now()}`;
@@ -992,6 +1013,18 @@ export function useNormalModeTurnOrchestrator({
         const dmTarget = candidateAgents[0];
         if (dmTarget) {
           respondingAgents = [dmTarget];
+        }
+      } else if (isExplicitSwarmDispatch) {
+        const onlineFirstPool = candidateAgents.some((a) => !isAgentOffline(a))
+          ? candidateAgents.filter((a) => !isAgentOffline(a))
+          : candidateAgents;
+        const { leadAgent } = resolveSwarmLeadAndWorkers({
+          candidateAgents:
+            userMentionedAgents.length > 0 ? candidateAgents : onlineFirstPool,
+          mentionedAgents: userMentionedAgents,
+        });
+        if (leadAgent) {
+          respondingAgents = [leadAgent];
         }
       } else if (userMentionedAgents.length > 0) {
         respondingAgents = userMentionedAgents;
@@ -1245,18 +1278,27 @@ export function useNormalModeTurnOrchestrator({
           excludeAuthorId: targetAgent.id,
         });
 
-        const finalPrompt = buildNormalModeTurnPrompt({
-          targetAgent,
-          availableAgents: candidateAgents,
-          roomId: currentThreadId,
-          isWarmSession: deltaBatch.isWarmSession,
-          deltaMessages: deltaBatch.deltaMessages,
-          triggerContent: agentTurnContent,
-          hop: 1,
-          maxHops: 12,
-          isDm: isDmThread,
-          isParallelFirstTurn: onlineAgents.length > 1,
-        });
+        const swarmOriginalTaskText =
+          `${swarmIntent.taskText}${attachmentManifest}`.trim() ||
+          agentTurnContent;
+        const finalPrompt = isExplicitSwarmDispatch
+          ? buildSwarmDecompositionPrompt({
+              leadAgent: targetAgent,
+              availableAgents: candidateAgents,
+              taskText: swarmOriginalTaskText,
+            })
+          : buildNormalModeTurnPrompt({
+              targetAgent,
+              availableAgents: candidateAgents,
+              roomId: currentThreadId,
+              isWarmSession: deltaBatch.isWarmSession,
+              deltaMessages: deltaBatch.deltaMessages,
+              triggerContent: agentTurnContent,
+              hop: 1,
+              maxHops: 12,
+              isDm: isDmThread,
+              isParallelFirstTurn: onlineAgents.length > 1,
+            });
 
         deliveredStandingContextRef.current.add(sessionKey);
         if (deltaBatch.latestWatermarkMessageId) {
@@ -1308,6 +1350,39 @@ export function useNormalModeTurnOrchestrator({
               return null;
             }
 
+            let resolvedReplyContent = acpResp.textResponse;
+            let resolvedAgentBadge = `${targetAgent.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : targetAgent.isRemote ? 'ACP Remote' : 'ACP'}`;
+            let resolvedSwarmMission: Message['swarmMission'] | undefined;
+
+            if (!isDmThread) {
+              const swarmExtractCtx = {
+                roomId: currentThreadId,
+                channelId: targetChannelId,
+                originalTask: isExplicitSwarmDispatch
+                  ? swarmOriginalTaskText
+                  : agentTurnContent,
+                triggerMode: isExplicitSwarmDispatch
+                  ? ('explicit' as const)
+                  : ('autonomous' as const),
+                leadAgent: targetAgent,
+                allChannelAgents: candidateAgents,
+              };
+              const extractedSwarm = extractSwarmPlanFromText(
+                acpResp.textResponse,
+                swarmExtractCtx
+              );
+              const resolvedSwarm =
+                extractedSwarm ||
+                (isExplicitSwarmDispatch
+                  ? buildFallbackSwarmPlan(acpResp.textResponse, swarmExtractCtx)
+                  : null);
+              if (resolvedSwarm) {
+                resolvedReplyContent = resolvedSwarm.cleanedText;
+                resolvedAgentBadge = '🐝 Swarm Lead';
+                resolvedSwarmMission = resolvedSwarm.plan;
+              }
+            }
+
             const agentReply: Message = {
               id: `msg-reply-${Date.now()}-${targetAgent.id}`,
               threadId: currentThreadId,
@@ -1318,12 +1393,13 @@ export function useNormalModeTurnOrchestrator({
               authorAvatar: targetAgent.avatar,
               isAgent: true,
               managedBy: targetAgent.isManagedByYou ? 'you' : undefined,
-              agentBadge: `${targetAgent.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : targetAgent.isRemote ? 'ACP Remote' : 'ACP'}`,
+              agentBadge: resolvedAgentBadge,
               timestamp: new Date().toLocaleTimeString([], {
                 hour: '2-digit',
                 minute: '2-digit',
               }),
-              content: acpResp.textResponse,
+              content: resolvedReplyContent,
+              swarmMission: resolvedSwarmMission,
               thinkingProcess: buildThinkingProcessFromAcp(
                 acpResp,
                 '已消化增量事件流并完成技术边界考量'
@@ -1390,11 +1466,13 @@ export function useNormalModeTurnOrchestrator({
               result: { status: 'completed', isRealProcess: acpResp.isRealProcess },
             });
 
-            turnOutputs.push({
-              agent: targetAgent,
-              messageId: agentReply.id,
-              replyContent: acpResp.textResponse,
-            });
+            if (!resolvedSwarmMission) {
+              turnOutputs.push({
+                agent: targetAgent,
+                messageId: agentReply.id,
+                replyContent: acpResp.textResponse,
+              });
+            }
           })
           .catch((err) => {
             setActiveExecutions((prev) => {
