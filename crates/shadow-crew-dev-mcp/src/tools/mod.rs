@@ -244,9 +244,106 @@ pub fn get_tools_list() -> Value {
                                 "required": ["decision_type", "summary", "trade_off_points", "impacted_files"]
                             }
                         }
+                    },
+                    "mcda_matrix": {
+                        "type": "object",
+                        "description": "可选的结构化 BWM 运筹权重与评分矩阵输入，由宿主直接送入 0-Token BWM 求解器",
+                        "properties": {
+                            "criteria": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": { "type": "string" },
+                                        "name": { "type": "string" },
+                                        "direction": { "type": "string", "enum": ["maximize", "minimize"] }
+                                    },
+                                    "required": ["id", "name", "direction"]
+                                }
+                            },
+                            "alternatives": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            },
+                            "score_matrix": {
+                                "type": "object",
+                                "description": "方案名 -> 准则ID -> 0~10 分值字典"
+                            },
+                            "best_criterion_id": { "type": "string" },
+                            "worst_criterion_id": { "type": "string" },
+                            "best_to_others": {
+                                "type": "array",
+                                "items": { "type": "number" }
+                            },
+                            "others_to_worst": {
+                                "type": "array",
+                                "items": { "type": "number" }
+                            },
+                            "score_provenance": {
+                                "type": "object"
+                            }
+                        }
                     }
                 },
                 "required": ["decision_type", "summary", "trade_off_points", "impacted_files"]
+            }
+        },
+        {
+            "name": "submit_proposal_claims",
+            "description": "在博弈阶段 1 (proposal) 提交结构化的可证伪核心论点节点与 DAG 依赖图，取代自然语言切片猜测。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "提案核心架构主张与总结 (至少 10 个字符)"
+                    },
+                    "claims": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "description": "核心可证伪论点节点列表",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "claim_id": {
+                                    "type": "string",
+                                    "description": "论点节点唯一 ID (如 claim-1)"
+                                },
+                                "claim": {
+                                    "type": "string",
+                                    "description": "核心主张命题与技术承诺"
+                                },
+                                "assumptions": {
+                                    "type": "array",
+                                    "items": { "type": "string" },
+                                    "description": "该论点依赖的前置假设"
+                                },
+                                "depends_on_claim_ids": {
+                                    "type": "array",
+                                    "items": { "type": "string" },
+                                    "description": "显式 DAG 前驱论点节点 ID 列表"
+                                },
+                                "confidence": {
+                                    "type": "number",
+                                    "description": "提案方自评初始置信度 (0.0 ~ 1.0)"
+                                }
+                            },
+                            "required": ["claim_id", "claim"]
+                        }
+                    },
+                    "impacted_files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "提案拟修改或新增的工程文件路径列表"
+                    },
+                    "design_decisions": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "关键架构选型与技术边界要点 (可选)"
+                    }
+                },
+                "required": ["summary", "claims", "impacted_files"]
             }
         },
         {
@@ -389,6 +486,15 @@ pub fn get_tools_list() -> Value {
                         "items": {
                             "type": "object",
                             "properties": {
+                                "claim_id": {
+                                    "type": "string",
+                                    "description": "关联的原子提案论点 ID (如 claim-1)，用于 100% 确定性对齐论点实证状态 (可选)"
+                                },
+                                "tier": {
+                                    "type": "string",
+                                    "enum": ["T1", "T2"],
+                                    "description": "证据分级: T1(只读静态检验, 权重<=0.3) 或 T2(受控沙箱执行检验) (可选)"
+                                },
                                 "source_tool": {
                                     "type": "string",
                                     "description": "检验工具或执行沙箱名称 (如 ast_grep, code_sandbox, cargo_test, read_file, static_analyzer)"
@@ -469,7 +575,34 @@ pub fn get_tools_list() -> Value {
                 "properties": {
                     "target_claim_id": {
                         "type": "string",
-                        "description": "被攻击的立论因果论点节点 ID (如 node-1-schema 或 C-1)，用于精准对齐 LMAD 局部争议切片 (可选)"
+                        "description": "被攻击的立论因果论点节点 ID (如 claim-1 或 node-1-schema)，用于精准对齐 LMAD 局部争议切片 (可选)"
+                    },
+                    "disputed_claim_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "显式指向存在争议的多个提案 claim_id 列表 (可选)"
+                    },
+                    "root_cause_category": {
+                        "type": "string",
+                        "enum": [
+                            "network_partition",
+                            "concurrency_race",
+                            "resource_exhaustion",
+                            "cost_complexity",
+                            "architecture_coupling",
+                            "security_boundary",
+                            "general"
+                        ],
+                        "description": "显式冲突根因分类枚举 (用于取代文本关键词猜测，可选)"
+                    },
+                    "reopening_triggers": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "《少数派异议报告》的黑天鹅重启触发条件清单 (可选)"
+                    },
+                    "alignment_score": {
+                        "type": "number",
+                        "description": "质询官对当前提案对齐/收敛程度的量化评估 (0.0 ~ 1.0，可选)"
                     },
                     "fatal_flaws": {
                         "type": "array",
@@ -497,6 +630,73 @@ pub fn get_tools_list() -> Value {
                     }
                 },
                 "required": ["fatal_flaws", "hidden_assumptions", "failure_scenarios", "counter_demands", "summary"]
+            }
+        },
+        {
+            "name": "submit_defense_patch",
+            "description": "在博弈阶段 4 (defense) 提交结构化的答辩立场、逐条论点修正与架构补丁方案，严格执行 Free-MAD 反盲从妥协契约。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "答辩修正核心结论总结"
+                    },
+                    "stance": {
+                        "type": "string",
+                        "enum": [
+                            "uphold_with_patch",
+                            "partial_concession_with_patch",
+                            "reject_critique_with_proof",
+                            "full_surrender_without_patch"
+                        ],
+                        "description": "显式答辩立场枚举：full_surrender_without_patch 代表无条件全面认怂，将被 Free-MAD 拦截"
+                    },
+                    "patched_claims": {
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "针对质询与验证结果的逐条回应",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "claim_id": {
+                                    "type": "string",
+                                    "description": "对应的提案 claim_id"
+                                },
+                                "resolution": {
+                                    "type": "string",
+                                    "description": "具体修正方案或技术反驳依据"
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["resolved", "upheld", "conceded"],
+                                    "description": "论点当前状态：resolved(已补丁闭环) / upheld(经实证维持原主张) / conceded(合理让步)"
+                                }
+                            },
+                            "required": ["claim_id", "resolution", "status"]
+                        }
+                    },
+                    "defense_patches": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "具体架构修正补丁、降级预案或边界约束列表"
+                    },
+                    "quantified_metrics": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "显式量化指标或性能/容灾边界约束 (可选)"
+                    },
+                    "impacted_files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "答辩修正后拟变更的工程文件路径列表"
+                    },
+                    "alignment_score": {
+                        "type": "number",
+                        "description": "答辩方对本轮收敛对齐度的自评 (0.0 ~ 1.0，可选)"
+                    }
+                },
+                "required": ["summary", "stance", "patched_claims", "defense_patches", "impacted_files"]
             }
         },
         {
@@ -536,11 +736,13 @@ pub fn get_tools_list() -> Value {
                 | "list_dir"
                 | "search_code"
                 | "submit_arbitration_ruling"
+                | "submit_proposal_claims"
                 | "submit_role_concurrence"
                 | "submit_module_decomposition"
                 | "submit_grounding_evidence"
                 | "submit_execution_deliverable"
                 | "submit_challenge_critique"
+                | "submit_defense_patch"
                 | "validate_workspace_diff" => (true, false, true, false),
                 "write_file"
                 | "str_replace"
@@ -680,14 +882,88 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
                 String::new()
             };
 
+            let mcda_info = if let Some(mcda) = arguments.get("mcda_matrix").and_then(|v| v.as_object()) {
+                let criteria_count = mcda.get("criteria").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                let alt_count = mcda.get("alternatives").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                format!("\n• 结构化 MCDA 运筹矩阵: {} 准则 × {} 方案", criteria_count, alt_count)
+            } else {
+                String::new()
+            };
+
             Ok(format!(
-                "✓ 【仲裁定案裁决书】已成功提交至宿主与 ADR 画布：\n• 裁决类型: {}\n• 核心决议: {}\n• 关键权衡点:\n{}\n• 约束安全爆炸半径文件: {}{}{}",
+                "✓ 【仲裁定案裁决书】已成功提交至宿主与 ADR 画布：\n• 裁决类型: {}\n• 核心决议: {}\n• 关键权衡点:\n{}\n• 约束安全爆炸半径文件: {}{}{}{}",
                 decision_type,
                 summary,
                 formatted_points,
                 if formatted_files.is_empty() { "无" } else { &formatted_files },
                 solution_line,
-                ruling_options_info
+                ruling_options_info,
+                mcda_info
+            ))
+        }
+        "submit_proposal_claims" => {
+            let summary = arguments["summary"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| anyhow!("缺少非空必填参数 summary"))?;
+            let claims = arguments["claims"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 claims 数组"))?;
+            if claims.is_empty() || claims.len() > 8 {
+                return Err(anyhow!(
+                    "claims 数量必须在 1~8 条之间，当前为 {}",
+                    claims.len()
+                ));
+            }
+            let impacted_files = arguments["impacted_files"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 impacted_files 数组"))?;
+
+            let mut formatted_claims = Vec::with_capacity(claims.len());
+            for (idx, item) in claims.iter().enumerate() {
+                let claim_id = item["claim_id"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow!("第 {} 条论点缺少非空 claim_id", idx + 1))?;
+                let claim_text = item["claim"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow!("论点 [{}] 缺少非空 claim 描述", claim_id))?;
+                let deps = item
+                    .get("depends_on_claim_ids")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|d| d.as_str().map(str::trim))
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                let dep_badge = if deps.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (depends_on: {})", deps)
+                };
+                formatted_claims.push(format!("  • [{}] {}{}", claim_id, claim_text, dep_badge));
+            }
+
+            let files_str = impacted_files
+                .iter()
+                .filter_map(|v| v.as_str().map(str::trim))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            Ok(format!(
+                "✓ 【提案结构化论点与因果图】已成功提交：\n• 提案摘要: {}\n• 论点节点 ({} 项):\n{}\n• 拟修改文件: {}",
+                summary,
+                claims.len(),
+                formatted_claims.join("\n"),
+                if files_str.is_empty() { "无" } else { &files_str }
             ))
         }
         "submit_role_concurrence" => {
@@ -860,8 +1136,10 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
                     let tool = ev["source_tool"].as_str().unwrap_or("unknown_tool");
                     let is_pass = ev["truth_value"].as_bool().unwrap_or(false);
                     let report = ev["verifier_report"].as_str().unwrap_or("完成检验");
+                    let claim_id = ev["claim_id"].as_str().map(|s| format!(" (claim: {})", s)).unwrap_or_default();
+                    let tier = ev["tier"].as_str().map(|s| format!("[{}]", s)).unwrap_or_default();
                     let status_badge = if is_pass { "✓ PASS" } else { "✗ FAIL" };
-                    format!("  {}. [{}] 来源: {} -> {}", i + 1, status_badge, tool, report)
+                    format!("  {}. [{}{}] 来源: {}{} -> {}", i + 1, status_badge, tier, tool, claim_id, report)
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -913,14 +1191,26 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 summary"))?;
             let target_claim_id = arguments["target_claim_id"].as_str().unwrap_or("general_proposal");
+            let root_cause_category = arguments["root_cause_category"].as_str().unwrap_or("general");
+            let disputed_ids = arguments
+                .get("disputed_claim_ids")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            let extra_meta = if disputed_ids.is_empty() {
+                format!("\n• 根因分类: {}", root_cause_category)
+            } else {
+                format!("\n• 争议论点集: [{}]\n• 根因分类: {}", disputed_ids, root_cause_category)
+            };
 
             if fatal_flaws.is_empty() || hidden_assumptions.is_empty() || failure_scenarios.is_empty() || counter_demands.is_empty() {
                 return Err(anyhow!("红队四部曲门禁未满足：fatal_flaws, hidden_assumptions, failure_scenarios, counter_demands 均不能为空"));
             }
 
             Ok(format!(
-                "✓ 【红队反例质询与四部曲门禁】已成功上报并锁定争议焦点：\n• 靶向论点: [{}]\n• 核心质询结论: {}\n• 致命缺陷 ({} 项): {}\n• 隐含假设 ({} 项): {}\n• 失效场景 ({} 项): {}\n• 实证补丁要求 ({} 项): {}",
+                "✓ 【红队反例质询与四部曲门禁】已成功上报并锁定争议焦点：\n• 靶向论点: [{}]{}\n• 核心质询结论: {}\n• 致命缺陷 ({} 项): {}\n• 隐含假设 ({} 项): {}\n• 失效场景 ({} 项): {}\n• 实证补丁要求 ({} 项): {}",
                 target_claim_id,
+                extra_meta,
                 summary,
                 fatal_flaws.len(),
                 fatal_flaws.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; "),
@@ -930,6 +1220,67 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
                 failure_scenarios.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; "),
                 counter_demands.len(),
                 counter_demands.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; ")
+            ))
+        }
+        "submit_defense_patch" => {
+            let summary = arguments["summary"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| anyhow!("缺少非空必填参数 summary"))?;
+            let stance = arguments["stance"]
+                .as_str()
+                .ok_or_else(|| anyhow!("缺少必填参数 stance"))?;
+            if !matches!(
+                stance,
+                "uphold_with_patch"
+                    | "partial_concession_with_patch"
+                    | "reject_critique_with_proof"
+                    | "full_surrender_without_patch"
+            ) {
+                return Err(anyhow!(
+                    "stance 必须为 uphold_with_patch | partial_concession_with_patch | reject_critique_with_proof | full_surrender_without_patch"
+                ));
+            }
+            let patched_claims = arguments["patched_claims"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 patched_claims 数组"))?;
+            if patched_claims.is_empty() {
+                return Err(anyhow!("patched_claims 不能为空，必须至少回应一条质询论点"));
+            }
+            let defense_patches = arguments["defense_patches"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 defense_patches 数组"))?;
+            let impacted_files = arguments["impacted_files"]
+                .as_array()
+                .ok_or_else(|| anyhow!("缺少必填参数 impacted_files 数组"))?;
+
+            if stance == "full_surrender_without_patch" && defense_patches.is_empty() {
+                return Err(anyhow!(
+                    "违反 Free-MAD 抗妥协契约 (surrender_detected=true)：禁止未提供任何 defense_patches 即提交 full_surrender_without_patch"
+                ));
+            }
+
+            let patch_list = defense_patches
+                .iter()
+                .filter_map(|v| v.as_str().map(str::trim))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("; ");
+            let files_list = impacted_files
+                .iter()
+                .filter_map(|v| v.as_str().map(str::trim))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            Ok(format!(
+                "✓ 【答辩修正立场与补丁方案】已成功提交：\n• 立场状态: {}\n• 核心答辩结论: {}\n• 回应论点数: {}\n• 架构补丁: {}\n• 涉及文件: {}",
+                stance,
+                summary,
+                patched_claims.len(),
+                if patch_list.is_empty() { "无" } else { &patch_list },
+                if files_list.is_empty() { "无" } else { &files_list }
             ))
         }
         "validate_workspace_diff" => {
@@ -982,11 +1333,13 @@ mod tests {
         assert!(names.contains(&"write_channel_artifact"));
         assert!(names.contains(&"write_agent_artifact"));
         assert!(names.contains(&"submit_arbitration_ruling"));
+        assert!(names.contains(&"submit_proposal_claims"));
         assert!(names.contains(&"submit_role_concurrence"));
         assert!(names.contains(&"submit_module_decomposition"));
         assert!(names.contains(&"submit_grounding_evidence"));
         assert!(names.contains(&"submit_execution_deliverable"));
         assert!(names.contains(&"submit_challenge_critique"));
+        assert!(names.contains(&"submit_defense_patch"));
         assert!(names.contains(&"validate_workspace_diff"));
 
         let decomposition = arr
@@ -1366,17 +1719,102 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
 
+    #[tokio::test]
+    async fn test_dispatch_tool_call_submit_proposal_claims() {
+        let args = json!({
+            "summary": "引入基于 WAL 的幂等消息投递与隔离沙箱边界",
+            "claims": [
+                {
+                    "claim_id": "claim-1",
+                    "claim": "使用单调递增 seq_id 消除并发乱序覆盖",
+                    "assumptions": ["单分片内 seq_id 单调严格递增"],
+                    "depends_on_claim_ids": [],
+                    "confidence": 0.9
+                },
+                {
+                    "claim_id": "claim-2",
+                    "claim": "基于 WAL 日志实现 3s 超时故障恢复",
+                    "depends_on_claim_ids": ["claim-1"],
+                    "confidence": 0.85
+                }
+            ],
+            "impacted_files": ["src/services/acpClient.ts", "src/hooks/useGameTheoreticFsm.ts"]
+        });
+        let res = dispatch_tool_call("submit_proposal_claims", &args).await.unwrap();
+        assert!(res.contains("✓ 【提案结构化论点与因果图】已成功提交"));
+        assert!(res.contains("claim-1"));
+        assert!(res.contains("depends_on: claim-1"));
+
+        let empty_claims = json!({
+            "summary": "无效空提案",
+            "claims": [],
+            "impacted_files": []
+        });
+        assert!(
+            dispatch_tool_call("submit_proposal_claims", &empty_claims)
+                .await
+                .is_err(),
+            "空 claims 数组必须被拒绝"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_tool_call_submit_defense_patch() {
+        let valid_args = json!({
+            "summary": "保留主干递增 seq_id 机制并增补超时 fenced 租约补丁",
+            "stance": "partial_concession_with_patch",
+            "patched_claims": [
+                {
+                    "claim_id": "claim-1",
+                    "resolution": "增加 fencing token 校验防止跨机房脑裂覆盖",
+                    "status": "resolved"
+                }
+            ],
+            "defense_patches": ["新增 FencingTokenGuard 校验，超时 <= 300ms 自动释放"],
+            "quantified_metrics": ["lease_timeout <= 300ms"],
+            "impacted_files": ["src/services/acpClient.ts"],
+            "alignment_score": 0.88
+        });
+        let res = dispatch_tool_call("submit_defense_patch", &valid_args)
+            .await
+            .unwrap();
+        assert!(res.contains("✓ 【答辩修正立场与补丁方案】已成功提交"));
+        assert!(res.contains("partial_concession_with_patch"));
+
+        let surrender_args = json!({
+            "summary": "我完全同意红队的说法，原方案彻底作废",
+            "stance": "full_surrender_without_patch",
+            "patched_claims": [
+                {
+                    "claim_id": "claim-1",
+                    "resolution": "放弃原主张",
+                    "status": "conceded"
+                }
+            ],
+            "defense_patches": [],
+            "impacted_files": []
+        });
+        assert!(
+            dispatch_tool_call("submit_defense_patch", &surrender_args)
+                .await
+                .is_err(),
+            "无补丁全盘认怂必须被工具门禁拦截"
+        );
+    }
+
     #[test]
     fn test_tools_list_annotations() {
         let list = get_tools_list();
         let arr = list.as_array().expect("tools list must be array");
         let governance_tools = [
             "submit_arbitration_ruling",
+            "submit_proposal_claims",
             "submit_role_concurrence",
             "submit_module_decomposition",
             "submit_grounding_evidence",
             "submit_execution_deliverable",
             "submit_challenge_critique",
+            "submit_defense_patch",
             "validate_workspace_diff",
         ];
         for tool_name in governance_tools {

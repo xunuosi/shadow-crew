@@ -6,9 +6,20 @@
  * 3. 遏制空洞辩论话术竞争，引导多 Agent 朝向挖掘真实边界收敛
  */
 
-import { Agent, ArgumentNode, ColMadAgentScore, ColMadSessionReport, GroundingEvidence } from '../../types';
+import {
+  Agent,
+  ArgumentNode,
+  ChallengeCritiquePayload,
+  ColMadAgentScore,
+  ColMadSessionReport,
+  DefensePatchPayload,
+  GameRolesConfig,
+  GroundingEvidence,
+  ProposalClaimsPayload,
+} from '../../types';
+import { computeClaimTokenOverlap } from './structuredTextAnalyzer';
 
-// 边界极端场景触发词 (Edge Cases)
+// 边界极端场景触发词 (Edge Cases，确定性小写词表)
 const EDGE_CASE_INDICATORS = [
   '极端工况',
   '并发击穿',
@@ -50,116 +61,170 @@ const REDUNDANT_BOILERPLATE = [
   '赞同上述所有观点',
 ];
 
+function countPhraseOccurrencesCap2(lowerText: string, phraseLower: string): number {
+  if (!lowerText || !phraseLower) return 0;
+  let count = 0;
+  let pos = 0;
+  while (count < 2) {
+    const idx = lowerText.indexOf(phraseLower, pos);
+    if (idx < 0) break;
+    count++;
+    pos = idx + phraseLower.length;
+  }
+  return count;
+}
+
+type BoundGameRole = 'proposer' | 'challenger' | 'verifier' | 'arbiter' | 'unknown';
+
+function resolveAgentGameRole(agent: Agent, gameRoles?: GameRolesConfig): BoundGameRole {
+  if (gameRoles) {
+    if (gameRoles.proposers?.includes(agent.id)) return 'proposer';
+    if (gameRoles.challengers?.includes(agent.id)) return 'challenger';
+    if (gameRoles.verifiers?.includes(agent.id)) return 'verifier';
+    if (gameRoles.arbiters?.includes(agent.id)) return 'arbiter';
+  }
+  const roleStr = agent.role || '';
+  const nameStr = agent.name || '';
+  if (roleStr.includes('提案') || roleStr.includes('Architect') || nameStr.includes('Proposer')) {
+    return 'proposer';
+  }
+  if (
+    roleStr.includes('红队') ||
+    roleStr.includes('Security') ||
+    nameStr.includes('Challenger') ||
+    nameStr.includes('RedTeam')
+  ) {
+    return 'challenger';
+  }
+  if (roleStr.includes('接地') || roleStr.includes('QA') || nameStr.includes('Verifier')) {
+    return 'verifier';
+  }
+  if (roleStr.includes('仲裁') || roleStr.includes('Arbiter') || nameStr.includes('Arbiter')) {
+    return 'arbiter';
+  }
+  return 'unknown';
+}
+
 export interface ColMadCalculationOptions {
   topicId: string;
   agents: Agent[];
+  gameRoles?: GameRolesConfig;
   proposalText?: string;
   critiqueText?: string;
   verificationText?: string;
   defenseText?: string;
   argumentNodes?: ArgumentNode[];
   evidences?: GroundingEvidence[];
+  proposalPayload?: ProposalClaimsPayload | null;
+  critiquePayload?: ChallengeCritiquePayload | null;
+  defensePayload?: DefensePatchPayload | null;
 }
 
 /**
  * 计算当期会话中所有参与 Agent 的增量事实贡献分与声誉等级
+ * 优先依据 GameRolesConfig 显式身份绑定与结构化 MCP 契约载荷评分，消除正则与 handle 文本扫描猜测
  */
 export function calculateColMadContributions(options: ColMadCalculationOptions): ColMadSessionReport {
   const {
     topicId,
     agents,
+    gameRoles,
     proposalText = '',
     critiqueText = '',
     verificationText = '',
     defenseText = '',
     argumentNodes = [],
     evidences = [],
+    proposalPayload,
+    critiquePayload,
+    defensePayload,
   } = options;
 
   const scores: Record<string, ColMadAgentScore> = {};
-
-  // 1. 建立角色与文本的映射
-  const agentTexts: Record<string, string> = {};
-  agents.forEach((agent) => {
-    const handle = agent.handle.toLowerCase();
-    const name = agent.name.toLowerCase();
-
-    // 根据文本中提及或角色的常规职责分配文本
-    let combinedText = '';
-    if (proposalText.toLowerCase().includes(handle) || proposalText.toLowerCase().includes(name)) {
-      combinedText += '\n' + proposalText;
-    }
-    if (critiqueText.toLowerCase().includes(handle) || critiqueText.toLowerCase().includes(name)) {
-      combinedText += '\n' + critiqueText;
-    }
-    if (verificationText.toLowerCase().includes(handle) || verificationText.toLowerCase().includes(name)) {
-      combinedText += '\n' + verificationText;
-    }
-    if (defenseText.toLowerCase().includes(handle) || defenseText.toLowerCase().includes(name)) {
-      combinedText += '\n' + defenseText;
-    }
-
-    // 若未通过 handle 显式分配，基于角色默认分配
-    if (!combinedText) {
-      if (agent.role?.includes('提案') || agent.role?.includes('Architect') || agent.name.includes('Proposer')) {
-        combinedText = proposalText + '\n' + defenseText;
-      } else if (agent.role?.includes('红队') || agent.role?.includes('Security') || agent.name.includes('Challenger') || agent.name.includes('RedTeam')) {
-        combinedText = critiqueText;
-      } else if (agent.role?.includes('接地') || agent.role?.includes('QA') || agent.name.includes('Verifier')) {
-        combinedText = verificationText;
-      } else {
-        combinedText = proposalText || critiqueText || '';
-      }
-    }
-
-    agentTexts[agent.id] = combinedText;
-  });
-
-  // 2. 统计已验证实证断言与各 Agent 关联
   const verifiedEvidences = evidences.filter((e) => e.truthValue);
-  const totalVerifiedClaims = argumentNodes.filter((n) => n.status === 'supported' && n.evidenceRefs && n.evidenceRefs.length > 0).length;
+  const proposalClaimIds = new Set((proposalPayload?.claims || []).map((c) => c.claimId));
 
   agents.forEach((agent) => {
-    const text = agentTexts[agent.id] || '';
+    const roleKind = resolveAgentGameRole(agent, gameRoles);
 
-    // 统计发现的极端边界/反例数 (Discovered Edge Cases)
-    let discoveredEdgeCasesCount = 0;
-    EDGE_CASE_INDICATORS.forEach((kw) => {
-      const regex = new RegExp(kw, 'gi');
-      const matches = text.match(regex);
-      if (matches) {
-        discoveredEdgeCasesCount += Math.min(2, matches.length); // 单个关键词封顶 2 次，防刷词
-      }
-    });
-
-    // 统计贡献的已实证断言数 (Verified Claims)
-    let verifiedClaimsCount = 0;
-    argumentNodes.forEach((node) => {
-      if (node.status === 'supported' && text.includes(node.claim.slice(0, 10))) {
-        verifiedClaimsCount++;
-      }
-    });
-
-    // 检验实证证据中是否包含该 Agent 的成果
-    if (verifiedEvidences.length > 0 && (agent.role?.includes('接地') || agent.role?.includes('QA') || text.includes('实证'))) {
-      verifiedClaimsCount += Math.min(3, verifiedEvidences.length);
+    // 1. 确定性角色文本归属（仅按显式游戏角色绑定，不再用 @handle 子串猜测文本）
+    let text = '';
+    if (roleKind === 'proposer') {
+      text = `${proposalText}\n${defenseText}`;
+    } else if (roleKind === 'challenger') {
+      text = critiqueText;
+    } else if (roleKind === 'verifier') {
+      text = verificationText;
+    } else if (roleKind === 'arbiter') {
+      text = '';
+    } else {
+      text = proposalText || critiqueText || '';
     }
 
-    // 统计冗余扣分 (Redundant Penalty)
+    const lowerText = text.toLowerCase();
+
+    // 2. 统计发现的极端边界/反例数 (Discovered Edge Cases)
+    let discoveredEdgeCasesCount = 0;
+    if (roleKind === 'challenger' && critiquePayload) {
+      const structuredCount =
+        critiquePayload.failureScenarios.length + critiquePayload.fatalFlaws.length;
+      discoveredEdgeCasesCount += Math.min(4, structuredCount);
+    }
+    EDGE_CASE_INDICATORS.forEach((kw) => {
+      discoveredEdgeCasesCount += countPhraseOccurrencesCap2(lowerText, kw.toLowerCase());
+    });
+
+    // 3. 统计贡献的已实证断言数 (Verified Claims)
+    let verifiedClaimsCount = 0;
+    const supportedNodes = argumentNodes.filter((n) => n.status === 'supported');
+
+    if (roleKind === 'proposer') {
+      supportedNodes.forEach((node) => {
+        if (
+          proposalClaimIds.has(node.id) ||
+          node.authorId === agent.id ||
+          (text && computeClaimTokenOverlap(node.claim, text) >= 0.45)
+        ) {
+          verifiedClaimsCount++;
+        }
+      });
+      if (defensePayload && defensePayload.defensePatches.length > 0 && verifiedClaimsCount === 0) {
+        const resolvedCount = defensePayload.patchedClaims.filter((c) => c.status === 'resolved').length;
+        verifiedClaimsCount += Math.min(2, resolvedCount);
+      }
+    } else if (roleKind === 'verifier') {
+      if (verifiedEvidences.length > 0) {
+        verifiedClaimsCount += Math.min(3, verifiedEvidences.length);
+      }
+    } else {
+      supportedNodes.forEach((node) => {
+        if (text && computeClaimTokenOverlap(node.claim, text) >= 0.45) {
+          verifiedClaimsCount++;
+        }
+      });
+      if (verifiedEvidences.length > 0 && text.includes('实证')) {
+        verifiedClaimsCount += Math.min(3, verifiedEvidences.length);
+      }
+    }
+
+    // 4. 统计冗余扣分 (Redundant Penalty)
     let redundantPenalty = 0;
     REDUNDANT_BOILERPLATE.forEach((phrase) => {
       if (text.includes(phrase)) {
         redundantPenalty += 1;
       }
     });
-    // 重复道歉或空洞顺从额外扣分
     if (text.includes('您说得对') || text.includes('完全认同')) {
+      redundantPenalty += 2;
+    }
+    if (roleKind === 'proposer' && defensePayload?.stance === 'full_surrender_without_patch') {
       redundantPenalty += 2;
     }
 
     // 非零和协同事实贡献公式：
     // FactReward = VerifiedClaims * 2.0 + DiscoveredEdgeCases * 2.5 - RedundantPenalty * 1.5
-    const rawFactReward = verifiedClaimsCount * 2.0 + discoveredEdgeCasesCount * 2.5 - redundantPenalty * 1.5;
+    const rawFactReward =
+      verifiedClaimsCount * 2.0 + discoveredEdgeCasesCount * 2.5 - redundantPenalty * 1.5;
     const factReward = Math.round(Math.max(-5.0, Math.min(25.0, rawFactReward)) * 10) / 10;
 
     let reputationLevel: ColMadAgentScore['reputationLevel'] = 'neutral';

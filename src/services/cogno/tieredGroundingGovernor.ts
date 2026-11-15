@@ -8,6 +8,7 @@
 
 import { GroundingEvidence, DisputeSpanPacket, ArgumentNode } from '../../types';
 import { extractMcpToolCallArguments, matchesMcpToolName } from '../acpClient';
+import { analyzeStructuredMarkdown, computeClaimTokenOverlap } from './structuredTextAnalyzer';
 
 export type ToolTier = 'T1' | 'T2';
 
@@ -116,26 +117,230 @@ function resolveEvidenceConfidence(item: Record<string, unknown>, fallback: numb
   return fallback;
 }
 
+const VALID_JSON_ESCAPE_CHARS = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't']);
+
+function isHexChar(ch: string): boolean {
+  const code = ch.charCodeAt(0);
+  return (code >= 48 && code <= 57) || (code >= 65 && code <= 70) || (code >= 97 && code <= 102);
+}
+
+function sanitizeInvalidJsonBackslashes(raw: string): string {
+  let out = '';
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch !== '\\') {
+      out += ch;
+      continue;
+    }
+    const next = raw[i + 1];
+    if (next === undefined) {
+      out += '\\\\';
+      continue;
+    }
+    if (VALID_JSON_ESCAPE_CHARS.has(next)) {
+      out += '\\' + next;
+      i += 1;
+      continue;
+    }
+    if (
+      next === 'u' &&
+      i + 5 < raw.length &&
+      isHexChar(raw[i + 2]) &&
+      isHexChar(raw[i + 3]) &&
+      isHexChar(raw[i + 4]) &&
+      isHexChar(raw[i + 5])
+    ) {
+      out += raw.slice(i, i + 6);
+      i += 5;
+      continue;
+    }
+    out += '\\\\' + next;
+    i += 1;
+  }
+  return out;
+}
+
 function parseJsonWithEscapeRecovery(raw: string): unknown {
   try {
     return JSON.parse(raw);
   } catch {
-    // 大模型在 JSON 内书写 grep/ast_grep 正则（如 fetch\(、\s+）时常漏写反斜杠转义，
+    // 大模型在 JSON 内书写 grep/ast_grep 模式（如 fetch\(、\s+）时常漏写反斜杠转义，
     // 仅对非法转义序列补齐反斜杠后重试，保留所有合法 JSON 转义（\" \\ \/ \b \f \n \r \t \uXXXX）。
-    const sanitized = raw.replace(
-      /\\(["\\/bfnrt]|u[0-9a-fA-F]{4})|\\(.)/g,
-      (match, valid, invalid) => (valid !== undefined ? match : `\\\\${invalid}`)
-    );
-    return JSON.parse(sanitized);
+    return JSON.parse(sanitizeInvalidJsonBackslashes(raw));
   }
 }
 
+const FAIL_ASCII_TOKENS = new Set(['FAIL', 'FAILED', 'FALSE', 'REFUTED']);
+const PASS_ASCII_TOKENS = new Set(['PASS', 'PASSED', 'TRUE', 'VERIFIED']);
+const T2_HINT_ASCII_TOKENS = new Set(['SANDBOX', 'RUN', 'TEST', 'BASH', 'SHELL']);
+
+const FAIL_ZH_PHRASES = [
+  '未通过',
+  '无法通过',
+  '不成立',
+  '未证实',
+  '证伪',
+  '失败',
+  '驳回',
+  '不支持',
+  '存在缺陷',
+  '严重异常',
+] as const;
+
+const PASS_ZH_PHRASES = ['符合预期', '测试通过', '通过', '证实', '成立', '支持', '有效'] as const;
+const NEGATION_PREFIXES = ['不', '未', '无', '非', '没', '无法', '未能', '不可', '并未', '并不', '尚未'] as const;
+
+function extractUpperAsciiWords(text: string): Set<string> {
+  const words = new Set<string>();
+  let buf = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const code = ch.charCodeAt(0);
+    const isWord =
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) ||
+      ch === '_';
+    if (isWord) {
+      buf += ch;
+    } else if (buf) {
+      words.add(buf.toUpperCase());
+      buf = '';
+    }
+  }
+  if (buf) {
+    words.add(buf.toUpperCase());
+  }
+  return words;
+}
+
+function hasNonNegatedZhPhrase(text: string, phrase: string): boolean {
+  let pos = 0;
+  while (pos < text.length) {
+    const idx = text.indexOf(phrase, pos);
+    if (idx < 0) return false;
+    const prefixSlice = text.slice(Math.max(0, idx - 2), idx);
+    const isNegated = NEGATION_PREFIXES.some((neg) => prefixSlice.endsWith(neg));
+    if (!isNegated) {
+      return true;
+    }
+    pos = idx + phrase.length;
+  }
+  return false;
+}
+
+function classifyVerdictSignals(
+  text: string,
+  options?: { includeConflictFail?: boolean }
+): { hasPass: boolean; hasFail: boolean } {
+  const upperWords = extractUpperAsciiWords(text);
+  let hasFail = false;
+  for (const tok of FAIL_ASCII_TOKENS) {
+    if (upperWords.has(tok)) {
+      hasFail = true;
+      break;
+    }
+  }
+  if (!hasFail) {
+    hasFail = FAIL_ZH_PHRASES.some((phrase) => text.includes(phrase));
+  }
+  if (!hasFail && options?.includeConflictFail) {
+    hasFail = hasNonNegatedZhPhrase(text, '冲突');
+  }
+
+  let hasPass = false;
+  for (const tok of PASS_ASCII_TOKENS) {
+    if (upperWords.has(tok)) {
+      hasPass = true;
+      break;
+    }
+  }
+  if (!hasPass) {
+    hasPass = PASS_ZH_PHRASES.some((phrase) => hasNonNegatedZhPhrase(text, phrase));
+  }
+  return { hasPass, hasFail };
+}
+
 function evaluateTextVerdict(text: string): boolean {
-  const hasFailToken =
-    /\b(?:FAIL|FAILED|FALSE|REFUTED)\b|(?:未通过|不成立|未证实|证伪|失败|驳回|不支持)/i.test(text);
-  const hasPassToken =
-    /\b(?:PASS|PASSED|TRUE|VERIFIED)\b|(?:(?<![不未无])通过|(?<![不未无])证实|(?<![不未无])成立|(?<![不未无])支持)/i.test(text);
-  return hasPassToken && !hasFailToken;
+  const { hasPass, hasFail } = classifyVerdictSignals(text);
+  return hasPass && !hasFail;
+}
+
+function hasT2ExecutionHint(text: string): boolean {
+  const upperWords = extractUpperAsciiWords(text);
+  for (const tok of T2_HINT_ASCII_TOKENS) {
+    if (upperWords.has(tok)) return true;
+  }
+  return text.includes('沙箱') || text.includes('执行');
+}
+
+const DECORATOR_EDGE_CHARS = new Set([' ', '\t', '-', '*', '+', '`', '_', "'", '"', '【', '】']);
+
+function stripEdgeDecorators(raw: string, extraLeadingBracket = false): string {
+  let start = 0;
+  let end = raw.length;
+  while (start < end) {
+    const ch = raw[start];
+    if (DECORATOR_EDGE_CHARS.has(ch) || (extraLeadingBracket && ch === '•')) {
+      start++;
+    } else {
+      break;
+    }
+  }
+  while (end > start && DECORATOR_EDGE_CHARS.has(raw[end - 1])) {
+    end--;
+  }
+  return raw.slice(start, end).trim();
+}
+
+const TOOL_KV_KEYS = new Set(['验证工具', '工具名称', 'sourcetool', 'source_tool']);
+const INPUT_KV_KEYS = new Set([
+  '检验输入',
+  '执行命令',
+  '测试用例',
+  'inputqueryorcode',
+  'input_query_or_code',
+  'input',
+]);
+const OUTPUT_KV_KEYS = new Set(['原始输出', '输出摘要', 'rawoutput', 'raw_output', 'output']);
+const VERDICT_KV_KEYS = new Set([
+  '真值判定',
+  '检验结论',
+  '测试结果',
+  'verdict',
+  'truthvalue',
+  'truth_value',
+]);
+const REPORT_KV_KEYS = new Set([
+  '实证报告',
+  '推演说明',
+  '详细结论',
+  'verifierreport',
+  'verifier_report',
+  'report',
+]);
+const CLAIM_ID_KV_KEYS = new Set(['claimid', 'claim_id', '论点id', '关联论点']);
+
+function doesEvidenceMatchArgumentNode(
+  ev: GroundingEvidence,
+  node: ArgumentNode,
+  rootDisputeNodeId: string | undefined,
+  totalEvidenceCount: number
+): boolean {
+  if (ev.claimId) {
+    return ev.claimId === node.id;
+  }
+  if (rootDisputeNodeId && rootDisputeNodeId === node.id && totalEvidenceCount === 1) {
+    return true;
+  }
+  if (!node.claim) {
+    return false;
+  }
+  const overlap = computeClaimTokenOverlap(
+    node.claim,
+    `${ev.verifierReport} ${ev.inputQueryOrCode} ${ev.rawOutput}`
+  );
+  return overlap >= 0.45;
 }
 
 /**
@@ -291,7 +496,9 @@ class TieredGroundingGovernor {
         ['sourceTool', 'source_tool', 'tool', 'toolName', 'tool_name'],
         'static_analyzer'
       ).trim() || 'static_analyzer';
-    const tier = this.getToolTier(toolName);
+    const detectedTier = this.getToolTier(toolName);
+    const explicitTier = pickOptionalString(item, ['tier', 'toolTier', 'tool_tier'])?.toUpperCase();
+    const tier: ToolTier = detectedTier === 'T2' || explicitTier === 'T2' ? 'T2' : 'T1';
     return {
       evidenceId: pickFirstString(
         item,
@@ -424,9 +631,13 @@ class TieredGroundingGovernor {
     };
 
     // 1. 尝试从所有 ```json ... ``` 块中提取（支持多块并跳过非 JSON / 非证据代码块）
-    const jsonBlocks = verifierText.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi);
-    for (const jsonMatch of jsonBlocks) {
-      const rawBlock = jsonMatch[1]?.trim();
+    const ast = analyzeStructuredMarkdown(verifierText);
+    for (const block of ast.fencedCodeBlocks) {
+      const lang = block.lang.trim().toLowerCase();
+      if (lang && lang !== 'json' && lang !== 'jsonc') {
+        continue;
+      }
+      const rawBlock = block.content.trim();
       if (!rawBlock) continue;
       try {
         const parsed = parseJsonWithEscapeRecovery(rawBlock);
@@ -443,7 +654,7 @@ class TieredGroundingGovernor {
         const parsed = parseJsonWithEscapeRecovery(trimmedText);
         evidences.push(...this.extractEvidencesFromParsedJson(parsed, jsonDefaults));
       } catch {
-        // 裸文本非合法 JSON，继续回退至结构化正则抽取
+        // 裸文本非合法 JSON，继续回退至结构化键值对抽取
       }
     }
 
@@ -451,61 +662,37 @@ class TieredGroundingGovernor {
       return evidences;
     }
 
-    // 2. 启发式正则/标签提取 (处理非严格 JSON 的结构化文本)
-    // 寻找常见结构: 【验证工具】/【检验输入】/【真值判定】/【实证结论】及 camelCase / snake_case 标签
-    const lines = verifierText.split('\n').map((l) => l.trim()).filter(Boolean);
+    // 2. 确定性 AST 键值映射提取（替代散落的标签正则）
     let currentTool: string = 'static_analyzer';
     let currentInput: string = '';
     let currentOutput: string = '';
     let currentVerdict: boolean | undefined;
     let currentReport: string = '';
+    let currentClaimId: string | undefined;
     let foundStructured = false;
 
-    const stripDecorators = (val: string): string =>
-      val.trim().replace(/^['"`]+|['"`]+$/g, '').trim();
+    for (const kv of ast.keyValuePairs) {
+      const normalizedKey = stripEdgeDecorators(kv.key, true).toLowerCase();
+      const val = stripEdgeDecorators(kv.value);
+      if (!normalizedKey || !val) continue;
 
-    for (const line of lines) {
-      const toolMatch = line.match(
-        /^[-*\s]*[*_`]*【?(?:验证工具|工具名称|sourceTool|source_tool)】?[*_`]*\s*[:：]\s*(.+)/i
-      );
-      if (toolMatch) {
-        currentTool = stripDecorators(toolMatch[1]) || 'static_analyzer';
+      if (TOOL_KV_KEYS.has(normalizedKey)) {
+        currentTool = val || 'static_analyzer';
         foundStructured = true;
-        continue;
-      }
-
-      const inputMatch = line.match(
-        /^[-*\s]*[*_`]*【?(?:检验输入|执行命令|测试用例|inputQueryOrCode|input_query_or_code|input)】?[*_`]*\s*[:：]\s*(.+)/i
-      );
-      if (inputMatch) {
-        currentInput = stripDecorators(inputMatch[1]);
+      } else if (INPUT_KV_KEYS.has(normalizedKey)) {
+        currentInput = val;
         foundStructured = true;
-        continue;
-      }
-
-      const outputMatch = line.match(
-        /^[-*\s]*[*_`]*【?(?:原始输出|输出摘要|rawOutput|raw_output|output)】?[*_`]*\s*[:：]\s*(.+)/i
-      );
-      if (outputMatch) {
-        currentOutput = stripDecorators(outputMatch[1]);
+      } else if (OUTPUT_KV_KEYS.has(normalizedKey)) {
+        currentOutput = val;
         foundStructured = true;
-        continue;
-      }
-
-      const verdictMatch = line.match(
-        /^[-*\s]*[*_`]*【?(?:真值判定|检验结论|测试结果|verdict|truthValue|truth_value)】?[*_`]*\s*[:：]\s*(.+)/i
-      );
-      if (verdictMatch) {
-        currentVerdict = evaluateTextVerdict(verdictMatch[1]);
+      } else if (VERDICT_KV_KEYS.has(normalizedKey)) {
+        currentVerdict = evaluateTextVerdict(val);
         foundStructured = true;
-        continue;
-      }
-
-      const reportMatch = line.match(
-        /^[-*\s]*[*_`]*【?(?:实证报告|推演说明|详细结论|verifierReport|verifier_report|report)】?[*_`]*\s*[:：]\s*(.+)/i
-      );
-      if (reportMatch) {
-        currentReport = stripDecorators(reportMatch[1]);
+      } else if (REPORT_KV_KEYS.has(normalizedKey)) {
+        currentReport = val;
+        foundStructured = true;
+      } else if (CLAIM_ID_KV_KEYS.has(normalizedKey)) {
+        currentClaimId = val;
         foundStructured = true;
       }
     }
@@ -518,23 +705,22 @@ class TieredGroundingGovernor {
           : evaluateTextVerdict(currentReport || currentOutput || verifierText);
       evidences.push({
         evidenceId: `ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        sourceTool: currentTool,
+        sourceTool: currentTool as GroundingEvidence['sourceTool'],
         inputQueryOrCode: currentInput || '验证命令/参数抽取',
         rawOutput: currentOutput || verifierText.slice(0, 150),
         truthValue: resolvedVerdict,
         verifierReport: currentReport || '完成实证检验',
         tier,
         isAdvisory: tier === 'T1',
+        claimId: currentClaimId,
         confidence: 0.85,
       });
       return evidences;
     }
 
-    // 3. 兜底解析：提炼文本核心反事实测试判定（防反义词包含误伤，如“不支持”/“不成立”排除）
-    const isPass =
-      /(PASS|\bTRUE\b|(?<![不未无])通过|(?<![不未无])证实|符合预期|测试通过|(?<![不未无])成立|(?<![不未无])支持)/i.test(verifierText) &&
-      !/(FAIL|\bFALSE\b|未通过|不成立|证伪|失败|存在缺陷|严重异常|不支持)/i.test(verifierText);
-    const tier = /sandbox|沙箱|执行|run|test|bash/i.test(verifierText) ? 'T2' : 'T1';
+    // 3. 兜底解析：基于确定性词元分类判定（排除否定前缀误伤）
+    const isPass = evaluateTextVerdict(verifierText);
+    const tier: ToolTier = hasT2ExecutionHint(verifierText) ? 'T2' : 'T1';
     const detectedTool = tier === 'T2' ? 'code_sandbox' : 'static_analyzer';
 
     evidences.push({
@@ -564,7 +750,8 @@ class TieredGroundingGovernor {
     const processedEvidences: GroundingEvidence[] = [];
 
     for (const ev of rawEvidences) {
-      const tier = this.getToolTier(ev.sourceTool);
+      const detectedTier = this.getToolTier(ev.sourceTool);
+      const tier: ToolTier = detectedTier === 'T2' || ev.tier === 'T2' ? 'T2' : 'T1';
       let finalEv = { ...ev, tier };
 
       if (tier === 'T2' && !isSafetyCharterSigned) {
@@ -625,11 +812,14 @@ class TieredGroundingGovernor {
     let updatedCommittedStates: ArgumentNode[] | undefined;
     if (committedStates && committedStates.length > 0) {
       updatedCommittedStates = committedStates.map((node) => {
-        // 关联此论点的证据
+        // 关联此论点的证据（优先显式 claimId 与根争议绑定，兜底使用技术词元集合重合度而非 .slice(0, 10)）
         const relatedEvidences = processedEvidences.filter((ev) =>
-          ev.claimId === node.id ||
-          (node.claim && ev.verifierReport.includes(node.claim.slice(0, 10))) ||
-          (node.claim && ev.inputQueryOrCode.includes(node.claim.slice(0, 10)))
+          doesEvidenceMatchArgumentNode(
+            ev,
+            node,
+            disputePacket?.rootDisputeNodeId,
+            processedEvidences.length
+          )
         );
 
         if (relatedEvidences.length === 0) {
@@ -684,9 +874,10 @@ class TieredGroundingGovernor {
       return this.computeWeightedTrueRatio(evidences);
     }
 
-    // 兜底正则排查：增加否定词前瞻与显式排除，杜绝词内包含误伤
-    const hasFail = /(FAIL|REFUTED|\bFALSE\b|未通过|证伪|不成立|失败|冲突|严重异常|存在缺陷|驳回|不支持)/i.test(verificationText);
-    const hasPass = /(PASS|VERIFIED|\bTRUE\b|符合预期|测试通过|(?<![不未无])成立|(?<![不未无])证实|有效|(?<![不未无])支持)/i.test(verificationText);
+    // 兜底词元排查：基于否定前缀隔离与确定性词集，杜绝反义词包含误伤
+    const { hasPass, hasFail } = classifyVerdictSignals(verificationText, {
+      includeConflictFail: true,
+    });
 
     if (hasPass && !hasFail) return 0.85;
     if (hasFail && !hasPass) return 0.15;

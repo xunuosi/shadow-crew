@@ -777,6 +777,79 @@ export interface GameRoleConcurrenceState {
   concludedAt?: string;              // 敲定时间戳
 }
 
+export type RootCauseCategory =
+  | 'network_partition'
+  | 'concurrency_race'
+  | 'resource_exhaustion'
+  | 'cost_complexity'
+  | 'architecture_coupling'
+  | 'security_boundary'
+  | 'general';
+
+export interface ProposalClaimItem {
+  claimId: string;
+  claim: string;
+  assumptions?: string[];
+  dependsOnClaimIds?: string[];
+  confidence?: number;
+}
+
+export interface ProposalClaimsPayload {
+  summary: string;
+  claims: ProposalClaimItem[];
+  impactedFiles: string[];
+  designDecisions?: string[];
+  source?: 'mcp_tool' | 'text_envelope';
+}
+
+export interface ChallengeCritiquePayload {
+  targetClaimId?: string;
+  disputedClaimIds?: string[];
+  rootCauseCategory?: RootCauseCategory | string;
+  reopeningTriggers?: string[];
+  alignmentScore?: number;
+  fatalFlaws: string[];
+  hiddenAssumptions: string[];
+  failureScenarios: string[];
+  counterDemands: string[];
+  summary: string;
+  source?: 'mcp_tool' | 'text_envelope';
+}
+
+export type DefenseStance =
+  | 'uphold_with_patch'
+  | 'partial_concession_with_patch'
+  | 'reject_critique_with_proof'
+  | 'full_surrender_without_patch';
+
+export interface DefensePatchedClaimItem {
+  claimId: string;
+  resolution: string;
+  status: 'resolved' | 'upheld' | 'conceded';
+}
+
+export interface DefensePatchPayload {
+  summary: string;
+  stance: DefenseStance;
+  patchedClaims: DefensePatchedClaimItem[];
+  defensePatches: string[];
+  quantifiedMetrics?: string[];
+  impactedFiles: string[];
+  alignmentScore?: number;
+  source?: 'mcp_tool' | 'text_envelope';
+}
+
+export interface McdaMatrixInput {
+  criteria: McdaCriterion[];
+  alternatives: string[];
+  scoreMatrix: Record<string, Record<string, number>>;
+  bestCriterionId: string;
+  worstCriterionId: string;
+  bestToOthers: number[];
+  othersToWorst: number[];
+  scoreProvenance?: Record<string, Record<string, string>>;
+}
+
 export interface GameTheoreticState {
   currentStage: GameTheoreticStage;
   gamePolicy?: GameTheoreticPolicy;
@@ -788,6 +861,9 @@ export interface GameTheoreticState {
   targetVerificationContent?: string;
   targetDefenseMessageId?: string;
   targetDefenseContent?: string;
+  proposalClaims?: ProposalClaimsPayload;
+  challengeCritique?: ChallengeCritiquePayload;
+  defensePatch?: DefensePatchPayload;
   isChallengerResponded?: boolean;
   isChallengerBypassed?: boolean;        // 贝叶斯快速通道按设计旁路红队对抗标记 (N11)
   challengerBypassedReason?: string;     // 旁路审计原因说明
@@ -1051,6 +1127,7 @@ export interface ArbitrationRulingDraft {
   tradeOffPoints: string[];
   impactedFiles: string[];
   solution?: string;
+  mcdaMatrix?: McdaMatrixInput;
   submittedBy?: string;
   submittedAt?: string;
 }

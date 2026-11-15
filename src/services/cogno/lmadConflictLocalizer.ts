@@ -6,14 +6,380 @@
  * 3. 误删告警机制 (Prune Alert)
  */
 
-import { ArgumentNode, DisputeSpanPacket } from '../../types';
+import {
+  ArgumentNode,
+  ChallengeCritiquePayload,
+  DisputeSpanPacket,
+  GroundingEvidence,
+  ProposalClaimItem,
+  ProposalClaimsPayload,
+  RootCauseCategory,
+} from '../../types';
+import {
+  extractChallengeCritiqueFromAcpResponse,
+  extractProposalClaimsFromAcpResponse,
+} from '../acpClient';
+import {
+  analyzeStructuredMarkdown,
+  computeClaimTokenOverlap,
+  extractTechnicalTermSet,
+  splitClauses,
+} from './structuredTextAnalyzer';
 
-// 无实义外壳标题与过渡词黑名单
-const SHELL_PREFIX_REGEX = /^(首先|其次|再次|最后|另外|总的来说|综上所述|也就是说|可以看到|如下图所示|我们认为|显然|由上可知|具体而言|众所周知)[，,\s]*/i;
-const BOILERPLATE_HEADING_REGEX = /^(架构总览|方案设计|技术方案|背景介绍|概述|总结|具体方案如下|核心思路|方案如下|步骤如下|如下所示|第一部分|第二部分|核心组件|引言|目录)[：:\s]*$/i;
+// 无实义外壳标题与过渡词确定性词典（零正则）
+const BOILERPLATE_HEADING_SET = new Set([
+  '架构总览',
+  '方案设计',
+  '技术方案',
+  '背景介绍',
+  '概述',
+  '总结',
+  '具体方案如下',
+  '核心思路',
+  '方案如下',
+  '步骤如下',
+  '如下所示',
+  '第一部分',
+  '第二部分',
+  '核心组件',
+  '引言',
+  '目录',
+]);
+
+const DISCOURSE_PREFIX_TOKENS = [
+  '首先',
+  '其次',
+  '再次',
+  '最后',
+  '另外',
+  '总的来说',
+  '综上所述',
+  '也就是说',
+  '可以看到',
+  '如下图所示',
+  '我们认为',
+  '显然',
+  '由上可知',
+  '具体而言',
+  '众所周知',
+] as const;
+
+const SUBJECT_PREFIX_TOKENS = ['我们', '本方案', '系统', '平台', '设计', '本案', '架构'] as const;
 
 // 核心技术断言动词特征（必须包含至少一个实质性架构动词或约束词）
-const ASSERTION_VERB_REGEX = /(采用|选用|引入|基于|设计为|构建|实现|保证|确保|防止|降低|提升|支持|约束|封装|解耦|配置|运行在|部署于|依赖于|拆分为|熔断|持久化|重试)/;
+const ASSERTION_VERBS = [
+  '采用',
+  '选用',
+  '引入',
+  '基于',
+  '设计为',
+  '构建',
+  '实现',
+  '保证',
+  '确保',
+  '防止',
+  '降低',
+  '提升',
+  '支持',
+  '约束',
+  '封装',
+  '解耦',
+  '配置',
+  '运行在',
+  '部署于',
+  '依赖于',
+  '拆分为',
+  '熔断',
+  '持久化',
+  '重试',
+] as const;
+
+const DEPENDENCY_CUES = [
+  '基于',
+  '依赖',
+  '接着',
+  '随后',
+  '因此',
+  '为了',
+  '在此基础',
+  '进而',
+] as const;
+
+const FAILURE_INDICATORS = ['失效', '崩溃', '漏洞', '隐患', '并发', '延迟', '锁'] as const;
+
+const REFUTATION_TOKENS_LOWER = ['未通过', '证伪', 'fail', 'false', '不成立', '死锁'] as const;
+
+const ROOT_CAUSE_LABELS: Record<RootCauseCategory, string> = {
+  concurrency_race: '高并发数据竞态与事务隔离级别权衡分歧',
+  network_partition: '分布式网络分区与异步重试边界假定分歧',
+  resource_exhaustion: '系统底层资源边界与生命周期管理分歧',
+  cost_complexity: '实现复杂度与工程运维 ROI 权衡分歧',
+  architecture_coupling: '架构模块边界与接口契约假定分歧',
+  security_boundary: '安全权限边界与输入校验防线分歧',
+  general: '极端工况下的防御边界与资源竞争分歧',
+};
+
+const ROOT_CAUSE_TAXONOMY: ReadonlyArray<{ keywords: readonly string[]; label: string }> = [
+  {
+    keywords: ['网络', '超时', '抖动', '重试', '脑裂', '分区'],
+    label: ROOT_CAUSE_LABELS.network_partition,
+  },
+  {
+    keywords: ['并发', '锁', '竞态', '竞争'],
+    label: ROOT_CAUSE_LABELS.concurrency_race,
+  },
+  {
+    keywords: ['内存', '泄漏', '溢出', '句柄'],
+    label: ROOT_CAUSE_LABELS.resource_exhaustion,
+  },
+  {
+    keywords: ['成本', '复杂度', 'roi'],
+    label: ROOT_CAUSE_LABELS.cost_complexity,
+  },
+  {
+    keywords: ['权限', '鉴权', '越权', '注入', '漏洞'],
+    label: ROOT_CAUSE_LABELS.security_boundary,
+  },
+];
+
+const GENERIC_ASCII_ENTITY_STOPWORDS = new Set([
+  'fail',
+  'pass',
+  'true',
+  'false',
+  'error',
+  'warn',
+  'info',
+  'test',
+  'json',
+  'null',
+  'void',
+  'todo',
+]);
+
+function stripLeadingListOrHeadingPrefix(raw: string): string {
+  let s = raw.trim();
+  // 1. Strip markdown heading hashes (#, ##, ###)
+  let hashIdx = 0;
+  while (hashIdx < s.length && s[hashIdx] === '#') {
+    hashIdx++;
+  }
+  if (hashIdx > 0) {
+    s = s.slice(hashIdx).trim();
+  }
+  // 2. Strip unordered bullets (-, *, +)
+  while (s.startsWith('- ') || s.startsWith('* ') || s.startsWith('+ ') || s.startsWith('• ')) {
+    s = s.slice(2).trim();
+  }
+  // 3. Strip numbered markers like "1. ", "2) ", "1、" or Chinese outline "一、"
+  let numEnd = 0;
+  while (numEnd < s.length && numEnd < 4 && s[numEnd] >= '0' && s[numEnd] <= '9') {
+    numEnd++;
+  }
+  if (numEnd > 0 && numEnd < s.length && (s[numEnd] === '.' || s[numEnd] === ')' || s[numEnd] === '、')) {
+    if (s[numEnd] === '、' || s[numEnd + 1] === ' ' || s[numEnd + 1] === undefined) {
+      s = s.slice(numEnd + 1).trim();
+    }
+  }
+  return s;
+}
+
+function stripPairedWrapper(text: string, marker: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text.startsWith(marker, i)) {
+      const closeIdx = text.indexOf(marker, i + marker.length);
+      if (closeIdx > i + marker.length) {
+        out += text.slice(i + marker.length, closeIdx);
+        i = closeIdx + marker.length;
+        continue;
+      }
+    }
+    out += text[i];
+    i++;
+  }
+  return out;
+}
+
+function cleanProposalLine(para: string): string {
+  let s = stripLeadingListOrHeadingPrefix(para);
+  s = stripPairedWrapper(s, '**');
+  s = stripPairedWrapper(s, '`');
+  return s.trim();
+}
+
+function isBoilerplateHeading(cleanLine: string): boolean {
+  let normalized = cleanLine.trim();
+  while (normalized.endsWith(':') || normalized.endsWith('：')) {
+    normalized = normalized.slice(0, -1).trim();
+  }
+  return BOILERPLATE_HEADING_SET.has(normalized);
+}
+
+function stripLeadingTokens(text: string, tokens: readonly string[]): string {
+  let current = text.trim();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const token of tokens) {
+      if (current.startsWith(token)) {
+        const rest = current.slice(token.length);
+        const nextCh = rest[0];
+        if (nextCh === undefined || nextCh === '，' || nextCh === ',' || nextCh === ' ' || nextCh === '：' || nextCh === ':') {
+          current = rest.slice(nextCh === undefined ? 0 : 1).trim();
+          while (current.startsWith('，') || current.startsWith(',') || current.startsWith(' ')) {
+            current = current.slice(1).trim();
+          }
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  return current;
+}
+
+function extractAsciiTechnicalEntities(text: string): Set<string> {
+  const entities = new Set<string>();
+  let buf = '';
+  const flush = () => {
+    if (buf.length >= 3 && !(buf[0] >= '0' && buf[0] <= '9')) {
+      const lower = buf.toLowerCase();
+      if (!GENERIC_ASCII_ENTITY_STOPWORDS.has(lower)) {
+        entities.add(lower);
+      }
+    }
+    buf = '';
+  };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const isAscii =
+      (ch >= 'a' && ch <= 'z') ||
+      (ch >= 'A' && ch <= 'Z') ||
+      (ch >= '0' && ch <= '9') ||
+      ch === '_' ||
+      ch === '-';
+    if (isAscii) {
+      buf += ch;
+    } else {
+      flush();
+    }
+  }
+  flush();
+  return entities;
+}
+
+function splitTargetSegments(targetText: string): string[] {
+  const segments: string[] = [];
+  for (const clause of splitClauses(targetText)) {
+    segments.push(clause);
+    const subs = clause.split(/[，,]+/).map((s) => s.trim()).filter(Boolean);
+    if (subs.length > 1) {
+      segments.push(...subs);
+    }
+  }
+  return segments;
+}
+
+function scoreClaimMatchInText(claim: string, targetText: string): number {
+  if (!claim || !targetText) return 0;
+  const claimTerms = extractTechnicalTermSet(claim);
+  const claimEntities = extractAsciiTechnicalEntities(claim);
+  const segments = splitTargetSegments(targetText);
+  if (segments.length === 0) return 0;
+
+  let bestScore = 0;
+  for (const seg of segments) {
+    const segTerms = extractTechnicalTermSet(seg);
+    let sharedTerms = 0;
+    for (const term of claimTerms) {
+      if (segTerms.has(term)) sharedTerms++;
+    }
+    const segEntities = extractAsciiTechnicalEntities(seg);
+    let sharedEntities = 0;
+    for (const ent of claimEntities) {
+      if (segEntities.has(ent)) sharedEntities++;
+    }
+    const overlap = computeClaimTokenOverlap(claim, seg);
+    const segmentScore =
+      overlap +
+      sharedEntities * 0.25 +
+      (sharedTerms >= 3 ? 0.25 : 0);
+    if (segmentScore > bestScore) {
+      bestScore = segmentScore;
+    }
+  }
+  return Number(bestScore.toFixed(4));
+}
+
+function isClaimMatchedInText(claim: string, targetText: string): boolean {
+  if (!claim || !targetText) return false;
+  const claimTerms = extractTechnicalTermSet(claim);
+  const claimEntities = extractAsciiTechnicalEntities(claim);
+  const segments = splitTargetSegments(targetText);
+
+  for (const seg of segments) {
+    const segTerms = extractTechnicalTermSet(seg);
+    let sharedTerms = 0;
+    for (const term of claimTerms) {
+      if (segTerms.has(term)) sharedTerms++;
+    }
+    const segEntities = extractAsciiTechnicalEntities(seg);
+    let sharedEntities = 0;
+    for (const ent of claimEntities) {
+      if (segEntities.has(ent)) sharedEntities++;
+    }
+    if (sharedEntities >= 2) return true;
+    if (sharedEntities >= 1 && (sharedTerms >= 2 || claimEntities.size === 1)) return true;
+    if (sharedTerms >= 3) return true;
+    if (sharedTerms >= 2 && computeClaimTokenOverlap(claim, seg) >= 0.30) return true;
+  }
+  return false;
+}
+
+function findBestMatchingArgumentNode(
+  nodes: ArgumentNode[],
+  targetText: string,
+  preferredIds?: string[]
+): ArgumentNode | undefined {
+  if (nodes.length === 0) return undefined;
+  if (preferredIds && preferredIds.length > 0) {
+    for (const pid of preferredIds) {
+      const exact = nodes.find((n) => n.id === pid);
+      if (exact) return exact;
+    }
+  }
+  let bestNode: ArgumentNode | undefined;
+  let bestScore = 0;
+  for (const node of nodes) {
+    const score = scoreClaimMatchInText(node.claim, targetText);
+    if (score > bestScore && score >= 0.28) {
+      bestScore = score;
+      bestNode = node;
+    }
+  }
+  return bestNode;
+}
+
+function resolveStructuredProposalClaims(
+  proposalText: string,
+  structuredClaims?: ProposalClaimItem[] | ProposalClaimsPayload | null
+): { claims: ProposalClaimItem[]; cleanedText: string } {
+  const extracted = extractProposalClaimsFromAcpResponse({ textResponse: proposalText || '' });
+  const cleanedText = extracted.cleanedText || proposalText || '';
+
+  if (Array.isArray(structuredClaims)) {
+    return { claims: structuredClaims, cleanedText };
+  }
+  if (structuredClaims && Array.isArray(structuredClaims.claims)) {
+    return { claims: structuredClaims.claims, cleanedText };
+  }
+  if (extracted.proposalPayload && Array.isArray(extracted.proposalPayload.claims)) {
+    return { claims: extracted.proposalPayload.claims, cleanedText };
+  }
+  return { claims: [], cleanedText };
+}
 
 export interface DehydrationResult {
   committedStates: ArgumentNode[];
@@ -26,47 +392,84 @@ export interface DehydrationResult {
 }
 
 /**
- * 将长篇提案文本解构为离散的技术论点节点列表 (Argument Nodes)
+ * 将提案文本或结构化 submit_proposal_claims 契约解构为离散的技术论点节点列表 (Argument Nodes)
  * 过滤空壳导语与纯标题，只抽取具备因果断言特征的技术命题 (外壳=0)
  */
 export function extractArgumentNodes(
   proposalText: string,
   authorId?: string,
-  authorName?: string
+  authorName?: string,
+  structuredClaims?: ProposalClaimItem[] | ProposalClaimsPayload | null
 ): ArgumentNode[] {
+  const { claims: explicitClaims, cleanedText } = resolveStructuredProposalClaims(
+    proposalText || '',
+    structuredClaims
+  );
+  if (explicitClaims.length > 0) {
+    const mappedNodes: ArgumentNode[] = explicitClaims
+      .filter((item) => item && typeof item.claim === 'string' && item.claim.trim().length > 0)
+      .slice(0, 5)
+      .map((item, idx) => ({
+        id: item.claimId?.trim() || `arg-node-${idx + 1}`,
+        authorId,
+        authorName,
+        claim: item.claim.trim(),
+        assumptions:
+          Array.isArray(item.assumptions) && item.assumptions.length > 0
+            ? item.assumptions
+            : ['默认系统在标准网络与吞吐 SLA 范围内运行'],
+        confidence:
+          typeof item.confidence === 'number' && Number.isFinite(item.confidence)
+            ? Math.max(0.1, Math.min(1.0, item.confidence))
+            : 0.90,
+        status: 'supported',
+        dependencies: Array.isArray(item.dependsOnClaimIds) ? item.dependsOnClaimIds : undefined,
+      }));
+    if (mappedNodes.length > 0) {
+      return buildArgumentDag(mappedNodes, cleanedText);
+    }
+  }
+
   if (!proposalText || proposalText.trim().length === 0) {
     return [];
   }
 
+  const ast = analyzeStructuredMarkdown(cleanedText);
   const nodes: ArgumentNode[] = [];
-  const rawParagraphs = proposalText.split(/\n+/).map((p) => p.trim()).filter(Boolean);
+  const rawParagraphs = cleanedText
+    .split('\n')
+    .map((p) => p.trim())
+    .filter(Boolean);
 
   let nodeIndex = 1;
   for (const para of rawParagraphs) {
-    // 1. 去除 Markdown 格式标记
-    const cleanLine = para
-      .replace(/^[#*0-9.\-\s]+/, '')
-      .replace(/\*\*(.*?)\*\*/g, '$1')
-      .replace(/`([^`]+)`/g, '$1')
-      .trim();
-
+    const cleanLine = cleanProposalLine(para);
     if (cleanLine.length < 12) continue;
 
     // 2. 过滤纯框架/过渡外壳标题
-    if (BOILERPLATE_HEADING_REGEX.test(cleanLine)) continue;
+    if (isBoilerplateHeading(cleanLine)) continue;
 
-    // 3. 将复合段落按标点拆分为候选断言从句
-    const clauses = cleanLine.split(/[。；;!?！？]+/).map((c) => c.trim()).filter(Boolean);
+    // 3. 按确定性句末分句切分为候选断言从句
+    const clauses = splitClauses(cleanLine);
 
     for (const clause of clauses) {
-      let strippedClause = clause.replace(SHELL_PREFIX_REGEX, '').trim();
-      strippedClause = strippedClause.replace(/^(我们|本方案|系统|平台|设计|本案|架构)[，,\s]*/i, '').trim();
-      
-      // 必须满足长度下限且包含实质技术动词
-      if (strippedClause.length >= 10 && strippedClause.length <= 160 && ASSERTION_VERB_REGEX.test(strippedClause)) {
-        // 提取前提假设
+      let strippedClause = stripLeadingTokens(clause, DISCOURSE_PREFIX_TOKENS);
+      strippedClause = stripLeadingTokens(strippedClause, SUBJECT_PREFIX_TOKENS);
+
+      const hasVerb = ASSERTION_VERBS.some((verb) => strippedClause.includes(verb));
+      const hasTechnicalEvidence =
+        ast.quantifiedMetricCount > 0 &&
+        extractAsciiTechnicalEntities(strippedClause).size >= 1 &&
+        strippedClause.includes('，');
+
+      if (strippedClause.length >= 10 && strippedClause.length <= 160 && (hasVerb || hasTechnicalEvidence)) {
         const assumptions: string[] = [];
-        if (strippedClause.includes('基于') || strippedClause.includes('依赖') || strippedClause.includes('假设') || strippedClause.includes('若')) {
+        if (
+          strippedClause.includes('基于') ||
+          strippedClause.includes('依赖') ||
+          strippedClause.includes('假设') ||
+          strippedClause.includes('若')
+        ) {
           assumptions.push(strippedClause.slice(0, 90));
         }
 
@@ -75,7 +478,8 @@ export function extractArgumentNodes(
           authorId,
           authorName,
           claim: strippedClause,
-          assumptions: assumptions.length > 0 ? assumptions : ['默认系统在标准网络与吞吐 SLA 范围内运行'],
+          assumptions:
+            assumptions.length > 0 ? assumptions : ['默认系统在标准网络与吞吐 SLA 范围内运行'],
           confidence: 0.90,
           status: 'supported', // 初始默认自洽
         });
@@ -90,8 +494,8 @@ export function extractArgumentNodes(
   // 兜底保障：若长文本中未能命中典型动词，提取有效非外壳长句
   if (nodes.length === 0) {
     for (const para of rawParagraphs) {
-      const cleanLine = para.replace(/^[#*0-9.\-\s]+/, '').replace(SHELL_PREFIX_REGEX, '').trim();
-      if (cleanLine.length >= 15 && !BOILERPLATE_HEADING_REGEX.test(cleanLine)) {
+      const cleanLine = stripLeadingTokens(cleanProposalLine(para), DISCOURSE_PREFIX_TOKENS);
+      if (cleanLine.length >= 15 && !isBoilerplateHeading(cleanLine)) {
         nodes.push({
           id: `arg-node-1`,
           authorId,
@@ -106,59 +510,55 @@ export function extractArgumentNodes(
     }
   }
 
-  return buildArgumentDag(nodes, proposalText);
+  return buildArgumentDag(nodes, cleanedText);
 }
 
 /**
  * 基于文本语义与因果推导构建论点有向无环图 (Claim DAG, P1-1)
  */
-export function buildArgumentDag(nodes: ArgumentNode[], proposalText: string): ArgumentNode[] {
+export function buildArgumentDag(nodes: ArgumentNode[], _proposalText: string): ArgumentNode[] {
   if (nodes.length <= 1) {
     return nodes.map((n) => ({ ...n, depth: 0, dependencies: [], impactScore: 1.0 }));
   }
 
-  // 1. 根据节点先后顺序与因果连词推导前置依赖
+  const nodeIdSet = new Set(nodes.map((n) => n.id));
+
+  // 1. 优先保留结构化契约显式声明的依赖边，其次依据因果词元推导前置依赖
   const idToDeps = new Map<string, string[]>();
 
   nodes.forEach((n, idx) => {
+    const explicitDeps = Array.isArray(n.dependencies)
+      ? n.dependencies.filter((depId) => depId !== n.id && nodeIdSet.has(depId))
+      : [];
+    if (explicitDeps.length > 0) {
+      idToDeps.set(n.id, Array.from(new Set(explicitDeps)));
+      return;
+    }
+
     const deps: string[] = [];
     const claimLower = n.claim.toLowerCase();
-
-    // 检查显式因果/依赖触发词
-    const hasDependencyCue =
-      claimLower.includes('基于') ||
-      claimLower.includes('依赖') ||
-      claimLower.includes('接着') ||
-      claimLower.includes('随后') ||
-      claimLower.includes('因此') ||
-      claimLower.includes('为了') ||
-      claimLower.includes('在此基础') ||
-      claimLower.includes('进而');
+    const hasDependencyCue = DEPENDENCY_CUES.some((cue) => claimLower.includes(cue));
 
     if (hasDependencyCue && idx > 0) {
-      // 优先寻找语义关联的前置节点
-      let foundParent = false;
+      let bestParentId: string | undefined;
+      let bestOverlap = 0;
       for (let prevIdx = idx - 1; prevIdx >= 0; prevIdx--) {
         const prevNode = nodes[prevIdx];
-        const sharedKeywords = prevNode.claim
-          .split(/[，,\s]+/)
-          .filter((w) => w.length >= 3 && claimLower.includes(w.toLowerCase()));
-
-        if (sharedKeywords.length > 0) {
-          deps.push(prevNode.id);
-          foundParent = true;
-          break;
+        const overlap = computeClaimTokenOverlap(prevNode.claim, n.claim);
+        if (overlap > bestOverlap && overlap >= 0.08) {
+          bestOverlap = overlap;
+          bestParentId = prevNode.id;
         }
       }
 
-      // 若未直接命中共享词汇，但具有显式前后递进标志，则依赖紧邻前置节点
-      if (!foundParent && idx > 0) {
+      if (bestParentId) {
+        deps.push(bestParentId);
+      } else {
         deps.push(nodes[idx - 1].id);
       }
     } else if (idx > 0 && idx % 2 === 1 && !deps.includes(nodes[idx - 1].id)) {
-      // 自然流式推导：若后续节点存在复合从属，赋予前序支撑
       const prevNode = nodes[idx - 1];
-      if (claimLower.includes('数据') && prevNode.claim.includes('数据')) {
+      if (computeClaimTokenOverlap(prevNode.claim, n.claim) >= 0.25) {
         deps.push(prevNode.id);
       }
     }
@@ -216,17 +616,68 @@ export function buildArgumentDag(nodes: ArgumentNode[], proposalText: string): A
   });
 }
 
+function classifyRootCauseLabel(
+  cleanedCritique: string,
+  critiquePayload?: ChallengeCritiquePayload | null
+): string {
+  if (critiquePayload?.rootCauseCategory) {
+    const rawCat = critiquePayload.rootCauseCategory;
+    if (rawCat === 'general' && critiquePayload.summary) {
+      return critiquePayload.summary.slice(0, 120);
+    }
+    if (rawCat in ROOT_CAUSE_LABELS) {
+      return ROOT_CAUSE_LABELS[rawCat as RootCauseCategory];
+    }
+    return ROOT_CAUSE_LABELS.general;
+  }
+  const lower = cleanedCritique.toLowerCase();
+  for (const entry of ROOT_CAUSE_TAXONOMY) {
+    if (entry.keywords.some((kw) => lower.includes(kw))) {
+      return entry.label;
+    }
+  }
+  return ROOT_CAUSE_LABELS.general;
+}
+
+function resolveCritiqueInput(
+  critiqueText: string,
+  explicitPayload?: ChallengeCritiquePayload | null
+): { payload?: ChallengeCritiquePayload; cleanedCritique: string } {
+  if (explicitPayload) {
+    const { cleanedText } = extractChallengeCritiqueFromAcpResponse({
+      textResponse: critiqueText || '',
+    });
+    return { payload: explicitPayload, cleanedCritique: cleanedText || critiqueText || '' };
+  }
+  if (!critiqueText || !critiqueText.trim()) {
+    return { payload: undefined, cleanedCritique: '' };
+  }
+  const extracted = extractChallengeCritiqueFromAcpResponse({ textResponse: critiqueText });
+  return {
+    payload: extracted.critiquePayload,
+    cleanedCritique: extracted.cleanedText || critiqueText,
+  };
+}
+
+function hasTextRefutationSignal(vText: string): boolean {
+  if (!vText) return false;
+  const lower = vText.toLowerCase();
+  return REFUTATION_TOKENS_LOWER.some((tok) => lower.includes(tok));
+}
+
 /**
- * 局部冲突定位：比对立论与反例，定位时序最早的冲突切片
+ * 局部冲突定位：优先消费结构化 submit_challenge_critique 契约，其次基于技术词元重合定位最早冲突切片
  */
 export function localizeEarliestDispute(
-  proposalText: string,
+  _proposalText: string,
   critiqueText: string,
-  argumentNodes: ArgumentNode[]
+  argumentNodes: ArgumentNode[],
+  critiquePayload?: ChallengeCritiquePayload | null
 ): DisputeSpanPacket {
   const defaultDisputeId = `dsp-${Date.now()}`;
-  
-  if (!critiqueText || critiqueText.trim().length === 0) {
+  const { payload, cleanedCritique } = resolveCritiqueInput(critiqueText, critiquePayload);
+
+  if ((!cleanedCritique || cleanedCritique.trim().length === 0) && !payload) {
     const mainNode = argumentNodes[0] || { claim: '核心方案架构设计' };
     return {
       disputeId: defaultDisputeId,
@@ -238,29 +689,28 @@ export function localizeEarliestDispute(
     };
   }
 
-  // 检索挑战反例中的失效关键词行
-  const critiqueLines = critiqueText.split('\n').map((l) => l.trim()).filter(Boolean);
-  const failureLine = critiqueLines.find(
-    (l) => l.includes('失效') || l.includes('崩溃') || l.includes('漏洞') || l.includes('隐患') || l.includes('并发') || l.includes('延迟') || l.includes('锁')
-  ) || critiqueLines[0] || '红队指出极端工况下的并发竞争与故障风险';
+  const ast = analyzeStructuredMarkdown(cleanedCritique);
+  const candidateLines = [
+    ...(payload?.failureScenarios || []),
+    ...(payload?.fatalFlaws || []),
+    ...ast.listItems,
+    ...cleanedCritique.split('\n').map((l) => l.trim()).filter(Boolean),
+  ];
+  const failureLine =
+    payload?.failureScenarios?.[0] ||
+    payload?.fatalFlaws?.[0] ||
+    candidateLines.find((l) => FAILURE_INDICATORS.some((ind) => l.includes(ind))) ||
+    payload?.summary ||
+    candidateLines[0] ||
+    '红队指出极端工况下的并发竞争与故障风险';
 
-  // 寻找被命中的论点节点
-  const hitNode = argumentNodes.find((n) => critiqueText.includes(n.claim.slice(0, 12))) || argumentNodes[0];
+  const hitNode =
+    findBestMatchingArgumentNode(argumentNodes, cleanedCritique, payload?.disputedClaimIds) ||
+    argumentNodes[0];
 
   const proposerClaim = hitNode ? hitNode.claim : '提案官提出的核心组件选型与时序设计';
-  const challengerCritique = failureLine.replace(/^[#*0-9.\-\s]+/, '').slice(0, 150);
-
-  // 分析根本冲突诱因 (Root Cause)
-  let rootCause = '极端工况下的防御边界与资源竞争分歧';
-  if (critiqueText.includes('网络') || critiqueText.includes('超时') || critiqueText.includes('抖动') || critiqueText.includes('重试')) {
-    rootCause = '分布式网络分区与异步重试边界假定分歧';
-  } else if (critiqueText.includes('并发') || critiqueText.includes('锁') || critiqueText.includes('竞态') || critiqueText.includes('竞争')) {
-    rootCause = '高并发数据竞态与事务隔离级别权衡分歧';
-  } else if (critiqueText.includes('内存') || critiqueText.includes('泄漏') || critiqueText.includes('溢出')) {
-    rootCause = '系统底层资源边界与生命周期管理分歧';
-  } else if (critiqueText.includes('成本') || critiqueText.includes('复杂度')) {
-    rootCause = '实现复杂度与工程运维 ROI 权衡分歧';
-  }
+  const challengerCritique = cleanProposalLine(failureLine).slice(0, 150);
+  const rootCause = classifyRootCauseLabel(cleanedCritique, payload);
 
   return {
     disputeId: defaultDisputeId,
@@ -279,52 +729,61 @@ export function dehydrateContextToCommittedStates(
   proposalText: string,
   critiqueText: string,
   argumentNodes: ArgumentNode[],
-  verificationText?: string
+  verificationText?: string,
+  options?: {
+    critiquePayload?: ChallengeCritiquePayload | null;
+    evidences?: GroundingEvidence[];
+  }
 ): ArgumentNode[] {
-  const result = dehydrateContextWithAlert(proposalText, critiqueText, argumentNodes, verificationText);
+  const result = dehydrateContextWithAlert(
+    proposalText,
+    critiqueText,
+    argumentNodes,
+    verificationText,
+    options
+  );
   return result.committedStates;
 }
 
 /**
  * 完整三态脱水与误删告警计算器 (R-5)
+ * 优先依据结构化 disputedClaimIds 与 GroundingEvidence.claimId 精准映射，消除 4-gram 与截断误伤
  */
 export function dehydrateContextWithAlert(
-  proposalText: string,
+  _proposalText: string,
   critiqueText: string,
   argumentNodes: ArgumentNode[],
-  verificationText?: string
+  verificationText?: string,
+  options?: {
+    critiquePayload?: ChallengeCritiquePayload | null;
+    evidences?: GroundingEvidence[];
+  }
 ): DehydrationResult {
   const vText = verificationText || '';
-  const cText = critiqueText || '';
+  const { payload, cleanedCritique } = resolveCritiqueInput(critiqueText || '', options?.critiquePayload);
+  const disputedIdSet = new Set(payload?.disputedClaimIds || []);
+  const evidences = options?.evidences || [];
 
-  // 为每个论点赋予三态判定 (supported | disputed | refuted)
+  const hasRefutationVerdict = hasTextRefutationSignal(vText);
+
   const updatedNodes = argumentNodes.map((node) => {
-    // 提取断言中的关键技术实体 (英文/数字标识符与中文 4-gram 语义切片)
-    const englishTokens = node.claim.match(/[a-zA-Z0-9_-]{3,}/g) || [];
-    const shingles: string[] = [];
-    for (let i = 0; i <= node.claim.length - 4; i += 2) {
-      shingles.push(node.claim.slice(i, i + 4));
-    }
+    const isChallenged =
+      disputedIdSet.size > 0
+        ? disputedIdSet.has(node.id)
+        : isClaimMatchedInText(node.claim, cleanedCritique);
 
-    const isChallenged = cText.includes(node.claim.slice(0, 10)) ||
-      englishTokens.some((token) => cText.toLowerCase().includes(token.toLowerCase())) ||
-      shingles.some((shingle) => cText.includes(shingle));
-    
-    // 检查验证官是否针对该断言给出了负向证伪信号
-    const hasRefutationVerdict = 
-      vText.includes('未通过') || 
-      vText.includes('证伪') || 
-      vText.includes('FAIL') || 
-      vText.includes('FALSE') || 
-      vText.includes('不成立') ||
-      vText.includes('死锁');
+    const hasExplicitRefutingEvidence = evidences.some(
+      (ev) =>
+        !ev.truthValue &&
+        (ev.claimId === node.id ||
+          (!ev.claimId && isClaimMatchedInText(node.claim, `${ev.verifierReport} ${ev.inputQueryOrCode}`)))
+    );
 
-    const isMentionedInVerification = 
-      vText.includes(node.claim.slice(0, 8)) ||
-      englishTokens.some((t) => vText.toLowerCase().includes(t.toLowerCase())) ||
-      shingles.some((s) => vText.includes(s));
+    const isMentionedInVerification =
+      hasExplicitRefutingEvidence || isClaimMatchedInText(node.claim, vText);
 
-    const isRefuted = isChallenged && hasRefutationVerdict && isMentionedInVerification;
+    const isRefuted =
+      hasExplicitRefutingEvidence || (isChallenged && hasRefutationVerdict && isMentionedInVerification);
 
     let status: 'supported' | 'disputed' | 'refuted' = 'supported';
     if (isRefuted) {
@@ -348,7 +807,6 @@ export function dehydrateContextWithAlert(
   const disputedOrRefutedNodes = updatedNodes.filter((n) => n.status !== 'supported');
   let pruneAlert: DehydrationResult['pruneAlert'] = undefined;
 
-  // 如果原本存在争议断言但未纳入 committed 看板，确保上层感知
   if (disputedOrRefutedNodes.length > 0 && committedStates.length === 0) {
     pruneAlert = {
       prunedClaimCount: disputedOrRefutedNodes.length,
@@ -387,52 +845,38 @@ export function calculateAffectedSubgraph(rootDisputeNodeId: string, nodes: Argu
 
 /**
  * 升级版图差分冲突定位 (Graph Diff Localizer, P1-1)：
- * 比较立论 DAG 与反例批判点，通过有向图逆向遍历定位因果链路上最早被攻破的根源节点 (Root Cause Node)，
- * 彻底杜绝回退兜底首个节点的误定位。
+ * 比较立论 DAG 与反例批判点，优先锚定结构化 disputed_claim_ids / targetClaimId，
+ * 再通过确定性词元重叠与有向图逆向追溯定位根源节点 (Root Cause Node)。
  */
 export function localizeGraphDiffDispute(
   proposalNodes: ArgumentNode[],
   critiqueText: string,
-  defenseText?: string,
-  targetClaimId?: string
+  _defenseText?: string,
+  targetClaimId?: string,
+  critiquePayload?: ChallengeCritiquePayload | null
 ): DisputeSpanPacket {
+  const { payload, cleanedCritique } = resolveCritiqueInput(critiqueText || '', critiquePayload);
   const baseDispute = localizeEarliestDispute(
     proposalNodes.map((n) => n.claim).join('\n'),
-    critiqueText,
-    proposalNodes
+    cleanedCritique,
+    proposalNodes,
+    payload
   );
 
   if (proposalNodes.length === 0) {
     return baseDispute;
   }
 
-  // 0. 若显式指定目标论点 ID，优先精准锚定 (P1-1 / submit_challenge_critique 协同)
-  let matchedNode: ArgumentNode | undefined;
-  if (targetClaimId) {
+  const preferredIds: string[] = [];
+  if (targetClaimId) preferredIds.push(targetClaimId);
+  if (payload?.disputedClaimIds?.length) preferredIds.push(...payload.disputedClaimIds);
+
+  // 0 & 1. 优先显式 ID 锚定，其次基于技术词元重合定位直接被批判命中的论点节点
+  let matchedNode = findBestMatchingArgumentNode(proposalNodes, cleanedCritique, preferredIds);
+  if (!matchedNode && targetClaimId) {
     matchedNode = proposalNodes.find(
-      (n) => n.id === targetClaimId || n.claim.includes(targetClaimId) || targetClaimId.includes(n.id)
+      (n) => n.id === targetClaimId || isClaimMatchedInText(n.claim, targetClaimId)
     );
-  }
-
-  // 1. 寻找被直接批判命中的候选论点节点
-  if (!matchedNode) {
-    matchedNode = proposalNodes.find((n) => critiqueText.includes(n.claim.slice(0, 12)));
-  }
-
-  if (!matchedNode) {
-    // 词项重叠打分匹配
-    let bestScore = -1;
-    for (const node of proposalNodes) {
-      const words = node.claim.split(/[，,\s]+/).filter((w) => w.length >= 2);
-      let matchCount = 0;
-      words.forEach((w) => {
-        if (critiqueText.includes(w)) matchCount++;
-      });
-      if (matchCount > bestScore && matchCount > 0) {
-        bestScore = matchCount;
-        matchedNode = node;
-      }
-    }
   }
 
   const directHitNode = matchedNode || proposalNodes[0];
@@ -441,18 +885,20 @@ export function localizeGraphDiffDispute(
   let rootDisputeNode = directHitNode;
   const nodeMap = new Map<string, ArgumentNode>();
   proposalNodes.forEach((n) => nodeMap.set(n.id, n));
+  const disputedIdSet = new Set(payload?.disputedClaimIds || []);
 
-  // 沿依赖链向上追溯：检查上游前置依赖是否也遭到质疑
   let curr = directHitNode;
   while (curr.dependencies && curr.dependencies.length > 0) {
     const parentId = curr.dependencies[0];
     const parentNode = nodeMap.get(parentId);
     if (!parentNode) break;
 
-    // 若上游节点的前提或核心主张也在 critique 中被波及，则认定更深层的根源在上游
-    const parentTokens = [parentNode.claim.slice(0, 8), ...(parentNode.assumptions || [])];
-    const isParentCritiqued = parentTokens.some((s) => s && critiqueText.includes(s.slice(0, 6)));
-    if (isParentCritiqued || critiqueText.includes('前提') || critiqueText.includes('根本')) {
+    const isParentCritiqued =
+      disputedIdSet.has(parentNode.id) ||
+      isClaimMatchedInText(parentNode.claim, cleanedCritique) ||
+      (parentNode.assumptions || []).some((a) => computeClaimTokenOverlap(a, cleanedCritique) >= 0.30);
+
+    if (isParentCritiqued || cleanedCritique.includes('前提') || cleanedCritique.includes('根本')) {
       rootDisputeNode = parentNode;
       curr = parentNode;
     } else {

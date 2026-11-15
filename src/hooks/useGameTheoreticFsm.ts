@@ -36,8 +36,11 @@ import {
 import {
   buildThinkingProcessFromAcp,
   extractChallengeCritiqueFromAcpResponse,
+  extractDefensePatchFromAcpResponse,
+  extractProposalClaimsFromAcpResponse,
   sendPromptToAcpAgent,
 } from '../services/acpClient';
+import { computeClaimTokenOverlap } from '../services/cogno/structuredTextAnalyzer';
 import { isAgentOffline, isAgentOnline } from '../utils/agentRuntime';
 import type { ProcessArbitrationConcurrenceOptions } from './useArbitrationConcurrence';
 
@@ -281,6 +284,8 @@ export function useGameTheoreticFsm({
           [topicId]: (prev[topicId] || []).map((m) => (m.id === proposalPendingId ? proposalReply : m)),
         }));
 
+        const { proposalPayload: moduleProposalClaims } = extractProposalClaimsFromAcpResponse(acpResp);
+
         // 推进模块状态机进入该模块的验证 (fast_track) 或挑战 (deep_debate) (N8, N9, N10, N12)
         const latestTopicBeforeNext = getTopicData(topicId) || currentTopic;
         const curModular = latestTopicBeforeNext.gameTheoreticState?.modularState;
@@ -357,6 +362,7 @@ export function useGameTheoreticFsm({
             ...old.gameTheoreticState,
             currentStage: nextModStage,
             targetProposalContent: dehydrateTargetTextForHandover(acpResp.textResponse),
+            proposalClaims: moduleProposalClaims || old.gameTheoreticState?.proposalClaims,
             isChallengerResponded: false,
             isChallengerBypassed: isFastTrackBypassed || old.gameTheoreticState?.isChallengerBypassed,
             challengerBypassedReason: isFastTrackBypassed
@@ -720,14 +726,29 @@ export function useGameTheoreticFsm({
 
         // 提取论点因果节点、升级为 Claim DAG 与图差分冲突定位 (Wave 3 P1-1)
         const { critiquePayload } = extractChallengeCritiqueFromAcpResponse(acpResp);
-        const argumentNodes = extractArgumentNodes(targetProposalText);
+        const resolvedProposalClaims =
+          extractProposalClaimsFromAcpResponse({ textResponse: targetProposalText }).proposalPayload ||
+          currentTopic.gameTheoreticState?.proposalClaims;
+        const argumentNodes = extractArgumentNodes(
+          targetProposalText,
+          undefined,
+          undefined,
+          resolvedProposalClaims
+        );
         const disputePacket = localizeGraphDiffDispute(
           argumentNodes,
           acpResp.textResponse,
           undefined,
-          critiquePayload?.targetClaimId
+          critiquePayload?.targetClaimId,
+          critiquePayload
         );
-        const committedStates = dehydrateContextToCommittedStates(targetProposalText, acpResp.textResponse, argumentNodes);
+        const committedStates = dehydrateContextToCommittedStates(
+          targetProposalText,
+          acpResp.textResponse,
+          argumentNodes,
+          undefined,
+          { critiquePayload }
+        );
 
         // 提炼并保留伴生少数派异议报告 (P0-2 Disagreement-Aware Deliberation)
         const minorityReport = compileMinorityReport({
@@ -736,11 +757,13 @@ export function useGameTheoreticFsm({
           dissentingAgentModel: challengerAgent.modelBadge || challengerAgent.modelConfig?.modelId || challengerAgent.modelConfig?.modelName || 'Heterogeneous-LLM',
           critiqueText: acpResp.textResponse,
           proposalText: targetProposalText,
+          critiquePayload,
         });
 
         const sprtScore = estimateRoundAlignmentScore({
           proposalText: targetProposalText,
           critiqueText: acpResp.textResponse,
+          critiquePayload,
         });
         // 关键门禁：若存在未验证核心冲突切片，拦截 early_exit (P1-2 / P0-1)
         const hasUnverifiedDispute = Boolean(disputePacket && disputePacket.groundingStatus === 'unverified');
@@ -877,6 +900,8 @@ export function useGameTheoreticFsm({
               currentStage: nextStageTarget,
               targetProposalContent: targetProposalText,
               targetChallengeContent: dehydrateTargetTextForHandover(acpResp.textResponse),
+              proposalClaims: resolvedProposalClaims || old.gameTheoreticState?.proposalClaims,
+              challengeCritique: critiquePayload || old.gameTheoreticState?.challengeCritique,
               isChallengerResponded: true,
               quorumAlert: undefined,
               sprtState,
@@ -1818,8 +1843,14 @@ export function useGameTheoreticFsm({
         }
         delete stageRefineRetriesRef.current[`${topicId}:defense`];
 
-        // Wave 2 P0-4: 评估答辩者的动态谄媚度 (Dynamic Sycophancy Score, DSS)
-        const sycophancyEval = evaluateDynamicSycophancyScore(proposerAgent, acpResp.textResponse);
+        // Wave 2 P0-4: 提取结构化答辩契约与动态谄媚度 (Dynamic Sycophancy Score, DSS)
+        const { defensePayload } = extractDefensePatchFromAcpResponse(acpResp);
+        const sycophancyEval = evaluateDynamicSycophancyScore(
+          proposerAgent,
+          acpResp.textResponse,
+          true,
+          defensePayload
+        );
         logGameTheoreticTelemetry('sycophancy_evaluated', topicId, {
           stage: 'defense',
           agentId: proposerAgent.id,
@@ -1844,6 +1875,8 @@ export function useGameTheoreticFsm({
           defenseText: acpResp.textResponse,
           groundedTrueRatio,
           dssScore: sycophancyEval.dss,
+          critiquePayload: currentTopic.gameTheoreticState?.challengeCritique,
+          defensePayload,
         });
 
         // 施加谄媚折减后的真实对齐分数 (Sharma et al. 2023)
@@ -1882,6 +1915,7 @@ export function useGameTheoreticFsm({
               targetProposalContent: targetProposalText,
               targetChallengeContent: targetChallengeText,
               targetDefenseContent: dehydrateTargetTextForHandover(acpResp.textResponse),
+              defensePatch: defensePayload || old.gameTheoreticState?.defensePatch,
               isDefenseResponded: true,
               quorumAlert: '⚠️ SPRT 似然比跌破死锁下界 (Deadlock Escalation)，答辩未能化解分歧，已熔断流转',
               sprtState: sprtStateAfterDefense,
@@ -1925,10 +1959,21 @@ export function useGameTheoreticFsm({
 
         // P2 二次对抗回边判定 (4 项硬条件守卫，不满足 4 条件不得回退，防止死循环) (R-4/R-6)
         const currentRoundCount = currentTopic.gameTheoreticState?.roundCount || 1;
-        const originalClaims = extractArgumentNodes(targetProposalText);
+        const originalClaims = extractArgumentNodes(
+          targetProposalText,
+          undefined,
+          undefined,
+          currentTopic.gameTheoreticState?.proposalClaims
+        );
         const defenseClaims = extractArgumentNodes(acpResp.textResponse);
         const hasNewUnverifiedClaims = defenseClaims.some(
-          (dc) => !originalClaims.some((oc) => oc.claim === dc.claim || (oc.claim && dc.claim && (oc.claim.includes(dc.claim) || dc.claim.includes(oc.claim))))
+          (dc) =>
+            !originalClaims.some(
+              (oc) =>
+                dc.id === oc.id ||
+                oc.claim === dc.claim ||
+                (oc.claim && dc.claim && computeClaimTokenOverlap(oc.claim, dc.claim) >= 0.55)
+            )
         ) || (defenseClaims.length > 0 && defenseClaims.some((dc) => dc.status === 'disputed' || dc.status === 'refuted'));
 
         const shouldTriggerP2Loopback =
@@ -1957,6 +2002,7 @@ export function useGameTheoreticFsm({
               targetProposalContent: targetProposalText,
               targetChallengeContent: targetChallengeText,
               targetDefenseContent: dehydrateTargetTextForHandover(acpResp.textResponse),
+              defensePatch: defensePayload || old.gameTheoreticState?.defensePatch,
               isChallengerResponded: false,
               isVerifierResponded: false,
               isDefenseResponded: false,
@@ -2127,6 +2173,7 @@ export function useGameTheoreticFsm({
             targetProposalContent: targetProposalText,
             targetChallengeContent: targetChallengeText,
             targetDefenseContent: dehydrateTargetTextForHandover(acpResp.textResponse),
+            defensePatch: defensePayload || old.gameTheoreticState?.defensePatch,
             isChallengerResponded: resolvedNextStage === 'arbitration',
             isVerifierResponded: resolvedNextStage === 'arbitration',
             isDefenseResponded: resolvedNextStage === 'arbitration',

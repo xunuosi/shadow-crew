@@ -213,6 +213,10 @@ export function useArbitrationConcurrence({
           evidences: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain,
           sycophancy: currentTopic.gameTheoreticState?.latestSycophancy,
           modelDiversity: currentTopic.gameTheoreticState?.modelDiversity,
+          mcdaMatrix: acpResp.rulingDraft?.mcdaMatrix,
+          proposalPayload: currentTopic.gameTheoreticState?.proposalClaims,
+          critiquePayload: currentTopic.gameTheoreticState?.challengeCritique,
+          defensePayload: currentTopic.gameTheoreticState?.defensePatch,
         });
 
         logGameTheoreticTelemetry('consistency_gate_evaluation', topicId, {
@@ -225,12 +229,16 @@ export function useArbitrationConcurrence({
         const colMadReport = calculateColMadContributions({
           topicId,
           agents: agentsRef.current.length > 0 ? agentsRef.current : candidateAgents,
+          gameRoles: currentTopic.gameRoles,
           proposalText: targetProposalText,
           critiqueText: targetChallengeText,
           verificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
           defenseText: targetDefenseText,
           argumentNodes: currentTopic.gameTheoreticState?.cognoNexus?.committedStates,
           evidences: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain,
+          proposalPayload: currentTopic.gameTheoreticState?.proposalClaims,
+          critiquePayload: currentTopic.gameTheoreticState?.challengeCritique,
+          defensePayload: currentTopic.gameTheoreticState?.defensePatch,
         });
 
         // 提取由 Arbiter Agent 通过 submit_arbitration_ruling 工具或结构化契约提交的裁决书草案与 3 种模式预案
@@ -243,6 +251,11 @@ export function useArbitrationConcurrence({
           verificationText: targetVerificationText || latestTopicForArbitration.gameTheoreticState?.targetVerificationContent,
           mcdaPayload,
           authorName: arbiterAgent.name,
+          proposalPayload: latestTopicForArbitration.gameTheoreticState?.proposalClaims,
+          critiquePayload: latestTopicForArbitration.gameTheoreticState?.challengeCritique,
+          defensePayload: latestTopicForArbitration.gameTheoreticState?.defensePatch,
+          argumentNodes: latestTopicForArbitration.gameTheoreticState?.cognoNexus?.committedStates,
+          modularState: latestTopicForArbitration.gameTheoreticState?.modularState,
         });
         const extractedRulingDraft = acpResp.rulingDraft || extractedRulingOptions.primaryDraft;
         if (!latestTopicForArbitration.gameTheoreticState?.rulingDraft) {

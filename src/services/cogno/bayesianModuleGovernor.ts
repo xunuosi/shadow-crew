@@ -9,6 +9,7 @@ import {
   TopicPatchDiffItem,
   WhitelistDeduplicationRecord,
 } from '../../types';
+import { extractFilePathsFromTextSegment } from './structuredTextAnalyzer';
 
 function clamp(val: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, val));
@@ -869,6 +870,47 @@ export function computeEntropyReductionRatio(
  * - 严禁硬编码任何特定代码文件路径（如 src/types.ts 等），确保非研发类（商业策略、产品规划、运营风控等）与研发类任务均可自适应分治
  * - 若提案文本或议题描述中已包含结构化小节标题，则优先提取真实业务子模块；否则按「目标与边界共识 -> 核心机制与路径 -> 风险防控与落地」三元正交维度拆解
  */
+const DEFAULT_DECOMP_IGNORED_HEADING_PREFIXES = ['背景', '总结', '综述', '结论', '附录'] as const;
+const DEFAULT_DECOMP_NUMBER_PREFIXES = ['一', '二', '三', '四', '1', '2', '3', '4'] as const;
+const DEFAULT_DECOMP_SEPARATORS = new Set(['、', '.', ')', '）']);
+
+function extractSectionHeadingsForDefaultModules(combined: string): string[] {
+  const results: string[] = [];
+  const seen = new Set<string>();
+  for (const rawLine of combined.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    let body: string | null = null;
+    if (line.startsWith('### ') || line.startsWith('## ')) {
+      body = line.startsWith('### ') ? line.slice(4).trim() : line.slice(3).trim();
+    } else if (
+      line.length >= 3 &&
+      (DEFAULT_DECOMP_NUMBER_PREFIXES as readonly string[]).includes(line[0]) &&
+      DEFAULT_DECOMP_SEPARATORS.has(line[1])
+    ) {
+      body = line.slice(2).trim();
+    }
+    if (!body) continue;
+
+    const zhColon = body.indexOf('：');
+    const enColon = body.indexOf(':');
+    const colonIdx =
+      zhColon >= 0 && enColon >= 0 ? Math.min(zhColon, enColon) : Math.max(zhColon, enColon);
+    const segment = (colonIdx >= 0 ? body.slice(0, colonIdx) : body).split('*').join('').trim();
+    if (
+      segment.length >= 4 &&
+      segment.length <= 36 &&
+      !DEFAULT_DECOMP_IGNORED_HEADING_PREFIXES.some((prefix) => segment.startsWith(prefix)) &&
+      !seen.has(segment)
+    ) {
+      seen.add(segment);
+      results.push(segment);
+      if (results.length >= 4) break;
+    }
+  }
+  return results;
+}
+
 export function buildDefaultDecompositionFromTopic(
   topicTitle: string,
   topicDescription: string = '',
@@ -879,18 +921,12 @@ export function buildDefaultDecompositionFromTopic(
   // 仅当议题或提案正文中真实出现了明确的文件路径时，才提取为关联文件，绝不凭空硬编码项目源码路径
   const mentionedFiles = Array.from(
     new Set(
-      (combined.match(/(?:[a-zA-Z0-9_-]+\/)+[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+/g) || []).slice(0, 6)
+      extractFilePathsFromTextSegment(combined).filter((p) => p.includes('/') && !p.endsWith('/'))
     )
-  );
+  ).slice(0, 6);
 
   // 尝试从提案或描述的 Markdown 标题 / 编号段落中提取真实业务子模块 (2~4 个)
-  const headingMatches = Array.from(
-    combined.matchAll(/(?:^|\n)\s*(?:#{2,3}\s+|(?:[一二三四1-4][、.)）])\s*)([^\n:：]{4,36})/g)
-  )
-    .map((m) => m[1].trim().replace(/\*+/g, ''))
-    .filter((t) => t.length >= 4 && !/^(背景|总结|综述|结论|附录)/.test(t));
-
-  const uniqueHeadings = Array.from(new Set(headingMatches)).slice(0, 4);
+  const uniqueHeadings = extractSectionHeadingsForDefaultModules(combined);
 
   // 保守兜底原则 (Fail-Safe)：当大模型未显式调用 submit_module_decomposition 时，
   // 严禁基于关键词猜测或默认放行 fast_track 跳过红方，所有兜底模块一律按 medium_standard + requiresRedTeam: true 走完整红方对抗

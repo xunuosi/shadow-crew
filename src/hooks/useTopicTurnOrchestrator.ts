@@ -17,6 +17,7 @@ import {
   buildThinkingProcessFromAcp,
   ensureAcpAgentSession,
   extractModuleDecompositionFromAcpResponse,
+  extractProposalClaimsFromAcpResponse,
   sendPromptToAcpAgent,
 } from '../services/acpClient';
 import {
@@ -1272,6 +1273,7 @@ export function useTopicTurnOrchestrator({
                     agent.name
                   );
                   const currentTopicData = getTopicData(topicId) || activeTopicData;
+                  const { proposalPayload: initialProposalPayload } = extractProposalClaimsFromAcpResponse(acpResp);
                   const baseModular = extractedDecomp
                     ? initializeModularOrchestrationState(extractedDecomp)
                     : currentTopicData?.gameTheoreticState?.modularState ||
@@ -1396,6 +1398,7 @@ export function useTopicTurnOrchestrator({
                       ...old.gameTheoreticState,
                       currentStage: nextStageForM1,
                       targetProposalContent: acpResp.textResponse,
+                      proposalClaims: initialProposalPayload,
                       isChallengerResponded: false,
                       isChallengerBypassed: isFastTrack,
                       challengerBypassedReason: isFastTrack

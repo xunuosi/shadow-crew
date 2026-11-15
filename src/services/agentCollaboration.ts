@@ -23,7 +23,12 @@ import {
   TaskModuleSlice,
   SharedInterfaceContract,
   MessageKind,
+  ProposalClaimsPayload,
+  ChallengeCritiquePayload,
+  DefensePatchPayload,
+  McdaMatrixInput,
 } from '../types';
+import { analyzeStructuredMarkdown } from './cogno/structuredTextAnalyzer';
 import {
   solveDeterministicBwm,
   solveExactBwmOptionB,
@@ -416,30 +421,60 @@ export const buildStandingContext = buildCrewRosterGuidance;
  * 2. 优先提取高信噪比结构（【💡 最终结论】、【📋 核心决策 / 变更清单】、```diff 块）
  * 3. 截断超长废话，防止下游 Agent 上下文滚雪球放大
  */
+function stripEnvelopeRangeIgnoreCase(raw: string, startTag: string, endTag: string): string {
+  let result = raw;
+  const startUpper = startTag.toUpperCase();
+  const endUpper = endTag.toUpperCase();
+  while (true) {
+    const upper = result.toUpperCase();
+    const sIdx = upper.indexOf(startUpper);
+    if (sIdx < 0) break;
+    const eIdx = upper.indexOf(endUpper, sIdx + startTag.length);
+    if (eIdx < 0) break;
+    result = `${result.slice(0, sIdx)}${result.slice(eIdx + endTag.length)}`;
+  }
+  return result;
+}
+
+function extractTaggedSectionSlice(
+  text: string,
+  sectionMarker: string,
+  stopMarkers: readonly string[]
+): string {
+  const startIdx = text.indexOf(sectionMarker);
+  if (startIdx < 0) return '';
+  let endIdx = text.length;
+  const searchFrom = startIdx + sectionMarker.length;
+  for (const stop of stopMarkers) {
+    const idx = text.indexOf(stop, searchFrom);
+    if (idx >= 0 && idx < endIdx) {
+      endIdx = idx;
+    }
+  }
+  return text.slice(startIdx, endIdx).trim();
+}
+
 export function dehydrateTargetTextForHandover(rawText?: string, maxChars = 1500): string {
   if (!rawText || !rawText.trim()) return '';
 
-  // 1. 剔除思维链块与元数据块
-  let clean = rawText
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
-    .replace(/<<<DEEP_THINKING>>>[\s\S]*?<<<DEEP_THINKING_END>>>/gi, '')
-    .replace(/<<<THINKING>>>[\s\S]*?<<<THINKING_END>>>/gi, '')
-    .replace(/<<<EXECUTION_META>>>[\s\S]*?<<<EXECUTION_META_END>>>/gi, '')
-    .trim();
+  // 1. 确定性边界剔除思维链块与元数据块（零正则）
+  let clean = stripEnvelopeRangeIgnoreCase(rawText, '<thinking>', '</thinking>');
+  clean = stripEnvelopeRangeIgnoreCase(clean, '<<<DEEP_THINKING>>>', '<<<DEEP_THINKING_END>>>');
+  clean = stripEnvelopeRangeIgnoreCase(clean, '<<<THINKING>>>', '<<<THINKING_END>>>');
+  clean = stripEnvelopeRangeIgnoreCase(clean, '<<<EXECUTION_META>>>', '<<<EXECUTION_META_END>>>');
+  clean = clean.trim();
 
   // 2. 若文本超长，优先保留首段核心结论、决策清单与 Diff 块
   if (clean.length > maxChars) {
-    const conclusionMatch = clean.match(/【💡\s*[^】]*】[\s\S]*?(?=(?:【📋|【📦|```|$))/);
-    const checklistMatch = clean.match(/【📋\s*[^】]*】[\s\S]*?(?=(?:【📦|```|$))/);
-    const diffMatch = clean.match(/```(?:diff|patch)[\s\S]*?```/);
+    const conclusionPart = extractTaggedSectionSlice(clean, '【💡', ['【📋', '【📦', '```']);
+    const checklistPart = extractTaggedSectionSlice(clean, '【📋', ['【📦', '```']);
+    const diffBlock = analyzeStructuredMarkdown(clean).fencedCodeBlocks.find(
+      (b) => b.lang.toLowerCase() === 'diff' || b.lang.toLowerCase() === 'patch'
+    );
+    const diffPart = diffBlock ? `\`\`\`${diffBlock.lang}\n${diffBlock.content}\n\`\`\`` : '';
 
-    if (conclusionMatch || checklistMatch) {
-      const parts = [
-        conclusionMatch ? conclusionMatch[0].trim() : '',
-        checklistMatch ? checklistMatch[0].trim() : '',
-        diffMatch ? diffMatch[0].trim() : '',
-      ].filter(Boolean);
-
+    if (conclusionPart || checklistPart) {
+      const parts = [conclusionPart, checklistPart, diffPart].filter(Boolean);
       if (parts.length > 0) {
         clean = parts.join('\n\n');
       }
@@ -690,7 +725,10 @@ export function buildTopicPrompt(options: {
 1. 严禁冗长的内心独白与思考过程废话；
 2. 【💡 最终答辩结论】(≤ 80 字通俗结论：认可/反驳挑战方哪些推演，核心修正收益是什么)；
 3. 【📋 修复与重构清单】(明确架构补丁方案、容灾降级、互斥加锁机制、负向边界恪守说明与性能/复杂度折中)；
-4. 【📦 架构补丁代码 / Unified Diff】(直接给出修复后的代码差异、接口修正或防御补丁，严禁越界添加禁用技术或超纲特性)。
+4. 【📦 架构补丁代码 / Unified Diff】(直接给出修复后的代码差异、接口修正或防御补丁，严禁越界添加禁用技术或超纲特性)；
+5. 【🛡️ 结构化答辩契约 (强制工具优先)】：
+   - 请优先调用宿主 MCP 工具 \`submit_defense_patch\`（包含 \`summary\`、\`stance\`：\`uphold_with_patch | partial_concession_with_patch | reject_critique_with_proof | full_surrender_without_patch\`、\`patched_claims\`、\`defense_patches\`、\`quantified_metrics\`、\`impacted_files\`、\`alignment_score\`）；
+   - 若无工具环境，请在正文末尾附带紧凑 \`<<<DEFENSE_PATCH>>>...<<<DEFENSE_PATCH_END>>>\` JSON 块。
 无需在正文 @ 任何人，平台状态机将自动汇总攻防论据并提交仲裁。
 
 【红队反例质询 (攻击靶点)】:
@@ -705,7 +743,9 @@ ${topic.targetChallengeText || '（详见前序讨论脉络中的挑战者发言
 2. 【💡 最终结论】(≤ 80 字通俗结论：核心选型设计、实现路径与预期质量性能保证目标)；
 3. 【📋 核心设计与变更文件清单】(明确文件路径如 \`src/...\`、核心架构组件、关键函数/类与边界保证)；
 4. 【📦 核心代码草案或 Unified Diff】(直接呈现关键类型签名与核心代码块)；
-5. 【🧭 模块拆解与红队路由自主决策 (强制工具优先)】：
+5. 【📜 结构化立论契约 (强制工具优先)】：
+   - 请调用宿主 MCP 工具 \`submit_proposal_claims\`，显式提交最多 5 条核心原子技术论点 \`claims\`（含 \`claim_id\`、\`claim\`、\`assumptions\`、\`depends_on_claim_ids\`、\`confidence\`）及 \`summary\`、\`impacted_files\`；若无工具环境，请在末尾附带紧凑 \`<<<PROPOSAL_CLAIMS>>>...<<<PROPOSAL_CLAIMS_END>>>\` JSON 块；
+6. 【🧭 模块拆解与红队路由自主决策 (强制工具优先)】：
    - 请优先调用宿主 MCP 工具 \`submit_module_decomposition\`，将本方案拆解为 1~4 个模块（若任务本身单一聚焦如单文件静态页面、局部小改，仅提交 1 个原子模块即可，严禁为了凑数强行拆出多个模块；复杂任务拆解为 2~4 个模块），并由你结合议题风险与语义**自主决定**每个模块的 \`complexity_level\`（\`low_deterministic\` / \`medium_standard\` / \`high_critical\`）、\`requires_red_team\`（\`true\`=必须经红方对抗压测，\`false\`=极低风险确定性模块可直通验证）与 \`routing_rationale\`（简明说明该路由判断依据）；
    - 若当前环境无 MCP 工具，请在回复末尾附带紧凑 \`<<<MODULE_DECOMPOSITION>>>...<<<MODULE_DECOMPOSITION_END>>>\` JSON 块。未显式声明时，系统默认全部模块进入红方对抗。
 无需在正文 @ 任何人，平台状态机将自动递交方案。`;
@@ -720,13 +760,15 @@ ${topic.targetChallengeText || '（详见前序讨论脉络中的挑战者发言
 ③ 极端边缘与失效场景 (failure_scenarios)：构造具体的恶意并发、网络断开超时、脏数据或雪崩工况；
 ④ 反例实证要求 (counter_demands)：明确要求提案官/验证官提供具体的代码防御补丁或复现测试用例。
 【输出铁律 · 结构化批判契约 (强制工具优先)】:
-1. 【首选执行（强制优先）】：直接调用宿主 MCP 工具 \`submit_challenge_critique\`，传入完整四部曲参数：
+1. 【首选执行（强制优先）】：直接调用宿主 MCP 工具 \`submit_challenge_critique\`，传入完整四部曲与结构化归因参数：
    - \`fatal_flaws\`: 致命隐患与逻辑漏洞列表（至少 1 条）
    - \`hidden_assumptions\`: 隐含假设缺陷列表（至少 1 条）
    - \`failure_scenarios\`: 极端边缘/失效场景工况列表（至少 1 条）
    - \`counter_demands\`: 反例实证与防御补丁要求列表（至少 1 条）
    - \`summary\`: 质询结论摘要 (≤ 80 字)
-   - \`target_claim_id\`: (可选) 靶向锁定的具体论点 ID
+   - \`target_claim_id\` / \`disputed_claim_ids\`: 靶向锁定的被质疑论点 ID 列表
+   - \`root_cause_category\`: (\`network_partition | concurrency_race | resource_exhaustion | cost_complexity | architecture_coupling | security_boundary | general\`)
+   - \`reopening_triggers\`: 黑天鹅重开条件列表；\`alignment_score\`: 0~1 主客观收敛度评估
 2. 【容灾备选（仅限无工具环境）】：若当前环境不可调用工具，可在正文末尾附带紧凑 JSON 契约块：
 <<<CHALLENGER_CRITIQUE>>>
 {
@@ -753,12 +795,12 @@ ${topic.targetProposalText || '（暂未提取到前序提案方案，请围绕�
 2. 【💡 实证核查结论】(明确输出真值判定：PASS / FAIL / 已证实 / 已证伪 / 成立 / 不成立，≤ 80 字)；
 3. 【📋 实证检验项与证据】(给出具体检验工具如 ast_grep/sandbox、测试用例代码与实际执行输出摘要)；
 4. 【📦 结构化证据契约 (强制工具契约优先)】：
-   - 【首选执行（强制优先）】：直接调用宿主 MCP 工具 \`submit_grounding_evidence\`，传入 evidences 数组（包含 source_tool, input_query_or_code, raw_output, truth_value, confidence, verifier_report）；
+   - 【首选执行（强制优先）】：直接调用宿主 MCP 工具 \`submit_grounding_evidence\`，传入 evidences 数组（包含 source_tool, claim_id, tier, input_query_or_code, raw_output, truth_value, confidence, verifier_report）；
    - 【容灾备选（仅限无工具环境）】：在回复末尾附带紧凑证据块（注意：输出 JSON 容灾块时，每个证据项必须一致且明确地包含布尔字段 \`truth_value\` 或 \`truthValue\`，取值为 \`true\` 或 \`false\`，切勿省略真值字段或仅用文字描述 PASS/FAIL 代替）：
 \`\`\`json
 {
   "evidences": [
-    { "sourceTool": "ast_grep", "truthValue": true, "truth_value": true, "confidence": 0.9, "verifierReport": "实证检验结论" }
+    { "claimId": "arg-node-1", "sourceTool": "ast_grep", "tier": "T1", "truthValue": true, "truth_value": true, "confidence": 0.9, "verifierReport": "实证检验结论" }
   ]
 }
 \`\`\`
@@ -1653,6 +1695,39 @@ const CRITERIA_CATALOGUE: CriterionCandidate[] = [
   },
 ];
 
+function stripThemeLeadingDecorators(raw: string): string {
+  const leadSet = new Set(['.', '#', '-', '*', '：', ':', ' ', '\t', '【', '】']);
+  const inlineSet = new Set(['*', '`', '_']);
+  let start = 0;
+  while (start < raw.length) {
+    const ch = raw[start];
+    if ((ch >= '0' && ch <= '9') || leadSet.has(ch)) {
+      start++;
+    } else {
+      break;
+    }
+  }
+  let out = '';
+  for (let i = start; i < raw.length; i++) {
+    if (!inlineSet.has(raw[i])) {
+      out += raw[i];
+    }
+  }
+  return out.trim();
+}
+
+function extractFirstBoldSpan(text: string): string | null {
+  const openIdx = text.indexOf('**');
+  if (openIdx < 0) return null;
+  const closeIdx = text.indexOf('**', openIdx + 2);
+  if (closeIdx < 0) return null;
+  const inner = text.slice(openIdx + 2, closeIdx).trim();
+  if (inner.length >= 3 && inner.length <= 25 && !inner.includes('*')) {
+    return inner;
+  }
+  return null;
+}
+
 function extractCoreThemeFromText(text?: string, fallback = ''): string {
   if (!text || !text.trim()) return fallback;
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -1661,16 +1736,29 @@ function extractCoreThemeFromText(text?: string, fallback = ''): string {
     l.includes('架构') || l.includes('重构') || l.includes('补丁') || l.startsWith('1.')
   );
   if (keyLine) {
-    const cleaned = keyLine.replace(/^[0-9.#\-*：:\s【】]+/, '').replace(/[*`_]/g, '').trim();
+    const cleaned = stripThemeLeadingDecorators(keyLine);
     if (cleaned.length >= 3) {
       return cleaned.slice(0, 20);
     }
   }
-  const boldMatch = text.match(/\*\*([^*]{3,25})\*\*/);
-  if (boldMatch) {
-    return boldMatch[1].trim().slice(0, 20);
+  const boldSpan = extractFirstBoldSpan(text);
+  if (boldSpan) {
+    return boldSpan.slice(0, 20);
   }
   return lines[0]?.slice(0, 20) || fallback;
+}
+
+function countLowerSubstringOccurrences(lowerHaystack: string, lowerNeedle: string): number {
+  if (!lowerHaystack || !lowerNeedle) return 0;
+  let count = 0;
+  let pos = 0;
+  while (pos < lowerHaystack.length) {
+    const idx = lowerHaystack.indexOf(lowerNeedle, pos);
+    if (idx < 0) break;
+    count++;
+    pos = idx + lowerNeedle.length;
+  }
+  return count;
 }
 
 export interface GenerateMcdaOptions {
@@ -1684,10 +1772,16 @@ export interface GenerateMcdaOptions {
   evidences?: GroundingEvidence[];
   sycophancy?: SycophancyEvaluation;
   modelDiversity?: ModelDiversityEvaluation;
+  mcdaMatrix?: McdaMatrixInput | null;
+  proposalPayload?: ProposalClaimsPayload | null;
+  critiquePayload?: ChallengeCritiquePayload | null;
+  defensePayload?: DefensePatchPayload | null;
 }
 
 /**
- * 神经符号确定性运筹裁决：结合 Arbiter 意图与真实研讨脉络，输出确定性多属性决策载荷 (LLM + BWM)
+ * 神经符号确定性运筹裁决：
+ * 1. 若仲裁官显式提供结构化 mcda_matrix，直接交付 BWM 运筹内核精确求解；
+ * 2. 否则依据结构化契约 (Proposal/Critique/Defense)、论点状态、接地证据与谄媚系数确定性推导矩阵。
  */
 export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): McdaDecisionPayload {
   const {
@@ -1700,18 +1794,53 @@ export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): 
     argumentNodes = [],
     evidences = [],
     sycophancy,
-    modelDiversity,
+    mcdaMatrix,
+    proposalPayload,
+    critiquePayload,
+    defensePayload,
   } = options;
 
-  const fullCorpus = [topicTitle, topicDescription, arbiterText, proposalText, critiqueText, defenseText].join('\n').toLowerCase();
+  if (
+    mcdaMatrix &&
+    Array.isArray(mcdaMatrix.criteria) &&
+    mcdaMatrix.criteria.length >= 2 &&
+    Array.isArray(mcdaMatrix.alternatives) &&
+    mcdaMatrix.alternatives.length >= 2 &&
+    Array.isArray(mcdaMatrix.bestToOthers) &&
+    mcdaMatrix.bestToOthers.length === mcdaMatrix.criteria.length &&
+    Array.isArray(mcdaMatrix.othersToWorst) &&
+    mcdaMatrix.othersToWorst.length === mcdaMatrix.criteria.length
+  ) {
+    const confidenceMatrix = calculateConfidenceMatrix({
+      alternatives: mcdaMatrix.alternatives,
+      criteriaIds: mcdaMatrix.criteria.map((c) => c.id),
+      evidences,
+      argumentNodes,
+      sycophancy,
+    });
+    return solveDeterministicBwm({
+      solverType: 'BWM',
+      criteria: mcdaMatrix.criteria,
+      alternatives: mcdaMatrix.alternatives,
+      scoreMatrix: mcdaMatrix.scoreMatrix,
+      bestCriterionId: mcdaMatrix.bestCriterionId,
+      worstCriterionId: mcdaMatrix.worstCriterionId,
+      bestToOthers: mcdaMatrix.bestToOthers,
+      othersToWorst: mcdaMatrix.othersToWorst,
+      scoreProvenance: mcdaMatrix.scoreProvenance || {},
+      confidenceMatrix,
+    });
+  }
 
-  // 1. 动态评分筛选当前议题最关切的准则 (前 4 项)
+  const fullCorpus = [topicTitle, topicDescription, arbiterText, proposalText, critiqueText, defenseText]
+    .join('\n')
+    .toLowerCase();
+
+  // 1. 确定性词频统计筛选当前议题最关切的准则 (前 4 项，零 new RegExp)
   const scoredCriteria = CRITERIA_CATALOGUE.map((c) => {
     let count = 0;
     c.keywords.forEach((kw) => {
-      const regex = new RegExp(kw.toLowerCase(), 'g');
-      const matches = fullCorpus.match(regex);
-      if (matches) count += matches.length;
+      count += countLowerSubstringOccurrences(fullCorpus, kw.toLowerCase());
     });
     return { candidate: c, count };
   });
@@ -1726,10 +1855,16 @@ export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): 
     direction: c.direction,
   }));
 
-  // 2. 动态抽取候选方案名称
-  const propTheme = extractCoreThemeFromText(proposalText, '提案主推方案');
-  const critTheme = extractCoreThemeFromText(critiqueText, '红队对抗重构方案');
-  const defTheme = extractCoreThemeFromText(defenseText || arbiterText, '架构权衡补丁');
+  // 2. 动态抽取候选方案名称（优先消费结构化 summary）
+  const propTheme =
+    (proposalPayload?.summary && proposalPayload.summary.slice(0, 20)) ||
+    extractCoreThemeFromText(proposalText, '提案主推方案');
+  const critTheme =
+    (critiquePayload?.summary && critiquePayload.summary.slice(0, 20)) ||
+    extractCoreThemeFromText(critiqueText, '红队对抗重构方案');
+  const defTheme =
+    (defensePayload?.summary && defensePayload.summary.slice(0, 20)) ||
+    extractCoreThemeFromText(defenseText || arbiterText, '架构权衡补丁');
 
   const altA = `方案A: 提案主导方案 (${propTheme})`;
   const altB = `方案B: 红队对抗方案 (${critTheme})`;
@@ -1748,9 +1883,13 @@ export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): 
     [altC]: {},
   };
 
-  // 计算实证与论点状态对准则的修正因子
+  // 计算实证、论点状态与结构化契约对准则的修正因子
   const verifiedT1T2Count = evidences.filter((e) => e.truthValue).length;
   const refutedT1T2Count = evidences.filter((e) => !e.truthValue).length;
+  const refutedNodesCount = argumentNodes.filter((n) => n.status === 'refuted').length;
+  const hasDefensePatchPayload = Boolean(defensePayload && defensePayload.defensePatches.length > 0);
+  const isWeakSurrender = defensePayload?.stance === 'full_surrender_without_patch';
+  const hasSevereCritique = (critiquePayload?.fatalFlaws?.length ?? 0) > 0;
 
   for (const crit of criteria) {
     let scoreA = 7.5;
@@ -1766,27 +1905,45 @@ export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): 
       scoreA = 7.8;
       scoreB = 8.8;
       scoreC = 8.5;
-      if (refutedT1T2Count > 0) {
+      if (refutedT1T2Count > 0 || refutedNodesCount > 0) {
         scoreA = Math.max(3.5, scoreA - 2.5);
-        provA = `实证检验存在 ${refutedT1T2Count} 项未通过/复现反例缺陷`;
+        provA = `实证检验存在 ${refutedT1T2Count || refutedNodesCount} 项未通过/复现反例缺陷`;
         provB = '红队反例获接地实证验证支持';
       } else if (verifiedT1T2Count > 0) {
         scoreA = Math.min(9.5, scoreA + 1.2);
         provA = `接地实证通过 ${verifiedT1T2Count} 项物理检验`;
       }
-      if (defenseText.includes('补丁') || defenseText.includes('容灾') || defenseText.includes('降级')) {
+      if (
+        hasDefensePatchPayload ||
+        defenseText.includes('补丁') ||
+        defenseText.includes('容灾') ||
+        defenseText.includes('降级')
+      ) {
         scoreC = Math.min(9.4, scoreC + 0.8);
         provC = '答辩已融入容灾/降级防御补丁';
+      }
+      if (isWeakSurrender) {
+        scoreA = Math.max(3.5, scoreA - 1.0);
       }
     } else if (crit.id === 'perf') {
       scoreA = 8.5;
       scoreB = 7.2;
       scoreC = 8.2;
-      if (critiqueText.includes('性能') || critiqueText.includes('延迟') || critiqueText.includes('瓶颈')) {
+      if (
+        hasSevereCritique ||
+        critiqueText.includes('性能') ||
+        critiqueText.includes('延迟') ||
+        critiqueText.includes('瓶颈')
+      ) {
         scoreA = Math.max(4.0, scoreA - 1.5);
         provA = '红队指出极端并发/网络抖动下的延迟抖动隐患';
       }
-      if (defenseText.includes('优化') || defenseText.includes('异步') || defenseText.includes('缓存')) {
+      if (
+        hasDefensePatchPayload ||
+        defenseText.includes('优化') ||
+        defenseText.includes('异步') ||
+        defenseText.includes('缓存')
+      ) {
         scoreC = Math.min(9.2, scoreC + 0.8);
         provC = '答辩补丁引入异步/缓冲优化性能';
       }

@@ -18,6 +18,7 @@ import {
   RulingRecord,
   TopicMessageData,
 } from '../../types';
+import { analyzeStructuredMarkdown } from './structuredTextAnalyzer';
 
 export interface ArbiterStage5TopicContext {
   title: string;
@@ -511,11 +512,22 @@ export function hasExplicitArbitrationRulingContract(acpResp: {
   }
 
   const text = acpResp.textResponse || '';
-  if (
-    /<<<RULING_DRAFT/i.test(text) ||
-    /```(?:json)?\s*\{\s*"decision_?type"[\s\S]*?\}\s*```/i.test(text)
-  ) {
+  if (text.toUpperCase().includes('<<<RULING_DRAFT')) {
     return true;
+  }
+
+  const ast = analyzeStructuredMarkdown(text);
+  for (const block of ast.fencedCodeBlocks) {
+    const lang = block.lang.trim().toLowerCase();
+    if (lang && lang !== 'json' && lang !== 'jsonc') continue;
+    try {
+      const parsed = JSON.parse(block.content.trim());
+      if (parsed && typeof parsed === 'object' && ('decision_type' in parsed || 'decisionType' in parsed)) {
+        return true;
+      }
+    } catch {
+      // 跳过非 JSON 代码块
+    }
   }
 
   return false;
