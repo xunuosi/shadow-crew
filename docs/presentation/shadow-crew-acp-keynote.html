@@ -145,7 +145,7 @@ body::after {
 }
 
 .slide::after {
-  content: attr(data-no) " / 33";
+  content: attr(data-no) " / 35";
   position: absolute; right: 44px; bottom: 30px; z-index: 2;
   font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
   color: var(--fg3);
@@ -176,8 +176,8 @@ h2 { font-size: 50px; line-height: 1.14; font-weight: 640; letter-spacing: -.015
 h3 { font-size: 21px; line-height: 1.35; font-weight: 620; }
 h4 { font-size: 15px; line-height: 1.4; font-weight: 620; }
 
-.lede { font-size: 21px; line-height: 1.6; color: var(--fg2); max-width: 940px; }
-.small { font-size: 13px; line-height: 1.6; color: var(--fg3); }
+.lede { font-size: 22px; line-height: 1.6; color: var(--fg2); max-width: 940px; }
+.small { font-size: 14.5px; line-height: 1.6; color: var(--fg3); }
 .mono { font-family: var(--mono); }
 .accent { color: var(--accent); }
 .grad {
@@ -315,9 +315,9 @@ html[data-theme="light"] .grad { background: none; color: var(--accent); }
 }
 .card.flat { background: transparent; }
 .card.tint { background: var(--accent-soft); border-color: var(--accent-line); }
-.card .card-k { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; color: var(--fg3); }
+.card .card-k { font-family: var(--mono); font-size: 11.5px; letter-spacing: .12em; color: var(--fg3); }
 .card .card-t { font-size: 17px; font-weight: 620; margin-top: 6px; line-height: 1.35; }
-.card .card-d { font-size: 14.5px; line-height: 1.65; color: var(--fg2); margin-top: 8px; }
+.card .card-d { font-size: 16px; line-height: 1.6; color: var(--fg2); margin-top: 8px; }
 .card .card-no {
   position: absolute; right: 18px; top: 14px;
   font-family: var(--mono); font-size: 11px; color: var(--fg3);
@@ -335,14 +335,14 @@ html[data-theme="light"] .grad { background: none; color: var(--accent); }
   border-left: 2px solid var(--accent);
   background: linear-gradient(90deg, var(--accent-soft), transparent 75%);
   border-radius: 0 12px 12px 0;
-  font-size: 18px; line-height: 1.6; color: var(--fg);
+  font-size: 19px; line-height: 1.6; color: var(--fg);
 }
 
 .callout {
   display: flex; align-items: center; gap: 12px;
   padding: 13px 18px; border-radius: 12px;
   border: 1px solid var(--line); background: var(--surface2);
-  font-size: 14.5px; color: var(--fg2); line-height: 1.5;
+  font-size: 15.5px; color: var(--fg2); line-height: 1.5;
 }
 .callout .tag {
   font-family: var(--mono); font-size: 10px; letter-spacing: .14em;
@@ -352,7 +352,7 @@ html[data-theme="light"] .grad { background: none; color: var(--accent); }
 
 /* ---------- lists ---------- */
 .lst { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
-.lst li { position: relative; padding-left: 18px; font-size: 15px; line-height: 1.6; color: var(--fg2); }
+.lst li { position: relative; padding-left: 18px; font-size: 16.5px; line-height: 1.6; color: var(--fg2); }
 .lst li::before {
   content: ""; position: absolute; left: 0; top: .62em;
   width: 5px; height: 5px; border-radius: 1px; background: var(--fg3);
@@ -362,15 +362,15 @@ html[data-theme="light"] .grad { background: none; color: var(--accent); }
 .lst.ok li::before { background: var(--ok); }
 .lst.bad li::before { background: var(--bad); }
 .lst.tight { gap: 6px; }
-.lst.tight li { font-size: 13.5px; }
+.lst.tight li { font-size: 15px; }
 
 /* ---------- table ---------- */
 .tbl-wrap { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--surface2); }
-table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+table.tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; }
 .tbl th {
   text-align: left; padding: 11px 15px;
   background: var(--surface3);
-  font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
   color: var(--fg3); font-weight: 600;
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
@@ -386,12 +386,12 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .tbl .hero { background: var(--accent-soft); }
 .tbl .hero strong { color: var(--accent); }
 .tbl .row-h { color: var(--fg); font-weight: 620; white-space: nowrap; }
-.tbl.compact td { padding: 10px 13px; font-size: 12.5px; line-height: 1.45; }
+.tbl.compact td { padding: 10px 13px; font-size: 13.5px; line-height: 1.45; }
 .tbl.compact th { padding: 9px 13px; }
 
 /* ---------- code ---------- */
 .code {
-  font-family: var(--mono); font-size: 12.5px; line-height: 1.75;
+  font-family: var(--mono); font-size: 13.5px; line-height: 1.75;
   background: var(--code-bg); color: var(--code-fg);
   border: 1px solid var(--line2); border-radius: 12px;
   padding: 16px 18px; white-space: pre-wrap; word-break: break-word;
@@ -428,7 +428,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 }
 .cover-copy { min-width: 0; }
 .cover-copy h1 { margin-top: 22px; }
-.cover-copy .lede { margin-top: 26px; max-width: 660px; font-size: 19px; }
+.cover-copy .lede { margin-top: 26px; max-width: 680px; font-size: 20px; }
 .cover-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 34px; }
 .cover-foot {
   display: flex; justify-content: space-between; align-items: center;
@@ -500,14 +500,14 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .tl-card .meta { margin-top: auto; display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* ---------- 03 pain cards ---------- */
-.pain { position: relative; height: 348px; padding: 24px; border-radius: 16px; border: 1px solid var(--line); background: var(--surface2); overflow: hidden; }
+.pain { position: relative; min-height: 336px; height: auto; padding: 24px; border-radius: 16px; border: 1px solid var(--line); background: var(--surface2); overflow: hidden; }
 .pain::before {
   content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
   background: var(--bad); opacity: .8;
 }
 .pain .idx { font-family: var(--mono); font-size: 11px; letter-spacing: .14em; color: var(--bad); }
 .pain h3 { margin-top: 10px; font-size: 22px; }
-.pain .p-desc { margin-top: 10px; font-size: 14.5px; line-height: 1.7; color: var(--fg2); }
+.pain .p-desc { margin-top: 10px; font-size: 16px; line-height: 1.7; color: var(--fg2); }
 .pain .p-foot { position: absolute; left: 24px; right: 24px; bottom: 22px; display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* ---------- 04 thick vs thin ---------- */
@@ -574,14 +574,14 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .pillars { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
 .pillar {
   grid-column: span 3;
-  min-height: 176px; padding: 20px; border-radius: 14px;
+  min-height: 180px; padding: 20px; border-radius: 14px;
   border: 1px solid var(--line); background: var(--surface2);
   position: relative;
 }
 .pillar:nth-child(n+5) { grid-column: span 4; }
 .pillar .pn { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; color: var(--accent); }
 .pillar h4 { margin-top: 8px; font-size: 15.5px; }
-.pillar p { margin-top: 7px; font-size: 12.5px; line-height: 1.55; color: var(--fg2); }
+.pillar p { margin-top: 7px; font-size: 14px; line-height: 1.55; color: var(--fg2); }
 .pillar .kv { margin-top: 10px; font-family: var(--mono); font-size: 10px; color: var(--fg3); }
 .pillars-note { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 
@@ -604,7 +604,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .step {
   display: flex; align-items: center; gap: 12px;
   padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px;
-  background: var(--surface2); font-size: 13px; color: var(--fg2);
+  background: var(--surface2); font-size: 14.5px; color: var(--fg2);
 }
 .step .sn {
   width: 22px; height: 22px; flex: none; border-radius: 6px;
@@ -635,13 +635,13 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .vs-mid svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 
 /* ---------- 11/22 tables ---------- */
-.tbl .mini { display: block; font-size: 10.5px; color: var(--fg3); margin-top: 3px; line-height: 1.4; }
+.tbl .mini { display: block; font-size: 11.5px; color: var(--fg3); margin-top: 3px; line-height: 1.4; }
 .tbl th.hcol { color: var(--accent); }
-table.matrix { font-size: 12px; }
-.matrix th { padding: 9px 11px; font-size: 9.5px; letter-spacing: .06em; }
+table.matrix { font-size: 13px; }
+.matrix th { padding: 9px 11px; font-size: 10.5px; letter-spacing: .06em; }
 .matrix td { padding: 10px 11px; line-height: 1.45; }
 .matrix td:first-child { white-space: nowrap; }
-.take { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface2); font-size: 12.5px; color: var(--fg2); line-height: 1.4; }
+.take { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface2); font-size: 13.5px; color: var(--fg2); line-height: 1.4; }
 .take b { color: var(--fg); font-weight: 620; }
 .take .tk { font-family: var(--mono); font-size: 9px; letter-spacing: .12em; color: var(--accent); flex: none; }
 
@@ -682,8 +682,8 @@ table.matrix { font-size: 12px; }
 .sys-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
 .sys { padding: 15px 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); min-width: 0; }
 .sys .no { font-family: var(--mono); font-size: 9px; color: var(--accent); letter-spacing: .1em; }
-.sys b { display: block; font-size: 13.5px; margin-top: 4px; line-height: 1.35; }
-.sys span { display: block; font-size: 10.5px; color: var(--fg3); margin-top: 3px; line-height: 1.4; }
+.sys b { display: block; font-size: 14.5px; margin-top: 4px; line-height: 1.35; }
+.sys span { display: block; font-size: 11.5px; color: var(--fg3); margin-top: 3px; line-height: 1.4; }
 .endpoint-row { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ---------- 15 topology ---------- */
@@ -729,20 +729,20 @@ table.matrix { font-size: 12px; }
 
 /* ---------- 18 pipeline ---------- */
 .pipe { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.pipe-card { padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface2); position: relative; min-height: 132px; }
+.pipe-card { padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface2); position: relative; min-height: 155px; }
 .pipe-card .pi { font-family: var(--mono); font-size: 10px; color: var(--accent); letter-spacing: .1em; }
 .pipe-card h4 { margin-top: 6px; font-size: 14px; }
-.pipe-card p { margin-top: 6px; font-size: 12px; line-height: 1.55; color: var(--fg2); }
+.pipe-card p { margin-top: 6px; font-size: 13.5px; line-height: 1.55; color: var(--fg2); }
 .pipe-card .tagm { position: absolute; right: 14px; top: 14px; font-family: var(--mono); font-size: 9px; color: var(--fg3); }
 
 /* ---------- 19 fsm ---------- */
 .stages { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-.stage { padding: 15px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface2); min-height: 238px; display: flex; flex-direction: column; min-width: 0; }
+.stage { padding: 15px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface2); min-height: 225px; display: flex; flex-direction: column; min-width: 0; }
 .stage .role { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; color: var(--fg3); }
 .stage .big { font-size: 28px; font-weight: 700; line-height: 1.1; margin-top: 6px; }
-.stage h4 { margin-top: 2px; font-size: 14px; }
-.stage p { margin-top: 8px; font-size: 11.5px; line-height: 1.55; color: var(--fg2); }
-.stage .out { margin-top: auto; padding-top: 9px; border-top: 1px dashed var(--line); font-size: 10px; color: var(--fg3); line-height: 1.45; }
+.stage h4 { margin-top: 2px; font-size: 15px; }
+.stage p { margin-top: 8px; font-size: 13px; line-height: 1.55; color: var(--fg2); }
+.stage .out { margin-top: auto; padding-top: 9px; border-top: 1px dashed var(--line); font-size: 11.5px; color: var(--fg3); line-height: 1.45; }
 .stage.s1 .big { color: var(--info); } .stage.s1 { border-color: var(--info-line); }
 .stage.s2 .big { color: var(--bad); } .stage.s2 { border-color: var(--bad-line); }
 .stage.s3 .big { color: var(--ok); } .stage.s3 { border-color: var(--ok-line); }
@@ -778,22 +778,22 @@ table.matrix { font-size: 12px; }
 
 /* ---------- 23 moats ---------- */
 .moats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-.moat { position: relative; overflow: hidden; padding: 18px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface2); min-height: 232px; display: flex; flex-direction: column; }
+.moat { position: relative; overflow: hidden; padding: 18px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface2); min-height: 240px; display: flex; flex-direction: column; }
 .moat > * { position: relative; z-index: 1; }
 .moat .mn { font-family: var(--mono); font-size: 10px; color: var(--accent); }
 .moat h4 { margin-top: 8px; font-size: 15px; line-height: 1.3; }
-.moat p { margin-top: 8px; font-size: 11.5px; line-height: 1.6; color: var(--fg2); }
-.moat .proof { margin-top: auto; padding-top: 12px; font-family: var(--mono); font-size: 9.5px; letter-spacing: .02em; color: var(--fg3); line-height: 1.5; }
-.moat .vs { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 10.5px; color: var(--fg3); line-height: 1.5; }
+.moat p { margin-top: 8px; font-size: 13px; line-height: 1.6; color: var(--fg2); }
+.moat .proof { margin-top: auto; padding-top: 12px; font-family: var(--mono); font-size: 11px; letter-spacing: .02em; color: var(--fg3); line-height: 1.5; }
+.moat .vs { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 12px; color: var(--fg3); line-height: 1.5; }
 
 /* ---------- 24 demo ---------- */
 .demo { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-.demo-step { padding: 16px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface2); min-height: 236px; display: flex; flex-direction: column; }
+.demo-step { padding: 16px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface2); min-height: 200px; display: flex; flex-direction: column; }
 .demo-step .tm { font-family: var(--mono); font-size: 10px; color: var(--accent); }
 .demo-step .no { font-family: var(--mono); font-size: 9px; color: var(--fg3); letter-spacing: .12em; margin-top: 2px; }
 .demo-step h4 { margin-top: 8px; font-size: 13.5px; line-height: 1.4; }
-.demo-step p { margin-top: 7px; font-size: 11px; line-height: 1.55; color: var(--fg2); }
-.demo-step .see { margin-top: auto; padding-top: 9px; border-top: 1px dashed var(--line); font-size: 9.5px; color: var(--fg3); line-height: 1.45; }
+.demo-step p { margin-top: 7px; font-size: 12.5px; line-height: 1.55; color: var(--fg2); }
+.demo-step .see { margin-top: auto; padding-top: 9px; border-top: 1px dashed var(--line); font-size: 11px; color: var(--fg3); line-height: 1.45; }
 
 /* ---------- 25 sycophancy ---------- */
 .chains { display: flex; flex-direction: column; gap: 9px; }
@@ -818,8 +818,8 @@ table.matrix { font-size: 12px; }
 .road-card .w { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; color: var(--fg3); }
 .road-card.now .w { color: var(--accent); }
 .road-card h4 { margin-top: 8px; font-size: 17px; }
-.road-card p { margin-top: 8px; font-size: 12px; line-height: 1.6; color: var(--fg2); }
-.road-card .crit { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); font-size: 10.5px; line-height: 1.5; color: var(--fg3); }
+.road-card p { margin-top: 8px; font-size: 13.5px; line-height: 1.6; color: var(--fg2); }
+.road-card .crit { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); font-size: 11.5px; line-height: 1.5; color: var(--fg3); }
 .road-card .st { margin-top: auto; padding-top: 12px; }
 
 /* ---------- 28 closing ---------- */
@@ -954,19 +954,19 @@ kbd {
 /* ---------- appendix: ACP hands-on ---------- */
 .appx-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 28px; align-items: start; }
 .appx-grid.wide { grid-template-columns: 1.32fr .68fr; }
-.code.tiny { font-size: 10.5px; line-height: 1.6; padding: 12px 14px; }
+.code.tiny { font-size: 11.5px; line-height: 1.55; padding: 12px 14px; }
 table.method { width: 100%; border-collapse: collapse; }
-table.method th { padding: 7px 9px; font-size: 9px; }
-table.method td { padding: 6px 9px; font-size: 11px; line-height: 1.4; }
-table.method .dir { font-family: var(--mono); font-size: 9px; color: var(--fg3); white-space: nowrap; }
-table.method .mth { font-family: var(--mono); font-size: 10px; color: var(--fg); white-space: nowrap; }
-table.method .req { font-family: var(--mono); font-size: 9px; color: var(--fg3); }
+table.method th { padding: 7px 9px; font-size: 10.5px; }
+table.method td { padding: 6px 9px; font-size: 13.5px; line-height: 1.4; }
+table.method .dir { font-family: var(--mono); font-size: 10.5px; color: var(--fg3); white-space: nowrap; }
+table.method .mth { font-family: var(--mono); font-size: 12.5px; color: var(--fg); white-space: nowrap; }
+table.method .req { font-family: var(--mono); font-size: 10.5px; color: var(--fg3); }
 table.method .req.b { color: var(--accent); }
 .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
-.check { padding: 11px 13px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface2); font-size: 11.5px; line-height: 1.55; color: var(--fg2); }
-.check b { display: block; font-size: 12.5px; color: var(--fg); margin-bottom: 2px; }
-.check .no { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; color: var(--accent); }
-.check code { font-family: var(--mono); font-size: 10px; color: var(--accent); }
+.check { padding: 11px 13px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface2); font-size: 13px; line-height: 1.55; color: var(--fg2); }
+.check b { display: block; font-size: 14px; color: var(--fg); margin-bottom: 2px; }
+.check .no { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; color: var(--accent); }
+.check code { font-family: var(--mono); font-size: 11px; color: var(--accent); }
 .err-codes { display: flex; flex-wrap: wrap; gap: 6px; }
 .err-codes .chip { font-size: 10px; padding: 5px 9px; }
 </style>
@@ -1013,14 +1013,14 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 01 ------------------------------------------------------------ -->
 <section class="slide cover is-active" data-no="01" data-section="开场" data-title="连接 Agent，连接彼此"
-  data-notes="开场不要急着讲技术。先让听众代入一个画面：每天在用的 Claude Code、Codex，还有同事电脑里调优好的 Agent，现在都能在同一个工作台里彼此看见、一起讨论。今天讲的不是又一个多 Agent 框架，而是用一条协议把它们连接起来，让 Agent 之间能协作，也让同事的经验能接进来。">
+  data-notes="开场不要急着讲技术。先让听众代入一个画面：每天在用的 Claude Code、Codex，还有同事电脑里调优好的 Agent，现在都能在同一个工作台里彼此看见、一起讨论。今天不做‘多 Agent 一定比单 Agent 好’的判断，而是讲怎么用协议把过程交给工作流，让人只关注结果；也让同事的经验一直在线。">
   <div class="cover-inner">
     <div class="cover-copy">
       <div class="eyebrow reveal">Shadow Crew · ACP Keynote</div>
       <h1 class="reveal">连接 Agent，<br>连接<span class="grad">彼此</span>。</h1>
-      <p class="lede reveal">不重复造 Agent。用 ACP 连接两样东西：<br>你常用的编程 Agent，和同事调优好的 Agent；<br>以及同事沉淀的 .scpack 经验包，让协作发生、经验流动。</p>
+      <p class="lede reveal">不重复造 Agent。用 ACP 连接两样东西：<br>你常用的编程 Agent，和同事调优好的 Agent；<br>以及同事沉淀的经验包——过程交给工作流，你只看结果。</p>
       <div class="cover-meta reveal">
-        <span class="chip accent"><span class="d" style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>33 页 · 约 33 分钟</span>
+        <span class="chip accent"><span class="d" style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>35 页 · 约 35 分钟</span>
         <span class="chip">技术峰会 / 架构师沙龙</span>
         <span class="chip">Agent Client Protocol</span>
       </div>
@@ -1072,91 +1072,86 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 02 ------------------------------------------------------------ -->
-<section class="slide" data-no="02" data-section="演进" data-title="AI 辅助编码的三个阶段"
-  data-notes="这条时间轴要讲清一个判断：单个 Agent 已经很强，但连接与协作才是下一阶段。前两阶段的瓶颈是模型能力，第三阶段的瓶颈是协议与治理。这也是我们今天不谈模型参数的原因。">
+<section class="slide" data-no="02" data-section="协作" data-title="单 Agent 与多 Agent：两种工作方式"
+  data-notes="不做代际判断。单 Agent 链路短、上下文集中，适合边界清晰的任务；多 Agent 增加分工与验证，但协调成本、Token 与时延都会上升。协作的目的不是证明谁更强，而是把过程交给工作流，让人从执行细节里退出来，只对结果负责。">
   <div class="slide-head">
-    <div class="eyebrow reveal">01 / 演进</div>
-    <h2 class="reveal">从代码补全，到连接协作</h2>
-    <p class="lede reveal">每一次跃迁，改变的不是“模型会不会写代码”，而是“谁能参与、谁能验证、谁来收敛”。</p>
+    <div class="eyebrow reveal">01 / 协作</div>
+    <h2 class="reveal">单 Agent 与多 Agent：两种工作方式</h2>
+    <p class="lede reveal">不比较优劣；先看任务边界、验证需求与协调成本。</p>
   </div>
   <div class="slide-body">
-    <div class="tl">
-      <div class="tl-item reveal">
-        <div class="tl-era">2021 — 2023 · 补全</div>
-        <div class="tl-card">
-          <span class="badge plain">阶段一</span>
-          <h3>代码补全</h3>
-          <p class="desc">IDE 里的 Tab 与聊天窗口。人在驾驶，模型负责补一段函数、解释一段报错。</p>
-          <div class="meta"><span class="chip">无自主执行</span><span class="chip">无工具循环</span></div>
-        </div>
+    <div class="grid cols-2 gap-24">
+      <div class="card reveal" style="padding:26px 28px">
+        <div class="card-k">SINGLE AGENT</div>
+        <h3 style="margin-top:8px">单 Agent：链路短，上下文集中</h3>
+        <p class="card-d">一个执行体从头做到尾，适合边界清晰、可一次交付的任务。</p>
+        <ul class="lst tight mt-16">
+          <li><b>工作方式</b>：读仓库、改文件、跑测试，一条链路完成</li>
+          <li><b>优势</b>：上下文集中，协调成本低</li>
+          <li><b>代价</b>：单点认知偏差，缺少外部挑战</li>
+        </ul>
       </div>
-      <div class="tl-item reveal">
-        <div class="tl-era">2024 — 2025 · 单 Agent</div>
-        <div class="tl-card">
-          <span class="badge info">阶段二</span>
-          <h3>单个 Agent</h3>
-          <p class="desc">Cursor / Claude Code / Codex 接管任务：自己读仓库、改文件、跑测试，端到端交付。</p>
-          <div class="meta"><span class="chip">任务级自主</span><span class="chip">单模型绑定</span></div>
-        </div>
-      </div>
-      <div class="tl-item now reveal">
-        <div class="tl-era">2026 → · 连接</div>
-        <div class="tl-card">
-          <span class="badge ok">阶段三</span>
-          <h3>连接协作</h3>
-          <p class="desc">常用的 Agent 按协议接入，跨机共享经验，让协作跨过工位与机器。</p>
-          <div class="meta"><span class="chip accent">ACP</span><span class="chip accent">Shadow Crew</span></div>
-        </div>
+      <div class="card reveal" style="padding:26px 28px">
+        <div class="card-k">MULTI-AGENT</div>
+        <h3 style="margin-top:8px">多 Agent：角色分工，交叉验证</h3>
+        <p class="card-d">把任务拆成角色与步骤，适合高风险、跨领域、需要证据链的任务。</p>
+        <ul class="lst tight mt-16">
+          <li><b>工作方式</b>：提案、挑战、验证、答辩、收敛</li>
+          <li><b>优势</b>：多视角交叉检查，任务可拆解</li>
+          <li><b>代价</b>：协调、Token 与时延上升，可能出现伪协同</li>
+        </ul>
       </div>
     </div>
-
-    <div class="callout mt-28 reveal">
-      <span class="tag">判断</span>
-      <span>第三阶段的瓶颈不在模型智力，而在 <b>连接协议</b> 与 <b>协作治理</b> —— 谁能把多个强模型连接成一张不内耗的协作网。</span>
+    <div class="callout mt-24 reveal"><span class="tag">目的</span><span>协作不是“更强”，而是把过程交给工作流：<b>人从执行细节里退出来，只对结果负责。</b></span></div>
+    <div class="flex items-center between mt-12 reveal">
+      <span class="small">是否更好，取决于任务；这里不做一刀切判断。</span>
+      <span class="chip">论文依据与边界见附录 A7</span>
     </div>
   </div>
 </section>
 
 <!-- 03 ------------------------------------------------------------ -->
-<section class="slide" data-no="03" data-section="痛点" data-title="繁荣背后的三堵隐形高墙"
-  data-notes="这里要引起共鸣，而不是贩卖焦虑。三个问题分别对应：认知、资产、治理。认知盲区来自单模型自审；记忆孤岛来自资产不可迁移；乌合之众来自缺少硬收敛机制。最后一句给出统一解。">
+<section class="slide" data-no="03" data-section="问题" data-title="协作的三个工程问题"
+  data-notes="这里讲三个工程问题，不做价值判断。认知盲区：单模型自审有边界；记忆孤岛：同事的经验不能随人/机器流动；协作失真：多 Agent 讨论可能附和、复读、无收敛。问题不在多 Agent 本身，而在缺少角色约束、验证机制与收敛门禁。论文依据见附录 A7。">
   <div class="slide-head">
-    <div class="eyebrow reveal">02 / 痛点</div>
-    <h2 class="reveal">繁荣背后的三堵“隐形高墙”</h2>
-    <p class="lede reveal">工具越来越多，协作却依然卡在同一个地方：单个 Agent 很强，连接很弱。</p>
+    <div class="eyebrow reveal">02 / 问题</div>
+    <h2 class="reveal">协作的三个工程问题</h2>
+    <p class="lede reveal">工具越来越多，但协作仍有三个问题：认知、经验、收敛。</p>
   </div>
   <div class="slide-body">
     <div class="grid cols-3">
       <div class="pain reveal">
-        <div class="idx">WALL 01</div>
+        <div class="idx">PROBLEM 01</div>
         <h3>认知盲区</h3>
-        <p class="p-desc">单 Agent 绑定单模型。Self-Refine 本质是模型自审，一致性幻觉无法自破；缺少异构模型之间的交叉质疑与互相纠偏。</p>
-        <div class="p-foot"><span class="badge bad">一致性幻觉</span><span class="badge plain">单模型归纳偏置</span></div>
+        <p class="p-desc">单模型自审有边界，缺少外部角色提出可证伪的反例。不是“单 Agent 不行”，而是需要交叉验证。</p>
+        <ul class="lst tight mt-12"><li><b>表现</b>：同一模型反复自审，结论趋同</li><li><b>缓解</b>：异构角色做红队质询</li></ul>
+        <div class="p-foot"><span class="badge bad">需要外部挑战</span><span class="badge plain">单模型归纳偏置</span></div>
       </div>
       <div class="pain reveal">
-        <div class="idx">WALL 02</div>
+        <div class="idx">PROBLEM 02</div>
         <h3>记忆孤岛</h3>
-        <p class="p-desc">数月调优的领域规约、项目记忆锁在某台电脑里。换机、新人入职，都要“重新教一遍 Agent”。</p>
+        <p class="p-desc">同事调优好的领域规约与项目记忆锁在某台机器。换人、换机、离职后，经验难以复用。</p>
+        <ul class="lst tight mt-12"><li><b>表现</b>：换机 / 换人后重新教</li><li><b>缓解</b>：经验打包成可分发资产</li></ul>
         <div class="p-foot"><span class="badge warn">经验不可迁移</span><span class="badge plain">资产随人离线</span></div>
       </div>
       <div class="pain reveal">
-        <div class="idx">WALL 03</div>
-        <h3>乌合之众</h3>
-        <p class="p-desc">多 Agent ≠ 多视角。谄媚附和、循环复读、Token 飞涨，讨论很久仍然没有确定性产出。</p>
-        <div class="p-foot"><span class="badge bad">Sycophancy</span><span class="badge plain">无硬收敛</span></div>
+        <div class="idx">PROBLEM 03</div>
+        <h3>协作失真</h3>
+        <p class="p-desc">多 Agent 讨论容易出现附和、复读、无收敛。问题不在多 Agent 本身，而在缺少角色约束与验证机制。</p>
+        <ul class="lst tight mt-12"><li><b>表现</b>：轮次增加，结论不收敛</li><li><b>缓解</b>：角色约束 + 验证门禁</li></ul>
+        <div class="p-foot"><span class="badge bad">需要收敛机制</span><span class="badge plain">不是多 Agent 的错</span></div>
       </div>
     </div>
-
     <div class="flex items-center between mt-28 reveal">
-      <p class="small" style="max-width:820px">三个问题的共同解：<b style="color:var(--fg)">标准化连接</b> + <b style="color:var(--fg)">资产化记忆</b> + <b style="color:var(--fg)">博弈论治理</b>。</p>
-      <span class="chip accent">这就是 Shadow Crew 的三条主线</span>
+      <p class="small" style="max-width:900px">三个问题的共同解：<b style="color:var(--fg)">标准化连接</b> + <b style="color:var(--fg)">资产化记忆</b> + <b style="color:var(--fg)">可验证的收敛机制</b>。</p>
+      <span class="chip accent">Shadow Crew 的三条主线</span>
     </div>
   </div>
 </section>
 
 <!-- 04 ------------------------------------------------------------ -->
 <section class="slide" data-no="04" data-section="破局" data-title="Thin Control Plane"
-  data-notes="强调“不造轮子”不是偷懒，而是架构判断。单个 Agent 已经被最强的团队做到了极致，宿主的价值在于把它们连起来，并管好工作区、权限、协同与记忆调度。控制面越薄，越能跟上 Agent 的迭代速度。">
+  data-notes="这不是“旧对新”，而是两种取舍：自建全套掌控力强，但维护成本高；连接现成复用快，但依赖协议与端点。Shadow Crew 选择把执行面外置，宿主只负责连接、协作与边界。控制面越薄，越容易跟上 Agent 的迭代。">
   <div class="slide-head">
     <div class="eyebrow reveal">03 / 破局</div>
     <h2 class="reveal">不造 Agent 轮子，做 Agent 之间的协作枢纽</h2>
@@ -1166,8 +1161,8 @@ table.method .req.b { color: var(--accent); }
     <div class="grid cols-2 gap-32">
       <div class="reveal">
         <div class="flex items-center gap-12" style="margin-bottom:14px">
-          <span class="badge bad">旧思路</span>
-          <span class="small">全自建 AI 协作栈</span>
+          <span class="badge plain">自建全套</span>
+          <span class="small">掌控力强，维护成本高</span>
         </div>
         <div class="stack">
           <div class="blk">模型训练与微调 <span>HEAVY</span></div>
@@ -1177,12 +1172,12 @@ table.method .req.b { color: var(--accent); }
           <div class="blk">权限与审计 <span>HEAVY</span></div>
           <div class="blk">协同 UI 与协议 <span>HEAVY</span></div>
         </div>
-        <p class="small mt-16">每一层都要自己造、自己追新，永远慢一个版本。</p>
+        <p class="small mt-16">掌控力强，但每一层都要自己维护、自己追新。</p>
       </div>
 
       <div class="reveal">
         <div class="flex items-center gap-12" style="margin-bottom:14px">
-          <span class="badge ok">新思路</span>
+          <span class="badge ok">连接现成</span>
           <span class="small">Thin Control Plane</span>
         </div>
         <div class="thin-bar">
@@ -1194,13 +1189,13 @@ table.method .req.b { color: var(--accent); }
           <div class="agent-box"><div class="nm">Codex</div><div class="sub">LOCAL STDIO</div></div>
           <div class="agent-box"><div class="nm">同事 Agent</div><div class="sub">REMOTE WS</div></div>
         </div>
-        <p class="small mt-16">执行黑盒外置。宿主不碰推理循环，只负责连接、协作与边界。</p>
+        <p class="small mt-16">执行黑盒外置。宿主不碰推理循环，只负责连接、协作与边界；代价是依赖协议与端点。</p>
       </div>
     </div>
 
     <div class="grid cols-3 gap-16 mt-32 reveal">
       <div class="callout"><span class="tag">01</span><span><b>执行面外置</b><br>Agent 进程独立演进</span></div>
-      <div class="callout"><span class="tag">02</span><span><b>控制面轻量</b><br>只做编排与治理</span></div>
+      <div class="callout"><span class="tag">02</span><span><b>控制面轻量</b><br>只做连接、协作与治理</span></div>
       <div class="callout"><span class="tag">03</span><span><b>记忆资产化</b><br>经验可打包、可迁移</span></div>
     </div>
   </div>
@@ -1536,10 +1531,10 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 12 ------------------------------------------------------------ -->
 <section class="slide" data-no="12" data-section="ACP · 协议" data-title="原生记忆第一原则"
-  data-notes="这页有一个容易讲反的点：宿主不是记忆的所有者。端点原生记忆才是长期事实源，宿主去 Prompt 里拼贴向量记忆，短期看能用，长期一定冲突。原则是 Native Memory First，端点没开就显式关闭，绝不越权注入。">
+  data-notes="这页有一个容易讲反的点：宿主不是记忆的所有者。端点原生记忆是长期事实源；宿主在 Prompt 里拼贴向量记忆，短期可能可用，长期容易与端点索引冲突。原则是 Native Memory First；端点没开就显式关闭，不越权注入。nativeMemory 是 Shadow Crew 扩展，不是 ACP 核心。">
   <div class="slide-head">
     <div class="eyebrow reveal">11 / 协议</div>
-    <h2 class="reveal">尊重端点，拒绝“伪兼容”的记忆拼贴</h2>
+    <h2 class="reveal">记忆归端点：原生优先，避免外部拼贴</h2>
     <p class="lede reveal">ACP 不规定长期记忆；<b class="mono">agentCapabilities.nativeMemory</b> 是 Shadow Crew 的扩展能力。</p>
   </div>
   <div class="slide-body">
@@ -1552,7 +1547,7 @@ table.method .req.b { color: var(--accent); }
           <li>上下文被污染，Token 白白消耗</li>
           <li>换一个端点就全部重做</li>
         </ul>
-        <div class="verdict">PSEUDO-COMPATIBILITY / 伪兼容</div>
+        <div class="verdict">外部拼贴：短期可用，长期冲突</div>
       </div>
       <div class="cmp ok reveal">
         <div class="cmp-h"><span class="mark">✓</span>Native Memory First</div>
@@ -1670,14 +1665,14 @@ table.method .req.b { color: var(--accent); }
 
     <div class="flex items-center between mt-24 reveal">
       <span class="small">五个控制面共享同一条协议总线，因此可以 <b style="color:var(--fg)">独立演进、互不绑架</b>。</span>
-      <span class="badge ok">100% ACP 纯执行面</span>
+      <span class="badge ok">ACP 执行面 · stdio 核心 + WS 扩展</span>
     </div>
   </div>
 </section>
 
 <!-- 15 ------------------------------------------------------------ -->
 <section class="slide" data-no="15" data-section="能力版图" data-title="跨机互联：连接同事的 Agent"
-  data-notes="这一幕很有画面感：张工调优了半年的 Claude Code，你不需要复制，只需要连接。讲清三种网络路径，并强调远程默认 ReadOnly Guard；WebSocket / Relay 是 Shadow Crew 的扩展传输，不是 ACP 核心。连接的不是一个冷冰冰的端点，而是同事积累下来的工作方式。现场若网络受限，后面 Demo 页有单机模拟方案。">
+  data-notes="这一幕很有画面感：张工调优了半年的 Claude Code，你不需要复制，只需要连接。讲清三种网络路径，并强调远程默认 ReadOnly Guard；WebSocket / Relay 是 Shadow Crew 的扩展传输，不是 ACP 核心。连接的不是一个冷冰冰的端点，而是同事积累下来的工作方式。产品最期望的方向，是让同事不在场时，他的 Agent 和经验仍然在线——像一直在你身边。现场若网络受限，Demo 页有单机模拟方案。">
   <div class="slide-head">
     <div class="eyebrow reveal">14 / 版图</div>
     <h2 class="reveal">把同事调优好的 Agent，接进同一个工作台</h2>
@@ -1720,18 +1715,18 @@ table.method .req.b { color: var(--accent); }
     <div class="grid cols-3 gap-16 mt-28 reveal">
       <div class="callout"><span class="tag">NET</span><span><b>同一套协议</b><br>本地与远程共享 session 语义</span></div>
       <div class="callout"><span class="tag">SAFE</span><span><b>默认只读</b><br>远程端点禁止写盘与执行</span></div>
-      <div class="callout"><span class="tag">DEMO</span><span><b>现场可模拟</b><br>本机 ws 回环，协议栈完全真实</span></div>
+      <div class="callout"><span class="tag">ALWAYS-ON</span><span><b>同事不在场，经验仍在线</b><br>Agent 与经验包继续可用</span></div>
     </div>
   </div>
 </section>
 
 <!-- 16 ------------------------------------------------------------ -->
 <section class="slide" data-no="16" data-section="能力版图" data-title="团队记忆资产化 .scpack"
-  data-notes="把 .scpack 讲成“可以带走的经验包”。重点不是压缩，而是三件事：六源一致、密码学验签、硬脱敏。再补一个工程细节：企业网关 503 时，Rollout 补偿提取能救回同事的经验。">
+  data-notes="把 .scpack 讲成“可以带走的经验包”。重点不是压缩，而是三件事：六源一致、密码学验签、硬脱敏。它实现的产品意图是：同事不在场，经验仍然在线；换机、换人、离职都不会让经验归零。再补一个工程细节：企业网关 503 时，Rollout 补偿提取能救回同事的经验。">
   <div class="slide-head">
     <div class="eyebrow reveal">15 / 版图</div>
     <h2 class="reveal">把同事调优好的经验，装进一个文件</h2>
-    <p class="lede reveal">工业级完整性校验、规范化签名与硬脱敏，让经验可以安全地连接与流转。</p>
+    <p class="lede reveal">工业级完整性校验、规范化签名与硬脱敏。同事休假、换机、离职，经验仍然可检索、可连接。</p>
   </div>
   <div class="slide-body">
     <div class="grid" style="grid-template-columns:1.05fr .95fr;gap:32px">
@@ -1804,7 +1799,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 18 ------------------------------------------------------------ -->
 <section class="slide" data-no="18" data-section="决策引擎" data-title="普通协同流与增量上下文"
-  data-notes="这是日常 80% 的场景。核心是两条：只发未读增量，保证 Prefix KV Cache 命中；并发用 Turn Barrier 收口，避免消息乱序。数字记住 51–80% 的 Token 节省和 100% 缓存命中。">
+  data-notes="这是多数日常场景。核心是两条：只发未读增量，保证 Prefix KV Cache 命中；并发用 Turn Barrier 收口，避免消息乱序。数字记住 51–80% 的 Token 节省和 100% 缓存命中。">
   <div class="slide-head">
     <div class="eyebrow reveal">17 / 决策</div>
     <h2 class="reveal">日常协同：更少的 Token，更稳的并发</h2>
@@ -1831,7 +1826,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 19 ------------------------------------------------------------ -->
 <section class="slide" data-no="19" data-section="决策引擎" data-title="CognoNexus 4+1 博弈引擎"
-  data-notes="这是全场的技术高潮。5 个角色不是 5 个 Agent 聊天，而是一个单向 FSM：每个阶段有契约、有产物、有门禁。红队必须给出可证伪的反例，验证官必须拿真实证据说话。强调 Human 仍在环内。">
+  data-notes="这是全场的技术高潮。5 个角色不是 5 个 Agent 聊天，而是一个单向 FSM：每个阶段有契约、有产物、有门禁。红队要给出可证伪的反例，验证官要拿真实证据说话。多角色与任务拆解有论文依据，但结论有任务边界；详见附录 A7。强调 Human 仍在环内。">
   <div class="slide-head">
     <div class="eyebrow reveal">18 / 决策</div>
     <h2 class="reveal">4+1：把讨论变成一场有规则的博弈</h2>
@@ -1861,12 +1856,14 @@ table.method .req.b { color: var(--accent); }
       </div>
       <div class="stage s5 reveal">
         <div class="role">ARBITER · BWM</div><div class="big">A</div><h4>综合裁定官</h4>
-        <p>运筹求解：把权衡转成权重与排序，一致性不达标直接打回。</p>
+        <p>运筹求解：把权衡转成权重与排序，一致性不达标退回重审。</p>
         <div class="out">产物：Living ADR + 少数派异议</div>
       </div>
     </div>
 
-    <div class="grid cols-4 gap-12 mt-20 reveal">
+    <div class="callout mt-14 reveal"><span class="tag">依据</span><span>多角色与任务拆解的研究依据：Free-MAD / ColMAD / LMAD / ReConcile；G-Frame 用贝叶斯路由拆模块，详见附录 A7。</span></div>
+
+    <div class="grid cols-4 gap-12 mt-12 reveal">
       <div class="callout"><span class="tag">HUMAN</span><span>保留最终否决权</span></div>
       <div class="callout"><span class="tag">QUORUM</span><span>法定人数门禁</span></div>
       <div class="callout"><span class="tag">RETRY</span><span>有界重试 ≤ 2</span></div>
@@ -1877,11 +1874,11 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 20 ------------------------------------------------------------ -->
 <section class="slide" data-no="20" data-section="决策引擎" data-title="BWM 运筹学 0-Token 仲裁"
-  data-notes="这一页要打破“AI 决策只能靠聊天”的惯性。BWM 把架构权衡变成权重求解，求解过程不调用 LLM，所以是 0-Token。一致性 ξ* 是硬门禁：不达标不是‘再讨论一下’，而是直接打回重来。">
+  data-notes="这一页讲一个可检查的收敛办法：BWM 把架构权衡变成权重求解，求解过程不调用 LLM，所以是 0-Token。一致性 ξ* 是门禁：不达标退回重审，而不是继续凭感觉讨论。BWM 不替代讨论，只把最后一步变成可检查的数学问题；参考见附录 A7。">
   <div class="slide-head">
     <div class="eyebrow reveal">19 / 决策</div>
-    <h2 class="reveal">把架构权衡，交给数学</h2>
-    <p class="lede reveal">BWM 运筹求解，0 次 LLM 调用。一致性不达标，红牌打回。</p>
+    <h2 class="reveal">把架构权衡，写成可检查的数学问题</h2>
+    <p class="lede reveal">BWM 运筹求解，0 次 LLM 调用；一致性不达标，退回重审。</p>
   </div>
   <div class="slide-body">
     <div class="grid" style="grid-template-columns:1.05fr .95fr;gap:36px">
@@ -1927,62 +1924,66 @@ table.method .req.b { color: var(--accent); }
           <div class="flex items-center gap-10" style="font-size:12.5px;color:var(--fg2)"><span class="badge info">TRIGGER</span>3 条量化黑天鹅重启触发器</div>
         </div>
 
-        <div class="callout mt-20" style="font-size:12.5px"><span class="tag">0 TOKEN</span><span>求解阶段不消耗任何 LLM 调用</span></div>
+        <div class="callout mt-20" style="font-size:12.5px"><span class="tag">0 TOKEN</span><span>求解阶段不消耗 LLM；BWM 参考见附录 A7</span></div>
       </div>
     </div>
   </div>
 </section>
 
 <!-- 21 ------------------------------------------------------------ -->
-<section class="slide" data-no="21" data-section="生态对标" data-title="开源生态四代演进"
-  data-notes="把 Shadow Crew 放进行业坐标系。前两代解决“单个 Agent 能不能干活”，第三代解决“在哪执行”，第四代解决“多个 Agent 如何组织”。我们站在第四代，不是因为我们模型更强，而是因为控制面更解耦。">
+<section class="slide" data-no="21" data-section="生态对标" data-title="四种协作形态"
+  data-notes="不做代际排名。四种形态各解决不同问题：硬编码框架、IDE 单 Agent 扩展、沙盒执行平台、解耦型控制面。选择取决于任务、团队与治理成本，不是谁替代谁。">
   <div class="slide-head">
     <div class="eyebrow reveal">20 / 对标</div>
-    <h2 class="reveal">从硬编码 SOP，到解耦型控制面</h2>
-    <p class="lede reveal">四代演进，看的不是功能多少，而是控制面放在哪里。</p>
+    <h2 class="reveal">四种协作形态，不同取舍</h2>
+    <p class="lede reveal">不同产品解决不同问题；没有唯一正确形态。</p>
   </div>
   <div class="slide-body">
-    <div class="gens">
-      <div class="gen reveal" data-g="01" style="height:220px">
-        <div class="gno">GENERATION 01</div>
-        <h4>硬编码 SOP 框架</h4>
-        <p>角色、流程、通信全部写死在框架里。中心化轮询，缺少硬收敛。</p>
-        <div class="who">CrewAI · AutoGen</div>
+    <div class="grid cols-2 gap-16">
+      <div class="card reveal" style="padding:22px 24px">
+        <div class="card-k">形态 A</div>
+        <h4 style="margin-top:8px">硬编码 SOP 框架</h4>
+        <p class="card-d">角色、流程、通信写死在框架里；上手快，灵活度有限。</p>
+        <div class="small" style="margin-top:10px">适合：流程固定、角色清晰的团队 · 代价：改流程要改代码</div>
+        <div class="mini">CrewAI · AutoGen</div>
       </div>
-      <div class="gen reveal" data-g="02" style="height:276px">
-        <div class="gno">GENERATION 02</div>
-        <h4>IDE 单 Agent 扩展</h4>
-        <p>编辑器里的单 Agent，靠 MCP 接工具。执行强，但协作仍留在本地。</p>
-        <div class="who">Cline · Goose</div>
+      <div class="card reveal" style="padding:22px 24px">
+        <div class="card-k">形态 B</div>
+        <h4 style="margin-top:8px">IDE 单 Agent 扩展</h4>
+        <p class="card-d">编辑器里的单 Agent，靠 MCP 接工具；轻，但协作仍留在本地。</p>
+        <div class="small" style="margin-top:10px">适合：个人在 IDE 内提效 · 代价：跨 Agent 协作弱</div>
+        <div class="mini">Cline · Goose</div>
       </div>
-      <div class="gen reveal" data-g="03" style="height:332px">
-        <div class="gno">GENERATION 03</div>
-        <h4>沙盒执行平台</h4>
-        <p>容器化隔离，私有事件流。解决了安全，代价是厚重与封闭。</p>
-        <div class="who">OpenHands</div>
+      <div class="card reveal" style="padding:22px 24px">
+        <div class="card-k">形态 C</div>
+        <h4 style="margin-top:8px">沙盒执行平台</h4>
+        <p class="card-d">容器化隔离，私有事件流；安全边界清晰，集成成本较高。</p>
+        <div class="small" style="margin-top:10px">适合：执行隔离优先的团队 · 代价：集成重</div>
+        <div class="mini">OpenHands</div>
       </div>
-      <div class="gen now reveal" data-g="04" style="height:388px">
-        <div class="gno">GENERATION 04 · NOW</div>
-        <h4>解耦型控制面</h4>
-        <p>100% ACP 纯执行面，多运行时接入，跨机记忆，博弈论收敛。</p>
-        <div class="who">Shadow Crew</div>
+      <div class="card reveal" style="padding:22px 24px;border-color:var(--accent-line);background:linear-gradient(180deg,var(--accent-soft),var(--surface2) 60%)">
+        <div class="card-k" style="color:var(--accent)">形态 D</div>
+        <h4 style="margin-top:8px">解耦型控制面</h4>
+        <p class="card-d">ACP 执行面 + 外部 Agent，多运行时接入；连接灵活，需要协议与治理。</p>
+        <div class="small" style="margin-top:10px">适合：多运行时、跨机协作 · 代价：依赖协议与治理</div>
+        <div class="mini" style="color:var(--accent)">Shadow Crew</div>
       </div>
     </div>
 
-    <div class="flex items-center between mt-20 reveal">
-      <span class="small">标准化的位置，决定生态的位置。</span>
-      <span class="chip accent">我们不在执行层内卷，我们在控制层立标准</span>
+    <div class="flex items-center between mt-24 reveal">
+      <span class="small">不是代际替代，而是四种取舍：任务、团队与治理成本不同，选择就不同。</span>
+      <span class="chip accent">控制面解耦是一种选择</span>
     </div>
   </div>
 </section>
 
 <!-- 22 ------------------------------------------------------------ -->
 <section class="slide" data-no="22" data-section="生态对标" data-title="核心四维横向对比矩阵"
-  data-notes="不要逐格念表。用手指划过 Shadow Crew 这一列，讲三句：协议是纯 ACP，协同是双模，记忆是可分发资产，安全是 Rust 反向代理。其余产品各有取舍，不是敌人，是不同代际的解法。">
+  data-notes="不要逐格念表，也不做排名。讲三句：Shadow Crew 选择纯 ACP 执行面、双模协同、可分发经验、Rust 反向代理；其他产品各有取舍，不是敌人，也不是落后的代际。">
   <div class="slide-head">
     <div class="eyebrow reveal">21 / 对标</div>
-    <h2 class="reveal">四维矩阵：我们在哪一格领先</h2>
-    <p class="lede reveal">四个维度，六种解法，一张表看清代际差异。</p>
+    <h2 class="reveal">四维矩阵：不同选择，不同取舍</h2>
+    <p class="lede reveal">四个维度，六种解法；看取舍，不排名。</p>
   </div>
   <div class="slide-body">
     <div class="tbl-wrap reveal">
@@ -2001,7 +2002,7 @@ table.method .req.b { color: var(--accent); }
         <tbody>
           <tr>
             <td class="row-h">协议标准</td>
-            <td class="hero"><strong>100% ACP 双栈</strong><span class="mini">stdio 核心 + WS 扩展</span></td>
+            <td class="hero"><strong>ACP 双栈</strong><span class="mini">stdio 核心 + WS 扩展</span></td>
             <td>标准 ACP<span class="mini">Nostr 中继桥接</span></td>
             <td>私有 CLI + WS<span class="mini">PTY 进程驱动</span></td>
             <td>私有 EventStream<span class="mini">+ MCP 工具</span></td>
@@ -2046,50 +2047,50 @@ table.method .req.b { color: var(--accent); }
     </div>
     <div class="flex items-center between mt-16 reveal">
       <span class="small">对标不是贬低同行：每一代都在解决它那一代的核心矛盾。</span>
-      <span class="badge ok">第四代：控制面解耦</span>
+      <span class="badge ok">控制面解耦</span>
     </div>
   </div>
 </section>
 
 <!-- 23 ------------------------------------------------------------ -->
-<section class="slide" data-no="23" data-section="生态对标" data-title="五条战略护城河"
-  data-notes="如果听众只记住一页，就是这一页。五条护城河不是功能列表，而是别人短期补不齐的结构性优势：协议位置、资产形态、决策机制、双模切换、安全边界。">
+<section class="slide" data-no="23" data-section="生态对标" data-title="五个设计选择"
+  data-notes="这一页讲五个设计选择，不做竞争优势的断言：执行面解耦、经验可携带、收敛有门禁、按任务选双模、边界在本地。每一条都有代价，也都有适用边界。">
   <div class="slide-head">
     <div class="eyebrow reveal">22 / 对标</div>
-    <h2 class="reveal">为什么我们走在最前沿</h2>
-    <p class="lede reveal">不是五个功能，而是五道短期内补不齐的结构性壁垒。</p>
+    <h2 class="reveal">五个设计选择：我们如何取舍</h2>
+    <p class="lede reveal">不是五个功能，而是五个取舍；每一条都有代价。</p>
   </div>
   <div class="slide-body">
     <div class="moats">
       <div class="moat reveal" data-g="01">
-        <div class="mn">MOAT 01</div><h4>解耦彻底</h4>
-        <p>100% ACP 纯执行面。不内嵌 Agent，不绑定模型，执行体可随时替换。</p>
+        <div class="mn">CHOICE 01</div><h4>执行面解耦</h4>
+        <p>ACP 纯执行面。不内嵌 Agent，不绑定模型；执行体可替换，但要依赖协议与端点。</p>
         <div class="proof">EVIDENCE · ACP 双栈 + 13 套回归</div>
-        <div class="vs">别人：把 Agent 焊死在宿主里</div>
+        <div class="vs">常见做法：把 Agent 焊死在宿主里</div>
       </div>
       <div class="moat reveal" data-g="02">
-        <div class="mn">MOAT 02</div><h4>跨机记忆</h4>
+        <div class="mn">CHOICE 02</div><h4>经验可携带</h4>
         <p>.scpack 把同事调优好的经验变成可验签、可分发、可只读挂载的资产。</p>
         <div class="proof">EVIDENCE · BLAKE3 + RFC 8785</div>
-        <div class="vs">别人：记忆留在本地文件里</div>
+        <div class="vs">常见做法：记忆留在本地文件里</div>
       </div>
       <div class="moat reveal" data-g="03">
-        <div class="mn">MOAT 03</div><h4>博弈趋真</h4>
-        <p>4+1 角色正交 + Free-MAD 红队 + BWM 硬门禁，不靠投票与互吹。</p>
+        <div class="mn">CHOICE 03</div><h4>收敛有门禁</h4>
+        <p>4+1 角色正交 + 红队质询 + BWM 门禁，尽量把结论落在证据上。</p>
         <div class="proof">EVIDENCE · ξ* ≤ 0.12 + 异议报告</div>
-        <div class="vs">别人：多 Agent 聊天即协同</div>
+        <div class="vs">常见做法：把多 Agent 聊天当协同</div>
       </div>
       <div class="moat reveal" data-g="04">
-        <div class="mn">MOAT 04</div><h4>双模协同</h4>
-        <p>日常走增量敏捷流，争议一键升维博弈。效率与严谨不必二选一。</p>
+        <div class="mn">CHOICE 04</div><h4>按任务选双模</h4>
+        <p>日常走增量流，争议升维博弈；按任务选择，不做一刀切。</p>
         <div class="proof">EVIDENCE · 增量省 51–80% Token</div>
-        <div class="vs">别人：要么轻，要么重</div>
+        <div class="vs">常见取舍：要么轻，要么重</div>
       </div>
       <div class="moat reveal" data-g="05">
-        <div class="mn">MOAT 05</div><h4>本地安全</h4>
+        <div class="mn">CHOICE 05</div><h4>边界在本地</h4>
         <p>Rust 反向权限代理 + 不可变 CWD + Fail-Closed，默认不信任。</p>
         <div class="proof">EVIDENCE · 五级授权 + Fail-Closed</div>
-        <div class="vs">别人：提示词约束，非确定性</div>
+        <div class="vs">常见做法：用提示词约束</div>
       </div>
     </div>
 
@@ -2148,11 +2149,11 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 25 ------------------------------------------------------------ -->
 <section class="slide" data-no="25" data-section="落地" data-title="认知防从众治理机制"
-  data-notes="这一页是理论支撑，也是价值主张。LLM 会谄媚，会为了‘看起来一致’放弃正确。我们的做法是量化它、折减它、用红队逼出反例、用数学门禁兜底，最后把反对意见完整保留下来。">
+  data-notes="这一页讲机制，不做“所有多 Agent 都会谄媚”的判断。LLM 存在谄媚倾向；做法是量化、折减、用红队逼出反例、用数学门禁兜底，并把反对意见保留下来。研究依据与边界见附录 A7。">
   <div class="slide-head">
     <div class="eyebrow reveal">24 / 落地</div>
-    <h2 class="reveal">不追求看起来一致，只追求证据上一致</h2>
-    <p class="lede reveal">LLM 会谄媚，治理机制必须比它更固执。</p>
+    <h2 class="reveal">尽量让结论落在证据上</h2>
+    <p class="lede reveal">LLM 存在谄媚倾向；用机制把结论拉回证据。</p>
   </div>
   <div class="slide-body">
     <div class="grid" style="grid-template-columns:1.05fr .95fr;gap:32px">
@@ -2160,7 +2161,7 @@ table.method .req.b { color: var(--accent); }
         <div class="chain"><span class="cno">01</span><span><b>BSS / DSS 谄媚量化</b> · 识别“无实据却突然妥协”</span><span class="ar">DETECT</span></div>
         <div class="chain"><span class="cno">02</span><span><b>γ 信任折减</b> · 对该 Agent 后续发言降权</span><span class="ar">DISCOUNT</span></div>
         <div class="chain"><span class="cno">03</span><span><b>Free-MAD 红队</b> · 强制给出死锁 / 竞态 / 越界反例</span><span class="ar">CHALLENGE</span></div>
-        <div class="chain"><span class="cno">04</span><span><b>BWM 硬门禁</b> · ξ* &gt; 0.12 直接打回，不进入裁决</span><span class="ar">GATE</span></div>
+        <div class="chain"><span class="cno">04</span><span><b>BWM 门禁</b> · ξ* &gt; 0.12 退回重审，不进入裁决</span><span class="ar">GATE</span></div>
         <div class="chain"><span class="cno">05</span><span><b>少数派异议报告</b> · 反对意见完整保留、不抹平</span><span class="ar">PRESERVE</span></div>
         <div class="chain"><span class="cno">06</span><span><b>黑天鹅触发器</b> · 3 条量化条件触发重启评审</span><span class="ar">REOPEN</span></div>
       </div>
@@ -2175,6 +2176,8 @@ table.method .req.b { color: var(--accent); }
         <div class="flex wrap gap-8 mt-20">
           <span class="chip">Sycophancy Propagation</span>
           <span class="chip">Free-MAD</span>
+          <span class="chip">ColMAD</span>
+          <span class="chip">ReConcile</span>
           <span class="chip">BWM</span>
         </div>
         <div class="card mt-20">
@@ -2234,40 +2237,40 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 27 ------------------------------------------------------------ -->
-<section class="slide" data-no="27" data-section="落地" data-title="未来演进路线 Roadmap"
-  data-notes="收束到未来。Wave 1 已经能用，Wave 2 解决组网自由，Wave 3 走向组织认知。不要过度承诺时间点，讲清方向与判断即可。">
+<section class="slide" data-no="27" data-section="落地" data-title="接下来的三个方向"
+  data-notes="收束到方向，不做时间预测。现在的桌面协同、下一步的 P2P 组网、探索中的组织级经验网络；不承诺时间点，也不把探索说成必然。">
   <div class="slide-head">
     <div class="eyebrow reveal">26 / 落地</div>
-    <h2 class="reveal">从桌面协同，到企业认知大脑</h2>
-    <p class="lede reveal">先连起来，再流起来，最后让组织会思考。</p>
+    <h2 class="reveal">接下来的三个方向</h2>
+    <p class="lede reveal">先连起来，再让经验流动，最后尝试组织级推理。</p>
   </div>
   <div class="slide-body">
     <div class="road">
       <div class="road-card now reveal">
-        <div class="w">WAVE 1 · NOW</div>
+        <div class="w">现在 · NOW</div>
         <h4>桌面协同</h4>
         <p>本地 / 远程 ACP、.scpack 资产、普通增量流、4+1 博弈与 Rust 权限中心，已形成闭环。</p>
         <div class="crit">完成标志 · 桌面端端到端闭环</div>
         <div class="st"><span class="badge ok"><span class="d"></span>已落地</span></div>
       </div>
       <div class="road-card reveal">
-        <div class="w">WAVE 2 · NEXT</div>
+        <div class="w">下一步 · NEXT</div>
         <h4>P2P 自组网</h4>
         <p>mDNS 发现与点对点直连，团队内无需中心 Relay，打开应用即可发现彼此的 Agent。</p>
         <div class="crit">完成标志 · 零 Relay 跨机协同</div>
         <div class="st"><span class="badge info"><span class="d"></span>演进中</span></div>
       </div>
       <div class="road-card reveal">
-        <div class="w">WAVE 3 · FUTURE</div>
+        <div class="w">探索 · EXPLORE</div>
         <h4>因果推断边缘盒子</h4>
-        <p>把团队决策沉淀为可推理的组织记忆，从“协同工具”走向“企业认知基础设施”。</p>
+        <p>尝试把团队决策沉淀为可检索、可推理的经验网络。</p>
         <div class="crit">完成标志 · 决策可追溯、可推理</div>
         <div class="st"><span class="badge plain"><span class="d"></span>探索</span></div>
       </div>
     </div>
 
     <div class="flex items-center between mt-28 reveal">
-      <span class="small">路线图的底层逻辑：先让 Agent 连起来，再让记忆流起来，最后让组织会思考。</span>
+      <span class="small">三个方向的顺序：先连接，再让经验流动，最后尝试组织级推理。</span>
       <span class="chip accent">Local-first → Team-first → Org-first</span>
     </div>
   </div>
@@ -2275,15 +2278,15 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 28 ------------------------------------------------------------ -->
 <section class="slide closing" data-no="28" data-section="结语" data-title="让 Agent 彼此连接，让经验彼此流动"
-  data-notes="收尾要慢。停在“让 Agent 彼此连接，让经验彼此流动”这句话上，然后给出行动号召：把常用的 Agent 接进来，把同事调优好的经验包分享出去。谢谢之后留出 Q&A。">
+  data-notes="收尾要慢。停在“让 Agent 彼此连接，让经验彼此流动”这句话上，然后落到主题：协作不是目的，让人只关注结果才是；同事不在场，他们的经验也一直在线。不做未来预测，只留一个愿望和一个行动号召。">
   <div class="eyebrow reveal">27 / 结语</div>
   <h1 class="reveal">让 Agent 彼此连接，<br><span class="grad">让经验彼此流动。</span></h1>
-  <p class="lede reveal">不重复造 Agent。把常用的、调优好的、身边的经验连成一张协作网。<br>你不必拥有所有答案，只需要把对的人和对的 Agent 连在一起。</p>
+  <p class="lede reveal">协作不是目的。把人从过程里抽出来，只关注结果，才是。<br>同事不在场，他们的经验也一直在线。</p>
   <div class="end-mark reveal">
     <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 2 39 25 62 32 39 39 32 62 25 39 2 32 25 25Z" fill="var(--accent)"/></svg>
     <span class="mono" style="font-size:12px;letter-spacing:.3em;color:var(--fg2)">SHADOW CREW · THANK YOU</span>
   </div>
-  <div class="end-note">连接 · 协作 · 共享 · 附录 A1–A5：ACP 实操</div>
+  <div class="end-note">连接 · 协作 · 结果 · 附录 A1–A7：ACP 实操</div>
 </section>
 
 
@@ -2331,17 +2334,71 @@ table.method .req.b { color: var(--accent); }
       </div>
     </div>
     <div class="flex items-center between mt-20 reveal">
-      <span class="small">先记住这条主干；A2 / A3 展开方法，A4 给出可直接照抄的报文。</span>
+      <span class="small">先记住这条主干；A2 讲 capabilities，A3 / A4 展开方法，A5 给出可直接照抄的报文。</span>
       <span class="chip">来源：agentclientprotocol.com</span>
     </div>
   </div>
 </section>
 
 <!-- 30 ------------------------------------------------------------ -->
-<section class="slide" data-no="30" data-section="附录 · ACP" data-title="V1 方法地图与能力"
+<!-- 30 ------------------------------------------------------------ -->
+<section class="slide" data-no="30" data-section="附录 · ACP" data-title="capabilities 是什么"
+  data-notes="capabilities 不是权限，也不是版本。它是 initialize 时双方交换的一张清单：我会哪些可选方法、哪些内容类型、哪些 MCP 传输。v1 用布尔，v2 用对象存在性；省略即不支持。后续只发对端声明过的能力，否则可能 -32602。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">附录 A2 / 基础</div>
+    <h2 class="reveal">capabilities 是什么：握手时交换的能力清单</h2>
+    <p class="lede reveal">它不是权限，也不是功能开关；它是 <span class="mono">initialize</span> 时交换的“能力清单”。</p>
+  </div>
+  <div class="slide-body">
+    <div class="appx-grid wide">
+      <div class="reveal">
+        <div class="tbl-wrap">
+          <table class="tbl method">
+            <thead><tr><th style="width:36%">字段</th><th style="width:64%">声明后可用</th></tr></thead>
+            <tbody>
+              <tr><td class="mth">session</td><td>new / list / resume / close / prompt / cancel / update 七个基线方法</td></tr>
+              <tr><td class="mth">session.prompt.image</td><td>prompt 里可带 <span class="mono">image</span> 内容块</td></tr>
+              <tr><td class="mth">session.prompt.audio</td><td>可带 <span class="mono">audio</span> 内容块</td></tr>
+              <tr><td class="mth">session.prompt.embeddedContext</td><td>可带 <span class="mono">resource</span> 内嵌资源</td></tr>
+              <tr><td class="mth">session.mcp.stdio</td><td>session/new 可传 stdio MCP server</td></tr>
+              <tr><td class="mth">session.mcp.http</td><td>可传 HTTP MCP server</td></tr>
+              <tr><td class="mth">session.delete</td><td><span class="mono">session/delete</span> 可用</td></tr>
+              <tr><td class="mth">session.additionalDirectories</td><td>可带额外工作区根目录</td></tr>
+              <tr><td class="mth">session.systemPrompt</td><td>可带 append / override 系统提示词</td></tr>
+              <tr><td class="mth">auth.terminal（Client）</td><td>Agent 可提供 terminal 类型登录</td></tr>
+              <tr><td class="mth">elicitation（Client）</td><td><span class="mono">elicitation/create</span> 可用</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small mt-8">v1 用布尔标记（<span class="mono">true/false</span>）；v2 用对象标记（<span class="mono">{}</span> / 省略）；<b>省略 = 不支持</b>。</p>
+      </div>
+
+      <div class="reveal">
+        <div class="card" style="padding:14px 16px">
+          <div class="card-k">V2 · 一段真实的 capabilities</div>
+          <div class="code tiny mt-8"><span class="c">// Agent 声明：支持基础 session + 图片 + stdio MCP</span>
+← {"capabilities":{
+  "session":{
+    "prompt":{"image":{}},
+    "mcp":{"stdio":{}}
+  }
+}}</div>
+        </div>
+        <ul class="lst tight mt-12">
+          <li><b>不是权限</b><br>权限走 <span class="mono">session/request_permission</span>；capabilities 只说明“支持哪些可选面”。</li>
+          <li><b>不是版本</b><br>版本是 <span class="mono">protocolVersion</span>；能力是同一版本内的可选字段。</li>
+          <li><b>不要猜</b><br>对端没声明的类型不要发；发了可能返回 <span class="mono">-32602</span>。</li>
+        </ul>
+      </div>
+    </div>
+    <div class="callout mt-14 reveal"><span class="tag">一句话</span><span><b>capabilities = “我能接什么”的清单</b>；<span class="mono">session</span> 是总开关，声明它就要实现七个基线方法。</span></div>
+  </div>
+</section>
+
+<section class="slide" data-no="31" data-section="附录 · ACP" data-title="V1 方法地图与能力"
   data-notes="V1 的基线很小：initialize、session/new、session/prompt、session/cancel，加上客户端的 session/request_permission。fs 与 terminal 是可选能力，让客户端替 Agent 执行。逐行讲的时候，强调‘基线 vs 能力门控’。">
   <div class="slide-head">
-    <div class="eyebrow reveal">附录 A2 / ACP V1</div>
+    <div class="eyebrow reveal">附录 A3 / ACP V1</div>
     <h2 class="reveal">V1 方法地图：基线很小，能力可选</h2>
     <p class="lede reveal">先看方法属于谁、是否需要能力；再看能力是布尔还是对象。</p>
   </div>
@@ -2404,10 +2461,10 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 31 ------------------------------------------------------------ -->
-<section class="slide" data-no="31" data-section="附录 · ACP" data-title="V2 方法地图与断点"
+<section class="slide" data-no="32" data-section="附录 · ACP" data-title="V2 方法地图与断点"
   data-notes="v2 的基线更大：只要 advertise capabilities.session，就必须实现 new/list/resume/close/prompt/cancel/update。客户端变薄：fs/terminal 移除，客户端工具改走 MCP。右边六个断点是迁移时最容易踩的坑。">
   <div class="slide-head">
-    <div class="eyebrow reveal">附录 A3 / ACP V2 (Draft)</div>
+    <div class="eyebrow reveal">附录 A4 / ACP V2 (Draft)</div>
     <h2 class="reveal">V2 方法地图：基线更大，客户端更薄</h2>
     <p class="lede reveal">一个连接只跑一个版本；先看基线，再看六个断点。</p>
   </div>
@@ -2459,10 +2516,10 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 32 ------------------------------------------------------------ -->
-<section class="slide" data-no="32" data-section="附录 · ACP" data-title="最小接入：四段报文跑通"
+<section class="slide" data-no="33" data-section="附录 · ACP" data-title="最小接入：四段报文跑通"
   data-notes="这页是可以直接照抄的最小闭环：握手、建会话、发 prompt、收口与审批。以 stdio + v2 为例；v1 的差异在页脚：clientCapabilities/clientInfo，以及 prompt 响应在结束时才返回 stopReason。">
   <div class="slide-head">
-    <div class="eyebrow reveal">附录 A4 / 接入</div>
+    <div class="eyebrow reveal">附录 A5 / 接入</div>
     <h2 class="reveal">最小接入：四段报文跑通 ACP</h2>
     <p class="lede reveal">以 stdio + v2 为例。直接照抄，先让一条消息走通，再补能力。</p>
   </div>
@@ -2519,10 +2576,10 @@ C→A {"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}</div
 </section>
 
 <!-- 33 ------------------------------------------------------------ -->
-<section class="slide" data-no="33" data-section="附录 · ACP" data-title="接入检查清单"
+<section class="slide" data-no="34" data-section="附录 · ACP" data-title="接入检查清单"
   data-notes="最后给一张检查清单：传输、版本、能力、会话、内容、流式、权限、取消、恢复、双栈。每一条都对应一个真实踩坑点，讲完这一页，听众回去就能接。">
   <div class="slide-head">
-    <div class="eyebrow reveal">附录 A5 / 落地</div>
+    <div class="eyebrow reveal">附录 A6 / 落地</div>
     <h2 class="reveal">接入检查清单：从握手到收口</h2>
     <p class="lede reveal">十项检查，覆盖传输、版本、能力、会话、流式、权限与恢复。</p>
   </div>
@@ -2552,6 +2609,33 @@ C→A {"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}</div
   </div>
 </section>
 
+<!-- 35 ------------------------------------------------------------ -->
+<section class="slide" data-no="35" data-section="附录 · 参考" data-title="参考论文与适用边界"
+  data-notes="这页是论文依据，不是必胜宣言。每篇只讲它支撑什么：反从众、协作讨论、局部切片、异构校准、谄媚传播、角色正交、BWM、异议保留。G-Frame 是内部规范，不是论文。最后强调边界：论文结论依赖任务、模型与提示，不能外推成“多 Agent 一定更准”。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">附录 A7 / 依据</div>
+    <h2 class="reveal">参考论文与适用边界</h2>
+    <p class="lede reveal">这些研究支持“多角色、任务拆解、验证机制可能提升准确性”，但结论有任务与模型边界。</p>
+  </div>
+  <div class="slide-body">
+    <div class="grid cols-2 gap-10">
+      <div class="card reveal" style="padding:13px 15px"><div class="card-k">PAPER 01</div><h4>Free-MAD</h4><p class="card-d" style="margin-top:4px">反从众的多 Agent 辩论；挑战者迫使提案给出可证伪反例。</p></div>
+      <div class="card reveal" style="padding:13px 15px"><div class="card-k">PAPER 02</div><h4>ColMAD</h4><p class="card-d" style="margin-top:4px">协作式多 Agent 辩论；角色分工与协同增量。</p></div>
+      <div class="card reveal" style="padding:13px 15px"><div class="card-k">PAPER 03</div><h4>LMAD</h4><p class="card-d" style="margin-top:4px">局部多 Agent 辩论；按冲突切片，减少无关上下文。</p></div>
+      <div class="card reveal" style="padding:13px 15px"><div class="card-k">PAPER 04</div><h4>ReConcile</h4><p class="card-d" style="margin-top:4px">异构模型共识与置信度校准；用校准置信度而非简单投票。</p></div>
+      <div class="card reveal" style="padding:13px 15px"><div class="card-k">PAPER 05</div><h4>Sycophancy Propagation</h4><p class="card-d" style="margin-top:4px">谄媚在多轮讨论中传播；需要量化与信任折减。</p></div>
+      <div class="card reveal" style="padding:13px 15px"><div class="card-k">PAPER 06</div><h4>DIANOIA</h4><p class="card-d" style="margin-top:4px">角色正交的认知流程；4+1 阶段划分的依据之一。</p></div>
+      <div class="card reveal" style="padding:13px 15px"><div class="card-k">PAPER 07</div><h4>LLM + BWM</h4><p class="card-d" style="margin-top:4px">用 BWM 把准则权重变成可检查的数学问题。</p></div>
+      <div class="card reveal" style="padding:13px 15px"><div class="card-k">PAPER 08</div><h4>Disagreement-Aware</h4><p class="card-d" style="margin-top:4px">保留少数派异议与黑天鹅重启触发器。</p></div>
+    </div>
+    <div class="callout mt-12 reveal"><span class="tag">G-FRAME</span><span>内部规范，不是论文：用贝叶斯先验 / 后验做模块路由（宣讲中称“贝叶斯博弈”），把大任务拆成 2–4 个原子模块。</span></div>
+    <div class="flex items-center between mt-10 reveal">
+      <span class="small">引用边界：论文结论依赖任务、模型与提示；这里不主张“多 Agent 必然优于单 Agent”。</span>
+      <span class="chip">来源：论文原文 / 内部规范</span>
+    </div>
+  </div>
+</section>
+
 </main>
 </div>
 
@@ -2574,7 +2658,7 @@ C→A {"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}</div
 <div class="overlay" id="overview" role="dialog" aria-modal="true" aria-label="幻灯片总览">
   <div class="ov-inner">
     <div class="ov-head">
-      <h2>全部 33 页</h2>
+      <h2>全部 35 页</h2>
       <span class="small">点击跳转 · Esc 关闭 · ← / → 翻页</span>
     </div>
     <div class="ov-grid" id="ov-grid"></div>
@@ -2643,8 +2727,8 @@ C→A {"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}</div
     var aside = notesOpen ? (narrow ? 340 : 440) : 0;
     var availW = window.innerWidth - aside;
     var availH = window.innerHeight;
-    var marginX = narrow ? 16 : 104;
-    var marginY = availH < 700 ? 26 : 96;
+    var marginX = narrow ? 16 : 40;
+    var marginY = availH < 700 ? 20 : 40;
     var s = Math.min((availW - marginX) / 1600, (availH - marginY) / 900);
     s = Math.max(0.2, Math.min(s, 1.6));
     stage.style.setProperty('--s', s);
