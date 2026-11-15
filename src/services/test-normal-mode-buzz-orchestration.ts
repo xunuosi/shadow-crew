@@ -273,8 +273,9 @@ console.log('\n2️⃣ 测试并发乱序到达下的会话水位线不变量 (C
     'Hop 2 提取后水位线平滑推进至最新有效消息 msg-reply-b1'
   );
 
-  // 测试超出 MAX_DELTA_BATCH_EVENTS (50) 时的尾部滑动窗口截断
-  const manyMessages: RoomTranscriptEntry[] = Array.from({ length: 65 }, (_, i) => ({
+  // 测试超出 MAX_DELTA_BATCH_EVENTS 时的尾部滑动窗口截断（数据量随常量推导，避免常量调整后用例失效）
+  const bulkTotal = MAX_DELTA_BATCH_EVENTS + 15;
+  const manyMessages: RoomTranscriptEntry[] = Array.from({ length: bulkTotal }, (_, i) => ({
     id: `msg-bulk-${i + 1}`,
     authorId: 'user-norris',
     authorName: 'Norris',
@@ -285,8 +286,8 @@ console.log('\n2️⃣ 测试并发乱序到达下的会话水位线不变量 (C
   });
   assert(
     bulkBatch.deltaMessages.length === MAX_DELTA_BATCH_EVENTS &&
-      bulkBatch.deltaMessages[0].id === 'msg-bulk-16' &&
-      bulkBatch.deltaMessages[49].id === 'msg-bulk-65',
+      bulkBatch.deltaMessages[0].id === `msg-bulk-${bulkTotal - MAX_DELTA_BATCH_EVENTS + 1}` &&
+      bulkBatch.deltaMessages[MAX_DELTA_BATCH_EVENTS - 1].id === `msg-bulk-${bulkTotal}`,
     `当未读事件数超出 MAX_DELTA_BATCH_EVENTS (${MAX_DELTA_BATCH_EVENTS}) 时，自动保留最近 ${MAX_DELTA_BATCH_EVENTS} 条增量`
   );
 

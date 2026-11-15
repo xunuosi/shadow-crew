@@ -240,15 +240,13 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
       }
       prevMsgCountRef.current = messages.length;
       scrollToBottom('auto');
+      // 只保留两次补偿滚动：rAF 处理首帧布局，120ms 兜底 Markdown/代码块异步回流。
+      // 原先 40/120/250 三次 setTimeout 会在长会话切换时反复触发同步布局，低端机上可感知卡顿。
       const raf = requestAnimationFrame(() => scrollToBottom('auto'));
-      const timer1 = setTimeout(() => scrollToBottom('auto'), 40);
-      const timer2 = setTimeout(() => scrollToBottom('auto'), 120);
-      const timer3 = setTimeout(() => scrollToBottom('auto'), 250);
+      const timer = setTimeout(() => scrollToBottom('auto'), 120);
       return () => {
         cancelAnimationFrame(raf);
-        clearTimeout(timer1);
-        clearTimeout(timer2);
-        clearTimeout(timer3);
+        clearTimeout(timer);
       };
     }
   }, [activeThread?.id, scrollToBottom, messages.length]);

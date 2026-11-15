@@ -207,6 +207,10 @@ import {
   executeAbortAgentOrchestration,
   executeAbortAllOrchestration,
   executeUpdateChannelMembersOrchestration,
+  selectRespondersForUnmentionedTurn,
+  settleWithDeadline,
+  createCascadeBudget,
+  consumeCascadeBudget,
 } from './services/agentCollaboration';
 import {
   evaluateGameConfiguration,
@@ -878,6 +882,57 @@ export default function App() {
   const activeCascadesRef = useRef<Record<string, CollaborationCascade>>({});
   activeCascadesRef.current = activeCascades;
   const messagesRef = useRef(messages);
+
+  // 汇合超时提示的节流表：同一房间 60 秒内只提示一次，避免多跳连续超时刷屏
+  const barrierTimeoutNoticeAtRef = useRef<Record<string, number>>({});
+  /**
+   * 汇合硬超时后的用户可见告知。
+   * 超时收敛此前只在控制台打 warn，前端表现为「推演中」却始终没有结论，
+   * 是「长时间无效等待」的主要观感来源；这里补一条系统卡片说明收敛原因与续跑方式。
+   */
+  const pushBarrierTimeoutNotice = (
+    roomId: string,
+    channelId: string,
+    timedOut: number,
+    timedOutAgentIds: string[] = []
+  ) => {
+    if (timedOut <= 0) return;
+    // 先回收超时成员的执行态：否则界面会一直停在「推演中」，直到该 Agent 自己在
+    // Rust 侧 900s 上限处结束，这正是「长时间无效等待」的来源。
+    if (timedOutAgentIds.length > 0) {
+      setActiveExecutions((prev) => {
+        const next = { ...prev };
+        timedOutAgentIds.forEach((agentId) => {
+          if (!agentId) return;
+          delete next[`${roomId}:${agentId}`];
+        });
+        if (Object.keys(next).length === 0) setIsGenerating(false);
+        return next;
+      });
+    }
+    const now = Date.now();
+    const lastAt = barrierTimeoutNoticeAtRef.current[roomId] || 0;
+    if (now - lastAt < 60_000) return;
+    barrierTimeoutNoticeAtRef.current = { ...barrierTimeoutNoticeAtRef.current, [roomId]: now };
+    const notice: Message = {
+      id: `barrier-timeout-${now}-${roomId}`,
+      threadId: roomId,
+      channelId,
+      authorId: 'system',
+      authorName: 'Shadow Crew 协同管控',
+      authorHandle: '@loop-guard',
+      authorAvatar: '🛡️',
+      isAgent: true,
+      agentBadge: 'Barrier Timeout',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      content: `⏱️ **本轮协同已按已完成结果收敛**：有 ${timedOut} 位成员未在等待时限内返回，已保留其余成员结论继续推进。如需该成员补充，可直接 @ 它追加一轮。`,
+    };
+    setMessages((prev) => {
+      const next = { ...prev, [roomId]: [...(prev[roomId] || []), notice] };
+      messagesRef.current = next;
+      return next;
+    });
+  };
   messagesRef.current = messages;
   const agentsRef = useRef(agents);
   agentsRef.current = agents;
@@ -2635,7 +2690,7 @@ export default function App() {
             kind: 'guard',
             agentBadge: 'Circuit Breaker',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `⚡ **多智能体协同已停止**：${loopCheck.reason}`,
+            content: `⚡ **多智能体协同已收敛**：${loopCheck.reason}`,
             collaborationInfo: {
               cascadeId,
               hop: cascade.depth,
@@ -2751,9 +2806,12 @@ export default function App() {
 
     // 4. 并行派发本跳所有去重后的目标 Agent，并在全部完成后进入下一道 Turn Barrier
     const hopOutputs: TurnAgentOutput[] = [];
+    // 屏障关闭后到达的迟到回复不再计入本轮输出，防止已判定超时的 Agent 又触发一次下一跳
+    let hopBarrierClosed = false;
     const cascadeTurnSnapshot = captureTurnEpoch(roomId, targetChannelId);
 
-    await Promise.allSettled(
+    // 本跳派发同样走硬超时汇合：单个 Agent 卡死不再让整条级联永久停在推演中
+    const hopSettle = await settleWithDeadline(
       allowedTargets.map(async (item) => {
         const { targetAgent, invokingAgents, sourceMessageIds, combinedReplies } = item;
         const agentSnapshot = captureTurnEpoch(roomId, targetChannelId, targetAgent.id);
@@ -2894,6 +2952,7 @@ export default function App() {
           availableAgents: candidateAgents,
           roomId,
           isWarmSession: deltaBatch.isWarmSession,
+          droppedDeltaCount: deltaBatch.droppedCount ?? 0,
           deltaMessages: deltaBatch.deltaMessages,
           triggerContent: latestTriggerReplyContent,
           hop: nextDepth,
@@ -2904,6 +2963,8 @@ export default function App() {
         });
 
         try {
+          // 链路预算记账：这一次真实模型调用连同提示词体积一并计入，超出总额度后 checkLoopGuard 会收敛并告知原因
+          consumeCascadeBudget(cascade, 1, cascadePrompt.length);
           const acpResp = await sendPromptToAcpAgent({
             agent: targetAgent,
             roomId,
@@ -3021,11 +3082,13 @@ export default function App() {
           );
           syncRunningAgentsWithBackend();
 
-          hopOutputs.push({
-            agent: targetAgent,
-            messageId: nextReply.id,
-            replyContent: acpResp.textResponse,
-          });
+          if (!hopBarrierClosed) {
+            hopOutputs.push({
+              agent: targetAgent,
+              messageId: nextReply.id,
+              replyContent: acpResp.textResponse,
+            });
+          }
         } catch (err) {
           setActiveExecutions((prev) => {
             const next = { ...prev };
@@ -3066,6 +3129,18 @@ export default function App() {
         }
       })
     );
+    hopBarrierClosed = true;
+    if (hopSettle.timedOut > 0) {
+      console.warn(
+        `[CollaborationCascade] 本跳 ${hopSettle.timedOut} 个 Agent 响应超时，按已完成结果收敛`
+      );
+      pushBarrierTimeoutNotice(
+        roomId,
+        targetChannelId,
+        hopSettle.timedOut,
+        hopSettle.timedOutIndexes.map((i) => allowedTargets[i]?.targetAgent?.id || '')
+      );
+    }
 
     // 5. 本跳同步屏障 (Turn Barrier) 汇合完成后，进入下一跳评估
     if (isTurnStale(cascadeTurnSnapshot) || activeCascadesRef.current[cascadeId]?.isAborted) {
@@ -3806,8 +3881,15 @@ export default function App() {
       if (userMentionedAgents.length > 0) {
         respondingAgents = userMentionedAgents;
       } else if (candidateAgents.length > 0) {
-        // 标准讨论模式（对标 Buzz）：当用户未显式点名特定 Agent 时，唤醒当前议题内所有已指派的在线 Agent 在 Hop 1 并发发言
-        respondingAgents = candidateAgents;
+        // 标准讨论模式（对标 Buzz）：未显式点名时按「关键词相关性 + 近期活跃度」启发式挑选响应者，
+        // 极短确认/寒暄只唤醒最近活跃的一位，避免一句「好」触发全员并发与 N 倍 token 消耗
+        // 优先在在线成员中挑选：离线成员无法推演，选中它会静默少人参与
+        const onlineCandidates = candidateAgents.filter((a) => !isAgentOffline(a));
+        respondingAgents = selectRespondersForUnmentionedTurn({
+          candidateAgents: onlineCandidates.length > 0 ? onlineCandidates : candidateAgents,
+          userContent: agentTurnContent,
+          recentMessages: messagesRef.current[topicId] || [],
+        });
       }
     }
 
@@ -3969,6 +4051,7 @@ export default function App() {
         visitedAgentIds: onlineAgents.map((a) => a.id),
         agentCallCounts: initialCallCounts,
         isAborted: false,
+        budget: createCascadeBudget(onlineAgents.length, resolveCascadeMaxHops(onlineAgents)),
       };
       activeCascadesRef.current = {
         ...activeCascadesRef.current,
@@ -4127,6 +4210,7 @@ export default function App() {
           availableAgents: candidateAgents,
           roomId: topicId,
           isWarmSession: deltaBatch.isWarmSession,
+          droppedDeltaCount: deltaBatch.droppedCount ?? 0,
           deltaMessages: deltaBatch.deltaMessages,
           triggerContent: agentTurnContent,
           hop: 1,
@@ -4155,8 +4239,15 @@ export default function App() {
           visitedAgentIds: [agent.id],
           agentCallCounts: { [agent.id]: 1 },
           isAborted: false,
+          budget: createCascadeBudget(onlineAgents.length, resolveCascadeMaxHops(onlineAgents)),
         };
         setActiveCascades((prev) => ({ ...prev, [cascadeId]: newCascade }));
+      }
+
+      // 链路预算记账：标准议题首轮同样计入总额度，避免议题内多 Agent 并发重复推演时 token 无上限
+      const accountingCascade = activeCascadesRef.current[cascadeId];
+      if (accountingCascade) {
+        consumeCascadeBudget(accountingCascade, 1, finalPrompt.length);
       }
 
       logRpc(agent.name, 'client_to_agent', 'session/prompt', {
@@ -4646,8 +4737,18 @@ export default function App() {
 
     // 标准讨论模式：Turn Barrier 同步屏障 —— 等待首轮所有并发 Agent 全部执行完毕后，统一聚合去重 @mention 唤醒下一跳
     if (!isGameTheoretic && agentTurnPromises.length > 0) {
-      Promise.allSettled(agentTurnPromises).then(() => {
+      // 硬超时汇合：个别 Agent 无响应时不再让整条级联永久停在「推演中」
+      settleWithDeadline(agentTurnPromises).then(({ timedOut, timedOutIndexes }) => {
         if (isTurnStale(topicTurnSnapshot)) return;
+        if (timedOut > 0) {
+          console.warn(`[CollaborationCascade] ${timedOut} 个 Agent 响应超时，本轮协同已按已完成结果收敛`);
+          pushBarrierTimeoutNotice(
+            topicId,
+            topicChannel?.id || activeChannel?.id || '',
+            timedOut,
+            timedOutIndexes.map((i) => onlineAgents[i]?.id || '')
+          );
+        }
         if (standardTurnOutputs.length > 0) {
           dispatchCascadingAgentResponse({
             cascadeId: sharedStandardCascadeId,
@@ -4860,8 +4961,15 @@ export default function App() {
     } else if (userMentionedAgents.length > 0) {
       respondingAgents = userMentionedAgents;
     } else if (candidateAgents.length > 0) {
-      // 普通频道模式（对标 Buzz）：当用户首次发言未显式点名特定单人时，唤醒当前频道内所有已准入的在线 Agent 在 Hop 1 并发发言
-      respondingAgents = candidateAgents;
+      // 普通频道模式（对标 Buzz）：未显式点名时按「关键词相关性 + 近期活跃度」启发式挑选响应者，
+      // 极短确认/寒暄只唤醒最近活跃的一位，避免全员并发把一句话放大成 N 倍调用
+      // 优先在在线成员中挑选：离线成员无法推演，选中它会静默少人参与
+      const onlineCandidates = candidateAgents.filter((a) => !isAgentOffline(a));
+      respondingAgents = selectRespondersForUnmentionedTurn({
+        candidateAgents: onlineCandidates.length > 0 ? onlineCandidates : candidateAgents,
+        userContent: agentTurnContent,
+        recentMessages: messagesRef.current[currentThreadId] || [],
+      });
     }
 
     if (respondingAgents.length === 0) {
@@ -4941,6 +5049,7 @@ export default function App() {
       visitedAgentIds: onlineAgents.map((ag) => ag.id),
       agentCallCounts: initialCallCounts,
       isAborted: false,
+      budget: createCascadeBudget(onlineAgents.length, resolveCascadeMaxHops(onlineAgents)),
     };
     activeCascadesRef.current = {
       ...activeCascadesRef.current,
@@ -5096,6 +5205,7 @@ export default function App() {
         availableAgents: candidateAgents,
         roomId: currentThreadId,
         isWarmSession: deltaBatch.isWarmSession,
+        droppedDeltaCount: deltaBatch.droppedCount ?? 0,
         deltaMessages: deltaBatch.deltaMessages,
         triggerContent: agentTurnContent,
         hop: 1,
@@ -5109,6 +5219,12 @@ export default function App() {
         sessionWatermarksRef.current.set(sessionKey, deltaBatch.latestWatermarkMessageId);
       }
       persistSessionWarmState();
+
+      // 链路预算记账：频道并发首轮同样计入总额度，频道规模扩大时不会无限放大 token 消耗
+      const threadCascade = activeCascadesRef.current[cascadeId];
+      if (threadCascade) {
+        consumeCascadeBudget(threadCascade, 1, finalPrompt.length);
+      }
 
       logRpc(targetAgent.name, 'client_to_agent', 'session/prompt', {
         jsonrpc: '2.0',
@@ -5275,8 +5391,17 @@ export default function App() {
 
     // Turn Barrier 同步屏障：仅在非 DM (即频道多 Agent 协同) 场景下，等待首轮所有并发 Agent 全部执行完毕后统一去重触发下一跳
     if (!isDmThread && hop1Promises.length > 0) {
-      Promise.allSettled(hop1Promises).then(() => {
+      settleWithDeadline(hop1Promises).then(({ timedOut, timedOutIndexes }) => {
         if (isTurnStale(threadTurnSnapshot)) return;
+        if (timedOut > 0) {
+          console.warn(`[CollaborationCascade] ${timedOut} 个 Agent 响应超时，本轮协同已按已完成结果收敛`);
+          pushBarrierTimeoutNotice(
+            activeThread.id,
+            targetChannelId,
+            timedOut,
+            timedOutIndexes.map((i) => onlineAgents[i]?.id || '')
+          );
+        }
         if (turnOutputs.length > 0) {
           dispatchCascadingAgentResponse({
             cascadeId,

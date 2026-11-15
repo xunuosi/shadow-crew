@@ -76,7 +76,7 @@ console.log('\n2️⃣ 测试 2026 主流大模型的上下文规格解析与安
   });
   assert(glmBudget.maxContextTokens === 1_000_000, '智谱 GLM-5.3 成功解析 1M 原生上下文 (1,000,000)');
   assert(glmBudget.reservedForOutput === 65536, '智谱 GLM-5.3 默认预留 64K 输出空间');
-  assert(glmBudget.historyTokenBudget === 512000, '智谱 GLM-5.3 桌面稳态预算达到 512K Tokens');
+  assert(glmBudget.historyTokenBudget === 192000, '智谱 GLM-5.3 桌面稳态预算受控在 192K Tokens 安全线');
 
   // 2.2 月之暗面 Kimi K3 (2M 原生上下文)
   const kimiBudget = getModelSafeContextBudget({
@@ -84,7 +84,7 @@ console.log('\n2️⃣ 测试 2026 主流大模型的上下文规格解析与安
     modelId: 'kimi-k3-max',
   });
   assert(kimiBudget.maxContextTokens === 2_000_000, 'Kimi K3 Max 成功解析 2M 原生上下文 (2,000,000)');
-  assert(kimiBudget.historyTokenBudget === 512000, 'Kimi K3 Max 桌面稳态预算受控在 512K Tokens 安全线');
+  assert(kimiBudget.historyTokenBudget === 192000, 'Kimi K3 Max 桌面稳态预算受控在 192K Tokens 安全线');
 
   // 2.3 阿里通义千问 Qwen 3.8 (1M 原生上下文)
   const qwenBudget = getModelSafeContextBudget({

@@ -149,3 +149,73 @@ body,
 .animate-streamline {
   animation: streamline 1.8s infinite ease-in-out;
 }
+
+/* ===== 进场动画兼容层 =====
+ * 代码里有 48 处 `animate-in fade-in zoom-in-95 slide-in-from-* duration-*` 写法，
+ * 但依赖的 tailwindcss-animate / tw-animate-css 并未安装，Tailwind v4 也不内置这组工具类，
+ * 导致全部弹窗/抽屉/浮层实际上没有任何进场动画。这里用原生 keyframes 补齐等价语义（零新增依赖）。
+ */
+@keyframes sc-enter {
+  from {
+    opacity: var(--sc-enter-opacity, 1);
+    transform: translate3d(var(--sc-enter-x, 0), var(--sc-enter-y, 0), 0) scale(var(--sc-enter-scale, 1));
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.animate-in {
+  animation-name: sc-enter;
+  animation-duration: 200ms;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  animation-fill-mode: both;
+}
+
+.fade-in {
+  --sc-enter-opacity: 0;
+}
+
+.zoom-in-90 {
+  --sc-enter-scale: 0.9;
+}
+
+.zoom-in-95 {
+  --sc-enter-scale: 0.95;
+}
+
+.slide-in-from-top-1 {
+  --sc-enter-y: -0.25rem;
+}
+
+.slide-in-from-bottom-1 {
+  --sc-enter-y: 0.25rem;
+}
+
+.slide-in-from-bottom-2 {
+  --sc-enter-y: 0.5rem;
+}
+
+/* Tailwind 的 duration-* 只作用于 transition，这里让进场动画时长同样跟随类名 */
+.duration-100.animate-in {
+  animation-duration: 100ms;
+}
+
+.duration-150.animate-in {
+  animation-duration: 150ms;
+}
+
+.duration-200.animate-in {
+  animation-duration: 200ms;
+}
+
+.duration-300.animate-in {
+  animation-duration: 300ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-in {
+    animation: none !important;
+  }
+}

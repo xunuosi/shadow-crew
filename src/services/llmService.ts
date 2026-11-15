@@ -1071,12 +1071,13 @@ export function getModelSafeContextBudget(config: AgentModelConfig): {
     };
   }
 
-  // 预留输出空间与系统提示词空间后，按 70% 作为历史上下文安全水位
-  let computedBudget = Math.floor(usableTokens * 0.7);
+  // 预留输出空间与系统提示词空间后，按 60% 作为历史上下文安全水位
+  // （多 Agent 每一跳都要重发一次历史，水位越高首字延迟与输入 token 越线性放大，缺口由既有摘要与折叠机制承接）
+  let computedBudget = Math.floor(usableTokens * 0.6);
 
-  // 工程稳态守卫：在 1M~2M 超大窗口场景下，将桌面多 Agent 协同历史稳态预算设定在 512,000 Tokens 上限，
-  // 兼顾海量长代码 Diff 深度推演与桌面端 JSON 传输/内存稳定性；小模型（8k~32k）则精准贴合其物理上限。
-  const MAX_DESKTOP_STEADY_BUDGET = 512_000;
+  // 工程稳态守卫：超大窗口场景下把桌面多 Agent 协同历史稳态预算收敛到 192,000 Tokens，
+  // 长会话优先走摘要压缩而不是整段回放，同时保留大 Diff 推演所需的空间。
+  const MAX_DESKTOP_STEADY_BUDGET = 192_000;
   if (computedBudget > MAX_DESKTOP_STEADY_BUDGET) {
     computedBudget = MAX_DESKTOP_STEADY_BUDGET;
   }
@@ -1709,8 +1710,12 @@ export function enforceHistoryBudgetConstraints(
       finalTokens = bounded.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
     }
 
-    // 终极安全钳制（微字符截断）：绝对保证 100% <= historyTokenBudget
-    while (finalTokens > historyTokenBudget) {
+    // 终极安全钳制：绝对保证 100% <= historyTokenBudget。
+    // 原实现逐字符裁剪，长会话下会退化为 O(字符数 × 消息数) 的无效循环；
+    // 改为按缺口比例一次砍到位，并加迭代上限兜住「估算取整导致不收敛」的极端情况。
+    let clampRounds = 0;
+    while (finalTokens > historyTokenBudget && clampRounds < 16) {
+      clampRounds += 1;
       let longestIdx = 0;
       let longestLen = 0;
       for (let i = 0; i < bounded.length; i++) {
@@ -1719,8 +1724,12 @@ export function enforceHistoryBudgetConstraints(
           longestIdx = i;
         }
       }
-      if (bounded[longestIdx].content.length <= 4) break;
-      bounded[longestIdx].content = bounded[longestIdx].content.slice(0, -1);
+      const target = bounded[longestIdx];
+      if (!target || target.content.length <= 4) break;
+      const excess = finalTokens - historyTokenBudget;
+      const targetTokens = Math.max(1, estimateTokenCount(target.content));
+      const cutChars = Math.max(1, Math.ceil((excess / targetTokens) * target.content.length));
+      target.content = target.content.slice(0, Math.max(4, target.content.length - cutChars));
       finalTokens = bounded.reduce((acc, m) => acc + estimateTokenCount(m.content), 0);
     }
   }
