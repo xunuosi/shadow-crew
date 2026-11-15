@@ -2409,24 +2409,24 @@ table.method .req.b { color: var(--accent); }
           <table class="tbl method">
             <thead><tr><th style="width:9%">方向</th><th style="width:30%">方法</th><th style="width:20%">必需性 / 能力</th><th style="width:41%">用途</th></tr></thead>
             <tbody>
-              <tr><td class="dir">C → A</td><td class="mth">initialize</td><td class="req b">基线</td><td>版本、能力、客户端信息</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">authenticate</td><td class="req">authMethods</td><td>认证（v2 改名 auth/login）</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">initialize</td><td class="req b">基线</td><td>protocolVersion / capabilities / clientInfo → 版本 + 能力</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">authenticate</td><td class="req">authMethods</td><td>methodId → 认证结果</td></tr>
               <tr><td class="dir">C → A</td><td class="mth">session/new</td><td class="req b">基线</td><td>cwd + mcpServers → sessionId</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">session/prompt</td><td class="req b">基线</td><td>ContentBlock[]；响应 { stopReason }</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">session/load</td><td class="req">loadSession</td><td>全量重放会话历史</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">session/resume</td><td class="req">sessionCapabilities.resume</td><td>恢复上下文，不重放</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">session/close</td><td class="req">sessionCapabilities.close</td><td>取消工作并释放会话</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">session/set_mode</td><td class="req">可选</td><td>切换 Agent 模式</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">logout</td><td class="req">auth.logout</td><td>登出</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">session/cancel</td><td class="req">通知</td><td>取消当前回合</td></tr>
-              <tr><td class="dir">A → C</td><td class="mth">session/update</td><td class="req">通知</td><td>消息块 / 工具 / 计划 / 状态</td></tr>
-              <tr><td class="dir">A → C</td><td class="mth">session/request_permission</td><td class="req b">基线</td><td>反向申请审批</td></tr>
-              <tr><td class="dir">A → C</td><td class="mth">fs/read_text_file<br>fs/write_text_file</td><td class="req">fs.*</td><td>客户端文件读写（可选）</td></tr>
-              <tr><td class="dir">A → C</td><td class="mth">terminal/*<span class="mini">create · output · wait_for_exit · kill · release</span></td><td class="req">terminal</td><td>客户端终端执行（可选）</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/prompt</td><td class="req b">基线</td><td>prompt[] → { stopReason }</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/load</td><td class="req">loadSession</td><td>sessionId + cwd → 重放 + response</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/resume</td><td class="req">sessionCapabilities.resume</td><td>sessionId + cwd → response</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/close</td><td class="req">sessionCapabilities.close</td><td>sessionId → response</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/set_mode</td><td class="req">可选</td><td>modeId → response</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">logout</td><td class="req">auth.logout</td><td>→ response</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/cancel</td><td class="req">通知</td><td>sessionId（无响应）</td></tr>
+              <tr><td class="dir">A → C</td><td class="mth">session/update</td><td class="req">通知</td><td>sessionId + update（无响应）</td></tr>
+              <tr><td class="dir">A → C</td><td class="mth">session/request_permission</td><td class="req b">基线</td><td>toolCall + options → outcome</td></tr>
+              <tr><td class="dir">A → C</td><td class="mth">fs/read_text_file<br>fs/write_text_file</td><td class="req">fs.*</td><td>path (+content) → content / response</td></tr>
+              <tr><td class="dir">A → C</td><td class="mth">terminal/*<span class="mini">create · output · wait_for_exit · kill · release</span></td><td class="req">terminal</td><td>command + cwd → terminalId / output</td></tr>
             </tbody>
           </table>
         </div>
-        <p class="small mt-8">V1 的 prompt 响应在回合结束时返回 <span class="mono">stopReason</span>；客户端工具是可选项，不是基线。</p>
+        <p class="small mt-8">表中“→”后为返回；通知无响应。V1 的 prompt 响应在回合结束时返回 <span class="mono">stopReason</span>；客户端工具是可选项。</p>
       </div>
 
       <div class="reveal">
@@ -2475,20 +2475,20 @@ table.method .req.b { color: var(--accent); }
           <table class="tbl method">
             <thead><tr><th style="width:10%">方向</th><th style="width:34%">方法</th><th style="width:18%">必需性</th><th style="width:38%">用途</th></tr></thead>
             <tbody>
-              <tr><td class="dir">C → A</td><td class="mth">initialize</td><td class="req b">基线</td><td>版本 / capabilities / info</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">auth/login · auth/logout</td><td class="req">authMethods</td><td>认证；非空则两者都必须实现</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">session/new</td><td class="req b">基线</td><td>cwd + mcpServers + systemPrompt</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">session/list · resume · close</td><td class="req b">基线</td><td>列出 / 恢复 / 关闭</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">initialize</td><td class="req b">基线</td><td>protocolVersion / capabilities / info → 版本 + 能力</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">auth/login · auth/logout</td><td class="req">authMethods</td><td>methodId → 登录 / 登出结果</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/new</td><td class="req b">基线</td><td>cwd + mcpServers + systemPrompt → sessionId</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/list · resume · close</td><td class="req b">基线</td><td>sessionId … → 列表 / response</td></tr>
               <tr><td class="dir">C → A</td><td class="mth">session/prompt</td><td class="req b">基线</td><td>ContentBlock[] → { messageId }</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">session/cancel</td><td class="req">通知</td><td>取消前台工作</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">session/set_config_option</td><td class="req">按能力</td><td>配置项；取代 set_mode</td></tr>
-              <tr><td class="dir">A → C</td><td class="mth">session/update</td><td class="req">通知</td><td>消息 / 工具 / state_update / plan</td></tr>
-              <tr><td class="dir">A → C</td><td class="mth">session/request_permission</td><td class="req b">基线</td><td>title + subject + options</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">tool_call/cancel · terminal/cancel</td><td class="req">按能力</td><td>单独取消某个工具 / 终端</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/cancel</td><td class="req">通知</td><td>sessionId（无响应）</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/set_config_option</td><td class="req">按能力</td><td>configId + value → response</td></tr>
+              <tr><td class="dir">A → C</td><td class="mth">session/update</td><td class="req">通知</td><td>sessionId + update（无响应）</td></tr>
+              <tr><td class="dir">A → C</td><td class="mth">session/request_permission</td><td class="req b">基线</td><td>title + subject + options → outcome</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">tool_call/cancel · terminal/cancel</td><td class="req">按能力</td><td>toolCallId / terminalId → response</td></tr>
             </tbody>
           </table>
         </div>
-        <p class="small mt-8">v2 基线方法更多，但客户端不再实现 <span class="mono">fs/*</span> 与 <span class="mono">terminal/*</span>。</p>
+        <p class="small mt-8">表中“→”后为返回；通知无响应。v2 基线方法更多，但客户端不再实现 <span class="mono">fs/*</span> 与 <span class="mono">terminal/*</span>。</p>
       </div>
 
       <div class="reveal">
