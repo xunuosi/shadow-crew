@@ -518,6 +518,11 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; }
   display: flex; justify-content: space-between; align-items: center;
 }
 .stack .blk span { font-family: var(--mono); font-size: 10px; color: var(--fg3); }
+.blk .st { font-family: var(--mono); font-size: 10px; letter-spacing: .04em; }
+.blk .st.no { color: var(--fg3); }
+.blk .st.out { color: var(--info); }
+.blk .st.edge { color: var(--warn); }
+.blk .st.self { color: var(--ok); }
 .thin-bar {
   padding: 14px 18px; border-radius: 10px;
   background: linear-gradient(90deg, var(--accent-soft), transparent);
@@ -1155,7 +1160,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 04 ------------------------------------------------------------ -->
 <section class="slide" data-no="04" data-section="破局" data-title="Thin Control Plane"
-  data-notes="这不是“旧对新”，而是两种取舍：自建全套掌控力强，但维护成本高；连接现成复用快，但依赖协议与端点。Shadow Crew 选择把执行面外置，宿主只负责连接、协作与边界。控制面越薄，越容易跟上 Agent 的迭代。">
+  data-notes="先澄清一个常见误解：左边不是 Shadow Crew 的功能清单，而是“如果全栈自建”要维护的层。模型训练不做；Agent 运行时（ReAct/Tool Loop）外置给 ACP Agent；向量记忆库不自建，用端点原生记忆 + .scpack；工具链与执行沙箱只做权限/工作区边界；权限审计、协同 UI 与协议是自建的。选择是把执行面外置，宿主只负责连接、协作与边界。">
   <div class="slide-head">
     <div class="eyebrow reveal">03 / 破局</div>
     <h2 class="reveal">不造 Agent 轮子，做 Agent 之间的协作枢纽</h2>
@@ -1165,18 +1170,18 @@ table.method .req.b { color: var(--accent); }
     <div class="grid cols-2 gap-32">
       <div class="reveal">
         <div class="flex items-center gap-12" style="margin-bottom:14px">
-          <span class="badge plain">自建全套</span>
-          <span class="small">掌控力强，维护成本高</span>
+          <span class="badge plain">假设：全栈自建</span>
+          <span class="small">不是 Shadow Crew 的功能清单</span>
         </div>
         <div class="stack">
-          <div class="blk">模型训练与微调 <span>HEAVY</span></div>
-          <div class="blk">Agent 编排引擎 <span>HEAVY</span></div>
-          <div class="blk">向量记忆库 <span>HEAVY</span></div>
-          <div class="blk">工具链与沙箱 <span>HEAVY</span></div>
-          <div class="blk">权限与审计 <span>HEAVY</span></div>
-          <div class="blk">协同 UI 与协议 <span>HEAVY</span></div>
+          <div class="blk">模型训练与微调 <span class="st no">HEAVY · 不做</span></div>
+          <div class="blk">Agent 运行时（ReAct / Tool Loop） <span class="st out">HEAVY · 外置</span></div>
+          <div class="blk">向量记忆库 <span class="st no">HEAVY · 不做</span></div>
+          <div class="blk">工具链与执行沙箱 <span class="st edge">HEAVY · 只做边界</span></div>
+          <div class="blk">权限与审计 <span class="st self">HEAVY · 自建</span></div>
+          <div class="blk">协同 UI 与协议 <span class="st self">HEAVY · 自建</span></div>
         </div>
-        <p class="small mt-16">掌控力强，但每一层都要自己维护、自己追新。</p>
+        <p class="small mt-16">左侧是“如果全栈自建”要维护的层；带“不做 / 外置 / 只做边界”的层，正是 Shadow Crew 选择不自己造的部分。</p>
       </div>
 
       <div class="reveal">
