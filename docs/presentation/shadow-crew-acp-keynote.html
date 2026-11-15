@@ -1073,7 +1073,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 02 ------------------------------------------------------------ -->
 <section class="slide" data-no="02" data-section="协作" data-title="单 Agent 与多 Agent：两种工作方式"
-  data-notes="不做代际判断。单 Agent 链路短、上下文集中，适合边界清晰的任务；多 Agent 增加分工与验证，但协调成本、Token 与时延都会上升。协作的目的不是证明谁更强，而是把过程交给工作流，让人从执行细节里退出来，只对结果负责。">
+  data-notes="不做代际判断。单 Agent 链路短、上下文集中，适合边界清晰的任务；多 Agent 增加分工与验证，但协调成本、Token 与时延都会上升。这里的“验证”不是再问一遍模型，而是过验证门禁；定义在下一页。协作的目的不是证明谁更强，而是把过程交给工作流，让人从执行细节里退出来，只对结果负责。">
   <div class="slide-head">
     <div class="eyebrow reveal">01 / 协作</div>
     <h2 class="reveal">单 Agent 与多 Agent：两种工作方式</h2>
@@ -1112,7 +1112,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 03 ------------------------------------------------------------ -->
 <section class="slide" data-no="03" data-section="问题" data-title="协作的三个工程问题"
-  data-notes="这里讲三个工程问题，不做价值判断。认知盲区：单模型自审有边界；记忆孤岛：同事的经验不能随人/机器流动；协作失真：多 Agent 讨论可能附和、复读、无收敛。问题不在多 Agent 本身，而在缺少角色约束、验证机制与收敛门禁。论文依据见附录 A7。">
+  data-notes="这里讲三个工程问题，不做价值判断。认知盲区：单模型自审有边界；记忆孤岛：同事的经验不能随人/机器流动；协作失真：多 Agent 讨论可能附和、复读、无收敛。验证门禁不是再跑一遍模型，而是四道确定性检查：证据可复现、反例逐条回应、一致性达标、法定人数参与；缺证据就退回，不按“看起来一致”放行。论文依据见附录 A7。">
   <div class="slide-head">
     <div class="eyebrow reveal">02 / 问题</div>
     <h2 class="reveal">协作的三个工程问题</h2>
@@ -1142,7 +1142,11 @@ table.method .req.b { color: var(--accent); }
         <div class="p-foot"><span class="badge bad">需要收敛机制</span><span class="badge plain">不是多 Agent 的错</span></div>
       </div>
     </div>
-    <div class="flex items-center between mt-28 reveal">
+    <div class="callout mt-14 reveal">
+      <span class="tag">验证门禁</span>
+      <span>结论进入裁决前，先过四道检查：<b>证据可复现</b>、<b>反例逐条回应</b>、<b>一致性达标</b>、<b>法定人数参与</b>；缺证据就退回，不按“看起来一致”放行。</span>
+    </div>
+    <div class="flex items-center between mt-14 reveal">
       <p class="small" style="max-width:900px">三个问题的共同解：<b style="color:var(--fg)">标准化连接</b> + <b style="color:var(--fg)">资产化记忆</b> + <b style="color:var(--fg)">可验证的收敛机制</b>。</p>
       <span class="chip accent">Shadow Crew 的三条主线</span>
     </div>
