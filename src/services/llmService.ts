@@ -1112,6 +1112,49 @@ export function getModelSafeContextBudget(config: AgentModelConfig): {
   };
 }
 
+function extractCompactedSummaryBlock(content: string): {
+  openTagWithPrefix: string;
+  openTagOnly: string;
+  innerContent: string;
+  closeTagWithSuffix: string;
+  modeAttrValue: string;
+} | null {
+  const lower = content.toLowerCase();
+  const openStart = lower.indexOf('<compacted-summary');
+  if (openStart < 0) return null;
+  const afterTagName = content[openStart + '<compacted-summary'.length];
+  if (afterTagName !== '>' && afterTagName !== ' ' && afterTagName !== '\t' && afterTagName !== '\n' && afterTagName !== '\r') {
+    return null;
+  }
+  const openEnd = content.indexOf('>', openStart);
+  if (openEnd < 0) return null;
+  const closeStart = lower.indexOf('</compacted-summary>', openEnd + 1);
+  if (closeStart < 0) return null;
+
+  const openTagOnly = content.slice(openStart, openEnd + 1);
+  const openTagWithPrefix = content.slice(0, openEnd + 1).trim();
+  const innerContent = content.slice(openEnd + 1, closeStart).trim();
+  const closeTagWithSuffix = content.slice(closeStart).trim();
+
+  let modeAttrValue = '';
+  const modeIdx = openTagOnly.indexOf('mode="');
+  if (modeIdx >= 0) {
+    const valStart = modeIdx + 'mode="'.length;
+    const valEnd = openTagOnly.indexOf('"', valStart);
+    if (valEnd > valStart) {
+      modeAttrValue = openTagOnly.slice(valStart, valEnd);
+    }
+  }
+
+  return {
+    openTagWithPrefix,
+    openTagOnly,
+    innerContent,
+    closeTagWithSuffix,
+    modeAttrValue,
+  };
+}
+
 /**
  * 单条超长消息的安全行内核折叠（Inline Core Folding）
  * 当某单条历史消息极大（如数千字甚至上万字）时，保留其开头关键背景与末尾结论，
@@ -1124,13 +1167,11 @@ export function foldMessageContentToTokenBudget(content: string, maxTokens: numb
   }
 
   // 特殊保护：若为 <compacted-summary> 摘要块，提取 mode 属性并保持 XML 标签完整性与合法性
-  const summaryTagMatch = content.match(
-    /^([\s\S]*?<compacted-summary(?:\s+[^>]*)?>)([\s\S]*?)(<\/compacted-summary>[\s\S]*)$/
-  );
-  if (summaryTagMatch) {
-    const openTag = summaryTagMatch[1].trim();
-    const innerContent = summaryTagMatch[2].trim();
-    const closeTag = summaryTagMatch[3].trim();
+  const summaryBlock = extractCompactedSummaryBlock(content);
+  if (summaryBlock) {
+    const openTag = summaryBlock.openTagWithPrefix;
+    const innerContent = summaryBlock.innerContent;
+    const closeTag = summaryBlock.closeTagWithSuffix;
     const openTokens = estimateTokenCount(openTag);
     const closeTokens = estimateTokenCount(closeTag);
     const envelopeCost = openTokens + closeTokens;
@@ -1146,8 +1187,7 @@ export function foldMessageContentToTokenBudget(content: string, maxTokens: numb
       return candidate;
     }
 
-    const modeMatch = openTag.match(/mode="([^"]+)"/);
-    const modeAttr = modeMatch ? ` mode="${modeMatch[1]}"` : '';
+    const modeAttr = summaryBlock.modeAttrValue ? ` mode="${summaryBlock.modeAttrValue}"` : '';
     const compactOpen = `<compacted-summary${modeAttr}>`;
     const compactClose = `</compacted-summary>`;
     const minEnvelope = estimateTokenCount(compactOpen) + estimateTokenCount(compactClose);
@@ -1212,6 +1252,33 @@ export function foldMessageContentToTokenBudget(content: string, maxTokens: numb
  * 3. 【未决争议与红队待办】(风险/待定/挑战/驳回/隐患)
  * 4. 【重要落地成果与交付】(已合入/已实现/文件改动)
  */
+const MEMORY_RISK_KEYWORDS = ['风险', '待定', '挑战', '驳回', '反例', '隐患', '注意', 'todo', '未决', '死锁', '排查', '缺陷'];
+const MEMORY_DECISION_KEYWORDS = ['架构', '方案', '决策', '确定', '采用', '选型', '定案', '裁决', '规范', '契约', '接口', '重构', '算法', '选定', '决议'];
+const MEMORY_CONSTRAINT_KEYWORDS = ['参数', '端口', '路径', 'token', '超时', '阈值', '限制', '配额', '状态机', '目录', 'env', 'api', '上限', '水位'];
+const MEMORY_DELIVERABLE_KEYWORDS = ['已完成', '已实现', '已合入', '已交付', '已测试', '通过', '落地', '生成'];
+
+function stripBulletPrefix(line: string): string {
+  return line.startsWith('•') ? line.slice(1).trimStart() : line;
+}
+
+function splitDeterministicSentences(cleaned: string): string[] {
+  const sentences: string[] = [];
+  let start = 0;
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (ch === '。' || ch === '！' || ch === '？' || ch === '.' || ch === '!' || ch === '?' || ch === '\n') {
+      const part = cleaned.slice(start, i + 1).trim();
+      if (part.length > 5) sentences.push(part);
+      start = i + 1;
+    }
+  }
+  if (start < cleaned.length) {
+    const tail = cleaned.slice(start).trim();
+    if (tail.length > 5) sentences.push(tail);
+  }
+  return sentences;
+}
+
 export function extractStructuredMemoryKeyPoints(
   olderMessages: Array<{ role: 'user' | 'assistant'; content: string }>
 ): {
@@ -1229,25 +1296,23 @@ export function extractStructuredMemoryKeyPoints(
 
   for (const msg of olderMessages) {
     // 若原消息已包含早期折叠摘要，解析出已有要点以防递归丢失
-    if (msg.content.includes('<compacted-summary')) {
-      const innerMatch = msg.content.match(/<compacted-summary[^>]*>([\s\S]*?)<\/compacted-summary>/i);
-      if (innerMatch && innerMatch[1]) {
-        const lines = innerMatch[1].split('\n').map((l) => l.trim()).filter(Boolean);
-        for (const line of lines) {
-          if (line.includes('【核心架构决策】') || line.includes('【架构与技术决议】')) {
-            decisions.push(line.replace(/^•\s*/, ''));
-          } else if (line.includes('【关键参数与约束】') || line.includes('【核心参数与工程约束】')) {
-            constraints.push(line.replace(/^•\s*/, ''));
-          } else if (line.includes('【未决挑战与待办】') || line.includes('【未决争议与红队待办】')) {
-            risksAndTodos.push(line.replace(/^•\s*/, ''));
-          } else if (line.includes('【重要落地成果】') || line.includes('【重要执行结果】')) {
-            deliverables.push(line.replace(/^•\s*/, ''));
-          } else if (line.startsWith('•')) {
-            rawSnippets.push(line.replace(/^•\s*/, ''));
-          }
+    const summaryBlock = extractCompactedSummaryBlock(msg.content);
+    if (summaryBlock && summaryBlock.innerContent) {
+      const lines = summaryBlock.innerContent.split('\n').map((l) => l.trim()).filter(Boolean);
+      for (const line of lines) {
+        if (line.includes('【核心架构决策】') || line.includes('【架构与技术决议】')) {
+          decisions.push(stripBulletPrefix(line));
+        } else if (line.includes('【关键参数与约束】') || line.includes('【核心参数与工程约束】')) {
+          constraints.push(stripBulletPrefix(line));
+        } else if (line.includes('【未决挑战与待办】') || line.includes('【未决争议与红队待办】')) {
+          risksAndTodos.push(stripBulletPrefix(line));
+        } else if (line.includes('【重要落地成果】') || line.includes('【重要执行结果】')) {
+          deliverables.push(stripBulletPrefix(line));
+        } else if (line.startsWith('•')) {
+          rawSnippets.push(stripBulletPrefix(line));
         }
-        continue;
       }
+      continue;
     }
 
     // 清理标签并按句子切分分析
@@ -1258,32 +1323,21 @@ export function extractStructuredMemoryKeyPoints(
 
     if (!cleaned) continue;
 
-    const sentences = cleaned.split(/(?<=[。！？.!?\n])/).map((s) => s.trim()).filter((s) => s.length > 5);
+    const sentences = splitDeterministicSentences(cleaned);
 
     let categorized = false;
     for (const sent of sentences) {
-      if (
-        /(?:风险|待定|挑战|驳回|反例|隐患|注意|TODO|未决|死锁|排查|缺陷)/i.test(sent) &&
-        risksAndTodos.length < 4
-      ) {
+      const sentLower = sent.toLowerCase();
+      if (MEMORY_RISK_KEYWORDS.some((kw) => sentLower.includes(kw)) && risksAndTodos.length < 4) {
         risksAndTodos.push(`[${msg.role}] ${sent.length > 90 ? `${sent.slice(0, 90)}...` : sent}`);
         categorized = true;
-      } else if (
-        /(?:架构|方案|决策|确定|采用|选型|定案|裁决|规范|契约|接口|重构|算法|选定|决议)/i.test(sent) &&
-        decisions.length < 4
-      ) {
+      } else if (MEMORY_DECISION_KEYWORDS.some((kw) => sentLower.includes(kw)) && decisions.length < 4) {
         decisions.push(`[${msg.role}] ${sent.length > 90 ? `${sent.slice(0, 90)}...` : sent}`);
         categorized = true;
-      } else if (
-        /(?:参数|端口|路径|Token|超时|阈值|限制|配额|状态机|目录|env|API|上限|水位)/i.test(sent) &&
-        constraints.length < 4
-      ) {
+      } else if (MEMORY_CONSTRAINT_KEYWORDS.some((kw) => sentLower.includes(kw)) && constraints.length < 4) {
         constraints.push(`[${msg.role}] ${sent.length > 90 ? `${sent.slice(0, 90)}...` : sent}`);
         categorized = true;
-      } else if (
-        /(?:已完成|已实现|已合入|已交付|已测试|通过|落地|生成)/i.test(sent) &&
-        deliverables.length < 4
-      ) {
+      } else if (MEMORY_DELIVERABLE_KEYWORDS.some((kw) => sentLower.includes(kw)) && deliverables.length < 4) {
         deliverables.push(`[${msg.role}] ${sent.length > 90 ? `${sent.slice(0, 90)}...` : sent}`);
         categorized = true;
       }
@@ -1362,36 +1416,120 @@ export function resolveMicroSummaryModel(config: AgentModelConfig): string {
  * 2. 至少命中一个核心结构标题 (架构/参数/未决/执行结果)
  * 3. 严格拒绝道歉、拒答（如“抱歉，我无法总结...”）与 JSON 错误文本
  */
+const MICRO_SUMMARY_HTTP_ERROR_PREFIXES = [
+  'error:',
+  'status: error',
+  'status: failed',
+  'http ',
+  'http status ',
+  '429 too many',
+  'rate limit exceeded',
+  'gateway timeout',
+  'bad request',
+  'unauthorized',
+];
+
+const MICRO_SUMMARY_OPENING_REFUSAL_PREFIXES = [
+  '抱歉',
+  '对不起',
+  '很抱歉',
+  '非常抱歉',
+  '作为一个ai',
+  '作为一个人工智能',
+  '作为ai',
+  '作为人工智能',
+  'i apologize',
+  'i am sorry',
+  "i'm sorry",
+  'i cannot fulfill',
+  'i am unable to fulfill',
+];
+
+const MICRO_SUMMARY_TASK_REFUSAL_PHRASES = [
+  '无法总结',
+  '不能总结',
+  '无法进行总结',
+  '无法提炼',
+  '无法处理上述对话',
+  'unable to summarize',
+  'cannot summarize',
+  'as an ai language model',
+];
+
+const MICRO_SUMMARY_SECTION_KEYWORDS = [
+  '架构', '技术决议', '技术方案', '方案', '选型', '技术边界', '核心决议', '演进', '决策',
+  '关键参数', '核心参数', '参数', '约束', '硬性约束', '指标', '限流',
+  '未决争议', '争议', '待办', '风险', '挑战',
+  '重要执行结果', '执行结果', '成果', '合入', '落地', '工程边界',
+];
+
+function stripOptionalListAndBoldPrefix(line: string): string {
+  let s = line.trimStart();
+  if (s.startsWith('•') || s.startsWith('-') || s.startsWith('*')) {
+    s = s.slice(1).trimStart();
+  } else {
+    let i = 0;
+    while (i < s.length && s.charCodeAt(i) >= 48 && s.charCodeAt(i) <= 57) i++;
+    if (i > 0 && s[i] === '.') {
+      s = s.slice(i + 1).trimStart();
+    }
+  }
+  while (s.startsWith('*')) s = s.slice(1);
+  return s.trimStart();
+}
+
+function hasStructuredSummarySectionHeader(text: string): boolean {
+  const lines = text.split('\n');
+  for (const rawLine of lines) {
+    const s = stripOptionalListAndBoldPrefix(rawLine);
+    if (!s.startsWith('【')) continue;
+    const closeBracket = s.indexOf('】');
+    if (closeBracket <= 1 || closeBracket > 40) continue;
+    const headerTitle = s.slice(1, closeBracket);
+    let after = s.slice(closeBracket + 1);
+    while (after.startsWith('*')) after = after.slice(1);
+    after = after.trimStart();
+    if (!after.startsWith(':') && !after.startsWith('：')) continue;
+    if (MICRO_SUMMARY_SECTION_KEYWORDS.some((kw) => headerTitle.includes(kw))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function isValidMicroAgentSummary(text: string): boolean {
   if (!text) return false;
   const trimmed = text.trim();
   if (trimmed.length < 20 || trimmed.length > 2000) return false;
 
   // 1. 拒绝纯 JSON 报错报文或纯 HTTP 错误响应行
-  if (
-    /^\s*\{[\s\S]*"error"[\s\S]*\}\s*$/i.test(trimmed) ||
-    /^\s*(?:error\s*:|status\s*:\s*(?:error|failed)|http\s*(?:status)?\s*\d{3}|429\s+too\s+many|rate\s*limit\s*exceeded|gateway\s*timeout|bad\s*request|unauthorized)\b/i.test(trimmed)
-  ) {
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && 'error' in parsed) {
+        return false;
+      }
+    } catch {
+      // ignore non-JSON braces
+    }
+  }
+
+  const lowerTrimmed = trimmed.toLowerCase();
+  if (MICRO_SUMMARY_HTTP_ERROR_PREFIXES.some((prefix) => lowerTrimmed.startsWith(prefix))) {
     return false;
   }
 
   // 2. 拒绝模型直接拒答、歉意闲聊或明确拒绝执行总结指令
-  // 注意：精准限制在“整段开头为道歉/身份声明”或“针对总结任务本身的拒答词”，
-  // 杜绝误杀包含“无法提供跨区域强一致性”或“接口存在 rate limit”等正常工程架构与争议结论
-  const openingApologyOrRefusal =
-    /^\s*(?:抱歉|对不起|很抱歉|非常抱歉|作为(?:一个)?(?:AI|人工智能)|I apologize|I am sorry|I'm sorry|I cannot fulfill|I am unable to fulfill)/i;
-  const explicitTaskRefusal =
-    /(?:无法总结|不能总结|无法进行总结|无法提炼|无法处理上述对话|unable to summarize|cannot summarize|as an AI language model[,\s].*?(?:cannot|unable))/i;
-  if (openingApologyOrRefusal.test(trimmed) || explicitTaskRefusal.test(trimmed)) {
+  const compactLower = lowerTrimmed.replace(/\s+/g, ' ');
+  if (
+    MICRO_SUMMARY_OPENING_REFUSAL_PREFIXES.some((prefix) => compactLower.startsWith(prefix)) ||
+    MICRO_SUMMARY_TASK_REFUSAL_PHRASES.some((phrase) => compactLower.includes(phrase))
+  ) {
     return false;
   }
 
-  // 3. 必须包含至少一个真正的行首结构化分类标题（如 `• 【架构与技术决议】:`、`【关键参数与约束】：` 等），
-  // 严禁将包含裸词“架构”“方案”的普通无结构对话文本误判为有效 Micro Memory
-  const lineStartStructuralHeader =
-    /^\s*(?:[•\-\*]|\d+\.)?\s*(?:\*{1,2})?【[^】\r\n]{0,16}(?:架构|技术决议|技术方案|方案|选型|技术边界|核心决议|演进|决策|关键参数|核心参数|参数|约束|硬性约束|指标|限流|未决争议|争议|待办|风险|挑战|重要执行结果|执行结果|成果|合入|落地|工程边界)[^】\r\n]{0,16}】(?:\*{1,2})?\s*[:：]/m;
-
-  return lineStartStructuralHeader.test(trimmed);
+  // 3. 必须包含至少一个真正的行首结构化分类标题（如 `• 【架构与技术决议】:`、`【关键参数与约束】：` 等）
+  return hasStructuredSummarySectionHeader(trimmed);
 }
 
 /**

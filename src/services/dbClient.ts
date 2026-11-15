@@ -83,11 +83,30 @@ export function filterPersistableMessages(messages: Message[]): Message[] {
   return messages.filter((msg) => !isTransientPendingMessage(msg));
 }
 
+function parseTopicExecModSuffix(
+  id: string,
+  prefix: 'topic-pending-exec-mod-' | 'topic-reply-exec-mod-'
+): string | null {
+  if (!id.startsWith(prefix)) return null;
+  const rest = id.slice(prefix.length);
+  const dashIdx = rest.indexOf('-');
+  if (dashIdx <= 0) return null;
+  const digits = rest.slice(0, dashIdx);
+  for (let i = 0; i < digits.length; i++) {
+    const code = digits.charCodeAt(i);
+    if (code < 48 || code > 57) return null;
+  }
+  const suffix = rest.slice(dashIdx + 1);
+  return suffix.length > 0 ? suffix : null;
+}
+
 function extractPendingReplySignature(id: string): { kind: string; suffix?: string } | null {
   if (!id) return null;
-  const execModMatch = id.match(/^topic-(?:pending|reply)-exec-mod-\d+-(.+)$/);
-  if (execModMatch) {
-    return { kind: 'exec-mod', suffix: execModMatch[1] };
+  const execModSuffix =
+    parseTopicExecModSuffix(id, 'topic-pending-exec-mod-') ??
+    parseTopicExecModSuffix(id, 'topic-reply-exec-mod-');
+  if (execModSuffix) {
+    return { kind: 'exec-mod', suffix: execModSuffix };
   }
   if (id.startsWith('topic-pending-concurrence-') || id.startsWith('topic-reply-concurrence-')) {
     return { kind: 'concurrence' };

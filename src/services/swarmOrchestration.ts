@@ -56,9 +56,27 @@ interface RawParsedSwarmPlan {
   subtasks?: unknown;
 }
 
-const SLASH_SWARM_REGEX = /^\/swarm(?:\s+([\s\S]*))?$/i;
-const SWARM_DELIM_REGEX = /<<<SWARM_PLAN>>>([\s\S]*?)<<<SWARM_PLAN_END>>>/i;
-const SWARM_XML_REGEX = /<swarm-plan>([\s\S]*?)<\/swarm-plan>/i;
+const SWARM_DELIM_OPEN = '<<<SWARM_PLAN>>>';
+const SWARM_DELIM_CLOSE = '<<<SWARM_PLAN_END>>>';
+const SWARM_XML_OPEN = '<swarm-plan>';
+const SWARM_XML_CLOSE = '</swarm-plan>';
+
+function extractDelimitedBlock(
+  rawText: string,
+  openTag: string,
+  closeTag: string
+): { matchedBlock: string; inner: string } | null {
+  const lower = rawText.toLowerCase();
+  const openIdx = lower.indexOf(openTag.toLowerCase());
+  if (openIdx < 0) return null;
+  const contentStart = openIdx + openTag.length;
+  const closeIdx = lower.indexOf(closeTag.toLowerCase(), contentStart);
+  if (closeIdx < 0) return null;
+  return {
+    matchedBlock: rawText.slice(openIdx, closeIdx + closeTag.length),
+    inner: rawText.slice(contentStart, closeIdx),
+  };
+}
 
 /**
  * 清洗并限制 Swarm missionId / taskId，严格保证仅包含 `[a-zA-Z0-9_-]`，
@@ -113,11 +131,13 @@ export function detectSwarmTriggerIntent(
   explicitSwarmMode?: boolean
 ): SwarmTriggerIntent {
   const trimmed = rawText.trim();
-  const slashMatch = trimmed.match(SLASH_SWARM_REGEX);
-  const hasSlashPrefix = Boolean(slashMatch);
+  const lower = trimmed.toLowerCase();
+  const hasSlashPrefix =
+    lower.startsWith('/swarm') &&
+    (trimmed.length === 6 || trimmed[6] === ' ' || trimmed[6] === '\t' || trimmed[6] === '\n' || trimmed[6] === '\r');
 
   if (hasSlashPrefix) {
-    const taskText = (slashMatch?.[1] || '').trim();
+    const taskText = trimmed.slice(6).trim();
     return {
       isSwarmTrigger: true,
       triggerMode: 'explicit',
@@ -343,12 +363,21 @@ export function buildSwarmDecompositionPrompt(options: {
   ].join('\n\n');
 }
 
+function stripMarkdownCodeFence(candidateText: string): string {
+  let s = candidateText.trim();
+  if (s.startsWith('```')) {
+    const firstNewline = s.indexOf('\n');
+    s = firstNewline >= 0 ? s.slice(firstNewline + 1) : s.slice(3);
+  }
+  s = s.trimEnd();
+  if (s.endsWith('```')) {
+    s = s.slice(0, -3);
+  }
+  return s.trim();
+}
+
 function tryParseJsonObject(candidateText: string): RawParsedSwarmPlan | null {
-  const cleanedBlock = candidateText
-    .trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim();
+  const cleanedBlock = stripMarkdownCodeFence(candidateText);
 
   const tryParse = (str: string): RawParsedSwarmPlan | null => {
     try {
@@ -387,21 +416,16 @@ export function extractSwarmPlanFromText(
 ): SwarmPlanExtractionResult | null {
   if (!rawText || !rawText.trim()) return null;
 
-  let match = rawText.match(SWARM_DELIM_REGEX);
-  let matchedBlock = match ? match[0] : '';
-  let jsonCandidate = match ? match[1] : '';
+  const extracted =
+    extractDelimitedBlock(rawText, SWARM_DELIM_OPEN, SWARM_DELIM_CLOSE) ??
+    extractDelimitedBlock(rawText, SWARM_XML_OPEN, SWARM_XML_CLOSE);
 
-  if (!match) {
-    match = rawText.match(SWARM_XML_REGEX);
-    if (match) {
-      matchedBlock = match[0];
-      jsonCandidate = match[1];
-    }
-  }
-
-  if (!match || !jsonCandidate) {
+  if (!extracted || !extracted.inner) {
     return null;
   }
+
+  const matchedBlock = extracted.matchedBlock;
+  const jsonCandidate = extracted.inner;
 
   const parsed = tryParseJsonObject(jsonCandidate);
   if (!parsed) {
@@ -544,14 +568,42 @@ export function buildFallbackSwarmPlan(
   });
 
   const listItems: Array<{ title: string; description: string }> = [];
-  const lines = String(rawText || '').split(/\r?\n/);
-  const listPattern = /^\s*(?:\d+[.)]|[-*+])\s+(?:\*\*([^*]+)\*\*\s*[:：\-]?\s*)?(.*)$/;
+  const lines = String(rawText || '').replace(/\r\n/g, '\n').split('\n');
+
+  const parseListItemLine = (line: string): { boldTitle: string; restBody: string } | null => {
+    const s = line.trimStart();
+    if (!s) return null;
+    let body = '';
+    if ((s[0] === '-' || s[0] === '*' || s[0] === '+') && (s[1] === ' ' || s[1] === '\t')) {
+      body = s.slice(2).trimStart();
+    } else {
+      let i = 0;
+      while (i < s.length && s.charCodeAt(i) >= 48 && s.charCodeAt(i) <= 57) i++;
+      if (i > 0 && (s[i] === '.' || s[i] === ')') && (s[i + 1] === ' ' || s[i + 1] === '\t')) {
+        body = s.slice(i + 2).trimStart();
+      } else {
+        return null;
+      }
+    }
+
+    if (body.startsWith('**')) {
+      const closeBold = body.indexOf('**', 2);
+      if (closeBold > 2) {
+        const boldTitle = body.slice(2, closeBold).trim();
+        let restBody = body.slice(closeBold + 2).trimStart();
+        if (restBody.startsWith(':') || restBody.startsWith('：') || restBody.startsWith('-')) {
+          restBody = restBody.slice(1).trimStart();
+        }
+        return { boldTitle, restBody };
+      }
+    }
+    return { boldTitle: '', restBody: body.trim() };
+  };
 
   for (const line of lines) {
-    const match = line.match(listPattern);
-    if (!match) continue;
-    const boldTitle = (match[1] || '').trim();
-    const restBody = (match[2] || '').trim();
+    const parsedLine = parseListItemLine(line);
+    if (!parsedLine) continue;
+    const { boldTitle, restBody } = parsedLine;
     const combined = [boldTitle, restBody].filter(Boolean).join('：');
     if (combined.length < 6) continue;
     listItems.push({
