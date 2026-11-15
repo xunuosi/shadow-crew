@@ -2055,6 +2055,7 @@ impl AcpProcessManager {
                 None,
                 None,
                 system_prompt,
+                None,
                 discussion_mode,
                 local_history_intact,
             )
@@ -3183,6 +3184,7 @@ impl AcpProcessManager {
                 attachments,
                 prompt,
                 system_prompt,
+                None,
                 discussion_mode,
                 native_memory_enabled,
                 native_memory_auto_generate,
@@ -3495,34 +3497,22 @@ pub(crate) fn build_session_close_request(session_id: &str, req_id: u64) -> serd
     })
 }
 
-/// 规范化用于 ACP 会话人设比对的系统提示词：
-/// 团队协同公约花名册 (Crew Roster) 会在冷启动第 1 轮动态挂载，
-/// 从第 2 轮起变为 warm-session 则遵循 Buzz 规范不再重复挂载花名册。
-/// 此处在比对前剥离动态花名册与协同公约块，确保真实 warm-session 不会被误判为人设变更而导致意外重建与上下文丢失。
-fn normalize_system_prompt_for_sync(prompt: &str) -> String {
-    let mut clean = prompt.to_string();
-    if let Some(start) = clean.find("[🛡️ Shadow Crew 平台智能体协同公约") {
-        if let Some(end) = clean[start..].find("[当前") {
-            clean = format!(
-                "{}\n\n{}",
-                clean[..start].trim_end(),
-                clean[start + end..].trim_start()
-            );
-        } else {
-            clean = clean[..start].trim_end().to_string();
-        }
-    } else if let Some(start) = clean.find("[👥 可用协同团队成员列表]:") {
-        if let Some(end) = clean[start..].find("[当前") {
-            clean = format!(
-                "{}\n\n{}",
-                clean[..start].trim_end(),
-                clean[start + end..].trim_start()
-            );
-        } else {
-            clean = clean[..start].trim_end().to_string();
-        }
+/// 解析用于 ACP 会话身份校验的稳定系统提示词：
+/// 前端通过独立 IPC 字段 `persona_prompt` 显式传递不包含动态团队花名册的稳定人设前缀，
+/// 后端不再依赖查找硬编码中文标题对 `system_prompt` 进行脆弱切片。
+pub(crate) fn resolve_session_identity_system_prompt(
+    persona_prompt: Option<&str>,
+    system_prompt: Option<&str>,
+    workspace_notice: &str,
+) -> String {
+    let base = persona_prompt
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| system_prompt.map(str::trim).filter(|s| !s.is_empty()));
+    match base {
+        Some(sp) => format!("{}{}", sp, workspace_notice).trim().to_string(),
+        None => workspace_notice.trim().to_string(),
     }
-    clean.trim().to_string()
 }
 
 struct ResolvedSessionWorkspace {
@@ -3900,6 +3890,7 @@ impl RunningAgent {
         workspace_cwd: Option<&str>,
         scope_type: Option<&str>,
         system_prompt: Option<&str>,
+        persona_prompt: Option<&str>,
         discussion_mode: Option<&str>,
         local_history_intact: Option<bool>,
     ) -> Result<EnsureSessionResult> {
@@ -3912,6 +3903,7 @@ impl RunningAgent {
             workspace_cwd,
             scope_type,
             system_prompt,
+            persona_prompt,
             discussion_mode,
             local_history_intact,
         )
@@ -3928,6 +3920,7 @@ impl RunningAgent {
         workspace_cwd: Option<&str>,
         scope_type: Option<&str>,
         system_prompt: Option<&str>,
+        persona_prompt: Option<&str>,
         discussion_mode: Option<&str>,
         local_history_intact: Option<bool>,
     ) -> Result<EnsureSessionResult> {
@@ -4072,10 +4065,11 @@ impl RunningAgent {
         let workspace_cwd = target_workspace_dir.to_string_lossy().to_string();
         let enriched_sp = match system_prompt {
             Some(sp) if !sp.trim().is_empty() => format!("{}{}", sp, workspace_notice),
-            _ => workspace_notice,
+            _ => workspace_notice.clone(),
         };
 
-        let normalized_sp = normalize_system_prompt_for_sync(&enriched_sp);
+        let normalized_sp =
+            resolve_session_identity_system_prompt(persona_prompt, system_prompt, &workspace_notice);
         let cached_sid = {
             let reg = self.session_registry.lock().await;
             if let Some(entry) = reg.get(&session_key) {
@@ -4545,6 +4539,7 @@ impl RunningAgent {
         attachments: &[AcpPromptAttachment],
         prompt: &str,
         system_prompt: Option<&str>,
+        persona_prompt: Option<&str>,
         discussion_mode: Option<&str>,
         native_memory_enabled: Option<bool>,
         native_memory_auto_generate: Option<bool>,
@@ -4560,6 +4555,7 @@ impl RunningAgent {
                 requested_workspace_cwd,
                 scope_type,
                 system_prompt,
+                persona_prompt,
                 discussion_mode,
                 None,
             )
@@ -5028,9 +5024,18 @@ impl RunningAgent {
                         .get("message")
                         .and_then(|m| m.as_str())
                         .unwrap_or_default();
-                    if err_msg.contains("Authentication required")
-                        || err_msg.to_lowercase().contains("authentication")
-                    {
+                    let err_code = err.get("code").and_then(|c| c.as_i64());
+                    let err_category = err
+                        .get("data")
+                        .and_then(|d| d.get("category").or_else(|| d.get("code")))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    let is_auth_error = err_code == Some(-32003)
+                        || err_category.eq_ignore_ascii_case("auth_required")
+                        || err_category.eq_ignore_ascii_case("authentication_required")
+                        || err_msg.contains("Authentication required")
+                        || err_msg.to_lowercase().contains("authentication");
+                    if is_auth_error {
                         *self.auth_state.lock().await = "auth_required".to_string();
                         *self.status_detail.lock().await = Some(err_msg.to_string());
                         let _ = self.app_handle.emit(
@@ -5696,31 +5701,46 @@ mod runtime_status_tests {
 
     #[test]
     fn test_normalize_system_prompt_for_sync() {
-        use super::normalize_system_prompt_for_sync;
+        use super::resolve_session_identity_system_prompt;
 
         let base_persona = "[🤖 智能体专属专精人设与认知规范]:\n• 你的代号：Coder (技术专家)\n• 核心职责：负责代码实现";
         let roster_v1 = "\n\n[🛡️ Shadow Crew 平台智能体协同公约 (Agent Collaboration Directive)]:\n[👥 可用协同团队成员列表]:\n• @alice (Alice · 架构师)\n• @bob (Bob · 审查员)";
         let roster_v2 = "\n\n[🛡️ Shadow Crew 平台智能体协同公约 (Agent Collaboration Directive)]:\n[👥 可用协同团队成员列表]:\n• @alice (Alice · 架构师)\n• @bob (Bob · 审查员)\n• @carol (Carol · 测试专家)";
         let workspace_env = "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: chan-1\n- 根目录: ~/.shadow-crew/channels/chan-1";
 
-        let cold_prompt_v1 = format!("{}{}{}", base_persona, roster_v1, workspace_env);
-        let warm_prompt = format!("{}{}", base_persona, workspace_env);
-        let cold_prompt_v2 = format!("{}{}{}", base_persona, roster_v2, workspace_env);
+        let cold_prompt_v1 = format!("{}{}", base_persona, roster_v1);
+        let warm_prompt = base_persona.to_string();
+        let cold_prompt_v2 = format!("{}{}", base_persona, roster_v2);
 
-        let norm_cold_v1 = normalize_system_prompt_for_sync(&cold_prompt_v1);
-        let norm_warm = normalize_system_prompt_for_sync(&warm_prompt);
-        let norm_cold_v2 = normalize_system_prompt_for_sync(&cold_prompt_v2);
+        let norm_cold_v1 = resolve_session_identity_system_prompt(
+            Some(base_persona),
+            Some(&cold_prompt_v1),
+            workspace_env,
+        );
+        let norm_warm = resolve_session_identity_system_prompt(
+            Some(base_persona),
+            Some(&warm_prompt),
+            workspace_env,
+        );
+        let norm_cold_v2 = resolve_session_identity_system_prompt(
+            Some(base_persona),
+            Some(&cold_prompt_v2),
+            workspace_env,
+        );
 
-        // 核心断言 1：冷启动（带团队花名册）与第二轮热会话（剥离花名册），规范化后严格一致
+        // 核心断言 1：冷启动（带团队花名册）与第二轮热会话（无花名册），基于结构化 persona_prompt 严格一致
         assert_eq!(norm_cold_v1, norm_warm);
-        // 核心断言 2：新成员加入后花名册更新，基础人设依然规范化一致，不触发 session 误杀
+        // 核心断言 2：新成员加入后花名册更新，基础人设依然严格一致，不触发 session 误杀
         assert_eq!(norm_cold_v2, norm_warm);
 
-        // 核心断言 3：当用户真正修改了 Agent 自身的人设（如代号或职责变化）时，规范化后严格不同
+        // 核心断言 3：当用户真正修改了 Agent 自身的人设（如代号或职责变化）时，严格不同
         let changed_persona =
             "[🤖 智能体专属专精人设与认知规范]:\n• 你的代号：Reviewer (安全架构师)";
-        let changed_prompt = format!("{}{}", changed_persona, workspace_env);
-        let norm_changed = normalize_system_prompt_for_sync(&changed_prompt);
+        let norm_changed = resolve_session_identity_system_prompt(
+            Some(changed_persona),
+            Some(changed_persona),
+            workspace_env,
+        );
         assert_ne!(norm_changed, norm_warm);
     }
 

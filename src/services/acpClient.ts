@@ -29,6 +29,11 @@ import {
   parseNativeMemoryCapability,
 } from './agentMemory';
 import { retrieveScpackExpertise } from './scpackService';
+import {
+  analyzeStructuredMarkdown,
+  extractFilePathsFromTextSegment,
+  normalizeRepoPath,
+} from './cogno/structuredTextAnalyzer';
 export {
   extractArbitrationRulingOptionsFromAcpResponse,
   synthesizeContextGroundedRulingDrafts,
@@ -42,6 +47,7 @@ export interface AcpSendPromptOptions {
   workspaceCwd?: string;
   channelId?: string;
   systemPrompt?: string;
+  personaPrompt?: string;
   isDm?: boolean;
   scopeType?: 'channel' | 'topic' | 'dm' | 'dm_topic';
   discussionMode?: 'standard' | 'game_theoretic';
@@ -1895,9 +1901,9 @@ export async function sendPromptToAcpAgent(
   registerActiveAcpSessionForKey(unifiedSessionKey);
 
   // 0. 统一解析并注入 Agent 自身专属专精人设与行为硬性约束
-  const personaPrompt = buildAgentPersonaPrompt(agent);
+  const personaPrompt = options.personaPrompt || buildAgentPersonaPrompt(agent);
   const resolvedSystemPrompt = options.systemPrompt
-    ? (options.systemPrompt.includes(agent.name) && options.systemPrompt.includes('智能体专属专精人设')
+    ? (options.systemPrompt.startsWith(personaPrompt)
         ? options.systemPrompt
         : `${personaPrompt}\n\n${options.systemPrompt}`)
     : personaPrompt;
@@ -2050,6 +2056,7 @@ export async function sendPromptToAcpAgent(
         cwd: targetCwd,
         envVars: launchEnvVars,
         systemPrompt: resolvedSystemPrompt,
+        personaPrompt: options.personaPrompt || personaPrompt,
         nativeMemoryEnabled: effectiveNativeMemoryEnabled,
         nativeMemoryAutoGenerate: effectiveNativeMemoryAutoGenerate,
         discussionMode: options.discussionMode,
@@ -2112,7 +2119,22 @@ export async function sendPromptToAcpAgent(
           (response.status === 'timeout' ? 'Agent 响应空闲超时 (等待超时)' : 'Agent 进程异常关闭');
 
         let formattedHelp = '';
-        if (rawErrMsg.toLowerCase().includes('authentication required')) {
+        const errObj = typeof response.error === 'object' && response.error !== null ? (response.error as Record<string, any>) : null;
+        const errCode = errObj?.code;
+        const errCategory = errObj?.data?.category || errObj?.data?.code;
+        const isAuthRequired =
+          errCode === -32003 ||
+          errCategory === 'auth_required' ||
+          errCategory === 'authentication_required' ||
+          rawErrMsg.toLowerCase().includes('authentication required');
+        const isTimeout =
+          response.status === 'timeout' ||
+          errCategory === 'timeout' ||
+          errCategory === 'idle_timeout' ||
+          rawErrMsg.toLowerCase().includes('idle timeout') ||
+          rawErrMsg.toLowerCase().includes('timeout');
+
+        if (isAuthRequired) {
           formattedHelp =
             `\n\n💡 **认证排障指南 (Claude Code ACP)**：\n` +
             `• **原因**：Anthropic 官方规范限制，第三方客户端集成（如 Shadow Crew）**不支持**复用本机的 \`claude.ai\` 网页/OAuth 订阅，需要提供 \`ANTHROPIC_API_KEY\`。\n` +
@@ -2121,7 +2143,7 @@ export async function sendPromptToAcpAgent(
             `  2. 在「环境变量 (ENV)」中填入您的 \`ANTHROPIC_API_KEY\`（格式如 \`sk-ant-api03-...\`）；\n` +
             `  3. *(可选)* 若使用第三方反代/中转网关，可额外添加 \`ANTHROPIC_BASE_URL\`；\n` +
             `  4. 保存后重新发送消息或点击「Start」重新拉起即可。`;
-        } else if (rawErrMsg.toLowerCase().includes('idle timeout') || rawErrMsg.toLowerCase().includes('timeout')) {
+        } else if (isTimeout) {
           formattedHelp =
             `\n\n💡 **慢模型 / 深度推理排障建议**：\n` +
             `• **原因**：复杂推理模型（如 DeepSeek-R1、o1/o3-mini、Claude 3.7 Thinking）首字思考耗时较长，或模型服务提供商处于排队状态。\n` +
@@ -2162,6 +2184,69 @@ export async function sendPromptToAcpAgent(
 /**
  * 从 Agent 响应 Markdown 文本中确定性提取 Unified Diff 块或带路径标注的工程代码补丁
  */
+const SUPPORTED_CODE_BLOCK_LANGS = new Set([
+  'ts', 'tsx', 'js', 'jsx', 'rs', 'rust', 'py', 'python', 'go', 'sql', 'toml', 'yaml', 'yml', 'css', 'html', 'sh',
+]);
+
+function stripDiffPrefix(rawPath: string): string {
+  const trimmed = rawPath.trim();
+  const withoutAb = trimmed.startsWith('a/') || trimmed.startsWith('b/') ? trimmed.slice(2) : trimmed;
+  return normalizeRepoPath(withoutAb);
+}
+
+function parseDiffHeaderPath(lines: string[], prefix: '---' | '+++'): string {
+  for (const line of lines) {
+    if (!line.startsWith(prefix)) continue;
+    const rest = line.slice(prefix.length).trim();
+    if (!rest) continue;
+    const token = rest.split(/\s/)[0] || '';
+    if (!token || token === '/dev/null') continue;
+    return stripDiffPrefix(token);
+  }
+  return '';
+}
+
+function parseFileHeaderCommentLine(line: string | undefined): string {
+  if (!line) return '';
+  let trimmed = line.trim();
+  if (trimmed.startsWith('//')) {
+    trimmed = trimmed.slice(2).trim();
+  } else if (trimmed.startsWith('#')) {
+    trimmed = trimmed.slice(1).trim();
+  } else if (trimmed.startsWith('/*')) {
+    trimmed = trimmed.slice(2);
+    const endIdx = trimmed.indexOf('*/');
+    if (endIdx >= 0) trimmed = trimmed.slice(0, endIdx);
+    trimmed = trimmed.trim();
+  } else {
+    return '';
+  }
+
+  const lower = trimmed.toLowerCase();
+  for (const label of ['filepath', 'file', 'path']) {
+    if (lower.startsWith(label)) {
+      let rest = trimmed.slice(label.length).trimStart();
+      if (rest.startsWith(':') || rest.startsWith('：')) {
+        rest = rest.slice(1).trimStart();
+      } else if (rest.length === trimmed.slice(label.length).length) {
+        continue;
+      }
+      const token = rest.split(/\s/)[0]?.replace(/[`'",;*]+$/g, '') || '';
+      if (token) return stripDiffPrefix(token);
+    }
+  }
+  return '';
+}
+
+function isDecisionRulingJsonBlock(rawBody: string): boolean {
+  try {
+    const parsed = JSON.parse(rawBody);
+    return Boolean(parsed && typeof parsed === 'object' && 'decisionType' in parsed);
+  } catch {
+    return rawBody.includes('"decisionType"');
+  }
+}
+
 export function extractWorkspaceDiffsFromText(
   text: string,
   fallbackFiles: string[] = []
@@ -2169,18 +2254,18 @@ export function extractWorkspaceDiffsFromText(
   if (!text || !text.trim()) return [];
   const results: TopicPatchDiffItem[] = [];
   const seenFiles = new Set<string>();
+  const ast = analyzeStructuredMarkdown(text);
 
-  const codeBlockRegex = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g;
-  let match: RegExpExecArray | null;
   let blockIndex = 0;
+  let searchCursor = 0;
 
-  while ((match = codeBlockRegex.exec(text)) !== null) {
-    const lang = (match[1] || '').toLowerCase().trim();
-    const rawBody = (match[2] || '').trim();
+  for (const block of ast.fencedCodeBlocks) {
+    const lang = block.lang.toLowerCase().trim();
+    const rawBody = block.content.trim();
     if (!rawBody) continue;
 
     // 跳过 JSON 契约块或 Mermaid 图表
-    if (lang === 'mermaid' || (lang === 'json' && rawBody.includes('"decisionType"'))) {
+    if (lang === 'mermaid' || (lang === 'json' && isDecisionRulingJsonBlock(rawBody))) {
       continue;
     }
 
@@ -2193,22 +2278,25 @@ export function extractWorkspaceDiffsFromText(
       lines.some((l) => l.startsWith('@@ '));
 
     // 查找代码块前方的上下文是否标注了文件名
-    const precedingText = text.slice(Math.max(0, match.index - 220), match.index);
-    const precedingFileMatch = precedingText.match(
-      /`([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)`|\*\*([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)\*\*|(?:文件|路径|File|Path)[:：\s]*`?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)`?/i
-    );
-    const contextFilename =
-      precedingFileMatch?.[1] || precedingFileMatch?.[2] || precedingFileMatch?.[3];
+    let contextFilename = '';
+    const bodyPos = text.indexOf(rawBody, searchCursor);
+    if (bodyPos >= 0) {
+      const fenceStart = text.lastIndexOf('```', bodyPos);
+      const anchor = fenceStart >= 0 ? fenceStart : bodyPos;
+      const precedingText = text.slice(Math.max(0, anchor - 220), anchor);
+      const extractedPaths = extractFilePathsFromTextSegment(precedingText);
+      contextFilename = extractedPaths[extractedPaths.length - 1] || '';
+      searchCursor = bodyPos + rawBody.length;
+    }
 
     if (isUnifiedDiff) {
-      let filename = '';
-      const plusMatch = rawBody.match(/^\+\+\+\s+(?:b\/)?([^\s\n]+)/m);
-      const minusMatch = rawBody.match(/^---\s+(?:a\/)?([^\s\n]+)/m);
-      const commentFileMatch = lines[0]?.match(/^(?:\/\/|#)\s*(?:filepath|file|path)[:：\s]*([^\s]+)/i);
-      filename =
-        (plusMatch?.[1] && plusMatch[1] !== '/dev/null' ? plusMatch[1] : '') ||
-        (minusMatch?.[1] && minusMatch[1] !== '/dev/null' ? minusMatch[1] : '') ||
-        commentFileMatch?.[1] ||
+      const plusPath = parseDiffHeaderPath(lines, '+++');
+      const minusPath = parseDiffHeaderPath(lines, '---');
+      const commentPath = parseFileHeaderCommentLine(lines[0]);
+      const filename =
+        plusPath ||
+        minusPath ||
+        commentPath ||
         contextFilename ||
         fallbackFiles[blockIndex] ||
         `patch_${blockIndex + 1}.ts`;
@@ -2223,47 +2311,47 @@ export function extractWorkspaceDiffsFromText(
         additions = lines.length;
       }
 
+      const normalizedName = stripDiffPrefix(filename);
       results.push({
-        filename: filename.replace(/^[ab]\//, ''),
+        filename: normalizedName,
         additions,
         deletions,
         diff: rawBody,
       });
-      seenFiles.add(filename);
+      seenFiles.add(normalizedName);
       blockIndex++;
-    } else if (
-      ['ts', 'tsx', 'js', 'jsx', 'rs', 'rust', 'py', 'python', 'go', 'sql', 'toml', 'yaml', 'yml', 'css', 'html', 'sh'].includes(lang) ||
-      lines[0]?.match(/^(?:\/\/|#|\/\*)\s*(?:filepath|file|path)[:：\s]*([^\s*]+)/i)
-    ) {
-      const commentFileMatch = lines[0]?.match(/^(?:\/\/|#|\/\*)\s*(?:filepath|file|path)[:：\s]*([^\s*]+)/i);
-      const filename =
-        commentFileMatch?.[1] ||
-        contextFilename ||
-        fallbackFiles.find((f) => !seenFiles.has(f)) ||
-        fallbackFiles[blockIndex] ||
-        '';
+    } else {
+      const commentPath = parseFileHeaderCommentLine(lines[0]);
+      if (SUPPORTED_CODE_BLOCK_LANGS.has(lang) || commentPath) {
+        const filename =
+          commentPath ||
+          contextFilename ||
+          fallbackFiles.find((f) => !seenFiles.has(f)) ||
+          fallbackFiles[blockIndex] ||
+          '';
 
-      if (filename || lines.length >= 4) {
-        const resolvedName = (filename || `src/patch_${blockIndex + 1}.${lang || 'ts'}`).replace(/^[ab]\//, '');
-        const cleanLines = commentFileMatch ? lines.slice(1) : lines;
-        const cleanCode = cleanLines.join('\n').trim();
-        const codeLines = cleanCode.split('\n');
-        const syntheticDiff = [
-          `--- a/${resolvedName}`,
-          `+++ b/${resolvedName}`,
-          `@@ -1,0 +1,${codeLines.length} @@`,
-          ...codeLines.map((l) => `+${l}`),
-        ].join('\n');
+        if (filename || lines.length >= 4) {
+          const resolvedName = stripDiffPrefix(filename || `src/patch_${blockIndex + 1}.${lang || 'ts'}`);
+          const cleanLines = commentPath ? lines.slice(1) : lines;
+          const cleanCode = cleanLines.join('\n').trim();
+          const codeLines = cleanCode.split('\n');
+          const syntheticDiff = [
+            `--- a/${resolvedName}`,
+            `+++ b/${resolvedName}`,
+            `@@ -1,0 +1,${codeLines.length} @@`,
+            ...codeLines.map((l) => `+${l}`),
+          ].join('\n');
 
-        results.push({
-          filename: resolvedName,
-          additions: codeLines.length,
-          deletions: 0,
-          diff: syntheticDiff,
-          codeContent: cleanCode,
-        });
-        seenFiles.add(resolvedName);
-        blockIndex++;
+          results.push({
+            filename: resolvedName,
+            additions: codeLines.length,
+            deletions: 0,
+            diff: syntheticDiff,
+            codeContent: cleanCode,
+          });
+          seenFiles.add(resolvedName);
+          blockIndex++;
+        }
       }
     }
   }
@@ -2988,6 +3076,7 @@ export async function ensureAcpAgentSession(options: {
   roomId: string;
   channelId?: string;
   systemPrompt?: string;
+  personaPrompt?: string;
   discussionMode?: string;
   workspaceBindingId?: string;
   workspaceCwd?: string;
@@ -3037,6 +3126,7 @@ export async function ensureAcpAgentSession(options: {
       workspaceBindingId: options.workspaceBindingId || null,
       workspaceCwd: options.workspaceCwd || null,
       systemPrompt: options.systemPrompt || null,
+      personaPrompt: options.personaPrompt || null,
       discussionMode: options.discussionMode || null,
       scopeType: options.scopeType || null,
       localHistoryIntact: options.localHistoryIntact ?? null,

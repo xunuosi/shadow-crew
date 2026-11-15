@@ -371,6 +371,7 @@ async fn send_prompt_to_agent(
     _cwd: Option<String>,
     _env_vars: Option<Vec<acp_manager::AcpEnvVar>>,
     system_prompt: Option<String>,
+    persona_prompt: Option<String>,
     discussion_mode: Option<String>,
     native_memory_enabled: Option<bool>,
     native_memory_auto_generate: Option<bool>,
@@ -406,6 +407,7 @@ async fn send_prompt_to_agent(
             attachments.as_deref().unwrap_or(&[]),
             &prompt,
             system_prompt.as_deref(),
+            persona_prompt.as_deref(),
             discussion_mode.as_deref(),
             native_memory_enabled,
             native_memory_auto_generate,
@@ -426,6 +428,7 @@ async fn ensure_agent_session(
     workspace_cwd: Option<String>,
     scope_type: Option<String>,
     system_prompt: Option<String>,
+    persona_prompt: Option<String>,
     discussion_mode: Option<String>,
     local_history_intact: Option<bool>,
     state: State<'_, AppState>,
@@ -454,6 +457,7 @@ async fn ensure_agent_session(
             workspace_cwd.as_deref(),
             scope_type.as_deref(),
             system_prompt.as_deref(),
+            persona_prompt.as_deref(),
             discussion_mode.as_deref(),
             local_history_intact,
         )
@@ -587,29 +591,172 @@ fn reconstruct_content_from_diff(diff: &str, code_content: Option<&str>) -> Stri
     lines.join("\n") + "\n"
 }
 
-fn try_block_replace_on_existing_file(existing: &str, diff: &str) -> Option<String> {
-    let mut removed_lines: Vec<&str> = Vec::new();
-    let mut added_lines: Vec<&str> = Vec::new();
-    for line in diff.lines() {
-        if line.starts_with("---") || line.starts_with("+++") || line.starts_with("@@") {
-            continue;
-        }
-        if let Some(rem) = line.strip_prefix('-') {
-            removed_lines.push(rem);
-        } else if let Some(add) = line.strip_prefix('+') {
-            added_lines.push(add);
-        }
-    }
-    if removed_lines.is_empty() {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UnifiedDiffLine<'a> {
+    Context(&'a str),
+    Remove(&'a str),
+    Add(&'a str),
+}
+
+#[derive(Debug, Clone)]
+struct UnifiedDiffHunk<'a> {
+    old_start: usize,
+    lines: Vec<UnifiedDiffLine<'a>>,
+}
+
+fn parse_unified_diff_hunk_header(line: &str) -> Option<usize> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with("@@") {
         return None;
     }
-    let target_block = removed_lines.join("\n");
-    let replacement_block = added_lines.join("\n");
-    if existing.contains(&target_block) {
-        Some(existing.replacen(&target_block, &replacement_block, 1))
-    } else {
-        None
+    let after_first = trimmed.strip_prefix("@@")?.trim_start();
+    let end_idx = after_first.find("@@")?;
+    let range_part = after_first[..end_idx].trim();
+    let old_token = range_part.split_whitespace().next()?;
+    let old_range = old_token.strip_prefix('-')?;
+    let old_start_str = old_range.split(',').next()?;
+    old_start_str.parse::<usize>().ok()
+}
+
+fn parse_unified_diff_hunks(diff: &str) -> Vec<UnifiedDiffHunk<'_>> {
+    let mut hunks: Vec<UnifiedDiffHunk<'_>> = Vec::new();
+    let mut current: Option<UnifiedDiffHunk<'_>> = None;
+    let mut saw_hunk_header = false;
+
+    for raw_line in diff.lines() {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        if line.starts_with("diff --git")
+            || line.starts_with("index ")
+            || line.starts_with("--- ")
+            || line.starts_with("+++ ")
+            || line.starts_with("\\ No newline at end of file")
+        {
+            continue;
+        }
+        if let Some(old_start) = parse_unified_diff_hunk_header(line) {
+            saw_hunk_header = true;
+            if let Some(prev) = current.take() {
+                hunks.push(prev);
+            }
+            current = Some(UnifiedDiffHunk {
+                old_start,
+                lines: Vec::new(),
+            });
+            continue;
+        }
+
+        let op = if let Some(rest) = line.strip_prefix('+') {
+            Some(UnifiedDiffLine::Add(rest))
+        } else if let Some(rest) = line.strip_prefix('-') {
+            Some(UnifiedDiffLine::Remove(rest))
+        } else if let Some(rest) = line.strip_prefix(' ') {
+            Some(UnifiedDiffLine::Context(rest))
+        } else if line.is_empty() && saw_hunk_header {
+            Some(UnifiedDiffLine::Context(""))
+        } else {
+            None
+        };
+
+        if let Some(parsed_line) = op {
+            if current.is_none() {
+                current = Some(UnifiedDiffHunk {
+                    old_start: 1,
+                    lines: Vec::new(),
+                });
+            }
+            if let Some(hunk) = current.as_mut() {
+                hunk.lines.push(parsed_line);
+            }
+        }
     }
+
+    if let Some(last) = current {
+        if !last.lines.is_empty() {
+            hunks.push(last);
+        }
+    }
+
+    hunks
+}
+
+fn try_block_replace_on_existing_file(existing: &str, diff: &str) -> Option<String> {
+    let hunks = parse_unified_diff_hunks(diff);
+    if hunks.is_empty() {
+        return None;
+    }
+
+    let had_trailing_newline = existing.ends_with('\n');
+    let mut file_lines: Vec<String> = existing
+        .lines()
+        .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+        .collect();
+
+    let mut line_delta: isize = 0;
+
+    for hunk in hunks {
+        let old_seq: Vec<&str> = hunk
+            .lines
+            .iter()
+            .filter_map(|l| match l {
+                UnifiedDiffLine::Context(s) | UnifiedDiffLine::Remove(s) => Some(*s),
+                UnifiedDiffLine::Add(_) => None,
+            })
+            .collect();
+        let new_seq: Vec<String> = hunk
+            .lines
+            .iter()
+            .filter_map(|l| match l {
+                UnifiedDiffLine::Context(s) | UnifiedDiffLine::Add(s) => Some((*s).to_string()),
+                UnifiedDiffLine::Remove(_) => None,
+            })
+            .collect();
+
+        if old_seq.is_empty() {
+            if new_seq.is_empty() {
+                continue;
+            }
+            let raw_idx = (hunk.old_start as isize + line_delta).max(0) as usize;
+            let insert_idx = raw_idx.min(file_lines.len());
+            let new_len = new_seq.len() as isize;
+            file_lines.splice(insert_idx..insert_idx, new_seq);
+            line_delta += new_len;
+            continue;
+        }
+
+        if old_seq.len() > file_lines.len() {
+            return None;
+        }
+
+        let expected_idx =
+            (hunk.old_start.saturating_sub(1) as isize + line_delta).max(0) as usize;
+        let max_start = file_lines.len() - old_seq.len();
+        let mut best_match: Option<(usize, isize)> = None;
+
+        for idx in 0..=max_start {
+            let matched = file_lines[idx..idx + old_seq.len()]
+                .iter()
+                .zip(old_seq.iter())
+                .all(|(a, b)| a == b);
+            if matched {
+                let dist = (idx as isize - expected_idx as isize).abs();
+                if best_match.is_none_or(|(_, best_dist)| dist < best_dist) {
+                    best_match = Some((idx, dist));
+                }
+            }
+        }
+
+        let (match_idx, _) = best_match?;
+        let old_len = old_seq.len() as isize;
+        let new_len = new_seq.len() as isize;
+        file_lines.splice(match_idx..match_idx + old_seq.len(), new_seq);
+        line_delta += new_len - old_len;
+    }
+
+    let mut result = file_lines.join("\n");
+    if had_trailing_newline && !result.is_empty() {
+        result.push('\n');
+    }
+    Some(result)
 }
 
 /// Tauri Command: 将议题落地 Agent 生成的补丁物理应用到本地工作区与频道归档目录
@@ -1227,6 +1374,20 @@ pub struct HttpResponsePayload {
     pub raw_text: String,
 }
 
+fn is_valid_llm_success_json(val: &serde_json::Value) -> bool {
+    let Some(obj) = val.as_object() else {
+        return false;
+    };
+    if obj.get("error").is_some_and(|e| !e.is_null()) {
+        return false;
+    }
+    obj.get("choices").is_some_and(|v| v.is_array())
+        || obj.get("models").is_some_and(|v| v.is_array())
+        || obj.get("data").is_some_and(|v| v.is_array())
+        || (obj.get("content").is_some_and(|v| v.is_array() || v.is_string())
+            && (obj.contains_key("role") || obj.contains_key("type") || obj.contains_key("id")))
+}
+
 /// Tauri Command: 原生无跨域 HTTP 请求转发 (彻底消除前端 WebView CORS 限制与企业内网证书拦截)
 #[tauri::command]
 async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, String> {
@@ -1268,12 +1429,10 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
     let mut raw_output = String::from_utf8_lossy(&output.stdout).to_string();
     let mut err_output = String::from_utf8_lossy(&output.stderr).to_string();
 
-    // 检查首次直连响应是否已经包含合法的大模型输出数据或模型列表
-    let initial_has_payload = raw_output.contains("\"choices\"")
-        || raw_output.contains("\"id\"")
-        || raw_output.contains("\"content\"")
-        || raw_output.contains("\"data\"")
-        || raw_output.contains("\"models\"");
+    // 检查首次直连响应是否已经包含合法的 LLM JSON 响应体（严禁含 error 字段或以裸子串猜测）
+    let initial_has_payload = serde_json::from_str::<serde_json::Value>(&raw_output)
+        .ok()
+        .is_some_and(|val| is_valid_llm_success_json(&val));
 
     // 如果直连失败且未获取到任何有效数据，自动尝试通过代理重试
     if !initial_has_payload && (!output.status.success() || raw_output.is_empty()) && !req.url.contains("127.0.0.1") {
@@ -1324,13 +1483,8 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
 
     let parsed_json: serde_json::Value = serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null);
 
-    // 容错判定：若响应 JSON 中已包含 choices/id/content/data/models 等标准 LLM 响应体，说明请求已成功被服务端处理完毕，
-    // 即使企业内网网关在传输末尾提前断开 TCP 连接导致系统 curl 产生非 0 退出码，也视为成功响应
-    let has_valid_llm_payload = parsed_json.get("choices").is_some()
-        || parsed_json.get("id").is_some()
-        || parsed_json.get("content").is_some()
-        || parsed_json.get("data").is_some()
-        || parsed_json.get("models").is_some();
+    // 仅在 HTTP 状态未报 4xx/5xx 错误且响应体为合法无 error 的 LLM 载荷时，允许 curl 尾包提前断开恢复
+    let has_valid_llm_payload = is_valid_llm_success_json(&parsed_json);
 
     if !output.status.success() && status_code == 200 && !has_valid_llm_payload {
         status_code = 500;
@@ -1339,7 +1493,7 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
         }
     }
 
-    let is_ok = (status_code >= 200 && status_code < 300) || has_valid_llm_payload;
+    let is_ok = (200..300).contains(&status_code);
 
     Ok(HttpResponsePayload {
         status: status_code,
@@ -2714,5 +2868,70 @@ mod attachment_tests {
         assert!(bin_preview.content.is_empty());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unified_diff_hunk_applier_handles_context_interleaved_and_multi_hunk_diffs() {
+        let existing = "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\n";
+        let diff = "\
+--- a/sample.txt
++++ b/sample.txt
+@@ -1,4 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
+-delta
++DELTA
+@@ -5,2 +5,3 @@
+ epsilon
++inserted_middle
+ zeta
+";
+        let updated = try_block_replace_on_existing_file(existing, diff)
+            .expect("hunk applier must succeed when interleaved context & multiple hunks match");
+        assert_eq!(
+            updated,
+            "alpha\nBETA\ngamma\nDELTA\nepsilon\ninserted_middle\nzeta\n"
+        );
+
+        let drifted_diff = "\
+--- a/sample.txt
++++ b/sample.txt
+@@ -1,3 +1,3 @@
+ alpha
+-nonexistent_line
+ gamma
+";
+        assert!(
+            try_block_replace_on_existing_file(existing, drifted_diff).is_none(),
+            "drifted hunk must fail atomically with None"
+        );
+    }
+
+    #[test]
+    fn is_valid_llm_success_json_rejects_error_payloads_with_id_or_content() {
+        let error_with_id_and_content = serde_json::json!({
+            "id": "req-401",
+            "error": {
+                "message": "invalid content token",
+                "code": "unauthorized"
+            }
+        });
+        assert!(!is_valid_llm_success_json(&error_with_id_and_content));
+
+        let valid_openai = serde_json::json!({
+            "id": "chatcmpl-123",
+            "choices": [{ "message": { "role": "assistant", "content": "ok" } }]
+        });
+        assert!(is_valid_llm_success_json(&valid_openai));
+
+        let valid_anthropic = serde_json::json!({
+            "id": "msg-1",
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "hello" }]
+        });
+        assert!(is_valid_llm_success_json(&valid_anthropic));
     }
 }

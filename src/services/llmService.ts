@@ -491,6 +491,26 @@ export interface RequestJsonOptions {
   timeoutMs?: number;
 }
 
+export function isValidLlmSuccessPayload(body: unknown): boolean {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return false;
+  }
+  const obj = body as Record<string, unknown>;
+  if (obj.error !== undefined && obj.error !== null) {
+    return false;
+  }
+  if (Array.isArray(obj.choices) || Array.isArray(obj.models) || Array.isArray(obj.data) || Array.isArray(obj.content)) {
+    return true;
+  }
+  if (obj.data && typeof obj.data === 'object') {
+    return true;
+  }
+  if (typeof obj.content === 'string' && obj.content.trim().length > 0) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * 全环境通用 HTTP 请求转发器 (支持 GET / POST)
  * 优先级：
@@ -525,16 +545,20 @@ export async function requestJsonUniversal(
         },
       });
       if (res) {
-        const hasPayload = Boolean(
-          (res.body && (res.body.choices || res.body.id || res.body.content || res.body.data || res.body.models)) ||
-          (res.raw_text && (res.raw_text.includes('"choices"') || res.raw_text.includes('"id"') || res.raw_text.includes('"content"') || res.raw_text.includes('"data"') || res.raw_text.includes('"models"')))
-        );
+        const hasErrorField = Boolean(res.body && typeof res.body === 'object' && res.body.error != null);
+        const isHttpOk = Boolean(res.ok) && (typeof res.status !== 'number' || (res.status >= 200 && res.status < 400));
+        const ok = isHttpOk && !hasErrorField;
         return {
-          ok: res.ok || hasPayload,
-          status: hasPayload ? 200 : res.status,
+          ok,
+          status: res.status,
           data: res.body,
           rawText: res.raw_text,
-          error: (res.ok || hasPayload) ? undefined : res.body?.error?.message || res.raw_text || `HTTP ${res.status}`,
+          error: ok
+            ? undefined
+            : res.body?.error?.message ||
+              (typeof res.body?.error === 'string' ? res.body.error : undefined) ||
+              res.raw_text ||
+              `HTTP ${res.status}`,
         };
       }
     } catch (tauriErr: any) {

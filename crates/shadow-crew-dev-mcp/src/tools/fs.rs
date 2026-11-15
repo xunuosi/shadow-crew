@@ -433,19 +433,68 @@ pub async fn validate_workspace_diff(
         total_additions += patch_add;
         total_deletions += patch_del;
 
-        // 3. 检查目标文件存在性与上下文匹配 (Dry-Run)
+        // 3. 检查目标文件存在性与 Hunk 级上下文序列匹配 (Dry-Run)
         let target_path = Path::new(&clean_filename);
         let file_exists = target_path.exists();
 
         let mut conflict_details = Vec::new();
         if file_exists {
             if let Ok(existing_content) = fs::read_to_string(target_path).await {
-                // 检查 diff 中被删除的行或上下文行是否存在于原文件中
-                for line in &diff_lines {
-                    if line.starts_with('-') && !line.starts_with("---") {
-                        let target_substr = line[1..].trim();
-                        if !target_substr.is_empty() && !existing_content.contains(target_substr) {
+                let existing_lines: Vec<&str> = existing_content
+                    .lines()
+                    .map(|l| l.strip_suffix('\r').unwrap_or(l))
+                    .collect();
+
+                let mut hunks_old_seqs: Vec<Vec<&str>> = Vec::new();
+                let mut current_seq: Vec<&str> = Vec::new();
+                let mut in_hunk = false;
+
+                for raw_line in &diff_lines {
+                    let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+                    if line.starts_with("@@") {
+                        if in_hunk && !current_seq.is_empty() {
+                            hunks_old_seqs.push(std::mem::take(&mut current_seq));
+                        }
+                        in_hunk = true;
+                        continue;
+                    }
+                    if line.starts_with("---") || line.starts_with("+++") || line.starts_with("diff --git") || line.starts_with("index ") {
+                        continue;
+                    }
+                    if let Some(rem) = line.strip_prefix('-') {
+                        if !in_hunk {
+                            in_hunk = true;
+                        }
+                        current_seq.push(rem);
+                        let target_substr = rem.trim();
+                        if !target_substr.is_empty() && !existing_lines.iter().any(|el| el.trim() == target_substr || el.contains(target_substr)) {
                             conflict_details.push(format!("原行未找到: `{}`", target_substr));
+                            if conflict_details.len() >= 2 {
+                                break;
+                            }
+                        }
+                    } else if let Some(ctx) = line.strip_prefix(' ') {
+                        if in_hunk {
+                            current_seq.push(ctx);
+                        }
+                    }
+                }
+                if in_hunk && !current_seq.is_empty() {
+                    hunks_old_seqs.push(current_seq);
+                }
+
+                if conflict_details.is_empty() && !hunks_old_seqs.is_empty() {
+                    for (hunk_idx, old_seq) in hunks_old_seqs.iter().enumerate() {
+                        if old_seq.is_empty() {
+                            continue;
+                        }
+                        let seq_matched = old_seq.len() <= existing_lines.len()
+                            && existing_lines.windows(old_seq.len()).any(|win| win == old_seq.as_slice());
+                        if !seq_matched {
+                            conflict_details.push(format!(
+                                "Hunk #{} 上下文与删除行序列未对齐",
+                                hunk_idx + 1
+                            ));
                             if conflict_details.len() >= 2 {
                                 break;
                             }
@@ -595,6 +644,15 @@ mod tests {
         let allowed = vec!["other_file.rs".to_string()];
         let viol_res = validate_workspace_diff(&clean_patches, Some(&allowed)).await.unwrap();
         assert!(viol_res.contains("越界拦截"));
+
+        // 4. Hunk sequence drift (lines exist individually, but context sequence does not match)
+        let drift_patches = vec![PatchItem {
+            filename: sample_path.to_string(),
+            diff: "--- a/sample.rs\n+++ b/sample.rs\n@@ -1,2 +1,2 @@\n }\n-    println!(\"hello\");\n+    println!(\"world\");\n".to_string(),
+        }];
+        let drift_res = validate_workspace_diff(&drift_patches, None).await.unwrap();
+        assert!(drift_res.contains("冲突预警"));
+        assert!(drift_res.contains("上下文与删除行序列未对齐"));
 
         let _ = fs::remove_dir_all(&temp_dir).await;
     }
