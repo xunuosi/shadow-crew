@@ -641,6 +641,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; }
 
 /* ---------- 11/22 tables ---------- */
 .tbl .mini { display: block; font-size: 11.5px; color: var(--fg3); margin-top: 3px; line-height: 1.4; }
+.tbl .note { display: block; margin-top: 5px; font-size: 12.5px; line-height: 1.55; color: var(--fg3); }
+.tbl .note b { color: var(--fg2); font-weight: 600; }
 .tbl th.hcol { color: var(--accent); }
 table.matrix { font-size: 13px; }
 .matrix th { padding: 9px 11px; font-size: 10.5px; letter-spacing: .06em; }
@@ -1171,32 +1173,42 @@ table.method .req.b { color: var(--accent); }
       <div class="reveal">
         <div class="tbl-wrap">
           <table class="tbl compact">
-            <thead><tr><th style="width:29%">层</th><th style="width:25%">谁负责</th><th style="width:46%">Shadow Crew 的做法</th></tr></thead>
+            <thead><tr><th style="width:26%">层</th><th style="width:24%">谁负责</th><th style="width:50%">Shadow Crew 的做法</th></tr></thead>
             <tbody>
               <tr>
                 <td><strong>Agent 运行时</strong><span class="mini">推理循环 · Tool Loop · 上下文管理</span></td>
                 <td>ACP Agent 端点<span class="mini">Claude Code / Codex / 同事 Agent</span></td>
-                <td>通过 ACP <strong>连接与调度</strong>，不实现运行时</td>
+                <td>通过 ACP <strong>连接与调度</strong>，不实现运行时
+                  <span class="note">推理循环、工具调用循环、上下文管理都在端点进程里跑；宿主只负责发请求、收流式输出。</span>
+                </td>
               </tr>
               <tr>
                 <td><strong>工具执行</strong><span class="mini">读写 · 搜索 · Shell · 结构化提交</span></td>
                 <td>Agent 自带工具；宿主可经 MCP 供工具</td>
-                <td>提供本地 dev MCP 工具（17 个）；<strong>执行仍在 Agent 侧</strong>，宿主只管权限与工作区边界</td>
+                <td>提供本地 dev MCP 工具（17 个），<strong>执行仍在 Agent 侧</strong>
+                  <span class="note">宿主把「读文件 / 改文件 / 搜索 / 跑命令 / 提交结构化结论」做成 MCP 工具供端点调用，但真正执行发生在 Agent 进程；宿主只管权限与目录边界。</span>
+                </td>
               </tr>
               <tr>
                 <td><strong>会话 · 权限 · 审计</strong></td>
                 <td>协议定义 + 宿主执行</td>
-                <td><strong>自建</strong>：CWD 绑定、反向权限代理、作用域授权、Fail-Closed</td>
+                <td><strong>自建</strong>：会话绑定、审批、授权、失败策略
+                  <span class="note"><b>CWD 绑定</b>＝每个议题锁定一个工作目录，不能漂移｜<b>反向权限代理</b>＝Agent 读写/执行前必须回头问宿主｜<b>作用域授权</b>＝一次 / 本会话 / Channel / Topic / DM｜<b>Fail-Closed</b>＝越界、超时、选项不全一律拒绝</span>
+                </td>
               </tr>
               <tr>
                 <td><strong>记忆</strong><span class="mini">长期记忆 · 跨机经验</span></td>
                 <td>端点原生记忆为主</td>
-                <td>记忆策略 + <span class="mono">.scpack</span> 经验包；<strong>不自建向量索引</strong></td>
+                <td>记忆策略 + <span class="mono">.scpack</span> 经验包；<strong>不自建向量索引</strong>
+                  <span class="note">长期记忆由端点自己管，宿主只做状态探测；跨机经验打包成 <span class="mono">.scpack</span>，可验签、只读挂载，不写进本地知识库。</span>
+                </td>
               </tr>
               <tr>
                 <td><strong>协同 · 决策 · 经验流转</strong></td>
                 <td>Shadow Crew</td>
-                <td><strong>自建</strong>：增量协同、4+1、BWM 门禁、Living ADR、跨机经验包</td>
+                <td><strong>自建</strong>，这是产品的主战场
+                  <span class="note"><b>增量协同</b>＝只发未读的新消息，省 Token｜<b>4+1</b>＝提案→挑战→验证→答辩→裁决五阶段｜<b>BWM 门禁</b>＝把权衡交给数学求权重，不自洽就退回｜<b>Living ADR</b>＝可导出的活体决策记录｜<b>跨机经验包</b>＝同事调好的经验可带走</span>
+                </td>
               </tr>
             </tbody>
           </table>
