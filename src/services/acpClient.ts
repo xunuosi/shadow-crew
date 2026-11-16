@@ -361,6 +361,112 @@ export function parseAcpTokenUsage(raw: unknown): AcpTokenUsage | undefined {
   };
 }
 
+// ---------------------------------------------------------------------------
+// ACP v2 unstable session config options（运行时声明的模型 / 模式选择）
+// ---------------------------------------------------------------------------
+
+export interface AcpConfigOptionChoice {
+  value: string;
+  name: string;
+  description?: string;
+}
+
+export interface AcpConfigOption {
+  id: string;
+  name: string;
+  description?: string;
+  /** 运行时语义分类；模型选择为 'model' */
+  category?: string;
+  type: string;
+  currentValue: string;
+  options?: AcpConfigOptionChoice[];
+}
+
+/**
+ * 解析运行时上报的 configOptions。只接受结构完整的配置项，
+ * 缺失 id/currentValue 或类型非法的条目直接丢弃（禁止猜测补位）。
+ */
+export function parseAcpConfigOptions(raw: unknown): AcpConfigOption[] {
+  if (!Array.isArray(raw)) return [];
+  const result: AcpConfigOption[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as Record<string, unknown>;
+    const id = typeof obj.id === 'string' ? obj.id : '';
+    const name = typeof obj.name === 'string' ? obj.name : '';
+    const currentValue =
+      typeof obj.currentValue === 'string'
+        ? obj.currentValue
+        : typeof obj.currentValue === 'number'
+          ? String(obj.currentValue)
+          : undefined;
+    if (!id || !name || currentValue === undefined) continue;
+    const choicesRaw = Array.isArray(obj.options) ? obj.options : [];
+    const choices: AcpConfigOptionChoice[] = [];
+    for (const choice of choicesRaw) {
+      if (!choice || typeof choice !== 'object') continue;
+      const choiceObj = choice as Record<string, unknown>;
+      const value = typeof choiceObj.value === 'string' ? choiceObj.value : '';
+      const choiceName = typeof choiceObj.name === 'string' ? choiceObj.name : value;
+      if (!value) continue;
+      choices.push({
+        value,
+        name: choiceName,
+        ...(typeof choiceObj.description === 'string'
+          ? { description: choiceObj.description }
+          : {}),
+      });
+    }
+    result.push({
+      id,
+      name,
+      ...(typeof obj.description === 'string' ? { description: obj.description } : {}),
+      ...(typeof obj.category === 'string' ? { category: obj.category } : {}),
+      type: typeof obj.type === 'string' ? obj.type : 'select',
+      currentValue,
+      ...(choices.length > 0 ? { options: choices } : {}),
+    });
+  }
+  return result;
+}
+
+/** 运行时语义上的模型选择项：category === 'model' 或 id === 'model'。 */
+export function findAcpModelOption(
+  options: readonly AcpConfigOption[] | undefined
+): AcpConfigOption | undefined {
+  return options?.find(
+    (option) =>
+      option.category?.toLowerCase() === 'model' || option.id.toLowerCase() === 'model'
+  );
+}
+
+/**
+ * 下发 ACP 会话配置项（模型选择）。仅允许运行时已上报的配置项；
+ * 运行时拒绝或未声明时抛出异常，由调用方显式提示，不做静默回退。
+ */
+export async function setAcpConfigOption(params: {
+  agentId: string;
+  sessionKey: string;
+  configId: string;
+  value: string;
+}): Promise<AcpConfigOption[]> {
+  const tauriInvoke =
+    typeof window !== 'undefined'
+      ? (window as any).__TAURI_INTERNALS__?.invoke ||
+        (window as any).__TAURI__?.core?.invoke
+      : null;
+  if (!tauriInvoke) {
+    throw new Error('当前环境不支持 ACP 会话配置下发（非 Tauri 运行期）');
+  }
+  const result = await tauriInvoke('acp_set_config_option', {
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    configId: params.configId,
+    value: params.value,
+  });
+  return parseAcpConfigOptions(result);
+}
+
 export interface AcpAgentResponse {
   textResponse: string;
   /** ACP 上报的单轮真实 token 用量；未上报时为 undefined */
@@ -1665,6 +1771,7 @@ export async function sendPromptToAcpAgent(
         discussionMode: options.discussionMode,
         scopeType: options.scopeType,
         attachments: promptAttachments,
+        desiredModel: agent.modelConfig?.modelId || null,
       });
 
       const durationMs = Date.now() - startTime;
@@ -2740,6 +2847,8 @@ export async function ensureAcpAgentSession(options: {
   scopeType?: 'channel' | 'topic' | 'dm' | 'dm_topic';
   isDm?: boolean;
   localHistoryIntact?: boolean;
+  /** 偏好模型：仅当运行时上报的模型配置项包含同名 value/name 时下发 */
+  desiredModel?: string;
 }): Promise<EnsureSessionResult | null> {
   const isDm = options.isDm ?? (
     options.scopeType
@@ -2786,6 +2895,7 @@ export async function ensureAcpAgentSession(options: {
       discussionMode: options.discussionMode || null,
       scopeType: options.scopeType || null,
       localHistoryIntact: options.localHistoryIntact ?? null,
+      desiredModel: options.desiredModel || null,
     });
     return result as EnsureSessionResult;
   } catch (err) {

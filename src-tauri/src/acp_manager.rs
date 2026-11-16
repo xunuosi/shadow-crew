@@ -742,6 +742,57 @@ fn jsonrpc_id_key(id: &serde_json::Value) -> Option<String> {
     None
 }
 
+/// 从 session/new | session/load | session/resume | session/set_config_option 的响应中
+/// 提取 `configOptions`（仅接受数组；缺字段或类型不符一律视为未上报）。
+fn extract_session_config_options(resp: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
+    resp.get("result")
+        .and_then(|result| result.get("configOptions"))
+        .and_then(|value| value.as_array())
+        .cloned()
+}
+
+/// 定位运行时的模型选择配置项：`category == "model"` 或 `id == "model"`。
+/// 只认运行时显式上报的语义，禁止通过名称/描述模糊猜测。
+fn find_model_config_option(options: &[serde_json::Value]) -> Option<&serde_json::Value> {
+    options.iter().find(|option| {
+        let category_matches = option
+            .get("category")
+            .and_then(|category| category.as_str())
+            .map(|category| category.eq_ignore_ascii_case("model"))
+            .unwrap_or(false);
+        let id_matches = option
+            .get("id")
+            .and_then(|id| id.as_str())
+            .map(|id| id.eq_ignore_ascii_case("model"))
+            .unwrap_or(false);
+        category_matches || id_matches
+    })
+}
+
+/// 在模型配置项的候选中精确匹配用户偏好值（value 优先，其次 name）。
+/// 匹配不到返回 None —— 绝不把任意文本硬塞给运行时。
+fn resolve_model_option_value(option: &serde_json::Value, desired: &str) -> Option<String> {
+    let choices = option.get("options")?.as_array()?;
+    let desired = desired.trim();
+    if desired.is_empty() {
+        return None;
+    }
+    for choice in choices {
+        if choice.get("value").and_then(|value| value.as_str()) == Some(desired) {
+            return Some(desired.to_string());
+        }
+    }
+    for choice in choices {
+        if choice.get("name").and_then(|name| name.as_str()) == Some(desired) {
+            return choice
+                .get("value")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string());
+        }
+    }
+    None
+}
+
 fn acp_client_capabilities() -> serde_json::Value {
     serde_json::json!({
         "fs": {
@@ -1376,6 +1427,9 @@ pub struct RunningAgent {
     /// 单 Agent 内部指令互斥锁：确保向同一 Agent 连续下发指令时不发生 stdio 管道竞态，
     /// 而不同 Agent 之间拥有独立的 RunningAgent 实例与子进程，完全并发、互不阻塞！
     pub prompt_lock: Arc<TokioMutex<()>>,
+    /// ACP v2 unstable：运行时通过 session/new | session/load | config_option_update 上报的
+    /// 会话配置项（含模型选择）。按 sessionId 缓存，禁止前端自行猜测可用模型。
+    pub session_config_options: Arc<TokioMutex<HashMap<String, Vec<serde_json::Value>>>>,
 }
 
 pub struct AcpProcessManager {
@@ -1605,6 +1659,7 @@ impl AcpProcessManager {
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
         local_history_intact: Option<bool>,
+        desired_model: Option<&str>,
     ) -> Result<EnsureSessionResult> {
         let agent = self
             .get_agent(agent_id)
@@ -1620,6 +1675,7 @@ impl AcpProcessManager {
                 system_prompt,
                 discussion_mode,
                 local_history_intact,
+                desired_model,
             )
             .await
     }
@@ -1940,6 +1996,9 @@ impl AcpProcessManager {
         let native_memory_capability =
             Arc::new(TokioMutex::new(AcpNativeMemoryCapability::default()));
         let negotiated_protocol_version = Arc::new(TokioMutex::new("unknown".to_string()));
+        let session_config_options: Arc<
+            TokioMutex<HashMap<String, Vec<serde_json::Value>>>,
+        > = Arc::new(TokioMutex::new(HashMap::new()));
         let replay_sinks = Arc::new(TokioMutex::new(HashMap::<
             String,
             Arc<TokioMutex<ReplaySinkState>>,
@@ -1993,6 +2052,7 @@ impl AcpProcessManager {
         let session_permission_grants_clone = session_permission_grants.clone();
         let pending_permission_count_clone = pending_permission_count.clone();
         let session_turn_completions_clone = session_turn_completions.clone();
+        let session_config_options_clone = session_config_options.clone();
         let permission_db_manager = self.db_manager.clone();
         let child_arc_reader = child_arc.clone();
 
@@ -2198,6 +2258,38 @@ impl AcpProcessManager {
                                             "cost": update.get("cost")
                                         });
                                         let _ = app_handle_clone.emit("acp:usage", &payload);
+                                    }
+
+                                    // ACP v2 unstable: 运行时主动变更配置项（例如外部切换模型）。
+                                    // 缓存与 UI 必须同步为运行时真值，不做本地推测。
+                                    if update_type == "config_option_update" {
+                                        if let Some(options) = update
+                                            .get("configOptions")
+                                            .and_then(|value| value.as_array())
+                                            .cloned()
+                                        {
+                                            let session_key = {
+                                                let registry =
+                                                    session_registry_permissions.lock().await;
+                                                registry.entries.iter().find_map(|(key, entry)| {
+                                                    (entry.session_id == sess_id)
+                                                        .then(|| key.clone())
+                                                })
+                                            };
+                                            session_config_options_clone
+                                                .lock()
+                                                .await
+                                                .insert(sess_id.to_string(), options.clone());
+                                            let _ = app_handle_clone.emit(
+                                                "acp:config_options",
+                                                serde_json::json!({
+                                                    "agent_id": &agent_id_clone,
+                                                    "sessionId": sess_id,
+                                                    "session_key": session_key,
+                                                    "configOptions": options,
+                                                }),
+                                            );
+                                        }
                                     }
 
                                     let is_state_idle = update_type == "state_update"
@@ -2567,6 +2659,7 @@ impl AcpProcessManager {
                 session_turn_completions: session_turn_completions.clone(),
                 negotiated_protocol_version: negotiated_protocol_version.clone(),
                 prompt_lock: Arc::new(TokioMutex::new(())),
+                session_config_options: session_config_options.clone(),
             },
         );
 
@@ -2817,6 +2910,7 @@ impl AcpProcessManager {
         discussion_mode: Option<&str>,
         native_memory_enabled: Option<bool>,
         native_memory_auto_generate: Option<bool>,
+        desired_model: Option<&str>,
     ) -> Result<serde_json::Value> {
         let agent = self
             .get_agent(agent_id)
@@ -2835,6 +2929,7 @@ impl AcpProcessManager {
                 discussion_mode,
                 native_memory_enabled,
                 native_memory_auto_generate,
+                desired_model,
             )
             .await
     }
@@ -3089,6 +3184,125 @@ impl RunningAgent {
             );
         }
         self.last_activity.store(now, Ordering::Relaxed);
+    }
+
+    /// 下发会话配置项（ACP v2 unstable `session/set_config_option`）。
+    /// 只允许设置运行时已显式上报过的配置项，未上报的 id 一律拒绝。
+    pub async fn set_config_option(
+        &self,
+        agent_id: &str,
+        session_key: &str,
+        config_id: &str,
+        value: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let _prompt_guard = self.prompt_lock.lock().await;
+        let session_id = {
+            let registry = self.session_registry.lock().await;
+            registry
+                .get(session_key)
+                .map(|entry| entry.session_id.clone())
+        }
+        .ok_or_else(|| anyhow::anyhow!("Session '{}' has no active ACP sessionId", session_key))?;
+        self.set_config_option_locked(agent_id, session_key, &session_id, config_id, value)
+            .await
+    }
+
+    /// 已持有 prompt_lock 时使用的内部实现。
+    async fn set_config_option_locked(
+        &self,
+        agent_id: &str,
+        session_key: &str,
+        session_id: &str,
+        config_id: &str,
+        value: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let known = {
+            let cache = self.session_config_options.lock().await;
+            cache
+                .get(session_id)
+                .map(|options| {
+                    options.iter().any(|option| {
+                        option.get("id").and_then(|id| id.as_str()) == Some(config_id)
+                    })
+                })
+                .unwrap_or(false)
+        };
+        if !known {
+            anyhow::bail!(
+                "ACP runtime 未上报配置项 '{}'，拒绝下发未声明的配置",
+                config_id
+            );
+        }
+
+        let (tx, rx) = oneshot::channel();
+        let request_id = {
+            let mut map = self.pending_requests.lock().await;
+            let base = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let mut id = base;
+            while map.contains_key(&id) {
+                id += 1;
+            }
+            map.insert(id, tx);
+            id
+        };
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "session/set_config_option",
+            "params": {
+                "sessionId": session_id,
+                "configId": config_id,
+                "value": value,
+            }
+        });
+        self.stdin_tx
+            .send(request.to_string())
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to send session/set_config_option for agent {}",
+                    agent_id
+                )
+            })?;
+
+        let response = match tokio::time::timeout(Duration::from_secs(15), rx).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => {
+                anyhow::bail!("ACP agent channel closed during session/set_config_option")
+            }
+            Err(_) => {
+                self.pending_requests.lock().await.remove(&request_id);
+                anyhow::bail!("ACP session/set_config_option timed out after 15s");
+            }
+        };
+        if let Some(error) = response.get("error") {
+            anyhow::bail!("ACP session/set_config_option error: {:?}", error);
+        }
+
+        // 优先采用运行时回传的最新配置；未回传时仅对本地缓存做「已被接受」的定向回写。
+        let mut latest = extract_session_config_options(&response);
+        {
+            let mut cache = self.session_config_options.lock().await;
+            if latest.is_none() {
+                let mut cached = cache.get(session_id).cloned().unwrap_or_default();
+                for option in &mut cached {
+                    if option.get("id").and_then(|id| id.as_str()) == Some(config_id) {
+                        option["currentValue"] = serde_json::Value::String(value.to_string());
+                    }
+                }
+                latest = Some(cached);
+            }
+            if let Some(options) = &latest {
+                cache.insert(session_id.to_string(), options.clone());
+            }
+        }
+        let options = latest.unwrap_or_default();
+        self.store_and_emit_config_options(agent_id, session_key, session_id, options.clone())
+            .await;
+        Ok(options)
     }
 
     #[allow(dead_code)]
@@ -3576,6 +3790,7 @@ impl RunningAgent {
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
         local_history_intact: Option<bool>,
+        desired_model: Option<&str>,
     ) -> Result<EnsureSessionResult> {
         let _prompt_guard = self.prompt_lock.lock().await;
         self.ensure_session_locked(
@@ -3588,6 +3803,7 @@ impl RunningAgent {
             system_prompt,
             discussion_mode,
             local_history_intact,
+            desired_model,
         )
         .await
     }
@@ -3604,6 +3820,7 @@ impl RunningAgent {
         system_prompt: Option<&str>,
         discussion_mode: Option<&str>,
         local_history_intact: Option<bool>,
+        desired_model: Option<&str>,
     ) -> Result<EnsureSessionResult> {
         if !self.is_alive.load(Ordering::SeqCst) {
             anyhow::bail!("Agent {} process is dead or closed", agent_id);
@@ -3863,6 +4080,26 @@ impl RunningAgent {
                                     restored_gen,
                                 );
                             }
+                            if let Some(options) = extract_session_config_options(&resp) {
+                                self.store_and_emit_config_options(
+                                    agent_id,
+                                    &session_key,
+                                    &persisted.session_id,
+                                    options,
+                                )
+                                .await;
+                            }
+                            if let Some(desired) =
+                                desired_model.map(str::trim).filter(|value| !value.is_empty())
+                            {
+                                self.apply_desired_model_locked(
+                                    agent_id,
+                                    &session_key,
+                                    &persisted.session_id,
+                                    desired,
+                                )
+                                .await;
+                            }
                             return Ok(EnsureSessionResult {
                                 session_id: persisted.session_id,
                                 is_new: false,
@@ -4012,6 +4249,26 @@ impl RunningAgent {
                                     restored_gen,
                                 );
                             }
+                            if let Some(options) = extract_session_config_options(&resp) {
+                                self.store_and_emit_config_options(
+                                    agent_id,
+                                    &session_key,
+                                    &persisted.session_id,
+                                    options,
+                                )
+                                .await;
+                            }
+                            if let Some(desired) =
+                                desired_model.map(str::trim).filter(|value| !value.is_empty())
+                            {
+                                self.apply_desired_model_locked(
+                                    agent_id,
+                                    &session_key,
+                                    &persisted.session_id,
+                                    desired,
+                                )
+                                .await;
+                            }
                             return Ok(EnsureSessionResult {
                                 session_id: persisted.session_id,
                                 is_new: false,
@@ -4112,12 +4369,13 @@ impl RunningAgent {
 
         let sess_result = tokio::time::timeout(Duration::from_secs(30), sess_rx).await;
 
-        let sid = match sess_result {
+        let (sid, created_config_options) = match sess_result {
             Ok(Ok(resp)) => {
                 if let Some(err) = resp.get("error") {
                     anyhow::bail!("ACP session/new error from agent {}: {:?}", agent_id, err);
                 }
-                resp.get("result")
+                let sid = resp
+                    .get("result")
                     .and_then(|r| r.get("sessionId"))
                     .and_then(|s| s.as_str())
                     .filter(|s| !s.trim().is_empty())
@@ -4127,7 +4385,8 @@ impl RunningAgent {
                             "ACP session/new missing result.sessionId in response: {:?}",
                             resp
                         )
-                    })?
+                    })?;
+                (sid, extract_session_config_options(&resp))
             }
             Ok(Err(_)) => {
                 anyhow::bail!(
@@ -4179,12 +4438,101 @@ impl RunningAgent {
             }),
         );
 
+        if let Some(options) = created_config_options {
+            self.store_and_emit_config_options(agent_id, &session_key, &sid, options)
+                .await;
+        }
+        // 用户在 Agent 配置中选择的偏好模型：仅当运行时真实上报了同名可选值时下发，
+        // 匹配不到则保持运行时默认（绝不把任意文本硬塞给运行时）。
+        if let Some(desired) = desired_model.map(str::trim).filter(|value| !value.is_empty()) {
+            self.apply_desired_model_locked(agent_id, &session_key, &sid, desired)
+                .await;
+        }
+
         Ok(EnsureSessionResult {
             session_id: sid,
             is_new: true,
             load_failed,
             recovery_mode: Some("new".to_string()),
         })
+    }
+
+    /// 缓存运行时上报的配置项并向 UI 广播；所有会话建立路径共用同一事件契约。
+    async fn store_and_emit_config_options(
+        &self,
+        agent_id: &str,
+        session_key: &str,
+        session_id: &str,
+        options: Vec<serde_json::Value>,
+    ) {
+        self.session_config_options
+            .lock()
+            .await
+            .insert(session_id.to_string(), options.clone());
+        let _ = self.app_handle.emit(
+            "acp:config_options",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "sessionId": session_id,
+                "session_key": session_key,
+                "configOptions": options,
+            }),
+        );
+    }
+
+    /// 在 ensure_session_locked 内部（已持有 prompt_lock）应用偏好模型。
+    async fn apply_desired_model_locked(
+        &self,
+        agent_id: &str,
+        session_key: &str,
+        session_id: &str,
+        desired: &str,
+    ) {
+        let options = self
+            .session_config_options
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default();
+        let Some(model_option) = find_model_config_option(&options) else {
+            tracing::info!(
+                "[Agent {}] ACP runtime did not advertise a model config option; keep runtime default",
+                agent_id
+            );
+            return;
+        };
+        let Some(config_id) = model_option.get("id").and_then(|id| id.as_str()) else {
+            return;
+        };
+        let Some(value) = resolve_model_option_value(model_option, desired) else {
+            tracing::info!(
+                "[Agent {}] Desired model '{}' is not among runtime options; keep runtime default",
+                agent_id,
+                desired
+            );
+            return;
+        };
+        if model_option.get("currentValue").and_then(|v| v.as_str()) == Some(value.as_str()) {
+            return;
+        }
+        match self
+            .set_config_option_locked(agent_id, session_key, session_id, config_id, &value)
+            .await
+        {
+            Ok(_) => tracing::info!(
+                "[Agent {}] Applied desired model '{}' to session {}",
+                agent_id,
+                value,
+                session_id
+            ),
+            Err(err) => tracing::warn!(
+                "[Agent {}] Failed to apply desired model '{}': {}",
+                agent_id,
+                desired,
+                err
+            ),
+        }
     }
 
     /// 发送 Prompt 请求并等待当前 Agent 返回 (符合标准 ACP 规范)
@@ -4204,6 +4552,7 @@ impl RunningAgent {
         discussion_mode: Option<&str>,
         native_memory_enabled: Option<bool>,
         native_memory_auto_generate: Option<bool>,
+        desired_model: Option<&str>,
     ) -> Result<serde_json::Value> {
         let _prompt_guard = self.prompt_lock.lock().await;
 
@@ -4218,6 +4567,7 @@ impl RunningAgent {
                 system_prompt,
                 discussion_mode,
                 None,
+                desired_model,
             )
             .await?;
         let current_session_id = ensure_res.session_id;
@@ -4814,12 +5164,88 @@ mod runtime_status_tests {
         acp_client_capabilities, attachment_file_uri, build_permission_request_view,
         build_prompt_content_blocks_from_root, build_scoped_session_key,
         check_supports_embedded_context, check_supports_prompt_image,
-        classify_permission_capability, derive_runtime_status, is_dm_session_scope,
-        jsonrpc_id_key, parse_permission_options, partition_permission_paths,
-        permission_cancelled_response, permission_selected_response,
-        resolve_session_workspace, resolve_v2_terminal_text, select_permission_option,
-        AcpPermissionDecision, AcpPromptAttachment, PermissionScopeContext,
+        classify_permission_capability, derive_runtime_status, extract_session_config_options,
+        find_model_config_option, is_dm_session_scope, jsonrpc_id_key, parse_permission_options,
+        partition_permission_paths, permission_cancelled_response, permission_selected_response,
+        resolve_model_option_value, resolve_session_workspace, resolve_v2_terminal_text,
+        select_permission_option, AcpPermissionDecision, AcpPromptAttachment,
+        PermissionScopeContext,
     };
+
+    #[test]
+    fn config_options_extract_only_accepts_array_payload() {
+        let with_options = serde_json::json!({
+            "result": {
+                "sessionId": "s1",
+                "configOptions": [{ "id": "model", "category": "model" }]
+            }
+        });
+        assert_eq!(extract_session_config_options(&with_options).unwrap().len(), 1);
+        assert!(extract_session_config_options(
+            &serde_json::json!({ "result": { "sessionId": "s1" } })
+        )
+        .is_none());
+        assert!(extract_session_config_options(
+            &serde_json::json!({ "result": { "configOptions": "not-an-array" } })
+        )
+        .is_none());
+        assert!(extract_session_config_options(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn model_option_matches_only_runtime_declared_semantics() {
+        let options = vec![
+            serde_json::json!({
+                "id": "approval",
+                "category": "mode",
+                "currentValue": "ask",
+                "options": []
+            }),
+            serde_json::json!({
+                "id": "model",
+                "category": "model",
+                "currentValue": "deepseek-chat",
+                "options": [
+                    { "value": "deepseek-chat", "name": "DeepSeek Chat" },
+                    { "value": "deepseek-reasoner", "name": "DeepSeek Reasoner" }
+                ]
+            }),
+        ];
+        let model = find_model_config_option(&options).expect("必须识别 category=model");
+        assert_eq!(model.get("id").and_then(|v| v.as_str()), Some("model"));
+        assert_eq!(
+            resolve_model_option_value(model, "deepseek-chat").as_deref(),
+            Some("deepseek-chat"),
+            "value 精确匹配"
+        );
+        assert_eq!(
+            resolve_model_option_value(model, "  DeepSeek Reasoner ").as_deref(),
+            Some("deepseek-reasoner"),
+            "name 精确匹配后必须转换为运行时 value"
+        );
+        assert_eq!(
+            resolve_model_option_value(model, "gpt-4"),
+            None,
+            "运行时未声明的模型禁止硬塞"
+        );
+        assert_eq!(
+            resolve_model_option_value(model, "   "),
+            None,
+            "空偏好视为未配置"
+        );
+        assert!(find_model_config_option(&options[..1]).is_none(), "非 model 配置不得误判");
+        assert!(find_model_config_option(&[]).is_none());
+    }
+
+    #[test]
+    fn model_option_detected_by_id_when_category_absent() {
+        let options = vec![serde_json::json!({
+            "id": "model",
+            "currentValue": "a",
+            "options": [{ "value": "a", "name": "A" }]
+        })];
+        assert!(find_model_config_option(&options).is_some());
+    }
 
     #[test]
     fn dead_process_is_idle() {

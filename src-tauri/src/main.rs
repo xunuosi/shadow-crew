@@ -379,6 +379,7 @@ async fn send_prompt_to_agent(
     discussion_mode: Option<String>,
     native_memory_enabled: Option<bool>,
     native_memory_auto_generate: Option<bool>,
+    desired_model: Option<String>,
     _app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
@@ -414,6 +415,7 @@ async fn send_prompt_to_agent(
             discussion_mode.as_deref(),
             native_memory_enabled,
             native_memory_auto_generate,
+            desired_model.as_deref(),
         )
         .await
         .map_err(|e| format!("ACP Prompt Error: {}", e))?;
@@ -433,6 +435,7 @@ async fn ensure_agent_session(
     system_prompt: Option<String>,
     discussion_mode: Option<String>,
     local_history_intact: Option<bool>,
+    desired_model: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<acp_manager::EnsureSessionResult, String> {
     // 关键并发隔离：在极小作用域内获取目标 Agent 的轻量级 Clone 句柄并检查存活状态，
@@ -461,11 +464,33 @@ async fn ensure_agent_session(
             system_prompt.as_deref(),
             discussion_mode.as_deref(),
             local_history_intact,
+            desired_model.as_deref(),
         )
         .await
         .map_err(|e| format!("ACP Ensure Session Error: {}", e))?;
 
     Ok(result)
+}
+
+/// Tauri Command: 下发 ACP 会话配置项（模型选择等，ACP v2 unstable `session/set_config_option`）
+#[tauri::command]
+async fn acp_set_config_option(
+    agent_id: String,
+    session_key: String,
+    config_id: String,
+    value: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let agent = {
+        let manager = state.acp_manager.lock().await;
+        manager
+            .get_agent(&agent_id)
+            .ok_or_else(|| format!("Agent '{}' 尚未开启通信，无法设置会话配置", agent_id))?
+    };
+    agent
+        .set_config_option(&agent_id, &session_key, &config_id, &value)
+        .await
+        .map_err(|e| format!("ACP Set Config Option Error: {}", e))
 }
 
 /// Tauri Command: 校验并规范化 Workspace cwd。
@@ -3140,6 +3165,7 @@ async fn main() {
             save_chat_attachments,
             send_prompt_to_agent,
             ensure_agent_session,
+            acp_set_config_option,
             resolve_workspace_cwd,
             clear_agent_sessions,
             read_workspace_file_sandboxed,

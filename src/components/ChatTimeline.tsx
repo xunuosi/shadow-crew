@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Message, Thread, Agent, Channel, ActiveAgentExecution, TopicMessageData, TopicPatchDiffItem, AcpSessionUsage } from '../types';
+import { findAcpModelOption, type AcpConfigOption } from '../services/acpClient';
 import { TopicMessageCard } from './TopicMessageCard';
 import { ChannelComposerActivityBar } from './ChannelComposerActivityBar';
 import { 
@@ -103,6 +104,10 @@ interface ChatTimelineProps {
   currentWorkspace?: string;
   /** 当前议题下各 Agent 的 ACP 真实会话用量（未上报的 Agent 不出现） */
   sessionUsageByAgent?: Record<string, AcpSessionUsage>;
+  /** 运行时真实声明的会话配置项（模型选择等），键为 agentId */
+  configOptionsByAgent?: Record<string, AcpConfigOption[]>;
+  /** 下发会话配置项；失败必须 reject，由时间线显式提示 */
+  onSelectAcpConfigOption?: (agentId: string, configId: string, value: string) => Promise<void>;
 }
 
 export const ChatTimeline: React.FC<ChatTimelineProps> = ({
@@ -130,6 +135,8 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   onToggleSidebar,
   currentWorkspace,
   sessionUsageByAgent,
+  configOptionsByAgent,
+  onSelectAcpConfigOption,
 }) => {
   const [filter, setFilter] = useState<'all' | 'topics' | 'resolved'>('all');
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
@@ -526,6 +533,40 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
     [sessionUsageByAgent, agents]
   );
 
+  // 仅展示运行时真实声明了「模型选择」且有候选值的 Agent；不做任何本地模型清单猜测。
+  const modelOptionEntries = useMemo(() => {
+    const result: { agentId: string; agent?: Agent; modelOption: AcpConfigOption }[] = [];
+    for (const [agentId, options] of Object.entries(configOptionsByAgent || {})) {
+      const modelOption = findAcpModelOption(options);
+      if (!modelOption || !modelOption.options || modelOption.options.length === 0) continue;
+      result.push({ agentId, agent: agents.find((a) => a.id === agentId), modelOption });
+    }
+    return result.sort((a, b) =>
+      (a.agent?.name || a.agentId).localeCompare(b.agent?.name || b.agentId)
+    );
+  }, [configOptionsByAgent, agents]);
+
+  const [configOptionBusyKey, setConfigOptionBusyKey] = useState<string | null>(null);
+  const [configOptionError, setConfigOptionError] = useState<string | null>(null);
+
+  const handleSelectConfigOption = async (
+    agentId: string,
+    option: AcpConfigOption,
+    value: string
+  ) => {
+    if (!onSelectAcpConfigOption || value === option.currentValue) return;
+    const busyKey = `${agentId}:${option.id}`;
+    setConfigOptionBusyKey(busyKey);
+    setConfigOptionError(null);
+    try {
+      await onSelectAcpConfigOption(agentId, option.id, value);
+    } catch (err) {
+      setConfigOptionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConfigOptionBusyKey(null);
+    }
+  };
+
   if (!activeThread) {
     return (
       <div 
@@ -660,6 +701,38 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
               {usageEntries.length > 2 && (
                 <span className="text-[10px] font-mono text-fg-muted">+{usageEntries.length - 2}</span>
               )}
+            </div>
+          )}
+
+          {/* ACP 运行时声明的模型选择：仅在下发成功后才更新 currentValue */}
+          {modelOptionEntries.length > 0 && (
+            <div className="hidden @xl:flex items-center gap-1.5 shrink-0">
+              {modelOptionEntries.slice(0, 2).map(({ agentId, agent, modelOption }) => {
+                const busy = configOptionBusyKey === `${agentId}:${modelOption.id}`;
+                return (
+                  <label
+                    key={`${agentId}:${modelOption.id}`}
+                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface-subtle border border-border text-[10px] font-mono text-fg-secondary whitespace-nowrap"
+                    title={`${agent?.name || agentId} · ${modelOption.name}（由 ACP 运行时声明）`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-600 dark:bg-purple-400 shrink-0" />
+                    <span className="max-w-[70px] truncate text-fg-muted">{agent?.name || agentId}</span>
+                    <select
+                      value={modelOption.currentValue}
+                      disabled={busy}
+                      onChange={(e) => void handleSelectConfigOption(agentId, modelOption, e.target.value)}
+                      className="bg-transparent text-fg text-[10px] font-mono outline-none cursor-pointer max-w-[140px] truncate disabled:opacity-60 disabled:cursor-wait"
+                    >
+                      {modelOption.options?.map((choice) => (
+                        <option key={choice.value} value={choice.value} className="bg-surface text-fg">
+                          {choice.name}
+                        </option>
+                      ))}
+                    </select>
+                    {busy && <Loader2 className="w-2.5 h-2.5 animate-spin text-fg-muted shrink-0" />}
+                  </label>
+                );
+              })}
             </div>
           )}
 
@@ -1670,6 +1743,20 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* 会话配置下发失败提示：显式报错，绝不静默回退 */}
+      {configOptionError && (
+        <div className="fixed bottom-36 right-8 z-50 max-w-sm px-3 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-500/15 border border-rose-300 dark:border-rose-500/30 shadow-2xl text-rose-800 dark:text-rose-300 text-xs font-semibold flex items-start gap-2 animate-in fade-in slide-in-from-bottom-2 duration-150">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <span className="min-w-0 break-words">模型切换失败：{configOptionError}</span>
+          <button
+            onClick={() => setConfigOptionError(null)}
+            className="ml-auto shrink-0 text-rose-600 dark:text-rose-400 hover:opacity-70 cursor-pointer"
+          >
+            关闭
+          </button>
         </div>
       )}
 

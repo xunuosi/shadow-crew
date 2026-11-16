@@ -86,6 +86,9 @@ import {
   extractWorkspaceDiffsFromText,
   applyTopicPatchToWorkspace,
   parseSessionKey,
+  parseAcpConfigOptions,
+  setAcpConfigOption,
+  type AcpConfigOption,
 } from './services/acpClient';
 import {
   resolveCascadeMaxHops,
@@ -813,6 +816,10 @@ export default function App() {
   const [rpcLogs, setRpcLogs] = useState<AcpRpcLog[]>(INITIAL_RPC_LOGS);
   // ACP v2 usage_update 上报的会话级上下文与成本快照，键为 `${roomId}::${agentId}`
   const [acpSessionUsage, setAcpSessionUsage] = useState<Record<string, AcpSessionUsage>>({});
+  // ACP v2 运行时上报的会话配置项（模型选择等），键为 `${roomId}::${agentId}`
+  const [acpConfigOptionsByAgent, setAcpConfigOptionsByAgent] = useState<
+    Record<string, { sessionKey: string; options: AcpConfigOption[] }>
+  >({});
 
   // Topic States (PRD 三层半扁平拓扑：频道 ➔ Topic 消息卡片 ➔ 独立推演抽屉)
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
@@ -1194,6 +1201,15 @@ export default function App() {
     }
     return result;
   }, [acpSessionUsage, activeThread]);
+  const activeConfigOptions = useMemo(() => {
+    if (!activeThread) return {};
+    const prefix = `${activeThread.id}::`;
+    const result: Record<string, AcpConfigOption[]> = {};
+    for (const [key, value] of Object.entries(acpConfigOptionsByAgent)) {
+      if (key.startsWith(prefix)) result[key.slice(prefix.length)] = value.options;
+    }
+    return result;
+  }, [acpConfigOptionsByAgent, activeThread]);
   const activeSubThread = activeSubThreadId ? subThreads[activeSubThreadId] : null;
   const selectedAgent = agents.find((a) => a.id === selectedAgentId) || agents[0];
 
@@ -1705,6 +1721,26 @@ export default function App() {
       unlistenUsage = fn;
     }).catch(() => {});
 
+    let unlistenConfigOptions: (() => void) | undefined;
+    tauriListen('acp:config_options', (event: any) => {
+      const payload = event?.payload;
+      if (!payload || !payload.agent_id) return;
+      if (typeof payload.session_key !== 'string') return;
+      const parsed = parseSessionKey(payload.session_key);
+      const roomId = 'roomId' in parsed ? parsed.roomId : undefined;
+      if (!roomId) return;
+      // 运行时上报空数组同样覆盖：代表当前会话没有可配置项，必须撤下旧选择器。
+      const options = parseAcpConfigOptions(payload.configOptions);
+      const key = `${roomId}::${payload.agent_id}`;
+      setAcpConfigOptionsByAgent((prev) => ({
+        ...prev,
+        [key]: { sessionKey: payload.session_key, options },
+      }));
+    }).then((fn: any) => {
+      if (disposed) { fn(); return; }
+      unlistenConfigOptions = fn;
+    }).catch(() => {});
+
     return () => {
       disposed = true;
       // 卸载前把尚未刷新的流式片段落地，避免丢字。
@@ -1718,6 +1754,7 @@ export default function App() {
       if (unlistenHeartbeat) unlistenHeartbeat();
       if (unlistenChunk) unlistenChunk();
       if (unlistenUsage) unlistenUsage();
+      if (unlistenConfigOptions) unlistenConfigOptions();
     };
   }, []);
 
@@ -2948,6 +2985,8 @@ export default function App() {
             workspaceCwd: sessionWorkspaceBinding?.cwd,
             scopeType: activeThread.type === 'dm' ? 'dm' : isTopic ? 'topic' : 'channel',
             localHistoryIntact,
+            // 偏好模型仅在运行时上报同名可选值时下发，匹配失败保持运行时默认。
+            desiredModel: targetAgent.modelConfig?.modelId,
           });
         } catch (err) {
           console.error(`[NormalTurn] Preflight ensureAcpAgentSession failed for ${targetAgent.name}:`, err);
@@ -3673,6 +3712,7 @@ export default function App() {
             workspaceCwd: topicBinding.cwd,
             scopeType: 'dm_topic',
             localHistoryIntact: priorTopicMessages.length > 0,
+            desiredModel: dmAgent.modelConfig?.modelId,
           });
           const response = await sendPromptToAcpAgent({
             agent: dmAgent,
@@ -4196,6 +4236,7 @@ export default function App() {
           workspaceCwd: getTopicWorkspaceBinding(activeTopicData?.id)?.cwd,
           scopeType: 'topic',
           localHistoryIntact,
+          desiredModel: agent.modelConfig?.modelId,
         });
       } catch (err) {
         console.error(`[TopicTurn] Preflight ensureAcpAgentSession failed for ${agent.name}:`, err);
@@ -5200,6 +5241,7 @@ export default function App() {
           scopeType: isDmThread ? 'dm' : 'channel',
           systemPrompt: preflightSystemPrompt,
           localHistoryIntact,
+          desiredModel: targetAgent.modelConfig?.modelId,
         });
       } catch (err) {
         console.error(`[ThreadTurn] Preflight ensureAcpAgentSession failed for ${targetAgent.name}:`, err);
@@ -5539,6 +5581,32 @@ export default function App() {
         new CustomEvent('shadow-crew:scroll-to-message', { detail: { messageId: message.id } })
       );
     }, 150);
+  };
+
+  /**
+   * 切换 ACP 会话级配置项（当前用于模型选择）。
+   * 仅当运行时真实上报过该 agent 的 configOptions 时才允许下发；
+   * 失败显式抛出，由调用方呈现错误，绝不静默吞掉。
+   */
+  const handleSelectAcpConfigOption = async (
+    agentId: string,
+    configId: string,
+    value: string
+  ): Promise<void> => {
+    if (!activeThread) throw new Error('当前没有活跃会话，无法切换配置项');
+    const key = `${activeThread.id}::${agentId}`;
+    const entry = acpConfigOptionsByAgent[key];
+    if (!entry) throw new Error('运行时尚未上报该 Agent 的会话配置项');
+    const updated = await setAcpConfigOption({
+      agentId,
+      sessionKey: entry.sessionKey,
+      configId,
+      value,
+    });
+    setAcpConfigOptionsByAgent((prev) => ({
+      ...prev,
+      [key]: { ...entry, options: updated },
+    }));
   };
 
   // Add Message to SubThread
@@ -6162,6 +6230,8 @@ export default function App() {
                   onToggleSidebar={() => toggleSidebar()}
                   currentWorkspace="shadow-crew"
                   sessionUsageByAgent={activeSessionUsage}
+                  configOptionsByAgent={activeConfigOptions}
+                  onSelectAcpConfigOption={handleSelectAcpConfigOption}
                 />
 
                 <MessageInput

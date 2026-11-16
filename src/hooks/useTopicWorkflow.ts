@@ -343,6 +343,7 @@ export function useTopicWorkflow(params: UseTopicWorkflowParams) {
           // 续跑轮次虽无本轮交接物，但前序交接物已进入 Prompt，本地会话历史必须保持完整。
           localHistoryIntact:
             state.artifacts.length > 0 || (state.carryover?.artifacts.length ?? 0) > 0,
+          desiredModel: agent.modelConfig?.modelId,
         });
       } catch (err) {
         const abortedByUser = isExecutionAborted();
