@@ -2434,7 +2434,7 @@ table.method .req.b { color: var(--accent); }
               <tr><td class="dir">C → A</td><td class="mth">session/prompt</td><td class="req b">基线</td><td>prompt[] → { stopReason }</td></tr>
               <tr><td class="dir">C → A</td><td class="mth">session/load</td><td class="req">loadSession</td><td>sessionId + cwd → 重放 + response</td></tr>
               <tr><td class="dir">C → A</td><td class="mth">session/resume</td><td class="req">sessionCapabilities.resume</td><td>sessionId + cwd → response</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">session/close</td><td class="req">sessionCapabilities.close</td><td>sessionId → response</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/close · list · delete</td><td class="req">sessionCapabilities.*</td><td>sessionId / cursor → response / 列表</td></tr>
               <tr><td class="dir">C → A</td><td class="mth">session/set_mode</td><td class="req">可选</td><td>modeId → response</td></tr>
               <tr><td class="dir">C → A</td><td class="mth">logout</td><td class="req">auth.logout</td><td>→ response</td></tr>
               <tr><td class="dir">C → A</td><td class="mth">session/cancel</td><td class="req">通知</td><td>sessionId（无响应）</td></tr>
@@ -2497,7 +2497,7 @@ table.method .req.b { color: var(--accent); }
               <tr><td class="dir">C → A</td><td class="mth">initialize</td><td class="req b">基线</td><td>protocolVersion / capabilities / info → 版本 + 能力</td></tr>
               <tr><td class="dir">C → A</td><td class="mth">auth/login · auth/logout</td><td class="req">authMethods</td><td>methodId → 登录 / 登出结果</td></tr>
               <tr><td class="dir">C → A</td><td class="mth">session/new</td><td class="req b">基线</td><td>cwd + mcpServers + systemPrompt → sessionId</td></tr>
-              <tr><td class="dir">C → A</td><td class="mth">session/list · resume · close</td><td class="req b">基线</td><td>sessionId … → 列表 / response</td></tr>
+              <tr><td class="dir">C → A</td><td class="mth">session/list · resume · close · delete</td><td class="req b">基线 / delete 能力</td><td>sessionId / cursor → response / 列表</td></tr>
               <tr><td class="dir">C → A</td><td class="mth">session/prompt</td><td class="req b">基线</td><td>ContentBlock[] → { messageId }</td></tr>
               <tr><td class="dir">C → A</td><td class="mth">session/cancel</td><td class="req">通知</td><td>sessionId（无响应）</td></tr>
               <tr><td class="dir">C → A</td><td class="mth">session/set_config_option</td><td class="req">按能力</td><td>configId + value → response</td></tr>
@@ -2507,7 +2507,7 @@ table.method .req.b { color: var(--accent); }
             </tbody>
           </table>
         </div>
-        <p class="small mt-8">表中“→”后为返回；通知无响应。v2 基线方法更多，但客户端不再实现 <span class="mono">fs/*</span> 与 <span class="mono">terminal/*</span>。</p>
+        <p class="small mt-8">表中“→”后为返回；通知无响应。<b style="color:var(--fg)">state_update 是 session/update 的变体，不是独立方法</b>。v2 基线方法更多，但客户端不再实现 <span class="mono">fs/*</span> 与 <span class="mono">terminal/*</span>。</p>
       </div>
 
       <div class="reveal">
