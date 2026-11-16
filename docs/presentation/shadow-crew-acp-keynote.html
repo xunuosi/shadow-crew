@@ -1186,7 +1186,7 @@ table.method .req.b { color: var(--accent); }
               <tr>
                 <td><strong>会话 · 权限 · 审计</strong></td>
                 <td>协议定义 + 宿主执行</td>
-                <td><strong>自建</strong>：CWD 绑定、反向权限代理、五级授权、Fail-Closed</td>
+                <td><strong>自建</strong>：CWD 绑定、反向权限代理、作用域授权、Fail-Closed</td>
               </tr>
               <tr>
                 <td><strong>记忆</strong><span class="mini">长期记忆 · 跨机经验</span></td>
@@ -1421,9 +1421,9 @@ table.method .req.b { color: var(--accent); }
           <span class="chip mono">shell.execute</span><span class="chip mono">network.access</span><span class="chip mono">other</span>
         </div>
         <div class="small" style="margin-top:8px">ACP 原始：<span class="mono">ToolKind</span> + <span class="mono">PermissionOption.kind</span></div>
-        <div class="small" style="margin:22px 0 10px">五级授权范围</div>
+        <div class="small" style="margin:22px 0 10px">授权范围：一次 / 本会话 / 四种作用域</div>
         <div class="flex wrap gap-8">
-          <span class="chip">Once</span><span class="chip">Session</span><span class="chip">Channel</span><span class="chip">Topic</span><span class="chip">DM</span>
+          <span class="chip">Once</span><span class="chip">Session</span><span class="chip">Channel</span><span class="chip">Topic</span><span class="chip">DM</span><span class="chip">DM Topic</span>
         </div>
         <div class="card mt-24" style="border-color:var(--bad-line);background:var(--bad-soft)">
           <div class="card-t" style="color:var(--bad)">越界写盘，永不持久放行</div>
@@ -1671,7 +1671,7 @@ table.method .req.b { color: var(--accent); }
           <div class="sys"><div class="no">02</div><b>记忆资产</b><span>.scpack 经验包 · 验签 · 只读卡带</span></div>
           <div class="sys"><div class="no">03</div><b>敏捷协同</b><span>增量上下文 · Fan-out · Turn Barrier</span></div>
           <div class="sys"><div class="no">04</div><b>博弈治理</b><span>4+1 · BWM 仲裁 · 少数派异议</span></div>
-          <div class="sys"><div class="no">05</div><b>权限中心</b><span>Rust 反向代理 · 五级授权 · Fail-Closed</span></div>
+          <div class="sys"><div class="no">05</div><b>权限中心</b><span>Rust 反向代理 · 作用域授权 · Fail-Closed</span></div>
         </div>
       </div>
 
@@ -2112,7 +2112,7 @@ table.method .req.b { color: var(--accent); }
       <div class="moat reveal" data-g="05">
         <div class="mn">CHOICE 05</div><h4>边界在本地</h4>
         <p>Rust 反向权限代理 + 不可变 CWD + Fail-Closed，默认不信任。</p>
-        <div class="proof">EVIDENCE · 五级授权 + Fail-Closed</div>
+        <div class="proof">EVIDENCE · Once/Session/作用域 + Fail-Closed</div>
         <div class="vs">常见做法：用提示词约束</div>
       </div>
     </div>

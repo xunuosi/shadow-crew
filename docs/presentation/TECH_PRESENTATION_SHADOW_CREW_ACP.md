@@ -153,7 +153,7 @@ Shadow Crew 在纯粹的 ACP 协议之上，构建了 5 大工业级控制面能
 | **06** | **ACP 的核心架构理念**<br>职责彻底解耦与对等双向通信 | 双向通信泳道图：展示 Client 与 Agent 之间正向派发与反向权限请求 | 强调 ACP 是真正的双向对等协议，宿主专注工作区隔离与权限，Agent 专注自主推理与 Tool Loop，职责边界异常分明。 |
 | **07** | **ACP 7 大能力支柱剖析**<br>支撑工业级协同的底层骨架 | 7 宫格蜂窝架构图：stdio、RPC、CWD、流式、生命周期、能力、反向权限 | 逐一拆解 stdio 按行传输、session 生命周期、内容块与不可变 CWD；明确 WS / 心跳 / nativeMemory 是 Shadow Crew 扩展。 |
 | **08** | **CWD 不可变约束与会话生命周期**<br>杜绝路径篡改与多任务串扰 | 目录隔离架构图：Topic 与物理目录的一对一永久绑定 | 解释为什么必须保证 Session 与 CWD 的不可变性，彻底杜绝多任务并发执行时的路径漂移与跨项目文件误写风险。 |
-| **09** | **反向权限代理（Permission Broker）**<br>把危险操作关进确定性笼子里 | 权限请求流程图：Agent 触发 $\rightarrow$ Rust 拦截 $\rightarrow$ 6 大 Capability 映射 $\rightarrow$ 弹窗审批 | “当 Agent 试图格式化磁盘或访问外部网络时，ACP 允许宿主建立 Rust 级的反向拦截。不放过任何未授权的越界行为。” |
+| **09** | **反向权限代理（Permission Broker）**<br>把危险操作关进确定性笼子里 | 权限请求流程图：Agent 触发 $\rightarrow$ Rust 拦截 $\rightarrow$ 6 类 Capability 映射 $\rightarrow$ 弹窗审批 | “当 Agent 试图格式化磁盘或访问外部网络时，ACP 允许宿主建立 Rust 级的反向拦截。不放过任何未授权的越界行为。” |
 | **10** | **协议的演进跃迁：从 V1 到 V2**<br>一次生命周期重构，而不是版本号加一 | V1 稳定 vs V2 Draft 对比列表 | 讲清 V2 真正改的是 prompt 生命周期、能力模型、客户端工具面；V2 目前仍是 Draft。 |
 | **11** | **六维核心差异全景对照表**<br>ACP V1 vs V2 的工程级深度对账 | 6 行对比表（版本、能力、生命周期、恢复、客户端工具、认证/模式） | 逐项讲透 V2 的 `{ messageId }` ack、`state_update` 终态、`session/resume`、客户端工具改走 MCP 与对象化能力。 |
 | **12** | **记忆归端点：原生优先，避免外部拼贴**<br>Native Memory First | 左右方案对比图：左侧外部拼贴（短期可用、长期冲突），右侧端点原生接入 | “`agentCapabilities.nativeMemory` 是 Shadow Crew 的扩展字段，不是 ACP 核心。端点自己管理长期记忆，宿主只做状态探测与策略引导；未声明时按 unsupported 处理。” |
