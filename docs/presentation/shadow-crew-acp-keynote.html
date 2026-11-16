@@ -145,7 +145,7 @@ body::after {
 }
 
 .slide::after {
-  content: attr(data-no) " / 35";
+  content: attr(data-no) " / 34";
   position: absolute; right: 44px; bottom: 30px; z-index: 2;
   font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
   color: var(--fg3);
@@ -1027,7 +1027,7 @@ table.method .req.b { color: var(--accent); }
       <h1 class="reveal">连接 Agent，<br>连接<span class="grad">彼此</span>。</h1>
       <p class="lede reveal">不重复造 Agent。用 ACP 连接两样东西：<br>你常用的编程 Agent，和同事调优好的 Agent；<br>以及同事沉淀的经验包——过程交给工作流，你只看结果。</p>
       <div class="cover-meta reveal">
-        <span class="chip accent"><span class="d" style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>35 页 · 约 35 分钟</span>
+        <span class="chip accent"><span class="d" style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>34 页 · 约 34 分钟</span>
         <span class="chip">技术峰会 / 架构师沙龙</span>
         <span class="chip">Agent Client Protocol</span>
       </div>
@@ -1237,54 +1237,7 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 05 ------------------------------------------------------------ -->
-<section class="slide" data-no="05" data-section="ACP · 协议" data-title="AI 时代的 LSP 时刻"
-  data-notes="用三次协议标准化建立认知锚点。LSP 统一了编辑器与语言服务，MCP 统一了 Agent 与工具，ACP 统一了宿主控制面与 Agent 运行时。核心句式：每一次标准化都把 N×M 的集成为变成 N+M。">
-  <div class="slide-head">
-    <div class="eyebrow reveal">04 / 协议</div>
-    <h2 class="reveal">AI 时代的“LSP 时刻”</h2>
-    <p class="lede reveal">每一次协议标准化，都把 N×M 的集成地狱，变成 N+M 的生态。</p>
-  </div>
-  <div class="slide-body">
-    <div class="flex col gap-12">
-      <div class="proto reveal">
-        <div class="proto-year">2016</div>
-        <div class="proto-card" style="flex:1">
-          <div class="row1"><span class="abbr">LSP</span><span class="full">Language Server Protocol</span></div>
-          <div class="decouple">解耦 <b>编辑器</b> ⟷ <b>语言静态分析</b></div>
-        </div>
-        <div class="proto-effect">编辑器不必为每种语言重写插件</div>
-      </div>
-      <div class="proto reveal">
-        <div class="proto-year">2024</div>
-        <div class="proto-card" style="flex:1">
-          <div class="row1"><span class="abbr">MCP</span><span class="full">Model Context Protocol</span></div>
-          <div class="decouple">解耦 <b>Agent</b> ⟷ <b>外部工具与数据源</b></div>
-        </div>
-        <div class="proto-effect">工具不再为每个 Agent 重复适配</div>
-      </div>
-      <div class="proto reveal">
-        <div class="proto-year">2025</div>
-        <div class="proto-card acp" style="flex:1">
-          <div class="row1"><span class="abbr">ACP</span><span class="full">Agent Client Protocol · Zed / 社区</span></div>
-          <div class="decouple">解耦 <b>桌面宿主控制面</b> ⟷ <b>自治 Agent 运行时</b></div>
-        </div>
-        <div class="proto-effect" style="color:var(--accent)">宿主不必内嵌任何一个 Agent</div>
-      </div>
-    </div>
-
-    <div class="flex items-center between mt-28 reveal">
-      <div class="flex items-center gap-16">
-        <span class="mono" style="font-size:26px;color:var(--fg3)">N × M</span>
-        <svg width="34" height="12" viewBox="0 0 34 12" aria-hidden="true"><path d="M0 6h30M25 1l5 5-5 5" fill="none" stroke="var(--accent)" stroke-width="1.4"/></svg>
-        <span class="mono" style="font-size:26px;color:var(--accent)">N + M</span>
-      </div>
-      <span class="chip">协议是生态的复利，不是技术的炫技</span>
-    </div>
-  </div>
-</section>
-
-<!-- 06 ------------------------------------------------------------ -->
-<section class="slide" data-no="06" data-section="ACP · 协议" data-title="职责解耦与对等双向通信"
+<section class="slide" data-no="05" data-section="ACP · 协议" data-title="职责解耦与对等双向通信"
   data-notes="这一页讲 ACP 的架构气质：它不是单向 RPC，而是对等双向。宿主正向派发任务，Agent 反向申请权限、推送流式更新。注意 v2 的 prompt 响应只是插入确认 { messageId }，终态走 state_update；v1 的 prompt 响应才结束回合。把这条反向通道讲透，后面权限代理才立得住。">
   <div class="slide-head">
     <div class="eyebrow reveal">05 / 协议</div>
@@ -1331,13 +1284,13 @@ table.method .req.b { color: var(--accent); }
       <span class="chip">职责解耦</span>
       <span class="chip">双向对等</span>
       <span class="chip">执行黑盒外置</span>
-      <span class="small" style="margin-left:auto">宿主不再是“更大的 Agent”，而是“更稳的操作系统”。</span>
+      <span class="small" style="margin-left:auto">ACP 沿用 LSP 的结构：JSON-RPC 2.0 · stdio 子进程 · initialize 能力协商。</span>
     </div>
   </div>
 </section>
 
-<!-- 07 ------------------------------------------------------------ -->
-<section class="slide" data-no="07" data-section="ACP · 协议" data-title="ACP 七大能力支柱"
+<!-- 06 ------------------------------------------------------------ -->
+<section class="slide" data-no="06" data-section="ACP · 协议" data-title="ACP 七大能力支柱"
   data-notes="七根柱子不要平均用力，重点讲三个：stdio 按行传输、会话生命周期、反向权限代理。注意：远程 WebSocket / Relay、300–1800s 心跳、agentCapabilities.nativeMemory 都是 Shadow Crew 的扩展，不是 ACP 核心；在台上要主动区分，避免被懂行的听众挑错。">
   <div class="slide-head">
     <div class="eyebrow reveal">06 / 协议</div>
@@ -1362,8 +1315,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 08 ------------------------------------------------------------ -->
-<section class="slide" data-no="08" data-section="ACP · 协议" data-title="CWD 不可变约束"
+<!-- 07 ------------------------------------------------------------ -->
+<section class="slide" data-no="07" data-section="ACP · 协议" data-title="CWD 不可变约束"
   data-notes="这页是很多多 Agent 系统的隐雷。并发任务共享工作区，路径一旦漂移，就是跨项目误写。ACP 把 session 与 CWD 物理绑定，宿主再叠加路径校验与符号链接防护，才谈得上并发安全。">
   <div class="slide-head">
     <div class="eyebrow reveal">07 / 协议</div>
@@ -1408,8 +1361,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 09 ------------------------------------------------------------ -->
-<section class="slide" data-no="09" data-section="ACP · 协议" data-title="反向权限代理中心"
+<!-- 08 ------------------------------------------------------------ -->
+<section class="slide" data-no="08" data-section="ACP · 协议" data-title="反向权限代理中心"
   data-notes="讲清“反向”两个字：不是宿主去问 Agent 能不能做，而是 Agent 在真正动手前，必须回头问宿主。归一化成六类能力后，策略可以统一，审计可以统一，授权范围也可以精确到议题。最后落一句 Fail-Closed。">
   <div class="slide-head">
     <div class="eyebrow reveal">08 / 协议</div>
@@ -1450,8 +1403,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 10 ------------------------------------------------------------ -->
-<section class="slide" data-no="10" data-section="ACP · 协议" data-title="从 V1 到 V2 的演进跃迁"
+<!-- 09 ------------------------------------------------------------ -->
+<section class="slide" data-no="09" data-section="ACP · 协议" data-title="从 V1 到 V2 的演进跃迁"
   data-notes="V1 不是不能用，而是每个宿主都要自己兜底；V2 把 prompt 生命周期、能力模型、会话方法重写。重点不是字段，而是“谁在什么时候算完成”。V2 目前仍是 Draft，生产落地要双栈和特性开关。">
   <div class="slide-head">
     <div class="eyebrow reveal">09 / 协议</div>
@@ -1498,8 +1451,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 11 ------------------------------------------------------------ -->
-<section class="slide" data-no="11" data-section="ACP · 协议" data-title="六维核心差异全景对照"
+<!-- 10 ------------------------------------------------------------ -->
+<section class="slide" data-no="10" data-section="ACP · 协议" data-title="六维核心差异全景对照"
   data-notes="挑三行：版本协商、prompt 生命周期、客户端工具。V2 的 prompt 响应不是完成，state_update 才是；fs/terminal 被移除，客户端工具改走 MCP；V2 仍是 Draft，不能当成已完全稳定的标准。">
   <div class="slide-head">
     <div class="eyebrow reveal">10 / 协议</div>
@@ -1564,8 +1517,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 12 ------------------------------------------------------------ -->
-<section class="slide" data-no="12" data-section="ACP · 协议" data-title="原生记忆第一原则"
+<!-- 11 ------------------------------------------------------------ -->
+<section class="slide" data-no="11" data-section="ACP · 协议" data-title="原生记忆第一原则"
   data-notes="这页有一个容易讲反的点：宿主不是记忆的所有者。端点原生记忆是长期事实源；宿主在 Prompt 里拼贴向量记忆，短期可能可用，长期容易与端点索引冲突。原则是 Native Memory First；端点没开就显式关闭，不越权注入。nativeMemory 是 Shadow Crew 扩展，不是 ACP 核心。">
   <div class="slide-head">
     <div class="eyebrow reveal">11 / 协议</div>
@@ -1605,8 +1558,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 13 ------------------------------------------------------------ -->
-<section class="slide" data-no="13" data-section="ACP · 协议" data-title="双栈协商"
+<!-- 12 ------------------------------------------------------------ -->
+<section class="slide" data-no="12" data-section="ACP · 协议" data-title="双栈协商"
   data-notes="双栈不是同时说两套，而是一个连接选一个版本。Client 请求最新；Agent 选不超过请求的最高版本；无匹配返回 -32022；v1-only 端点返回 1，Client 用 v1 形状重来或重连。V2 还是 Draft，生产用特性开关。">
   <div class="slide-head">
     <div class="eyebrow reveal">12 / 协议</div>
@@ -1659,8 +1612,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 14 ------------------------------------------------------------ -->
-<section class="slide" data-no="14" data-section="能力版图" data-title="五大核心系统全景"
+<!-- 13 ------------------------------------------------------------ -->
+<section class="slide" data-no="13" data-section="能力版图" data-title="五大核心系统全景"
   data-notes="从协议切换到产品。强调这五层不是五个功能，而是五个控制面：连接、记忆、协同、决策、安全。它们共同长在 ACP 这条总线上，所以可以独立演进。">
   <div class="slide-head">
     <div class="eyebrow reveal">13 / 版图</div>
@@ -1705,8 +1658,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 15 ------------------------------------------------------------ -->
-<section class="slide" data-no="15" data-section="能力版图" data-title="跨机互联：连接同事的 Agent"
+<!-- 14 ------------------------------------------------------------ -->
+<section class="slide" data-no="14" data-section="能力版图" data-title="跨机互联：连接同事的 Agent"
   data-notes="这一幕很有画面感：张工调优了半年的 Claude Code，你不需要复制，只需要连接。讲清三种网络路径，并强调远程默认 ReadOnly Guard；WebSocket / Relay 是 Shadow Crew 的扩展传输，不是 ACP 核心。连接的不是一个冷冰冰的端点，而是同事积累下来的工作方式。产品最期望的方向，是让同事不在场时，他的 Agent 和经验仍然在线——像一直在你身边。现场若网络受限，Demo 页有单机模拟方案。">
   <div class="slide-head">
     <div class="eyebrow reveal">14 / 版图</div>
@@ -1755,8 +1708,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 16 ------------------------------------------------------------ -->
-<section class="slide" data-no="16" data-section="能力版图" data-title="团队记忆资产化 .scpack"
+<!-- 15 ------------------------------------------------------------ -->
+<section class="slide" data-no="15" data-section="能力版图" data-title="团队记忆资产化 .scpack"
   data-notes="把 .scpack 讲成“可以带走的经验包”。重点不是压缩，而是三件事：六源一致、密码学验签、硬脱敏。它实现的产品意图是：同事不在场，经验仍然在线；换机、换人、离职都不会让经验归零。再补一个工程细节：企业网关 503 时，Rollout 补偿提取能救回同事的经验。">
   <div class="slide-head">
     <div class="eyebrow reveal">15 / 版图</div>
@@ -1795,8 +1748,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 17 ------------------------------------------------------------ -->
-<section class="slide" data-no="17" data-section="能力版图" data-title="零污染只读卡带"
+<!-- 16 ------------------------------------------------------------ -->
+<section class="slide" data-no="16" data-section="能力版图" data-title="零污染只读卡带"
   data-notes="四级漏斗讲的是“什么时候把记忆送进上下文”。答案是：不到需要的时候不送。前置零 Token，按需 JIT 检索，动态注入当前阶段。这样既不污染本地知识库，也不把上下文塞爆。">
   <div class="slide-head">
     <div class="eyebrow reveal">16 / 版图</div>
@@ -1832,8 +1785,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 18 ------------------------------------------------------------ -->
-<section class="slide" data-no="18" data-section="决策引擎" data-title="普通协同流与增量上下文"
+<!-- 17 ------------------------------------------------------------ -->
+<section class="slide" data-no="17" data-section="决策引擎" data-title="普通协同流与增量上下文"
   data-notes="这是多数日常场景。核心是两条：只发未读增量，保证 Prefix KV Cache 命中；并发用 Turn Barrier 收口，避免消息乱序。数字记住 51–80% 的 Token 节省和 100% 缓存命中。">
   <div class="slide-head">
     <div class="eyebrow reveal">17 / 决策</div>
@@ -1859,8 +1812,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 19 ------------------------------------------------------------ -->
-<section class="slide" data-no="19" data-section="决策引擎" data-title="CognoNexus 4+1 博弈引擎"
+<!-- 18 ------------------------------------------------------------ -->
+<section class="slide" data-no="18" data-section="决策引擎" data-title="CognoNexus 4+1 博弈引擎"
   data-notes="这是全场的技术高潮。5 个角色不是 5 个 Agent 聊天，而是一个单向 FSM：每个阶段有契约、有产物、有门禁。红队要给出可证伪的反例，验证官要拿真实证据说话。多角色与任务拆解有论文依据，但结论有任务边界；详见附录 A7。强调 Human 仍在环内。">
   <div class="slide-head">
     <div class="eyebrow reveal">18 / 决策</div>
@@ -1907,8 +1860,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 20 ------------------------------------------------------------ -->
-<section class="slide" data-no="20" data-section="决策引擎" data-title="BWM 运筹学 0-Token 仲裁"
+<!-- 19 ------------------------------------------------------------ -->
+<section class="slide" data-no="19" data-section="决策引擎" data-title="BWM 运筹学 0-Token 仲裁"
   data-notes="这一页讲一个可检查的收敛办法：BWM 把架构权衡变成权重求解，求解过程不调用 LLM，所以是 0-Token。一致性 ξ* 是门禁：不达标退回重审，而不是继续凭感觉讨论。BWM 不替代讨论，只把最后一步变成可检查的数学问题；参考见附录 A7。">
   <div class="slide-head">
     <div class="eyebrow reveal">19 / 决策</div>
@@ -1965,8 +1918,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 21 ------------------------------------------------------------ -->
-<section class="slide" data-no="21" data-section="生态对标" data-title="四种协作形态"
+<!-- 20 ------------------------------------------------------------ -->
+<section class="slide" data-no="20" data-section="生态对标" data-title="四种协作形态"
   data-notes="不做代际排名。四种形态各解决不同问题：硬编码框架、IDE 单 Agent 扩展、沙盒执行平台、解耦型控制面。选择取决于任务、团队与治理成本，不是谁替代谁。">
   <div class="slide-head">
     <div class="eyebrow reveal">20 / 对标</div>
@@ -2012,8 +1965,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 22 ------------------------------------------------------------ -->
-<section class="slide" data-no="22" data-section="生态对标" data-title="核心四维横向对比矩阵"
+<!-- 21 ------------------------------------------------------------ -->
+<section class="slide" data-no="21" data-section="生态对标" data-title="核心四维横向对比矩阵"
   data-notes="不要逐格念表，也不做排名。讲三句：Shadow Crew 选择纯 ACP 执行面、双模协同、可分发经验、Rust 反向代理；其他产品各有取舍，不是敌人，也不是落后的代际。">
   <div class="slide-head">
     <div class="eyebrow reveal">21 / 对标</div>
@@ -2087,8 +2040,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 23 ------------------------------------------------------------ -->
-<section class="slide" data-no="23" data-section="生态对标" data-title="五个设计选择"
+<!-- 22 ------------------------------------------------------------ -->
+<section class="slide" data-no="22" data-section="生态对标" data-title="五个设计选择"
   data-notes="这一页讲五个设计选择，不做竞争优势的断言：执行面解耦、经验可携带、收敛有门禁、按任务选双模、边界在本地。每一条都有代价，也都有适用边界。">
   <div class="slide-head">
     <div class="eyebrow reveal">22 / 对标</div>
@@ -2133,8 +2086,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 24 ------------------------------------------------------------ -->
-<section class="slide" data-no="24" data-section="落地" data-title="10 分钟 Live Demo 实战"
+<!-- 23 ------------------------------------------------------------ -->
+<section class="slide" data-no="23" data-section="落地" data-title="10 分钟 Live Demo 实战"
   data-notes="Demo 的关键不是炫技，是让每一步都可视：远端蓝标、验签通过、Token 水位线、ξ* 数字、权限弹窗。若现场网络受限，直接切 npm run mock:remote，协议栈依然真实，观众看到的是 Remote ACP 端点。">
   <div class="slide-head">
     <div class="eyebrow reveal">23 / 落地</div>
@@ -2182,8 +2135,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 25 ------------------------------------------------------------ -->
-<section class="slide" data-no="25" data-section="落地" data-title="认知防从众治理机制"
+<!-- 24 ------------------------------------------------------------ -->
+<section class="slide" data-no="24" data-section="落地" data-title="认知防从众治理机制"
   data-notes="这一页讲机制，不做“所有多 Agent 都会谄媚”的判断。LLM 存在谄媚倾向；做法是量化、折减、用红队逼出反例、用数学门禁兜底，并把反对意见保留下来。研究依据与边界见附录 A7。">
   <div class="slide-head">
     <div class="eyebrow reveal">24 / 落地</div>
@@ -2229,8 +2182,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 26 ------------------------------------------------------------ -->
-<section class="slide" data-no="26" data-section="落地" data-title="企业落地 ROI 全景量化"
+<!-- 25 ------------------------------------------------------------ -->
+<section class="slide" data-no="25" data-section="落地" data-title="企业落地 ROI 全景量化"
   data-notes="给管理者算账：单场架构研讨从 12 万 Token 压到 3.2 万，降 73%；经验复用从周级变秒级。最后一定要说数据边界：这是特定任务分布下的实测，不是所有场景的承诺。">
   <div class="slide-head">
     <div class="eyebrow reveal">25 / 落地</div>
@@ -2271,8 +2224,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 27 ------------------------------------------------------------ -->
-<section class="slide" data-no="27" data-section="落地" data-title="接下来的三个方向"
+<!-- 26 ------------------------------------------------------------ -->
+<section class="slide" data-no="26" data-section="落地" data-title="接下来的三个方向"
   data-notes="收束到方向，不做时间预测。现在的桌面协同、下一步的 P2P 组网、探索中的组织级经验网络；不承诺时间点，也不把探索说成必然。">
   <div class="slide-head">
     <div class="eyebrow reveal">26 / 落地</div>
@@ -2311,8 +2264,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 28 ------------------------------------------------------------ -->
-<section class="slide closing" data-no="28" data-section="结语" data-title="让 Agent 彼此连接，让经验彼此流动"
+<!-- 27 ------------------------------------------------------------ -->
+<section class="slide closing" data-no="27" data-section="结语" data-title="让 Agent 彼此连接，让经验彼此流动"
   data-notes="收尾要慢。停在“让 Agent 彼此连接，让经验彼此流动”这句话上，然后落到主题：协作不是目的，让人只关注结果才是；同事不在场，他们的经验也一直在线。不做未来预测，只留一个愿望和一个行动号召。">
   <div class="eyebrow reveal">27 / 结语</div>
   <h1 class="reveal">让 Agent 彼此连接，<br><span class="grad">让经验彼此流动。</span></h1>
@@ -2325,8 +2278,8 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 
-<!-- 29 ------------------------------------------------------------ -->
-<section class="slide" data-no="29" data-section="附录 · ACP" data-title="一次 ACP 调用，从头到尾"
+<!-- 28 ------------------------------------------------------------ -->
+<section class="slide" data-no="28" data-section="附录 · ACP" data-title="一次 ACP 调用，从头到尾"
   data-notes="这是全流程地图：先握手，再建会话，再发 prompt，然后靠 session/update 流式回传，必要时反向审批，最后以 idle 收口。强调 v1 与 v2 的终点不同：v1 的 prompt 响应才结束回合，v2 的 prompt 响应只是插入确认。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A1 / 实操</div>
@@ -2375,9 +2328,9 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 30 ------------------------------------------------------------ -->
-<!-- 30 ------------------------------------------------------------ -->
-<section class="slide" data-no="30" data-section="附录 · ACP" data-title="capabilities 是什么"
+<!-- 29 ------------------------------------------------------------ -->
+<!-- 29 ------------------------------------------------------------ -->
+<section class="slide" data-no="29" data-section="附录 · ACP" data-title="capabilities 是什么"
   data-notes="capabilities 不是权限，也不是版本。它是 initialize 时双方交换的一张清单：我会哪些可选方法、哪些内容类型、哪些 MCP 传输。v1 用布尔，v2 用对象存在性；省略即不支持。后续只发对端声明过的能力，否则可能 -32602。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A2 / 基础</div>
@@ -2430,7 +2383,7 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<section class="slide" data-no="31" data-section="附录 · ACP" data-title="V1 方法地图与能力"
+<section class="slide" data-no="30" data-section="附录 · ACP" data-title="V1 方法地图与能力"
   data-notes="V1 的基线很小：initialize、session/new、session/prompt、session/cancel，加上客户端的 session/request_permission。fs 与 terminal 是可选能力，让客户端替 Agent 执行。逐行讲的时候，强调‘基线 vs 能力门控’。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A3 / ACP V1</div>
@@ -2495,8 +2448,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 31 ------------------------------------------------------------ -->
-<section class="slide" data-no="32" data-section="附录 · ACP" data-title="V2 方法地图与断点"
+<!-- 30 ------------------------------------------------------------ -->
+<section class="slide" data-no="31" data-section="附录 · ACP" data-title="V2 方法地图与断点"
   data-notes="v2 的基线更大：只要 advertise capabilities.session，就必须实现 new/list/resume/close/prompt/cancel/update。客户端变薄：fs/terminal 移除，客户端工具改走 MCP。右边六个断点是迁移时最容易踩的坑。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A4 / ACP V2 (Draft)</div>
@@ -2550,8 +2503,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 32 ------------------------------------------------------------ -->
-<section class="slide" data-no="33" data-section="附录 · ACP" data-title="最小接入：四段报文跑通"
+<!-- 31 ------------------------------------------------------------ -->
+<section class="slide" data-no="32" data-section="附录 · ACP" data-title="最小接入：四段报文跑通"
   data-notes="这页是可以直接照抄的最小闭环：握手、建会话、发 prompt、收口与审批。以 stdio + v2 为例；v1 的差异在页脚：clientCapabilities/clientInfo，以及 prompt 响应在结束时才返回 stopReason。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A5 / 接入</div>
@@ -2610,8 +2563,8 @@ C→A {"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}</div
   </div>
 </section>
 
-<!-- 33 ------------------------------------------------------------ -->
-<section class="slide" data-no="34" data-section="附录 · ACP" data-title="接入检查清单"
+<!-- 32 ------------------------------------------------------------ -->
+<section class="slide" data-no="33" data-section="附录 · ACP" data-title="接入检查清单"
   data-notes="最后给一张检查清单：传输、版本、能力、会话、内容、流式、权限、取消、恢复、双栈。每一条都对应一个真实踩坑点，讲完这一页，听众回去就能接。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A6 / 落地</div>
@@ -2644,8 +2597,8 @@ C→A {"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}</div
   </div>
 </section>
 
-<!-- 35 ------------------------------------------------------------ -->
-<section class="slide" data-no="35" data-section="附录 · 参考" data-title="参考论文与适用边界"
+<!-- 34 ------------------------------------------------------------ -->
+<section class="slide" data-no="34" data-section="附录 · 参考" data-title="参考论文与适用边界"
   data-notes="这页是论文依据，不是必胜宣言。每篇只讲它支撑什么：反从众、协作讨论、局部切片、异构校准、谄媚传播、角色正交、BWM、异议保留。G-Frame 是内部规范，不是论文。最后强调边界：论文结论依赖任务、模型与提示，不能外推成“多 Agent 一定更准”。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A7 / 依据</div>
@@ -2693,7 +2646,7 @@ C→A {"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}</div
 <div class="overlay" id="overview" role="dialog" aria-modal="true" aria-label="幻灯片总览">
   <div class="ov-inner">
     <div class="ov-head">
-      <h2>全部 35 页</h2>
+      <h2>全部 34 页</h2>
       <span class="small">点击跳转 · Esc 关闭 · ← / → 翻页</span>
     </div>
     <div class="ov-grid" id="ov-grid"></div>
