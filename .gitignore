@@ -12,3 +12,4 @@ target/
 **/gen/
 backups/
 .tmp-*/
+.shadow-crew/

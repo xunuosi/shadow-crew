@@ -9,12 +9,7 @@ import {
   TopicPatchDiffItem,
   WhitelistDeduplicationRecord,
 } from '../../types';
-
-/**
- * 高风险核心域正则：同时覆盖软件工程高危域（并发、锁、事务、鉴权、迁移）与通用业务高危域（资损、合规、法务、隐私、现金流、赔付、违约、不可逆决策）
- */
-const CRITICAL_DOMAIN_REGEX =
-  /并发|互斥锁|死锁|事务|一致性|幂等|安全|鉴权|权限|迁移|内存泄漏|持久化|沙箱|状态机|资损|合规|法律|法务|隐私|资金|账务|现金流|赔付|违约|垄断|不可逆|concurrency|mutex|deadlock|transaction|idempoten|security|auth|migration|sqlite|sandbox|fsm|compliance|financial|privacy|liability/i;
+import { extractFilePathsFromTextSegment } from './structuredTextAnalyzer';
 
 function clamp(val: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, val));
@@ -31,12 +26,14 @@ function sigmoid(x: number): number {
 
 /**
  * 1. 先验风险初始化方程 (Bayesian Prior Initialization)
- * P_prior(m_k) = clamp(B_level + 0.05 * max(0, |F_k| - 2) + 0.15 * I_critical(m_k), 0.10, 0.90)
+ * 完全依据大模型自主评估的 complexityLevel / requiresRedTeam 与文件跨度计算，禁止硬编码关键词匹配：
+ * P_prior(m_k) = clamp(B_level + 0.05 * max(0, |F_k| - 2), 0.10, 0.90)
  */
 export function estimateModulePriorRisk(params: {
   complexityLevel: ModuleComplexityLevel;
   allowedFilesCount: number;
-  responsibilityText: string;
+  responsibilityText?: string;
+  requiresRedTeam?: boolean;
 }): {
   priorRisk: number;
   routingMode: 'fast_track' | 'deep_debate';
@@ -49,15 +46,19 @@ export function estimateModulePriorRisk(params: {
 
   const baseRisk = baseMap[params.complexityLevel] ?? 0.45;
   const fileSpreadPenalty = 0.05 * Math.max(0, params.allowedFilesCount - 2);
-  const criticalDomainBonus = CRITICAL_DOMAIN_REGEX.test(params.responsibilityText) ? 0.15 : 0.0;
 
   const priorRisk = Number(
-    clamp(baseRisk + fileSpreadPenalty + criticalDomainBonus, 0.10, 0.90).toFixed(4)
+    clamp(baseRisk + fileSpreadPenalty, 0.10, 0.90).toFixed(4)
   );
 
-  // 先验不确定性 < 0.45 走快速验证流 (fast_track)，否则走深度对抗流 (deep_debate)
+  // 大模型显式要求红队对抗 (requiresRedTeam === true) 时强制走 deep_debate；
+  // 否则依据先验不确定性阈值 (< 0.45 走 fast_track，>= 0.45 走 deep_debate)
   const routingMode: 'fast_track' | 'deep_debate' =
-    priorRisk < 0.45 ? 'fast_track' : 'deep_debate';
+    params.requiresRedTeam === true
+      ? 'deep_debate'
+      : priorRisk < 0.45
+      ? 'fast_track'
+      : 'deep_debate';
 
   return { priorRisk, routingMode };
 }
@@ -160,7 +161,7 @@ export function initializeModularOrchestrationState(
     lockedAt: draft.submittedAt || now,
   };
 
-  // 硬性控制模块数量在 2 ~ 4 个之间，防止退化为单模块或过度碎片化 (EDGE-02)
+  // 控制模块数量在 1 ~ 4 个之间：允许单一聚焦/简单任务以 1 个模块轻量推进，仅在空数组时兜底补齐，防止过度碎片化 (EDGE-02)
   const rawList = Array.isArray(draft.modules) ? [...draft.modules] : [];
   if (rawList.length === 0) {
     rawList.push(
@@ -185,14 +186,6 @@ export function initializeModularOrchestrationState(
     const first = rawList[0];
     const firstId = first.moduleId || 'mod-1';
     rawList[0] = { ...first, moduleId: firstId };
-    rawList.push({
-      moduleId: `${firstId}-guard`,
-      title: '模块 2：边界风险防控与落地验收闭环',
-      responsibility: `围绕「${first.title}」开展极端边界反例压测、异常回退机制与落地验收指标核验`,
-      allowedFiles: [],
-      dependsOn: [firstId],
-      complexityLevel: 'low_deterministic',
-    });
   }
   const boundedRawModules = rawList.slice(0, 4);
 
@@ -205,7 +198,7 @@ export function initializeModularOrchestrationState(
     const { priorRisk, routingMode } = estimateModulePriorRisk({
       complexityLevel: raw.complexityLevel,
       allowedFilesCount: rawFiles.length,
-      responsibilityText: `${raw.title} ${raw.responsibility}`,
+      requiresRedTeam: raw.requiresRedTeam,
     });
 
     const belief: BayesianModuleBelief = {
@@ -229,6 +222,8 @@ export function initializeModularOrchestrationState(
       allowedFiles: rawFiles,
       dependsOnModuleIds: raw.dependsOn || [],
       complexityLevel: raw.complexityLevel,
+      requiresRedTeam: raw.requiresRedTeam,
+      routingRationale: raw.routingRationale,
       status: 'pending',
       belief,
       scopedMessageIds: [],
@@ -324,7 +319,7 @@ export function initializeModularOrchestrationState(
     const { priorRisk, routingMode } = estimateModulePriorRisk({
       complexityLevel: mod.complexityLevel,
       allowedFilesCount: exclusiveFiles.length,
-      responsibilityText: `${mod.title} ${mod.responsibility}`,
+      requiresRedTeam: mod.requiresRedTeam,
     });
     return {
       ...mod,
@@ -792,6 +787,11 @@ export function stepModularStageTransition(
 
   // 4. 阶段 4：答辩修正 (defense) 推进
   const reachedRefineLimit = currentModuleRefineCount >= 1;
+  // 若本轮答辩已产生正向实证结论，且本轮未再出现新的证伪或契约违规，说明答辩已实质消解此前 verification 的遗留证伪项
+  const defenseCleanlyAddressed =
+    (feedbackDelta.verifiedClaims ?? 0) > 0 &&
+    (feedbackDelta.refutedClaims ?? 0) === 0 &&
+    (feedbackDelta.contractViolations ?? 0) === 0;
   const adv = advanceModularOrchestration(
     state,
     targetModuleId,
@@ -800,7 +800,7 @@ export function stepModularStageTransition(
     {
       allowFreeze: true,
       isDefenseCompletion: true,
-      resolveRefutedClaims: reachedRefineLimit,
+      resolveRefutedClaims: reachedRefineLimit || defenseCleanlyAddressed,
       resolveContractViolations: reachedRefineLimit,
       forceFreeze: reachedRefineLimit,
     }
@@ -870,47 +870,77 @@ export function computeEntropyReductionRatio(
  * - 严禁硬编码任何特定代码文件路径（如 src/types.ts 等），确保非研发类（商业策略、产品规划、运营风控等）与研发类任务均可自适应分治
  * - 若提案文本或议题描述中已包含结构化小节标题，则优先提取真实业务子模块；否则按「目标与边界共识 -> 核心机制与路径 -> 风险防控与落地」三元正交维度拆解
  */
+const DEFAULT_DECOMP_IGNORED_HEADING_PREFIXES = ['背景', '总结', '综述', '结论', '附录'] as const;
+const DEFAULT_DECOMP_NUMBER_PREFIXES = ['一', '二', '三', '四', '1', '2', '3', '4'] as const;
+const DEFAULT_DECOMP_SEPARATORS = new Set(['、', '.', ')', '）']);
+
+function extractSectionHeadingsForDefaultModules(combined: string): string[] {
+  const results: string[] = [];
+  const seen = new Set<string>();
+  for (const rawLine of combined.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    let body: string | null = null;
+    if (line.startsWith('### ') || line.startsWith('## ')) {
+      body = line.startsWith('### ') ? line.slice(4).trim() : line.slice(3).trim();
+    } else if (
+      line.length >= 3 &&
+      (DEFAULT_DECOMP_NUMBER_PREFIXES as readonly string[]).includes(line[0]) &&
+      DEFAULT_DECOMP_SEPARATORS.has(line[1])
+    ) {
+      body = line.slice(2).trim();
+    }
+    if (!body) continue;
+
+    const zhColon = body.indexOf('：');
+    const enColon = body.indexOf(':');
+    const colonIdx =
+      zhColon >= 0 && enColon >= 0 ? Math.min(zhColon, enColon) : Math.max(zhColon, enColon);
+    const segment = (colonIdx >= 0 ? body.slice(0, colonIdx) : body).split('*').join('').trim();
+    if (
+      segment.length >= 4 &&
+      segment.length <= 36 &&
+      !DEFAULT_DECOMP_IGNORED_HEADING_PREFIXES.some((prefix) => segment.startsWith(prefix)) &&
+      !seen.has(segment)
+    ) {
+      seen.add(segment);
+      results.push(segment);
+      if (results.length >= 4) break;
+    }
+  }
+  return results;
+}
+
 export function buildDefaultDecompositionFromTopic(
   topicTitle: string,
   topicDescription: string = '',
   proposalText: string = ''
 ): ModuleDecompositionDraft {
   const combined = `${topicTitle}\n${topicDescription}\n${proposalText}`;
-  const isCriticalCore = CRITICAL_DOMAIN_REGEX.test(combined);
 
   // 仅当议题或提案正文中真实出现了明确的文件路径时，才提取为关联文件，绝不凭空硬编码项目源码路径
   const mentionedFiles = Array.from(
     new Set(
-      (combined.match(/(?:[a-zA-Z0-9_-]+\/)+[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+/g) || []).slice(0, 6)
+      extractFilePathsFromTextSegment(combined).filter((p) => p.includes('/') && !p.endsWith('/'))
     )
-  );
+  ).slice(0, 6);
 
   // 尝试从提案或描述的 Markdown 标题 / 编号段落中提取真实业务子模块 (2~4 个)
-  const headingMatches = Array.from(
-    combined.matchAll(/(?:^|\n)\s*(?:#{2,3}\s+|(?:[一二三四1-4][、.)）])\s*)([^\n:：]{4,36})/g)
-  )
-    .map((m) => m[1].trim().replace(/\*+/g, ''))
-    .filter((t) => t.length >= 4 && !/^(背景|总结|综述|结论|附录)/.test(t));
+  const uniqueHeadings = extractSectionHeadingsForDefaultModules(combined);
 
-  const uniqueHeadings = Array.from(new Set(headingMatches)).slice(0, 4);
-
+  // 保守兜底原则 (Fail-Safe)：当大模型未显式调用 submit_module_decomposition 时，
+  // 严禁基于关键词猜测或默认放行 fast_track 跳过红方，所有兜底模块一律按 medium_standard + requiresRedTeam: true 走完整红方对抗
   const dynamicModules =
     uniqueHeadings.length >= 2
-      ? uniqueHeadings.map((heading, idx) => {
-          const isHighRisk = CRITICAL_DOMAIN_REGEX.test(heading) || (idx === 1 && isCriticalCore);
-          return {
-            moduleId: `mod-${idx + 1}`,
-            title: `模块 ${idx + 1}：${heading}`,
-            responsibility: `聚焦「${heading}」维度的方案推演、边界校验与可行性论证`,
-            allowedFiles: idx === 0 ? mentionedFiles.slice(0, 2) : idx === 1 ? mentionedFiles.slice(2, 4) : mentionedFiles.slice(4, 6),
-            dependsOn: idx === 0 ? [] : [`mod-${idx}`],
-            complexityLevel: (isHighRisk
-              ? 'high_critical'
-              : idx === 0
-              ? 'low_deterministic'
-              : 'medium_standard') as ModuleComplexityLevel,
-          };
-        })
+      ? uniqueHeadings.map((heading, idx) => ({
+          moduleId: `mod-${idx + 1}`,
+          title: `模块 ${idx + 1}：${heading}`,
+          responsibility: `聚焦「${heading}」维度的方案推演、边界校验与可行性论证`,
+          allowedFiles: idx === 0 ? mentionedFiles.slice(0, 2) : idx === 1 ? mentionedFiles.slice(2, 4) : mentionedFiles.slice(4, 6),
+          dependsOn: idx === 0 ? [] : [`mod-${idx}`],
+          complexityLevel: 'medium_standard' as ModuleComplexityLevel,
+          requiresRedTeam: true,
+        }))
       : [
           {
             moduleId: 'mod-1-boundary',
@@ -918,7 +948,8 @@ export function buildDefaultDecompositionFromTopic(
             responsibility: `明确「${topicTitle.slice(0, 36)}」的业务/系统边界、核心衡量指标与前置假设约束`,
             allowedFiles: mentionedFiles.slice(0, 2),
             dependsOn: [],
-            complexityLevel: 'low_deterministic' as ModuleComplexityLevel,
+            complexityLevel: 'medium_standard' as ModuleComplexityLevel,
+            requiresRedTeam: true,
           },
           {
             moduleId: 'mod-2-mechanism',
@@ -926,7 +957,8 @@ export function buildDefaultDecompositionFromTopic(
             responsibility: `推演「${topicTitle.slice(0, 36)}」的主体方案设计、资源分配或关键流转机制`,
             allowedFiles: mentionedFiles.slice(2, 4),
             dependsOn: ['mod-1-boundary'],
-            complexityLevel: (isCriticalCore ? 'high_critical' : 'medium_standard') as ModuleComplexityLevel,
+            complexityLevel: 'medium_standard' as ModuleComplexityLevel,
+            requiresRedTeam: true,
           },
           {
             moduleId: 'mod-3-governance',
@@ -934,7 +966,8 @@ export function buildDefaultDecompositionFromTopic(
             responsibility: `针对极端异常场景制定容错降级、合规风控兜底方案与量化验收标准`,
             allowedFiles: mentionedFiles.slice(4, 6),
             dependsOn: ['mod-1-boundary', 'mod-2-mechanism'],
-            complexityLevel: 'low_deterministic' as ModuleComplexityLevel,
+            complexityLevel: 'medium_standard' as ModuleComplexityLevel,
+            requiresRedTeam: true,
           },
         ];
 

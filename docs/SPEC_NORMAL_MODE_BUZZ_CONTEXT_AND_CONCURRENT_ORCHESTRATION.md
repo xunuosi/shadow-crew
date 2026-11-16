@@ -171,3 +171,26 @@ Shadow Crew 普通模式在 **Channel 主流（`handleSendMessage`）**、**Topi
 | **`test-normal-mode-buzz-orchestration.ts`** | 1. `<system-reminder>` / `<delta-events>` 语义防注入转义；<br>2. 并发乱序完成下的会话水位线增量切片不变量与 `MAX_DELTA_BATCH_EVENTS` 截断；<br>3. 冷启动 vs 热会话 Prompt 组装与 Token 缩减率验证（>70% 缩减）；<br>4. Turn Barrier 多源 `@mention` 去重合并、自指过滤与频道外越界拦截。 | `npx tsx src/services/test-normal-mode-buzz-orchestration.ts` |
 | **`test-mention-resolution.ts`** | 36 项 `@mention` 解析、代码块/行内代码/URL 抗误触、多 Agent 协同解析基线测试。 | `npx tsx src/services/test-mention-resolution.ts` |
 | **`cogno/verify-all-governance.ts`** | 20 项博弈裁决模式（CognoNexus 4+1 引擎）全链路防退化验证，确保普通模式改造零侵入博弈模式。 | `npx tsx src/services/cogno/verify-all-governance.ts` |
+| **`test-normal-mode-swarm-orchestration.ts`** | 12 项 Swarm 双模触发、确认门禁、路径重叠告警、纯并行沙箱隔离、局部容错、Lead Reduce 汇总 Diff 与持久化恢复测试。 | `npm run test:swarm` |
+
+---
+
+## 7. 普通模式 Swarm 协同拆解架构（Single-Lead Map-Reduce）
+
+为支持用户在频道主消息流中通过单一协调 Agent 统筹多名队友并行完成复杂大任务，系统在普通协同模式下集成轻量级 **Swarm 协同拆解协议**（[`src/services/swarmOrchestration.ts`](../src/services/swarmOrchestration.ts) 与 [`src/hooks/useSwarmOrchestrator.ts`](../src/hooks/useSwarmOrchestrator.ts)）：
+
+1. **双模触发机制（Dual Trigger，仅对普通频道生效，1:1 DM 自动屏蔽）**
+   - **显式触发**：输入框开启 `🐝 Swarm` 开关或使用 `/swarm <任务>` 前缀。`handleSendMessage` 仅唤醒单个 Lead Agent（优先首位被 `@` 成员，否则首位在线成员），投递 `buildSwarmDecompositionPrompt`（要求只拆解不动手、划分尽量正交的 `allowedFiles` 边界并输出 `<<<SWARM_PLAN>>>...<<<SWARM_PLAN_END>>>`）；若未严格遵循 JSON 格式，通过 `buildFallbackSwarmPlan` 兜底生成待确认卡片。
+   - **自主触发**：普通对话中 Lead Agent 判断确属大型多模块工程任务且回复包含有效结构化 `<<<SWARM_PLAN>>>` / `<swarm-plan>` 时，系统自动升级该消息为 Swarm 卡片并退出当前 `@mention` 级联；日常普通问答严格不触发。
+2. **人工确认门禁（`awaiting_approval` Gate）**
+   - Lead 拆解后暂停于 [`SwarmMissionCard`](../src/components/SwarmMissionCard.tsx)，绝不私自唤醒 Workers。
+   - 人类用户可勾选/取消子任务（`enabled`）、通过下拉框重指派执行 Agent、通过 `computeSwarmFileOverlaps` 实时检查路径前缀重叠告警，并触发 **🔄 重新拆解**、**✕ 取消** 或 **🚀 确认并发派发**。
+3. **纯并行隔离执行（Pure Parallel Sandbox Workers）**
+   - 确认派发后通过 `Promise.allSettled` 并发启动所有已启用 Worker。每个 Worker 独占隔离会话作用域 `${roomId}-swarm-${taskId}`（严格校验为 `[a-zA-Z0-9_-]`，满足 `validateSessionSegment` 安全规则），仅接收 `originalTask`、`sharedContractSummary`、自身子任务及 `allowedFiles`，严禁透传兄弟产物，且完全屏蔽 Worker 回复中的 `@handle` 横向级联。
+   - 每个 Worker 将详细运行日志与回复归档至专属 `SubThread`（`swarm-sub-${missionId}-${taskId}`），点击卡片任意行 **详情/追问** 即可在 `SubThreadDrawer` 展开查阅或追问，保持主时间轴整洁。
+   - 支持单子任务独立 **中止**、异常/中止后 **换人重试** 或 **跳过**，绝不牵连健康运行的兄弟 Worker。
+4. **Map-Reduce 终局汇总与工作区合入（Lead Reduce Synthesis）**
+   - 当全部已启用子任务进入 `completed` 或 `skipped`（且至少 1 个 `completed`）时，自动唤醒 Lead Agent（作用域 `${roomId}-swarm-reduce-${missionId}`）执行综合验收汇总（Reduce Phase）。
+   - 通过 `aggregateSwarmWorkerDiffs`（底层复用 `mergeTopicPatchDiffs`）将多 Worker 产物与 Lead 集成修正按文件名去重合并，接入 `CodexDiffViewer` 审查并支持一键物理合入绑定工作区（`applyTopicPatchToWorkspace`）。
+   - 重启/刷新恢复时，`sanitizeHydratedSwarmMission` 将残留 `running` 子任务收敛为 `aborted` 并将中断的 `reducing` 任务回退至可恢复状态。
+

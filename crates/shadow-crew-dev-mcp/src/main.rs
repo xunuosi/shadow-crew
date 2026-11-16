@@ -29,17 +29,28 @@ async fn main() -> Result<()> {
 
             match method {
                 "initialize" => {
+                    let client_protocol_version = val["params"]["protocolVersion"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or("2024-11-05");
                     let resp = json!({
                         "jsonrpc": "2.0",
                         "id": req_id,
                         "result": {
-                            "protocolVersion": "2024-11-05",
+                            "protocolVersion": client_protocol_version,
                             "serverInfo": {
-                                "name": "shinobi-dev-mcp",
+                                "name": "shadow-crew-dev-mcp",
                                 "version": "0.1.0"
                             },
                             "capabilities": {
                                 "tools": {
+                                    "listChanged": false
+                                },
+                                "resources": {
+                                    "listChanged": false
+                                },
+                                "prompts": {
                                     "listChanged": false
                                 }
                             }
@@ -54,6 +65,39 @@ async fn main() -> Result<()> {
                         "id": req_id,
                         "result": {
                             "tools": tools::get_tools_list()
+                        }
+                    });
+                    writeln!(stdout, "{}", resp)?;
+                    stdout.flush()?;
+                }
+                "resources/list" => {
+                    let resp = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "resources": []
+                        }
+                    });
+                    writeln!(stdout, "{}", resp)?;
+                    stdout.flush()?;
+                }
+                "resources/templates/list" => {
+                    let resp = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "resourceTemplates": []
+                        }
+                    });
+                    writeln!(stdout, "{}", resp)?;
+                    stdout.flush()?;
+                }
+                "prompts/list" => {
+                    let resp = json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "prompts": []
                         }
                     });
                     writeln!(stdout, "{}", resp)?;

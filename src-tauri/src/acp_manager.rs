@@ -1387,6 +1387,488 @@ fn build_permission_request_view(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TrackedMcpToolCall {
+    pub tool_call_id: String,
+    pub server_name: String,
+    pub tool_name: String,
+    pub name: String,
+    pub status: String,
+    pub arguments: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_output: Option<serde_json::Value>,
+}
+
+const AUTO_APPROVED_GOVERNANCE_TOOLS: &[&str] = &[
+    "submit_arbitration_ruling",
+    "submit_role_concurrence",
+    "submit_module_decomposition",
+    "submit_grounding_evidence",
+    "submit_challenge_critique",
+    "submit_execution_deliverable",
+    "validate_workspace_diff",
+];
+
+fn is_known_shadow_crew_mcp_tool(tool_name: &str) -> bool {
+    AUTO_APPROVED_GOVERNANCE_TOOLS.contains(&tool_name)
+        || matches!(
+            tool_name,
+            "write_channel_artifact" | "write_agent_artifact"
+        )
+}
+
+/// 解析 MCP 工具名称，兼容 Claude Code (`mcp__<server>__<tool>`)、Codex (`mcp.<server>.<tool>`) 与裸名
+pub fn normalize_mcp_server_and_tool(raw_name: &str) -> (Option<String>, String) {
+    let trimmed = raw_name.trim();
+    if let Some(rest) = trimmed.strip_prefix("mcp__") {
+        if let Some((server, tool)) = rest.split_once("__") {
+            let clean_server = server.trim();
+            let clean_tool = tool.trim();
+            if !clean_server.is_empty() && !clean_tool.is_empty() {
+                return (Some(clean_server.to_string()), clean_tool.to_string());
+            }
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("mcp.") {
+        if let Some((server, tool)) = rest.split_once('.') {
+            let clean_server = server.trim();
+            let clean_tool = tool.trim();
+            if !clean_server.is_empty() && !clean_tool.is_empty() {
+                return (Some(clean_server.to_string()), clean_tool.to_string());
+            }
+        }
+    }
+    if is_known_shadow_crew_mcp_tool(trimmed) {
+        return (
+            Some("shadow-crew-dev-mcp".to_string()),
+            trimmed.to_string(),
+        );
+    }
+    (None, trimmed.to_string())
+}
+
+fn is_non_empty_tool_args(val: &serde_json::Value) -> bool {
+    match val {
+        serde_json::Value::Null => false,
+        serde_json::Value::Object(map) => !map.is_empty(),
+        serde_json::Value::Array(arr) => !arr.is_empty(),
+        serde_json::Value::String(s) => !s.trim().is_empty(),
+        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => true,
+    }
+}
+
+fn extract_mcp_tool_arguments(update_obj: &serde_json::Value) -> serde_json::Value {
+    let raw_candidate = if let Some(raw_input) = update_obj.get("rawInput") {
+        if let Some(obj) = raw_input.as_object() {
+            if obj.contains_key("server") && obj.contains_key("tool") && obj.contains_key("arguments")
+            {
+                obj.get("arguments").cloned().unwrap_or(serde_json::Value::Null)
+            } else {
+                raw_input.clone()
+            }
+        } else {
+            raw_input.clone()
+        }
+    } else {
+        update_obj
+            .get("arguments")
+            .or_else(|| update_obj.get("args"))
+            .or_else(|| update_obj.get("input"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    };
+
+    if let serde_json::Value::String(ref raw_str) = raw_candidate {
+        let trimmed = raw_str.trim();
+        if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+            || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                return parsed;
+            }
+        }
+    }
+
+    raw_candidate
+}
+
+fn raw_output_indicates_error(raw_output: &serde_json::Value) -> bool {
+    if raw_output
+        .get("result")
+        .and_then(|r| r.get("isError"))
+        .and_then(|v| v.as_bool())
+        == Some(true)
+    {
+        return true;
+    }
+    if raw_output
+        .get("isError")
+        .and_then(|v| v.as_bool())
+        == Some(true)
+    {
+        return true;
+    }
+    if raw_output
+        .get("error")
+        .map(|v| !v.is_null())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    false
+}
+
+/// 合并并追踪单次 session/prompt 生命周期内的 `tool_call` / `tool_call_update` 事件
+pub fn upsert_tracked_tool_call(
+    list: &mut Vec<TrackedMcpToolCall>,
+    update_obj: &serde_json::Value,
+) {
+    let tool_call_id = update_obj
+        .get("toolCallId")
+        .or_else(|| update_obj.get("id"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("tool-call-{}", list.len() + 1));
+
+    let explicit_server = update_obj
+        .get("rawInput")
+        .and_then(|v| v.get("server"))
+        .and_then(|v| v.as_str())
+        .or_else(|| update_obj.get("server_name").and_then(|v| v.as_str()))
+        .or_else(|| update_obj.get("serverName").and_then(|v| v.as_str()))
+        .or_else(|| update_obj.get("server").and_then(|v| v.as_str()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let raw_input_tool = update_obj
+        .get("rawInput")
+        .and_then(|v| v.get("tool"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let claude_tool_name = update_obj
+        .get("_meta")
+        .and_then(|m| m.get("claudeCode"))
+        .and_then(|c| c.get("toolName"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let direct_tool_name = update_obj
+        .get("tool_name")
+        .and_then(|v| v.as_str())
+        .or_else(|| update_obj.get("tool").and_then(|v| v.as_str()))
+        .or_else(|| update_obj.get("name").and_then(|v| v.as_str()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let title_str = update_obj
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let mut parsed_server: Option<String> = explicit_server;
+    let mut parsed_tool = String::new();
+
+    for candidate in [raw_input_tool, claude_tool_name, direct_tool_name, title_str]
+        .into_iter()
+        .flatten()
+    {
+        let (srv_opt, bare_tool) = normalize_mcp_server_and_tool(candidate);
+        if parsed_server.is_none() {
+            parsed_server = srv_opt;
+        }
+        if parsed_tool.is_empty() && !bare_tool.is_empty() {
+            parsed_tool = bare_tool;
+        }
+        if parsed_server.is_some() && !parsed_tool.is_empty() {
+            break;
+        }
+    }
+
+    let args = extract_mcp_tool_arguments(update_obj);
+
+    let raw_output = update_obj
+        .get("rawOutput")
+        .filter(|v| !v.is_null())
+        .cloned()
+        .or_else(|| update_obj.get("output").filter(|v| !v.is_null()).cloned())
+        .or_else(|| {
+            update_obj
+                .get("_meta")
+                .and_then(|m| m.get("claudeCode"))
+                .and_then(|c| c.get("toolResponse"))
+                .filter(|v| !v.is_null())
+                .cloned()
+        });
+
+    let mut status = update_obj
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    if let Some(ref out) = raw_output {
+        if raw_output_indicates_error(out) {
+            status = Some("failed".to_string());
+        }
+    }
+
+    if let Some(existing) = list.iter_mut().find(|item| item.tool_call_id == tool_call_id) {
+        if existing.server_name.is_empty() {
+            if let Some(srv) = parsed_server {
+                existing.server_name = srv;
+            }
+        }
+        if existing.tool_name.is_empty() && !parsed_tool.is_empty() {
+            existing.tool_name = parsed_tool.clone();
+            existing.name = parsed_tool;
+        } else if !parsed_tool.is_empty()
+            && existing.server_name.is_empty()
+            && (is_known_shadow_crew_mcp_tool(&parsed_tool)
+                || parsed_tool != existing.tool_name)
+        {
+            // 若前序仅拿到通用 title，后续 update 携带更精确工具名时予以刷新
+            if existing.tool_name == "Terminal" || existing.tool_name == "unknown" {
+                existing.tool_name = parsed_tool.clone();
+                existing.name = parsed_tool;
+            }
+        }
+        if is_non_empty_tool_args(&args) {
+            existing.arguments = args;
+        }
+        if let Some(out) = raw_output {
+            existing.raw_output = Some(out);
+        }
+        if let Some(new_status) = status {
+            let existing_terminal =
+                existing.status == "completed" || existing.status == "failed";
+            let new_terminal = new_status == "completed" || new_status == "failed";
+            if !existing_terminal || new_terminal {
+                existing.status = new_status;
+            }
+        }
+        return;
+    }
+
+    let final_server = parsed_server.unwrap_or_default();
+    let final_tool = if parsed_tool.is_empty() {
+        "unknown".to_string()
+    } else {
+        parsed_tool
+    };
+    list.push(TrackedMcpToolCall {
+        tool_call_id,
+        server_name: final_server,
+        tool_name: final_tool.clone(),
+        name: final_tool,
+        status: status.unwrap_or_else(|| "pending".to_string()),
+        arguments: if args.is_null() {
+            serde_json::json!({})
+        } else {
+            args
+        },
+        raw_output,
+    });
+}
+
+/// 判断权限请求是否为无破坏性的治理/契约上报工具，若是则自动放行以保障 4+1 状态机无人值守推演
+pub fn is_auto_approved_governance_tool(params_or_tool_call: &serde_json::Value) -> bool {
+    let tool_call = params_or_tool_call
+        .get("toolCall")
+        .or_else(|| {
+            params_or_tool_call
+                .get("subject")
+                .and_then(|subject| subject.get("toolCall"))
+        })
+        .unwrap_or(params_or_tool_call);
+
+    let candidates = [
+        tool_call
+            .get("_meta")
+            .and_then(|m| m.get("claudeCode"))
+            .and_then(|c| c.get("toolName"))
+            .and_then(|v| v.as_str()),
+        tool_call
+            .get("rawInput")
+            .and_then(|r| r.get("tool"))
+            .and_then(|v| v.as_str()),
+        tool_call.get("tool_name").and_then(|v| v.as_str()),
+        tool_call.get("tool").and_then(|v| v.as_str()),
+        tool_call.get("name").and_then(|v| v.as_str()),
+        tool_call.get("title").and_then(|v| v.as_str()),
+        params_or_tool_call.get("title").and_then(|v| v.as_str()),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        let (_, normalized) = normalize_mcp_server_and_tool(candidate);
+        if AUTO_APPROVED_GOVERNANCE_TOOLS.contains(&normalized.as_str()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 解析内置 `shadow-crew-dev-mcp` 二进制的绝对路径
+pub fn resolve_dev_mcp_binary_path_with_overrides(
+    cwd: &str,
+    host_cwd: &str,
+    env_overrides: &[Option<&str>],
+) -> Option<String> {
+    let mut candidates: Vec<PathBuf> = env_overrides
+        .iter()
+        .flatten()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+
+    candidates.extend([
+        PathBuf::from(cwd).join("target/debug/shadow-crew-dev-mcp"),
+        PathBuf::from(cwd).join("target/release/shadow-crew-dev-mcp"),
+        PathBuf::from(host_cwd).join("target/debug/shadow-crew-dev-mcp"),
+        PathBuf::from(host_cwd).join("target/release/shadow-crew-dev-mcp"),
+        PathBuf::from(host_cwd).join("../target/debug/shadow-crew-dev-mcp"),
+        PathBuf::from(host_cwd).join("../target/release/shadow-crew-dev-mcp"),
+        PathBuf::from("target/debug/shadow-crew-dev-mcp"),
+        PathBuf::from("target/release/shadow-crew-dev-mcp"),
+        PathBuf::from("../target/debug/shadow-crew-dev-mcp"),
+        PathBuf::from("../../target/debug/shadow-crew-dev-mcp"),
+    ]);
+
+    if let Some(workspace_root) = Path::new(env!("CARGO_MANIFEST_DIR")).parent() {
+        candidates.push(workspace_root.join("target/debug/shadow-crew-dev-mcp"));
+        candidates.push(workspace_root.join("target/release/shadow-crew-dev-mcp"));
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join("shadow-crew-dev-mcp"));
+            if let Some(contents_dir) = exe_dir.parent() {
+                candidates.push(contents_dir.join("Resources/shadow-crew-dev-mcp"));
+            }
+        }
+    }
+
+    candidates.extend([
+        PathBuf::from(cwd).join("target/debug/shinobi-dev-mcp"),
+        PathBuf::from(cwd).join("target/release/shinobi-dev-mcp"),
+        PathBuf::from(host_cwd).join("target/debug/shinobi-dev-mcp"),
+        PathBuf::from(host_cwd).join("target/release/shinobi-dev-mcp"),
+        PathBuf::from("target/debug/shinobi-dev-mcp"),
+        PathBuf::from("target/release/shinobi-dev-mcp"),
+        PathBuf::from("../target/debug/shinobi-dev-mcp"),
+        PathBuf::from("../../target/debug/shinobi-dev-mcp"),
+    ]);
+
+    for candidate in candidates {
+        if let Ok(canonical) = std::fs::canonicalize(&candidate) {
+            if canonical.is_file() {
+                return Some(canonical.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 解析内置 `shadow-crew-dev-mcp` 二进制的绝对路径（优先读取显式环境变量覆盖）
+pub fn resolve_dev_mcp_binary_path(cwd: &str, host_cwd: &str) -> Option<String> {
+    let env_primary = std::env::var("SHADOW_CREW_DEV_MCP_PATH").ok();
+    let env_legacy = std::env::var("SHINOBI_DEV_MCP_PATH").ok();
+    resolve_dev_mcp_binary_path_with_overrides(
+        cwd,
+        host_cwd,
+        &[env_primary.as_deref(), env_legacy.as_deref()],
+    )
+}
+
+/// 构造挂载到 ACP session (`session/new` / `session/load` / `session/resume`) 的 `mcpServers` 载荷。
+/// - ACP v2 (`negotiated_protocol_version == "v2"`) 要求 stdio 服务器显式携带 `"type": "stdio"` (`zMcpServer2`)。
+/// - ACP v1 (`claude-agent-acp` 等) 通过 `!("type" in server)` 识别 stdio 服务器，因此必须省略 `"type"` 字段。
+pub fn build_session_mcp_servers(
+    dev_mcp_path: Option<&str>,
+    negotiated_protocol_version: &str,
+    agent_id: &str,
+    channel_id: Option<&str>,
+    effective_cwd: &str,
+    env_vars: &Option<HashMap<String, String>>,
+) -> serde_json::Value {
+    let Some(path) = dev_mcp_path.map(str::trim).filter(|s| !s.is_empty()) else {
+        return serde_json::json!([]);
+    };
+
+    let home_dir = crate::db_manager::get_shadow_crew_home_dir()
+        .to_string_lossy()
+        .to_string();
+
+    let mut env_pairs: Vec<(String, String)> = vec![
+        ("SHADOW_CREW_HOME".to_string(), home_dir.clone()),
+        ("SHINOBI_HOME".to_string(), home_dir),
+        (
+            "SHADOW_CREW_WORKSPACE_ROOT".to_string(),
+            effective_cwd.to_string(),
+        ),
+        ("SHADOW_CREW_AGENT_ID".to_string(), agent_id.to_string()),
+        ("SHINOBI_AGENT_ID".to_string(), agent_id.to_string()),
+    ];
+
+    let resolved_channel_id = channel_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            env_vars.as_ref().and_then(|map| {
+                map.get("SHADOW_CREW_CHANNEL_ID")
+                    .or_else(|| map.get("SHINOBI_CHANNEL_ID"))
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+        });
+    if let Some(cid) = resolved_channel_id {
+        env_pairs.push(("SHADOW_CREW_CHANNEL_ID".to_string(), cid.clone()));
+        env_pairs.push(("SHINOBI_CHANNEL_ID".to_string(), cid));
+    }
+
+    if let Some(map) = env_vars {
+        for key in [
+            "SHADOW_CREW_ARTIFACT_ROOT",
+            "SHINOBI_ARTIFACT_ROOT",
+            "SHADOW_CREW_WORKSPACE_BINDING_ID",
+        ] {
+            if let Some(val) = map.get(key).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                env_pairs.push((key.to_string(), val.to_string()));
+            }
+        }
+    }
+
+    let env_array: Vec<serde_json::Value> = env_pairs
+        .into_iter()
+        .map(|(name, value)| serde_json::json!({ "name": name, "value": value }))
+        .collect();
+
+    if negotiated_protocol_version == "v2" {
+        serde_json::json!([{
+            "type": "stdio",
+            "name": "shadow-crew-dev-mcp",
+            "command": path,
+            "args": [],
+            "env": env_array
+        }])
+    } else {
+        serde_json::json!([{
+            "name": "shadow-crew-dev-mcp",
+            "command": path,
+            "args": [],
+            "env": env_array
+        }])
+    }
+}
+
 #[derive(Clone)]
 pub struct RunningAgent {
     pub agent_id: String,
@@ -1397,6 +1879,7 @@ pub struct RunningAgent {
     pub pending_requests: Arc<TokioMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
     #[allow(dead_code)]
     pub active_chunks: Arc<TokioMutex<HashMap<u64, String>>>,
+    pub active_tool_calls: Arc<TokioMutex<HashMap<u64, Vec<TrackedMcpToolCall>>>>,
     pub session_active_req: Arc<TokioMutex<HashMap<String, u64>>>,
     pub loading_sessions: Arc<TokioMutex<HashSet<String>>>,
     pub replay_sinks: Arc<TokioMutex<HashMap<String, Arc<TokioMutex<ReplaySinkState>>>>>,
@@ -1422,6 +1905,8 @@ pub struct RunningAgent {
     pub app_handle: AppHandle,
     pub last_activity: Arc<AtomicU64>,
     pub expert_pack_id: Option<String>,
+    pub dev_mcp_path: Option<String>,
+    pub spawn_env_map: HashMap<String, String>,
     pub session_turn_completions: Arc<TokioMutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
     pub negotiated_protocol_version: Arc<TokioMutex<String>>,
     /// 单 Agent 内部指令互斥锁：确保向同一 Agent 连续下发指令时不发生 stdio 管道竞态，
@@ -1712,6 +2197,7 @@ impl AcpProcessManager {
                 None,
                 None,
                 system_prompt,
+                None,
                 discussion_mode,
                 local_history_intact,
                 desired_model,
@@ -1774,33 +2260,7 @@ impl AcpProcessManager {
             .unwrap_or_else(|| ".".to_string());
 
         // 预先解析 shadow-crew-dev-mcp (及 shinobi-dev-mcp) 绝对路径，防止切换 current_dir 到 ~/.shadow-crew 后相对路径失效
-        let mut resolved_dev_mcp: Option<String> = None;
-        let possible_mcp_bins = [
-            format!("{}/target/debug/shadow-crew-dev-mcp", cwd),
-            format!("{}/target/release/shadow-crew-dev-mcp", cwd),
-            format!("{}/target/debug/shadow-crew-dev-mcp", host_cwd),
-            format!("{}/target/release/shadow-crew-dev-mcp", host_cwd),
-            "target/debug/shadow-crew-dev-mcp".to_string(),
-            "target/release/shadow-crew-dev-mcp".to_string(),
-            "../target/debug/shadow-crew-dev-mcp".to_string(),
-            "../../target/debug/shadow-crew-dev-mcp".to_string(),
-            format!("{}/target/debug/shinobi-dev-mcp", cwd),
-            format!("{}/target/release/shinobi-dev-mcp", cwd),
-            format!("{}/target/debug/shinobi-dev-mcp", host_cwd),
-            format!("{}/target/release/shinobi-dev-mcp", host_cwd),
-            "target/debug/shinobi-dev-mcp".to_string(),
-            "target/release/shinobi-dev-mcp".to_string(),
-            "../target/debug/shinobi-dev-mcp".to_string(),
-            "../../target/debug/shinobi-dev-mcp".to_string(),
-        ];
-        for mcp_bin in &possible_mcp_bins {
-            if let Ok(canonical) = std::fs::canonicalize(mcp_bin) {
-                if canonical.is_file() {
-                    resolved_dev_mcp = Some(canonical.to_string_lossy().to_string());
-                    break;
-                }
-            }
-        }
+        let resolved_dev_mcp = resolve_dev_mcp_binary_path(cwd, &host_cwd);
 
         // 智能路径探测: codex-acp 适配器命令
         // 主目录解析统一走 HOME → USERPROFILE → HOMEDRIVE+HOMEPATH，Windows 上不能只认 HOME。
@@ -1808,13 +2268,16 @@ impl AcpProcessManager {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         if command_line.contains("codex-acp") {
-            let possible_bins = [
+            let mut possible_bins = vec![
                 format!("{}/bin/codex-acp", cwd),
                 format!("{}/bin/codex-acp", host_cwd),
                 "bin/codex-acp".to_string(),
                 "../bin/codex-acp".to_string(),
-                format!("{}/.local/bin/codex-acp", home),
             ];
+            if let Some(workspace_root) = Path::new(env!("CARGO_MANIFEST_DIR")).parent() {
+                possible_bins.push(workspace_root.join("bin/codex-acp").to_string_lossy().to_string());
+            }
+            possible_bins.push(format!("{}/.local/bin/codex-acp", home));
             for b in &possible_bins {
                 if let Ok(canonical) = std::fs::canonicalize(b) {
                     if canonical.is_file() {
@@ -1907,6 +2370,7 @@ impl AcpProcessManager {
         }
 
         // 注入用户配置的环境变量 (如 ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL 等)
+        let mut spawn_env_map: HashMap<String, String> = HashMap::new();
         if let Some(ref vars) = env_vars {
             for item in vars {
                 let (k, v) = item.clone().into_pair();
@@ -1932,6 +2396,7 @@ impl AcpProcessManager {
                         continue;
                     }
                     cmd.env(trimmed_k, trimmed_v);
+                    spawn_env_map.insert(trimmed_k.to_string(), trimmed_v.to_string());
                     let display_val = if trimmed_k.to_uppercase().contains("KEY")
                         || trimmed_k.to_uppercase().contains("TOKEN")
                         || trimmed_k.to_uppercase().contains("SECRET")
@@ -2001,6 +2466,8 @@ impl AcpProcessManager {
         let pending_requests: Arc<TokioMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>> =
             Arc::new(TokioMutex::new(HashMap::new()));
         let active_chunks: Arc<TokioMutex<HashMap<u64, String>>> =
+            Arc::new(TokioMutex::new(HashMap::new()));
+        let active_tool_calls: Arc<TokioMutex<HashMap<u64, Vec<TrackedMcpToolCall>>>> =
             Arc::new(TokioMutex::new(HashMap::new()));
         let session_active_req: Arc<TokioMutex<HashMap<String, u64>>> =
             Arc::new(TokioMutex::new(HashMap::new()));
@@ -2076,6 +2543,7 @@ impl AcpProcessManager {
         let app_handle_clone = app_handle.clone();
         let pending_requests_clone = pending_requests.clone();
         let active_chunks_clone = active_chunks.clone();
+        let active_tool_calls_clone = active_tool_calls.clone();
         let session_active_req_clone = session_active_req.clone();
         let loading_sessions_clone = loading_sessions.clone();
         let replay_sinks_clone = replay_sinks.clone();
@@ -2229,6 +2697,13 @@ impl AcpProcessManager {
                                         .get("sessionUpdate")
                                         .and_then(|u| u.as_str())
                                         .unwrap_or_default();
+                                    if update_type == "tool_call" || update_type == "tool_call_update" {
+                                        if let Some(req_id) = active_req_id {
+                                            let mut tool_calls_map = active_tool_calls_clone.lock().await;
+                                            let list = tool_calls_map.entry(req_id).or_default();
+                                            upsert_tracked_tool_call(list, update);
+                                        }
+                                    }
                                     let is_chunk = update_type == "agent_message_chunk"
                                         || update_type == "state_update"
                                         || update_type == "message_patch";
@@ -2460,6 +2935,37 @@ impl AcpProcessManager {
                                 );
                                 continue;
                             }
+                            if is_auto_approved_governance_tool(&params)
+                                && view.outside_workspace_paths.is_empty()
+                            {
+                                let auto_opt_id = select_permission_option(
+                                    &permission_options,
+                                    AcpPermissionDecision::AllowOnce,
+                                )
+                                .or_else(|| {
+                                    permission_options
+                                        .iter()
+                                        .find(|opt| {
+                                            opt.kind == "allow_always"
+                                                || opt.kind.starts_with("allow")
+                                        })
+                                        .map(|opt| opt.option_id.clone())
+                                });
+                                if let Some(option_id) = auto_opt_id {
+                                    let response =
+                                        permission_selected_response(rpc_id.clone(), &option_id);
+                                    let _ = stdin_tx_reader.send(response.to_string()).await;
+                                    log_acp_event(
+                                        &agent_id_clone,
+                                        "PERM_GOVERNANCE_ALLOW",
+                                        &format!(
+                                            "[ACP Permission Auto-Approve] Governance contract tool auto-approved: request={} tool={} option={}",
+                                            request_id, view.tool_name, option_id
+                                        ),
+                                    );
+                                    continue;
+                                }
+                            }
                             let grant_key = SessionPermissionGrantKey {
                                 session_id: session_id.clone(),
                                 grant: PermissionGrantKey {
@@ -2583,26 +3089,59 @@ impl AcpProcessManager {
                     if let Some(id) = matched_id {
                         let mut map = pending_requests_clone.lock().await;
                         if let Some(tx) = map.remove(&id) {
-                            // 如果此请求累积了流式 chunk 文本，回填进 result.text_response
-                            let accumulated = active_chunks_clone
-                                .lock()
-                                .await
-                                .remove(&id)
-                                .unwrap_or_default();
-                            if !accumulated.is_empty() {
+                            let is_v2_receipt_resp = json_val
+                                .get("result")
+                                .map(|res| {
+                                    let has_receipt = res.get("messageId").is_some()
+                                        || res.get("status").and_then(|s| s.as_str())
+                                            == Some("accepted");
+                                    let has_terminal = res.get("stopReason").is_some()
+                                        || res.get("text_response").is_some()
+                                        || res.get("response").is_some();
+                                    has_receipt && !has_terminal
+                                })
+                                .unwrap_or(false);
+
+                            if !is_v2_receipt_resp {
+                                // 如果此请求累积了流式 chunk 文本，回填进 result.text_response
+                                let accumulated = active_chunks_clone
+                                    .lock()
+                                    .await
+                                    .remove(&id)
+                                    .unwrap_or_default();
+                                let tracked_mcp_calls: Vec<TrackedMcpToolCall> =
+                                    active_tool_calls_clone
+                                        .lock()
+                                        .await
+                                        .remove(&id)
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .filter(|tc| !tc.server_name.is_empty())
+                                        .collect();
+
                                 if let Some(res_obj) =
                                     json_val.get_mut("result").and_then(|r| r.as_object_mut())
                                 {
-                                    let needs_fill = res_obj
-                                        .get("text_response")
-                                        .and_then(|t| t.as_str())
-                                        .map(|s| s.is_empty())
-                                        .unwrap_or(true);
-                                    if needs_fill {
-                                        res_obj.insert(
-                                            "text_response".to_string(),
-                                            serde_json::Value::String(accumulated),
-                                        );
+                                    if !accumulated.is_empty() {
+                                        let needs_fill = res_obj
+                                            .get("text_response")
+                                            .and_then(|t| t.as_str())
+                                            .map(|s| s.is_empty())
+                                            .unwrap_or(true);
+                                        if needs_fill {
+                                            res_obj.insert(
+                                                "text_response".to_string(),
+                                                serde_json::Value::String(accumulated),
+                                            );
+                                        }
+                                    }
+                                    if !tracked_mcp_calls.is_empty() {
+                                        if let Ok(serialized) =
+                                            serde_json::to_value(&tracked_mcp_calls)
+                                        {
+                                            res_obj
+                                                .insert("mcp_tool_calls".to_string(), serialized);
+                                        }
                                     }
                                 }
                             }
@@ -2669,6 +3208,7 @@ impl AcpProcessManager {
                 stdin_tx: stdin_tx.clone(),
                 pending_requests: pending_requests.clone(),
                 active_chunks,
+                active_tool_calls,
                 session_active_req,
                 loading_sessions,
                 replay_sinks: replay_sinks.clone(),
@@ -2692,6 +3232,8 @@ impl AcpProcessManager {
                 app_handle: app_handle.clone(),
                 last_activity: last_activity.clone(),
                 expert_pack_id: detected_expert_pack_id,
+                dev_mcp_path: resolved_dev_mcp,
+                spawn_env_map,
                 session_turn_completions: session_turn_completions.clone(),
                 negotiated_protocol_version: negotiated_protocol_version.clone(),
                 prompt_lock: Arc::new(TokioMutex::new(())),
@@ -2962,6 +3504,7 @@ impl AcpProcessManager {
                 attachments,
                 prompt,
                 system_prompt,
+                None,
                 discussion_mode,
                 native_memory_enabled,
                 native_memory_auto_generate,
@@ -3421,34 +3964,22 @@ pub(crate) fn build_session_close_request(session_id: &str, req_id: u64) -> serd
     })
 }
 
-/// 规范化用于 ACP 会话人设比对的系统提示词：
-/// 团队协同公约花名册 (Crew Roster) 会在冷启动第 1 轮动态挂载，
-/// 从第 2 轮起变为 warm-session 则遵循 Buzz 规范不再重复挂载花名册。
-/// 此处在比对前剥离动态花名册与协同公约块，确保真实 warm-session 不会被误判为人设变更而导致意外重建与上下文丢失。
-fn normalize_system_prompt_for_sync(prompt: &str) -> String {
-    let mut clean = prompt.to_string();
-    if let Some(start) = clean.find("[🛡️ Shadow Crew 平台智能体协同公约") {
-        if let Some(end) = clean[start..].find("[当前") {
-            clean = format!(
-                "{}\n\n{}",
-                clean[..start].trim_end(),
-                clean[start + end..].trim_start()
-            );
-        } else {
-            clean = clean[..start].trim_end().to_string();
-        }
-    } else if let Some(start) = clean.find("[👥 可用协同团队成员列表]:") {
-        if let Some(end) = clean[start..].find("[当前") {
-            clean = format!(
-                "{}\n\n{}",
-                clean[..start].trim_end(),
-                clean[start + end..].trim_start()
-            );
-        } else {
-            clean = clean[..start].trim_end().to_string();
-        }
+/// 解析用于 ACP 会话身份校验的稳定系统提示词：
+/// 前端通过独立 IPC 字段 `persona_prompt` 显式传递不包含动态团队花名册的稳定人设前缀，
+/// 后端不再依赖查找硬编码中文标题对 `system_prompt` 进行脆弱切片。
+pub(crate) fn resolve_session_identity_system_prompt(
+    persona_prompt: Option<&str>,
+    system_prompt: Option<&str>,
+    workspace_notice: &str,
+) -> String {
+    let base = persona_prompt
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| system_prompt.map(str::trim).filter(|s| !s.is_empty()));
+    match base {
+        Some(sp) => format!("{}{}", sp, workspace_notice).trim().to_string(),
+        None => workspace_notice.trim().to_string(),
     }
-    clean.trim().to_string()
 }
 
 struct ResolvedSessionWorkspace {
@@ -3853,6 +4384,7 @@ impl RunningAgent {
         workspace_cwd: Option<&str>,
         scope_type: Option<&str>,
         system_prompt: Option<&str>,
+        persona_prompt: Option<&str>,
         discussion_mode: Option<&str>,
         local_history_intact: Option<bool>,
         desired_model: Option<&str>,
@@ -3866,6 +4398,7 @@ impl RunningAgent {
             workspace_cwd,
             scope_type,
             system_prompt,
+            persona_prompt,
             discussion_mode,
             local_history_intact,
             desired_model,
@@ -3883,6 +4416,7 @@ impl RunningAgent {
         workspace_cwd: Option<&str>,
         scope_type: Option<&str>,
         system_prompt: Option<&str>,
+        persona_prompt: Option<&str>,
         discussion_mode: Option<&str>,
         local_history_intact: Option<bool>,
         desired_model: Option<&str>,
@@ -4028,11 +4562,12 @@ impl RunningAgent {
         let workspace_cwd = target_workspace_dir.to_string_lossy().to_string();
         let enriched_sp = match system_prompt {
             Some(sp) if !sp.trim().is_empty() => format!("{}{}", sp, workspace_notice),
-            _ => workspace_notice,
+            _ => workspace_notice.clone(),
         };
         let negotiated_version = self.negotiated_protocol_version.lock().await.clone();
 
-        let normalized_sp = normalize_system_prompt_for_sync(&enriched_sp);
+        let normalized_sp =
+            resolve_session_identity_system_prompt(persona_prompt, system_prompt, &workspace_notice);
         let cached_sid = {
             let reg = self.session_registry.lock().await;
             if let Some(entry) = reg.get(&session_key) {
@@ -4060,6 +4595,27 @@ impl RunningAgent {
         }
 
         // Layer 1 (协议级恢复优先): 若内存中未命中 session_id，检查 SQLite 持久化记录
+        let mut session_env_map = self.spawn_env_map.clone();
+        let artifact_root_str = resolved_workspace.artifact_root.to_string_lossy().to_string();
+        session_env_map.insert(
+            "SHADOW_CREW_ARTIFACT_ROOT".to_string(),
+            artifact_root_str.clone(),
+        );
+        session_env_map.insert("SHINOBI_ARTIFACT_ROOT".to_string(), artifact_root_str);
+        session_env_map.insert(
+            "SHADOW_CREW_WORKSPACE_BINDING_ID".to_string(),
+            resolved_workspace.workspace_binding_id.clone(),
+        );
+        let negotiated_ver_for_mcp = self.negotiated_protocol_version.lock().await.clone();
+        let session_mcp_servers = build_session_mcp_servers(
+            self.dev_mcp_path.as_deref(),
+            &negotiated_ver_for_mcp,
+            agent_id,
+            channel_id,
+            &workspace_cwd,
+            &Some(session_env_map),
+        );
+
         let persisted_opt = if let Some(ref db) = self.db_manager {
             db.get_acp_session(agent_id, &session_key).ok().flatten()
         } else {
@@ -4101,7 +4657,7 @@ impl RunningAgent {
                         "workspaceRoot": &workspace_cwd,
                         "workspaceBindingId": &resolved_workspace.workspace_binding_id,
                         "artifactRoot": resolved_workspace.artifact_root.to_string_lossy(),
-                        "mcpServers": [],
+                        "mcpServers": session_mcp_servers.clone(),
                     });
                     let resume_req = serde_json::json!({
                         "jsonrpc": "2.0",
@@ -4231,7 +4787,7 @@ impl RunningAgent {
                         "workspaceRoot": &workspace_cwd,
                         "workspaceBindingId": &resolved_workspace.workspace_binding_id,
                         "artifactRoot": resolved_workspace.artifact_root.to_string_lossy(),
-                        "mcpServers": [],
+                        "mcpServers": session_mcp_servers.clone(),
                     });
                     if is_dm {
                         load_params["agentId"] = serde_json::Value::String(agent_id.to_string());
@@ -4404,7 +4960,7 @@ impl RunningAgent {
             "workspaceRoot": &workspace_cwd,
             "workspaceBindingId": &resolved_workspace.workspace_binding_id,
             "artifactRoot": resolved_workspace.artifact_root.to_string_lossy(),
-            "mcpServers": [],
+            "mcpServers": session_mcp_servers,
             "sessionKey": &session_key,
         });
         if is_dm || is_dm_topic {
@@ -4614,6 +5170,7 @@ impl RunningAgent {
         attachments: &[AcpPromptAttachment],
         prompt: &str,
         system_prompt: Option<&str>,
+        persona_prompt: Option<&str>,
         discussion_mode: Option<&str>,
         native_memory_enabled: Option<bool>,
         native_memory_auto_generate: Option<bool>,
@@ -4630,6 +5187,7 @@ impl RunningAgent {
                 requested_workspace_cwd,
                 scope_type,
                 system_prompt,
+                persona_prompt,
                 discussion_mode,
                 None,
                 desired_model,
@@ -5034,10 +5592,21 @@ impl RunningAgent {
                         .get("stopReason")
                         .and_then(|r| r.as_str())
                         .unwrap_or("end_turn");
-                    let accumulated_text = {
-                        let chunks = self.active_chunks.lock().await;
-                        chunks.get(&req_id).cloned().unwrap_or_default()
-                    };
+                    let accumulated_text = self
+                        .active_chunks
+                        .lock()
+                        .await
+                        .remove(&req_id)
+                        .unwrap_or_default();
+                    let tracked_mcp_calls: Vec<TrackedMcpToolCall> = self
+                        .active_tool_calls
+                        .lock()
+                        .await
+                        .remove(&req_id)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|tc| !tc.server_name.is_empty())
+                        .collect();
                     let final_text =
                         resolve_v2_terminal_text(stop_reason, &accumulated_text, &term_val);
                     let msg_id = receipt_resp
@@ -5050,6 +5619,13 @@ impl RunningAgent {
                         "stopReason": stop_reason,
                         "text_response": final_text
                     });
+                    if !tracked_mcp_calls.is_empty() {
+                        if let Ok(serialized) = serde_json::to_value(&tracked_mcp_calls) {
+                            if let Some(obj) = res_obj.as_object_mut() {
+                                obj.insert("mcp_tool_calls".to_string(), serialized);
+                            }
+                        }
+                    }
                     if let Some(nm) = term_val.get("nativeMemory") {
                         if let Some(obj) = res_obj.as_object_mut() {
                             obj.insert("nativeMemory".to_string(), nm.clone());
@@ -5101,9 +5677,18 @@ impl RunningAgent {
                         .get("message")
                         .and_then(|m| m.as_str())
                         .unwrap_or_default();
-                    if err_msg.contains("Authentication required")
-                        || err_msg.to_lowercase().contains("authentication")
-                    {
+                    let err_code = err.get("code").and_then(|c| c.as_i64());
+                    let err_category = err
+                        .get("data")
+                        .and_then(|d| d.get("category").or_else(|| d.get("code")))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    let is_auth_error = err_code == Some(-32003)
+                        || err_category.eq_ignore_ascii_case("auth_required")
+                        || err_category.eq_ignore_ascii_case("authentication_required")
+                        || err_msg.contains("Authentication required")
+                        || err_msg.to_lowercase().contains("authentication");
+                    if is_auth_error {
                         *self.auth_state.lock().await = "auth_required".to_string();
                         *self.status_detail.lock().await = Some(err_msg.to_string());
                         let _ = self.app_handle.emit(
@@ -5144,13 +5729,15 @@ impl RunningAgent {
             }
         };
 
-        // 清理 session_active_req (仅当本请求依然为该 session 当前绑定的活跃请求时才执行清理，严防覆盖后被早退请求误删)
+        // 清理 session_active_req 与本次请求的流式缓存 (仅当本请求依然为该 session 当前绑定的活跃请求时才执行清理，严防覆盖后被早退请求误删)
         {
             let mut active_reqs = self.session_active_req.lock().await;
             if active_reqs.get(&current_session_id) == Some(&req_id) {
                 active_reqs.remove(&current_session_id);
             }
         }
+        self.active_chunks.lock().await.remove(&req_id);
+        self.active_tool_calls.lock().await.remove(&req_id);
 
         self.cancel_pending_permissions_for_session(
             &current_session_id,
@@ -5848,31 +6435,46 @@ mod runtime_status_tests {
 
     #[test]
     fn test_normalize_system_prompt_for_sync() {
-        use super::normalize_system_prompt_for_sync;
+        use super::resolve_session_identity_system_prompt;
 
         let base_persona = "[🤖 智能体专属专精人设与认知规范]:\n• 你的代号：Coder (技术专家)\n• 核心职责：负责代码实现";
         let roster_v1 = "\n\n[🛡️ Shadow Crew 平台智能体协同公约 (Agent Collaboration Directive)]:\n[👥 可用协同团队成员列表]:\n• @alice (Alice · 架构师)\n• @bob (Bob · 审查员)";
         let roster_v2 = "\n\n[🛡️ Shadow Crew 平台智能体协同公约 (Agent Collaboration Directive)]:\n[👥 可用协同团队成员列表]:\n• @alice (Alice · 架构师)\n• @bob (Bob · 审查员)\n• @carol (Carol · 测试专家)";
         let workspace_env = "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: chan-1\n- 根目录: ~/.shadow-crew/channels/chan-1";
 
-        let cold_prompt_v1 = format!("{}{}{}", base_persona, roster_v1, workspace_env);
-        let warm_prompt = format!("{}{}", base_persona, workspace_env);
-        let cold_prompt_v2 = format!("{}{}{}", base_persona, roster_v2, workspace_env);
+        let cold_prompt_v1 = format!("{}{}", base_persona, roster_v1);
+        let warm_prompt = base_persona.to_string();
+        let cold_prompt_v2 = format!("{}{}", base_persona, roster_v2);
 
-        let norm_cold_v1 = normalize_system_prompt_for_sync(&cold_prompt_v1);
-        let norm_warm = normalize_system_prompt_for_sync(&warm_prompt);
-        let norm_cold_v2 = normalize_system_prompt_for_sync(&cold_prompt_v2);
+        let norm_cold_v1 = resolve_session_identity_system_prompt(
+            Some(base_persona),
+            Some(&cold_prompt_v1),
+            workspace_env,
+        );
+        let norm_warm = resolve_session_identity_system_prompt(
+            Some(base_persona),
+            Some(&warm_prompt),
+            workspace_env,
+        );
+        let norm_cold_v2 = resolve_session_identity_system_prompt(
+            Some(base_persona),
+            Some(&cold_prompt_v2),
+            workspace_env,
+        );
 
-        // 核心断言 1：冷启动（带团队花名册）与第二轮热会话（剥离花名册），规范化后严格一致
+        // 核心断言 1：冷启动（带团队花名册）与第二轮热会话（无花名册），基于结构化 persona_prompt 严格一致
         assert_eq!(norm_cold_v1, norm_warm);
-        // 核心断言 2：新成员加入后花名册更新，基础人设依然规范化一致，不触发 session 误杀
+        // 核心断言 2：新成员加入后花名册更新，基础人设依然严格一致，不触发 session 误杀
         assert_eq!(norm_cold_v2, norm_warm);
 
-        // 核心断言 3：当用户真正修改了 Agent 自身的人设（如代号或职责变化）时，规范化后严格不同
+        // 核心断言 3：当用户真正修改了 Agent 自身的人设（如代号或职责变化）时，严格不同
         let changed_persona =
             "[🤖 智能体专属专精人设与认知规范]:\n• 你的代号：Reviewer (安全架构师)";
-        let changed_prompt = format!("{}{}", changed_persona, workspace_env);
-        let norm_changed = normalize_system_prompt_for_sync(&changed_prompt);
+        let norm_changed = resolve_session_identity_system_prompt(
+            Some(changed_persona),
+            Some(changed_persona),
+            workspace_env,
+        );
         assert_ne!(norm_changed, norm_warm);
     }
 
@@ -6916,5 +7518,264 @@ mod runtime_status_tests {
             resolve_v2_terminal_text("error", "", &v2_err_state),
             "Connection to Codex was lost."
         );
+    }
+
+    #[test]
+    fn test_build_session_mcp_servers_v1_and_v2() {
+        use super::build_session_mcp_servers;
+        use std::collections::HashMap;
+
+        let empty = build_session_mcp_servers(None, "v1", "agent-1", Some("chan-1"), "/ws", &None);
+        assert_eq!(empty, serde_json::json!([]));
+
+        let mut env_map = HashMap::new();
+        env_map.insert(
+            "SHADOW_CREW_ARTIFACT_ROOT".to_string(),
+            "/tmp/artifacts".to_string(),
+        );
+        env_map.insert(
+            "SHADOW_CREW_WORKSPACE_BINDING_ID".to_string(),
+            "bind-1".to_string(),
+        );
+        let wrapped_env = Some(env_map);
+
+        // ACP v1 (e.g. claude-agent-acp) MUST omit "type" for stdio servers
+        let v1_servers = build_session_mcp_servers(
+            Some("/abs/path/shadow-crew-dev-mcp"),
+            "v1",
+            "agent-claude",
+            Some("chan-abc"),
+            "/tmp/ws",
+            &wrapped_env,
+        );
+        let v1_arr = v1_servers.as_array().unwrap();
+        assert_eq!(v1_arr.len(), 1);
+        assert_eq!(v1_arr[0]["name"], "shadow-crew-dev-mcp");
+        assert_eq!(v1_arr[0]["command"], "/abs/path/shadow-crew-dev-mcp");
+        assert!(
+            v1_arr[0].get("type").is_none(),
+            "ACP v1 stdio entry must omit 'type' for claude-agent-acp compatibility"
+        );
+        let env_list = v1_arr[0]["env"].as_array().unwrap();
+        assert!(env_list
+            .iter()
+            .any(|e| e["name"] == "SHADOW_CREW_WORKSPACE_ROOT" && e["value"] == "/tmp/ws"));
+        assert!(env_list
+            .iter()
+            .any(|e| e["name"] == "SHADOW_CREW_ARTIFACT_ROOT" && e["value"] == "/tmp/artifacts"));
+        assert!(env_list
+            .iter()
+            .any(|e| e["name"] == "SHADOW_CREW_WORKSPACE_BINDING_ID" && e["value"] == "bind-1"));
+
+        // ACP v2 (e.g. @agentclientprotocol/codex-acp) REQUIRES "type": "stdio"
+        let v2_servers = build_session_mcp_servers(
+            Some("/abs/path/shadow-crew-dev-mcp"),
+            "v2",
+            "agent-codex",
+            None,
+            "/tmp/ws",
+            &wrapped_env,
+        );
+        let v2_arr = v2_servers.as_array().unwrap();
+        assert_eq!(v2_arr.len(), 1);
+        assert_eq!(v2_arr[0]["type"], "stdio");
+        assert_eq!(v2_arr[0]["name"], "shadow-crew-dev-mcp");
+    }
+
+    #[test]
+    fn test_resolve_dev_mcp_binary_path_precedence_and_fallback() {
+        use super::resolve_dev_mcp_binary_path_with_overrides;
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "sc-dev-mcp-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let override_bin = temp_dir.join("custom-dev-mcp");
+        std::fs::write(&override_bin, "#!/bin/sh\nexit 0\n").unwrap();
+
+        let overridden = resolve_dev_mcp_binary_path_with_overrides(
+            "/nonexistent-cwd",
+            "/nonexistent-host",
+            &[Some(override_bin.to_string_lossy().as_ref()), None],
+        );
+        assert_eq!(
+            overridden.as_deref(),
+            Some(std::fs::canonicalize(&override_bin).unwrap().to_string_lossy().as_ref()),
+            "Explicit SHADOW_CREW_DEV_MCP_PATH override must resolve before workspace fallbacks"
+        );
+
+        let fallback = resolve_dev_mcp_binary_path_with_overrides(
+            "/nonexistent-cwd",
+            "/nonexistent-host",
+            &[Some("/nonexistent/override/binary"), None],
+        );
+        if let Some(workspace_root) = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent() {
+            let target_debug = workspace_root.join("target/debug/shadow-crew-dev-mcp");
+            if target_debug.is_file() {
+                assert_eq!(
+                    fallback.as_deref(),
+                    Some(std::fs::canonicalize(&target_debug).unwrap().to_string_lossy().as_ref()),
+                    "Missing override should fall back to CARGO_MANIFEST_DIR workspace binary"
+                );
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_upsert_tracked_tool_call_claude_and_codex() {
+        use super::{upsert_tracked_tool_call, TrackedMcpToolCall};
+
+        let mut list: Vec<TrackedMcpToolCall> = Vec::new();
+
+        // 1. Claude Code ACP: initial tool_call has empty rawInput
+        upsert_tracked_tool_call(
+            &mut list,
+            &serde_json::json!({
+                "_meta": { "claudeCode": { "toolName": "mcp__shadow-crew-dev-mcp__submit_arbitration_ruling" } },
+                "toolCallId": "call_claude_1",
+                "sessionUpdate": "tool_call",
+                "rawInput": {},
+                "status": "pending",
+                "title": "submit_arbitration_ruling"
+            }),
+        );
+        // 2. Claude Code ACP: update provides real rawInput
+        upsert_tracked_tool_call(
+            &mut list,
+            &serde_json::json!({
+                "_meta": { "claudeCode": { "toolName": "mcp__shadow-crew-dev-mcp__submit_arbitration_ruling" } },
+                "toolCallId": "call_claude_1",
+                "sessionUpdate": "tool_call_update",
+                "rawInput": {
+                    "decision_type": "trade_off_matrix",
+                    "summary": "Balanced ruling",
+                    "trade_off_points": ["Safety over latency"],
+                    "impacted_files": ["src-tauri/src/acp_manager.rs"]
+                }
+            }),
+        );
+        // 3. Claude Code ACP: completion update omits rawInput
+        upsert_tracked_tool_call(
+            &mut list,
+            &serde_json::json!({
+                "_meta": { "claudeCode": { "toolName": "mcp__shadow-crew-dev-mcp__submit_arbitration_ruling" } },
+                "toolCallId": "call_claude_1",
+                "sessionUpdate": "tool_call_update",
+                "status": "completed",
+                "rawOutput": "✓ 【仲裁定案裁决书】已成功提交"
+            }),
+        );
+
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].server_name, "shadow-crew-dev-mcp");
+        assert_eq!(list[0].tool_name, "submit_arbitration_ruling");
+        assert_eq!(list[0].status, "completed");
+        assert_eq!(list[0].arguments["decision_type"], "trade_off_matrix");
+        assert!(list[0].raw_output.is_some());
+
+        // 4. Codex ACP format with error in rawOutput
+        upsert_tracked_tool_call(
+            &mut list,
+            &serde_json::json!({
+                "toolCallId": "call_codex_1",
+                "sessionUpdate": "tool_call",
+                "title": "mcp.shadow-crew-dev-mcp.submit_role_concurrence",
+                "status": "in_progress",
+                "rawInput": {
+                    "server": "shadow-crew-dev-mcp",
+                    "tool": "submit_role_concurrence",
+                    "arguments": {
+                        "protocol_version": 1,
+                        "status": "concurred"
+                    }
+                }
+            }),
+        );
+        upsert_tracked_tool_call(
+            &mut list,
+            &serde_json::json!({
+                "toolCallId": "call_codex_1",
+                "sessionUpdate": "tool_call_update",
+                "status": "completed",
+                "rawOutput": {
+                    "result": { "content": [{"type": "text", "text": "invalid digest"}], "isError": true },
+                    "error": null
+                }
+            }),
+        );
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[1].server_name, "shadow-crew-dev-mcp");
+        assert_eq!(list[1].tool_name, "submit_role_concurrence");
+        assert_eq!(list[1].arguments["status"], "concurred");
+        assert_eq!(list[1].status, "failed");
+
+        // 5. Builtin non-MCP tool (Bash) should have empty server_name so it gets excluded from mcp_tool_calls
+        upsert_tracked_tool_call(
+            &mut list,
+            &serde_json::json!({
+                "_meta": { "claudeCode": { "toolName": "Bash" } },
+                "toolCallId": "call_bash_1",
+                "sessionUpdate": "tool_call",
+                "rawInput": { "command": "ls" },
+                "status": "completed"
+            }),
+        );
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[2].server_name, "");
+        assert_eq!(list[2].tool_name, "Bash");
+    }
+
+    #[test]
+    fn test_is_auto_approved_governance_tool() {
+        use super::is_auto_approved_governance_tool;
+
+        let claude_ruling = serde_json::json!({
+            "sessionId": "s1",
+            "toolCall": {
+                "_meta": { "claudeCode": { "toolName": "mcp__shadow-crew-dev-mcp__submit_arbitration_ruling" } },
+                "title": "submit_arbitration_ruling"
+            }
+        });
+        assert!(is_auto_approved_governance_tool(&claude_ruling));
+
+        let codex_concurrence = serde_json::json!({
+            "sessionId": "s2",
+            "subject": {
+                "type": "tool_call",
+                "toolCall": {
+                    "title": "mcp.shadow-crew-dev-mcp.submit_role_concurrence",
+                    "rawInput": {
+                        "server": "shadow-crew-dev-mcp",
+                        "tool": "submit_role_concurrence",
+                        "arguments": {}
+                    }
+                }
+            }
+        });
+        assert!(is_auto_approved_governance_tool(&codex_concurrence));
+
+        let bash_tool = serde_json::json!({
+            "sessionId": "s1",
+            "toolCall": {
+                "_meta": { "claudeCode": { "toolName": "Bash" } },
+                "name": "Bash"
+            }
+        });
+        assert!(!is_auto_approved_governance_tool(&bash_tool));
+
+        let write_tool = serde_json::json!({
+            "sessionId": "s1",
+            "toolCall": {
+                "_meta": { "claudeCode": { "toolName": "mcp__shadow-crew-dev-mcp__write_file" } },
+                "name": "write_file"
+            }
+        });
+        assert!(!is_auto_approved_governance_tool(&write_tool));
     }
 }

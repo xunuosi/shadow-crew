@@ -11,6 +11,7 @@ import {
   Thread,
   Message,
   DiscussionMode, 
+  GameRoleConcurrenceState,
   GameRolesConfig, 
   GameRoleType, 
   GameTheoreticStage,
@@ -27,7 +28,12 @@ import {
   TaskModuleSlice,
   SharedInterfaceContract,
   MessageKind,
+  ProposalClaimsPayload,
+  ChallengeCritiquePayload,
+  DefensePatchPayload,
+  McdaMatrixInput,
 } from '../types';
+import { analyzeStructuredMarkdown } from './cogno/structuredTextAnalyzer';
 import {
   solveDeterministicBwm,
   solveExactBwmOptionB,
@@ -69,6 +75,7 @@ import {
   computeEntropyReductionRatio,
   buildDefaultDecompositionFromTopic,
   buildArbiterStage5Directive,
+  buildArbiterBlockedConcurrenceInquiryDirective,
   buildRoleConcurrencePrompt,
 } from './cogno';
 
@@ -391,7 +398,9 @@ export function buildCrewRosterGuidance(
       `5. 【做减法即是增量 · 达成共识自然收敛 (Silence as Success)】：如果你认同前序方案且无硬伤漏洞可挑，或者方案已足够完备，**直接给出你的最终落地总结与行动建议，切勿在正文中 @ 任何成员**。不要为了“证明自己有思考”而硬塞新概念，回复中不含任何成员的 @handle 即代表协同圆满收敛交付！\n` +
       `6. 【严禁裸确认与客套回复 (No Bare Acks)】：严禁发送纯粹的礼貌性确认、赞同或声明自己不再回复的内容（如「收到」、「已对齐」、「完全赞同，我不再回复」、「${exampleHandle} 已知悉」等）。任何不含实质内容的回复都会再次唤醒其他 Agent 造成无效震荡。\n` +
       `7. 【叙述性提及请勿加 @】：仅在真正需要对方介入推演时才使用 @handle。在叙述方案背景或引用他人观点时（例如「正如 ${peers[0]?.name || '专家'} 刚才所分析的架构」），请直接写成员姓名而**不要添加 @ 符号**，避免系统误触级联唤醒。\n` +
-      `8. 【严禁在正文中复读流程元话语 (Anti-Meta-Talk)】：正文是直接面向人类用户与协作同伴的专业探讨，**严禁在正文中出现「第 N 轮接力」、「根据协同公约第 4 条」、「本轮无新增增量」、「静默收敛即成功」等任何系统调度器控制词汇**！\n\n`
+      `8. 【严禁在正文中复读流程元话语 (Anti-Meta-Talk)】：正文是直接面向人类用户与协作同伴的专业探讨，**严禁在正文中出现「第 N 轮接力」、「根据协同公约第 4 条」、「本轮无新增增量」、「静默收敛即成功」等任何系统调度器控制词汇**！\n` +
+      `9. 【大型多模块任务的自主 Swarm 提案 (Autonomous Swarm Proposal)】：仅当人类指派的确实是适合多名成员独立并行拆解交付的大型工程任务时，你可以在简述拆分思路后附加 \`<<<SWARM_PLAN>>>{ "sharedContractSummary": "...", "subTasks": [{ "taskId": "...", "title": "...", "description": "...", "suggestedAgentHandle": "@...", "allowedFiles": [...] }] }<<<SWARM_PLAN_END>>>\` 提案块（结尾**严禁**再 @ 任何成员），系统会自动将其升级为待人类确认派发的 Swarm 卡片。\n` +
+      `   • **日常普通问答严禁滥用**：常规概念解释、单点 Bug 排查、代码问答或普通讨论请直接回复，**切勿**输出 \`<<<SWARM_PLAN>>>\` 区块。\n\n`
     : `3. 【独立推演原则】：当前频道仅有你一名 Agent 在线。你应当独立完成本次任务推演与技术方案产出，**无需且严禁在回复中 @ 任何未加入当前频道的外部 Agent**。\n\n`;
 
   return (
@@ -457,30 +466,60 @@ export const buildStandingContext = buildCrewRosterGuidance;
  * 2. 优先提取高信噪比结构（【💡 最终结论】、【📋 核心决策 / 变更清单】、```diff 块）
  * 3. 截断超长废话，防止下游 Agent 上下文滚雪球放大
  */
+function stripEnvelopeRangeIgnoreCase(raw: string, startTag: string, endTag: string): string {
+  let result = raw;
+  const startUpper = startTag.toUpperCase();
+  const endUpper = endTag.toUpperCase();
+  while (true) {
+    const upper = result.toUpperCase();
+    const sIdx = upper.indexOf(startUpper);
+    if (sIdx < 0) break;
+    const eIdx = upper.indexOf(endUpper, sIdx + startTag.length);
+    if (eIdx < 0) break;
+    result = `${result.slice(0, sIdx)}${result.slice(eIdx + endTag.length)}`;
+  }
+  return result;
+}
+
+function extractTaggedSectionSlice(
+  text: string,
+  sectionMarker: string,
+  stopMarkers: readonly string[]
+): string {
+  const startIdx = text.indexOf(sectionMarker);
+  if (startIdx < 0) return '';
+  let endIdx = text.length;
+  const searchFrom = startIdx + sectionMarker.length;
+  for (const stop of stopMarkers) {
+    const idx = text.indexOf(stop, searchFrom);
+    if (idx >= 0 && idx < endIdx) {
+      endIdx = idx;
+    }
+  }
+  return text.slice(startIdx, endIdx).trim();
+}
+
 export function dehydrateTargetTextForHandover(rawText?: string, maxChars = 1500): string {
   if (!rawText || !rawText.trim()) return '';
 
-  // 1. 剔除思维链块与元数据块
-  let clean = rawText
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
-    .replace(/<<<DEEP_THINKING>>>[\s\S]*?<<<DEEP_THINKING_END>>>/gi, '')
-    .replace(/<<<THINKING>>>[\s\S]*?<<<THINKING_END>>>/gi, '')
-    .replace(/<<<EXECUTION_META>>>[\s\S]*?<<<EXECUTION_META_END>>>/gi, '')
-    .trim();
+  // 1. 确定性边界剔除思维链块与元数据块（零正则）
+  let clean = stripEnvelopeRangeIgnoreCase(rawText, '<thinking>', '</thinking>');
+  clean = stripEnvelopeRangeIgnoreCase(clean, '<<<DEEP_THINKING>>>', '<<<DEEP_THINKING_END>>>');
+  clean = stripEnvelopeRangeIgnoreCase(clean, '<<<THINKING>>>', '<<<THINKING_END>>>');
+  clean = stripEnvelopeRangeIgnoreCase(clean, '<<<EXECUTION_META>>>', '<<<EXECUTION_META_END>>>');
+  clean = clean.trim();
 
   // 2. 若文本超长，优先保留首段核心结论、决策清单与 Diff 块
   if (clean.length > maxChars) {
-    const conclusionMatch = clean.match(/【💡\s*[^】]*】[\s\S]*?(?=(?:【📋|【📦|```|$))/);
-    const checklistMatch = clean.match(/【📋\s*[^】]*】[\s\S]*?(?=(?:【📦|```|$))/);
-    const diffMatch = clean.match(/```(?:diff|patch)[\s\S]*?```/);
+    const conclusionPart = extractTaggedSectionSlice(clean, '【💡', ['【📋', '【📦', '```']);
+    const checklistPart = extractTaggedSectionSlice(clean, '【📋', ['【📦', '```']);
+    const diffBlock = analyzeStructuredMarkdown(clean).fencedCodeBlocks.find(
+      (b) => b.lang.toLowerCase() === 'diff' || b.lang.toLowerCase() === 'patch'
+    );
+    const diffPart = diffBlock ? `\`\`\`${diffBlock.lang}\n${diffBlock.content}\n\`\`\`` : '';
 
-    if (conclusionMatch || checklistMatch) {
-      const parts = [
-        conclusionMatch ? conclusionMatch[0].trim() : '',
-        checklistMatch ? checklistMatch[0].trim() : '',
-        diffMatch ? diffMatch[0].trim() : '',
-      ].filter(Boolean);
-
+    if (conclusionPart || checklistPart) {
+      const parts = [conclusionPart, checklistPart, diffPart].filter(Boolean);
       if (parts.length > 0) {
         clean = parts.join('\n\n');
       }
@@ -518,6 +557,7 @@ export interface TopicPromptContext {
   modularState?: ModularOrchestrationState;
   participatingAgents?: Agent[];
   recentHistory?: Array<{ author: string; content: string; isAgent?: boolean }>;
+  concurrenceState?: GameRoleConcurrenceState;
   concurrenceVerificationContext?: {
     arbiterName: string;
     arbiterText: string;
@@ -584,7 +624,8 @@ ${scopeFilesLine}• 贝叶斯风险信念: P_prior=${activeModule.belief.priorR
 • 【上下文物理隔离铁律 (Entropy & KL-Divergence Control)】:
   1. 你当前处于模块「${activeModule.title}」的独立隔离沙箱中，只需专注解决本模块的单一职责；
   2. 严禁越界展开或篡改其他模块（${otherModulesExcluded || '非本模块'}）的专属职责与受保护范畴；
-  3. 跨模块协同必须 100% 遵循上方《公共契约》中的共识与不变量。`;
+  3. 跨模块协同必须 100% 遵循上方《公共契约》中的共识与不变量；
+  4. 【防范围漂移与负向边界铁律 (Anti-Scope-Drift & Negative Boundaries)】：必须严格恪守原始任务及《公共契约》声明的负向禁令与技术栈约束（例如：明确要求纯静态 HTML+CSS 时，严禁私自引入 JS / \`<script>\`、\`<form>\`、\`fetch\`、网络请求或任何持久化存储），绝不擅自扩充实现范围。`;
 }
 
 /**
@@ -662,17 +703,34 @@ export function buildTopicPrompt(options: {
 
   let gameModeDirective = '';
   if (topic.discussionMode === 'game_theoretic' && topic.gameRoles) {
-    const role = getAgentGameRole(targetAgent.id, topic.gameRoles);
-    const stage = topic.gameStage || (role === 'proposer' ? 'proposal' : role === 'challenger' ? 'challenge' : role === 'verifier' ? 'verification' : 'arbitration');
+    const baseRole = getAgentGameRole(targetAgent.id, topic.gameRoles);
+    const stage = topic.gameStage || (baseRole === 'proposer' ? 'proposal' : baseRole === 'challenger' ? 'challenge' : baseRole === 'verifier' ? 'verification' : 'arbitration');
+    const role: GameRoleType | null =
+      stage === 'arbitration' && (topic.gameRoles.arbiters || []).includes(targetAgent.id)
+        ? 'arbiter'
+        : (stage === 'decomposition' || stage === 'proposal' || stage === 'defense') && (topic.gameRoles.proposers || []).includes(targetAgent.id)
+        ? 'proposer'
+        : stage === 'challenge' && (topic.gameRoles.challengers || []).includes(targetAgent.id)
+        ? 'challenger'
+        : stage === 'verification' && (topic.gameRoles.verifiers || []).includes(targetAgent.id)
+        ? 'verifier'
+        : baseRole;
 
     const verificationSection = topic.targetVerificationText
       ? `\n\n【🔍 接地验证实证检验结论 (Grounding Truth)】:\n<<<GROUNDING_VERIFICATION_START>>>\n${topic.targetVerificationText}\n<<<GROUNDING_VERIFICATION_END>>>`
       : '';
 
-    if (role === 'proposer') {
+    if (
+      stage === 'arbitration' &&
+      topic.concurrenceState?.isConcurrencePhaseActive &&
+      !topic.concurrenceState.allConcurred &&
+      (role === 'arbiter' || !(topic.gameRoles.arbiters && topic.gameRoles.arbiters.length > 0))
+    ) {
+      gameModeDirective = buildArbiterBlockedConcurrenceInquiryDirective(topic.concurrenceState);
+    } else if (role === 'proposer') {
       if (stage === 'decomposition') {
         gameModeDirective = `\n\n【博弈编排 - 🧭 阶段 0: G-Frame 模块拓扑拆解与接口契约锚定 (Decomposition)】:
-你是本议题的技术主导工程师 (Proposer)。请根据本研发任务的边界，将其拆解为 2~4 个职责单一、物理隔离的原子子模块，并锁定跨模块只读《公共接口契约 (SharedInterfaceContract)》，杜绝跨模块依赖混乱与接口不兼容。
+你是本议题的技术主导工程师 (Proposer)。请根据本研发任务的边界，将其拆解为 1~4 个职责单一、物理隔离的原子子模块（若任务本身单一聚焦如单文件静态页面或局部小改，可仅拆解为 1 个模块；复杂多域任务拆解为 2~4 个模块），并锁定跨模块只读《公共接口契约 (SharedInterfaceContract)》，杜绝跨模块依赖混乱与接口不兼容。
 【输出铁律 · 纯净拆解载荷直出】:
 1. 严禁冗长的推演思考废话与客套；
 2. 首段给出【💡 最终拆解结论】(≤ 80 字，讲清模块边界与核心不变量)；
@@ -692,7 +750,9 @@ export function buildTopicPrompt(options: {
       "responsibility": "定义核心领域模型与抽象接口",
       "allowed_files": ["src/types/index.ts"],
       "depends_on": [],
-      "complexity_level": "low_deterministic"
+      "complexity_level": "low_deterministic",
+      "requires_red_team": false,
+      "routing_rationale": "单一确定性文件修改，无并发、持久化或不可逆风险"
     }
   ]
 }
@@ -703,11 +763,17 @@ export function buildTopicPrompt(options: {
 红队挑战者已指出具体漏洞与失效场景，且接地实证工程师已提供检验结论（见下方靶点数据）。
 【答辩守则 · 用代码补丁说话】:
 严禁无原则全盘妥协或空洞认错，严禁空谈理论！必须以客观工程事实、防御补丁（Patch）或架构权衡进行自洽答辩。
+【防范围漂移与负向边界铁律 (Anti-Scope-Drift Bounds)】:
+- 必须严格恪守原始议题与需求中的全部负向边界（例如：明确要求仅纯静态 HTML+CSS 时，严禁为了迎合红队而引入 JavaScript / \`<script>\`、\`<form>\`、\`fetch\`、网络请求或 \`localStorage\` 等任何持久化机制）；
+- 答辩期间绝不允许借修复之名擅自扩充需求范围或增加任务之外的功能模块；若挑战者提出了违反负向边界或超出任务范围的要求，必须明确依据需求边界予以驳回，仅在合法作用域内交付最小精确防御补丁！
 【输出铁律 · 纯净结论与直出补丁】:
 1. 严禁冗长的内心独白与思考过程废话；
 2. 【💡 最终答辩结论】(≤ 80 字通俗结论：认可/反驳挑战方哪些推演，核心修正收益是什么)；
-3. 【📋 修复与重构清单】(明确架构补丁方案、容灾降级、互斥加锁机制与性能/复杂度折中说明)；
-4. 【📦 架构补丁代码 / Unified Diff】(直接给出修复后的代码差异、接口修正或防御补丁)。
+3. 【📋 修复与重构清单】(明确架构补丁方案、容灾降级、互斥加锁机制、负向边界恪守说明与性能/复杂度折中)；
+4. 【📦 架构补丁代码 / Unified Diff】(直接给出修复后的代码差异、接口修正或防御补丁，严禁越界添加禁用技术或超纲特性)；
+5. 【🛡️ 结构化答辩契约 (强制工具优先)】：
+   - 请优先调用宿主 MCP 工具 \`submit_defense_patch\`（包含 \`summary\`、\`stance\`：\`uphold_with_patch | partial_concession_with_patch | reject_critique_with_proof | full_surrender_without_patch\`、\`patched_claims\`、\`defense_patches\`、\`quantified_metrics\`、\`impacted_files\`、\`alignment_score\`）；
+   - 若无工具环境，请在正文末尾附带紧凑 \`<<<DEFENSE_PATCH>>>...<<<DEFENSE_PATCH_END>>>\` JSON 块。
 无需在正文 @ 任何人，平台状态机将自动汇总攻防论据并提交仲裁。
 
 【红队反例质询 (攻击靶点)】:
@@ -715,13 +781,18 @@ export function buildTopicPrompt(options: {
 ${topic.targetChallengeText || '（详见前序讨论脉络中的挑战者发言）'}
 <<<CHALLENGER_CRITIQUE_END>>>${verificationSection}`;
       } else {
-        gameModeDirective = `\n\n【博弈编排 - 🏛️ 阶段 1: 方案主导工程师立论起草 (Proposer)】:
-你是本议题的技术方案主导工程师 (Proposer)。请针对本议题的目标，给出最清晰、最具可落地性的工程技术方案。
+        gameModeDirective = `\n\n【博弈编排 - 🏛️ 阶段 1: 方案主导工程师立论起草与自主路由评估 (Proposer)】:
+你是本议题的技术方案主导工程师 (Proposer)。请针对本议题的目标，给出最清晰、最具可落地性的工程技术方案，并自主评估是否需要红队对抗质询。
 【输出铁律 · 纯净结论与直出代码】:
 1. 严禁冗长的推演思考废话、自我解释与客套；
 2. 【💡 最终结论】(≤ 80 字通俗结论：核心选型设计、实现路径与预期质量性能保证目标)；
 3. 【📋 核心设计与变更文件清单】(明确文件路径如 \`src/...\`、核心架构组件、关键函数/类与边界保证)；
-4. 【📦 核心代码草案或 Unified Diff】(直接呈现关键类型签名与核心代码块)。
+4. 【📦 核心代码草案或 Unified Diff】(直接呈现关键类型签名与核心代码块)；
+5. 【📜 结构化立论契约 (强制工具优先)】：
+   - 请调用宿主 MCP 工具 \`submit_proposal_claims\`，显式提交最多 5 条核心原子技术论点 \`claims\`（含 \`claim_id\`、\`claim\`、\`assumptions\`、\`depends_on_claim_ids\`、\`confidence\`）及 \`summary\`、\`impacted_files\`；若无工具环境，请在末尾附带紧凑 \`<<<PROPOSAL_CLAIMS>>>...<<<PROPOSAL_CLAIMS_END>>>\` JSON 块；
+6. 【🧭 模块拆解与红队路由自主决策 (强制工具优先)】：
+   - 请优先调用宿主 MCP 工具 \`submit_module_decomposition\`，将本方案拆解为 1~4 个模块（若任务本身单一聚焦如单文件静态页面、局部小改，仅提交 1 个原子模块即可，严禁为了凑数强行拆出多个模块；复杂任务拆解为 2~4 个模块），并由你结合议题风险与语义**自主决定**每个模块的 \`complexity_level\`（\`low_deterministic\` / \`medium_standard\` / \`high_critical\`）、\`requires_red_team\`（\`true\`=必须经红方对抗压测，\`false\`=极低风险确定性模块可直通验证）与 \`routing_rationale\`（简明说明该路由判断依据）；
+   - 若当前环境无 MCP 工具，请在回复末尾附带紧凑 \`<<<MODULE_DECOMPOSITION>>>...<<<MODULE_DECOMPOSITION_END>>>\` JSON 块。未显式声明时，系统默认全部模块进入红方对抗。
 无需在正文 @ 任何人，平台状态机将自动递交方案。`;
       }
     } else if (role === 'challenger') {
@@ -729,14 +800,30 @@ ${topic.targetChallengeText || '（详见前序讨论脉络中的挑战者发言
 你是本议题的技术红队质询工程师 (Challenger)。提案官已提交初始方案（见下方【攻击标的方案】）。
 【作战守则 · 精准挑刺找硬核 Bug】:
 严禁盲目附和与套话认同！严禁概念辩论，直接寻找以下具体缺陷：
-① 逻辑矛盾与隐含假设缺陷：指出方案中不合理的默认前提或理想化假设；
-② 极端边缘与失效场景：构造具体的恶意并发、网络断开超时、死锁竞争、脏数据或崩溃工况；
-③ 反例压测与实证要求：明确要求提案官提供补丁防御设计或复现测试用例。
-【输出铁律 · 纯净结论与直出漏洞】:
-1. 严禁冗长思考推演与客套铺垫；
-2. 【💡 最终质询结论】(≤ 80 字，直截了当指出最致命的 1~2 个缺陷风险)；
-3. 【📋 漏洞与失效工况清单】(1. 质疑靶点与文件 2. 极端失效反例场景 3. 系统崩溃/失真的连锁反应)；
-4. 【📦 修复补丁要求】(向提案方提出具体的架构补丁防御检验要求)。
+① 逻辑矛盾与致命隐患 (fatal_flaws)：指出方案中逻辑破绽、竞争死锁或严重单点风险；
+② 隐含假设缺陷 (hidden_assumptions)：揭示方案中不合理的前置默认假设或未经验证的前提；
+③ 极端边缘与失效场景 (failure_scenarios)：构造具体的恶意并发、网络断开超时、脏数据或雪崩工况；
+④ 反例实证要求 (counter_demands)：明确要求提案官/验证官提供具体的代码防御补丁或复现测试用例。
+【输出铁律 · 结构化批判契约 (强制工具优先)】:
+1. 【首选执行（强制优先）】：直接调用宿主 MCP 工具 \`submit_challenge_critique\`，传入完整四部曲与结构化归因参数：
+   - \`fatal_flaws\`: 致命隐患与逻辑漏洞列表（至少 1 条）
+   - \`hidden_assumptions\`: 隐含假设缺陷列表（至少 1 条）
+   - \`failure_scenarios\`: 极端边缘/失效场景工况列表（至少 1 条）
+   - \`counter_demands\`: 反例实证与防御补丁要求列表（至少 1 条）
+   - \`summary\`: 质询结论摘要 (≤ 80 字)
+   - \`target_claim_id\` / \`disputed_claim_ids\`: 靶向锁定的被质疑论点 ID 列表
+   - \`root_cause_category\`: (\`network_partition | concurrency_race | resource_exhaustion | cost_complexity | architecture_coupling | security_boundary | general\`)
+   - \`reopening_triggers\`: 黑天鹅重开条件列表；\`alignment_score\`: 0~1 主客观收敛度评估
+2. 【容灾备选（仅限无工具环境）】：若当前环境不可调用工具，可在正文末尾附带紧凑 JSON 契约块：
+<<<CHALLENGER_CRITIQUE>>>
+{
+  "fatal_flaws": ["指出核心致命破绽"],
+  "hidden_assumptions": ["揭示默认前置假设"],
+  "failure_scenarios": ["极端并发/断网/宕机工况"],
+  "counter_demands": ["具体的代码补丁或测试用例要求"],
+  "summary": "质询结论摘要"
+}
+<<<CHALLENGER_CRITIQUE_END>>>
 无需在正文 @ 任何人，平台将自动流转至接地验证/抗辩阶段。
 
 【被质询提案方案 (攻击标的)】:
@@ -752,18 +839,13 @@ ${topic.targetProposalText || '（暂未提取到前序提案方案，请围绕�
 1. 严禁长篇推测与主观评论；
 2. 【💡 实证核查结论】(明确输出真值判定：PASS / FAIL / 已证实 / 已证伪 / 成立 / 不成立，≤ 80 字)；
 3. 【📋 实证检验项与证据】(给出具体检验工具如 ast_grep/sandbox、测试用例代码与实际执行输出摘要)；
-4. 【📦 结构化证据块】(在回复结尾必须附带标准 JSON 证据块)：
+4. 【📦 结构化证据契约 (强制工具契约优先)】：
+   - 【首选执行（强制优先）】：直接调用宿主 MCP 工具 \`submit_grounding_evidence\`，传入 evidences 数组（包含 source_tool, claim_id, tier, input_query_or_code, raw_output, truth_value, confidence, verifier_report）；
+   - 【容灾备选（仅限无工具环境）】：在回复末尾附带紧凑证据块（注意：输出 JSON 容灾块时，每个证据项必须一致且明确地包含布尔字段 \`truth_value\` 或 \`truthValue\`，取值为 \`true\` 或 \`false\`，切勿省略真值字段或仅用文字描述 PASS/FAIL 代替）：
 \`\`\`json
 {
   "evidences": [
-    {
-      "sourceTool": "ast_grep",
-      "inputQueryOrCode": "具体的检验代码、查询命令或测试用例",
-      "rawOutput": "执行输出摘要或观测结果",
-      "truthValue": true,
-      "confidence": 0.9,
-      "verifierReport": "精炼客观的实证结论"
-    }
+    { "claimId": "arg-node-1", "sourceTool": "ast_grep", "tier": "T1", "truthValue": true, "truth_value": true, "confidence": 0.9, "verifierReport": "实证检验结论" }
   ]
 }
 \`\`\`
@@ -1736,15 +1818,17 @@ ${filesList}
 【落地实施与 UI 契约输出要求】:
 1. 你已被指派为本议题定案决议的**落地执行智能体**。请依据上述定案结论与你的专职角色，直接产出真实的落地交付物（如工程代码变更、架构/需求规范文档、配置/SQL 脚本或专项执行报告）；
 2. 若本次落地涉及修改或新建工作区文件（代码、文档、配置等），请为每个文件输出标准 Unified Diff 块（使用 \`\`\`diff 包裹，首行注明 \`--- a/文件路径\` 与 \`+++ b/文件路径\`），或在代码块首行注明 \`// filepath: 文件路径\`，以便工作台自动解析并支持一键物理合入；若本议题属于纯方案规划或分析结论、无需改动工作区文件，则直接输出结构化 Markdown 报告，不要强行编造伪代码；
-3. **【强制 UI 描述契约】**：为使工作台 UI 动态适配本次交付物的真实业务语义，你**必须**在回复的最末尾附带如下格式的 JSON 元数据块（系统解析后会自动从展示正文中隐藏该块）：
+3. **【落地交付契约 (强制工具契约优先)】**：
+   - 【首选执行（强制优先）】：直接调用宿主 MCP 工具 \`submit_execution_deliverable\`，传入 \`section_title\`、\`pod_title\`、\`status_summary\`、\`deliverable_kind\` ("workspace_files" | "report_only")、\`review_action_label\`、\`apply_action_label\`；
+   - 【容灾备选（仅限无工具环境）】：在回复的最末尾附带紧凑元数据块：
 <<<EXECUTION_META>>>
 {
-  "sectionTitle": "贴合本次交付物性质的章节标题（例如：订单幂等锁实现与单测补丁 / OAuth2 鉴权 ADR 规范落盘 / 慢查询根因排查与止血执行预案）",
-  "podTitle": "带 Emoji 的简短落地舱名称（10字以内，例如：🛠️ 幂等锁代码交付 / 📄 鉴权规范落盘 / 📋 止血执行预案）",
-  "statusSummary": "一句话交付成果摘要（40字以内，用于主时间轴卡片与系统通知展示）",
-  "deliverableKind": "workspace_files 或 report_only（有工作区文件/文档变更时填 workspace_files，纯报告无文件变更时填 report_only）",
-  "reviewActionLabel": "审查按钮动态文案（例如：审查代码 Diff / 预览文档变更 / 查看脚本 Diff）",
-  "applyActionLabel": "合入按钮动态文案（例如：一键合入本地仓库 / 写入本地文档目录 / 应用配置变更）"
+  "sectionTitle": "贴合本次交付物性质的章节标题",
+  "podTitle": "🛠️ 简短落地舱名称",
+  "statusSummary": "一句话交付成果摘要 (40字以内)",
+  "deliverableKind": "workspace_files",
+  "reviewActionLabel": "审查代码 Diff",
+  "applyActionLabel": "合入本地工作区"
 }
 <<<EXECUTION_META_END>>>
 4. 无需在正文中 @ 任何人，直接交付高质量落地成果！`;
@@ -1844,13 +1928,15 @@ ${filesList}
 1. 你已被指派以【单一独立 Agent】身份串行推进 G-Frame 模块化重构流水线中的 **[阶段 ${moduleIndex}/${totalModules}: ${moduleSlice.title}]**；
 2. **【爆炸半径隔离铁律】**：当前处于本模块专属沙箱，你**只能**修改或新建上方白名单列出的文件，**严禁越界修改其他未授权模块的文件**！
 3. **【公共契约一致性铁律】**：涉及跨模块通信、共享数据结构或接口调用时，必须严格遵守《公共接口契约》，严禁擅自修改已约定的函数签名或字段；
-4. 若本模块涉及修改/新建工作区文件，请针对每个白名单文件输出标准 Unified Diff 块（使用 \`\`\`diff 包裹，首行注明 \`--- a/文件路径\` 与 \`+++ b/文件路径\`），或在代码块首行注明 \`// filepath: 文件路径\`，以便工作台自动解析并支持一键物理合入；
-5. **【强制 UI 描述契约】**：请在回复最末尾附带如下格式的 JSON 元数据块：
+4. 若本模块涉及修改/新建工作区文件，请针对每个白名单文件输出标准 Unified Diff 块（使用 \`\`\`diff 包裹，首行注明 \`--- a/文件路径\` 与 \`+++ b/文件路径\`），或在代码块首行注明 \`// filepath: 文件路径\`，以便工作台自动解析并支持一键物理合入；推荐优先调用宿主 MCP 工具 \`validate_workspace_diff\` 执行预检，验证 Diff 清洁度与白名单文件隔离；
+5. **【落地交付契约 (强制工具契约优先)】**：
+   - 【首选执行（强制优先）】：直接调用宿主 MCP 工具 \`submit_execution_deliverable\`，传入本阶段交付元数据；
+   - 【容灾备选（仅限无工具环境）】：在回复最末尾附带紧凑元数据块：
 <<<EXECUTION_META>>>
 {
   "sectionTitle": "阶段 ${moduleIndex}/${totalModules}: ${moduleSlice.title} 落地交付",
   "podTitle": "🛠️ ${moduleSlice.title.slice(0, 8)}",
-  "statusSummary": "本阶段交付摘要（40字以内，如：已完成模块 1 核心数据结构与契约定义）",
+  "statusSummary": "本阶段交付摘要（40字以内）",
   "deliverableKind": "workspace_files",
   "reviewActionLabel": "审查本阶段 Diff",
   "applyActionLabel": "合入本阶段代码"
@@ -1906,6 +1992,39 @@ const CRITERIA_CATALOGUE: CriterionCandidate[] = [
   },
 ];
 
+function stripThemeLeadingDecorators(raw: string): string {
+  const leadSet = new Set(['.', '#', '-', '*', '：', ':', ' ', '\t', '【', '】']);
+  const inlineSet = new Set(['*', '`', '_']);
+  let start = 0;
+  while (start < raw.length) {
+    const ch = raw[start];
+    if ((ch >= '0' && ch <= '9') || leadSet.has(ch)) {
+      start++;
+    } else {
+      break;
+    }
+  }
+  let out = '';
+  for (let i = start; i < raw.length; i++) {
+    if (!inlineSet.has(raw[i])) {
+      out += raw[i];
+    }
+  }
+  return out.trim();
+}
+
+function extractFirstBoldSpan(text: string): string | null {
+  const openIdx = text.indexOf('**');
+  if (openIdx < 0) return null;
+  const closeIdx = text.indexOf('**', openIdx + 2);
+  if (closeIdx < 0) return null;
+  const inner = text.slice(openIdx + 2, closeIdx).trim();
+  if (inner.length >= 3 && inner.length <= 25 && !inner.includes('*')) {
+    return inner;
+  }
+  return null;
+}
+
 function extractCoreThemeFromText(text?: string, fallback = ''): string {
   if (!text || !text.trim()) return fallback;
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -1914,16 +2033,29 @@ function extractCoreThemeFromText(text?: string, fallback = ''): string {
     l.includes('架构') || l.includes('重构') || l.includes('补丁') || l.startsWith('1.')
   );
   if (keyLine) {
-    const cleaned = keyLine.replace(/^[0-9.#\-*：:\s【】]+/, '').replace(/[*`_]/g, '').trim();
+    const cleaned = stripThemeLeadingDecorators(keyLine);
     if (cleaned.length >= 3) {
       return cleaned.slice(0, 20);
     }
   }
-  const boldMatch = text.match(/\*\*([^*]{3,25})\*\*/);
-  if (boldMatch) {
-    return boldMatch[1].trim().slice(0, 20);
+  const boldSpan = extractFirstBoldSpan(text);
+  if (boldSpan) {
+    return boldSpan.slice(0, 20);
   }
   return lines[0]?.slice(0, 20) || fallback;
+}
+
+function countLowerSubstringOccurrences(lowerHaystack: string, lowerNeedle: string): number {
+  if (!lowerHaystack || !lowerNeedle) return 0;
+  let count = 0;
+  let pos = 0;
+  while (pos < lowerHaystack.length) {
+    const idx = lowerHaystack.indexOf(lowerNeedle, pos);
+    if (idx < 0) break;
+    count++;
+    pos = idx + lowerNeedle.length;
+  }
+  return count;
 }
 
 export interface GenerateMcdaOptions {
@@ -1937,10 +2069,16 @@ export interface GenerateMcdaOptions {
   evidences?: GroundingEvidence[];
   sycophancy?: SycophancyEvaluation;
   modelDiversity?: ModelDiversityEvaluation;
+  mcdaMatrix?: McdaMatrixInput | null;
+  proposalPayload?: ProposalClaimsPayload | null;
+  critiquePayload?: ChallengeCritiquePayload | null;
+  defensePayload?: DefensePatchPayload | null;
 }
 
 /**
- * 神经符号确定性运筹裁决：结合 Arbiter 意图与真实研讨脉络，输出确定性多属性决策载荷 (LLM + BWM)
+ * 神经符号确定性运筹裁决：
+ * 1. 若仲裁官显式提供结构化 mcda_matrix，直接交付 BWM 运筹内核精确求解；
+ * 2. 否则依据结构化契约 (Proposal/Critique/Defense)、论点状态、接地证据与谄媚系数确定性推导矩阵。
  */
 export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): McdaDecisionPayload {
   const {
@@ -1953,18 +2091,53 @@ export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): 
     argumentNodes = [],
     evidences = [],
     sycophancy,
-    modelDiversity,
+    mcdaMatrix,
+    proposalPayload,
+    critiquePayload,
+    defensePayload,
   } = options;
 
-  const fullCorpus = [topicTitle, topicDescription, arbiterText, proposalText, critiqueText, defenseText].join('\n').toLowerCase();
+  if (
+    mcdaMatrix &&
+    Array.isArray(mcdaMatrix.criteria) &&
+    mcdaMatrix.criteria.length >= 2 &&
+    Array.isArray(mcdaMatrix.alternatives) &&
+    mcdaMatrix.alternatives.length >= 2 &&
+    Array.isArray(mcdaMatrix.bestToOthers) &&
+    mcdaMatrix.bestToOthers.length === mcdaMatrix.criteria.length &&
+    Array.isArray(mcdaMatrix.othersToWorst) &&
+    mcdaMatrix.othersToWorst.length === mcdaMatrix.criteria.length
+  ) {
+    const confidenceMatrix = calculateConfidenceMatrix({
+      alternatives: mcdaMatrix.alternatives,
+      criteriaIds: mcdaMatrix.criteria.map((c) => c.id),
+      evidences,
+      argumentNodes,
+      sycophancy,
+    });
+    return solveDeterministicBwm({
+      solverType: 'BWM',
+      criteria: mcdaMatrix.criteria,
+      alternatives: mcdaMatrix.alternatives,
+      scoreMatrix: mcdaMatrix.scoreMatrix,
+      bestCriterionId: mcdaMatrix.bestCriterionId,
+      worstCriterionId: mcdaMatrix.worstCriterionId,
+      bestToOthers: mcdaMatrix.bestToOthers,
+      othersToWorst: mcdaMatrix.othersToWorst,
+      scoreProvenance: mcdaMatrix.scoreProvenance || {},
+      confidenceMatrix,
+    });
+  }
 
-  // 1. 动态评分筛选当前议题最关切的准则 (前 4 项)
+  const fullCorpus = [topicTitle, topicDescription, arbiterText, proposalText, critiqueText, defenseText]
+    .join('\n')
+    .toLowerCase();
+
+  // 1. 确定性词频统计筛选当前议题最关切的准则 (前 4 项，零 new RegExp)
   const scoredCriteria = CRITERIA_CATALOGUE.map((c) => {
     let count = 0;
     c.keywords.forEach((kw) => {
-      const regex = new RegExp(kw.toLowerCase(), 'g');
-      const matches = fullCorpus.match(regex);
-      if (matches) count += matches.length;
+      count += countLowerSubstringOccurrences(fullCorpus, kw.toLowerCase());
     });
     return { candidate: c, count };
   });
@@ -1979,10 +2152,16 @@ export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): 
     direction: c.direction,
   }));
 
-  // 2. 动态抽取候选方案名称
-  const propTheme = extractCoreThemeFromText(proposalText, '提案主推方案');
-  const critTheme = extractCoreThemeFromText(critiqueText, '红队对抗重构方案');
-  const defTheme = extractCoreThemeFromText(defenseText || arbiterText, '架构权衡补丁');
+  // 2. 动态抽取候选方案名称（优先消费结构化 summary）
+  const propTheme =
+    (proposalPayload?.summary && proposalPayload.summary.slice(0, 20)) ||
+    extractCoreThemeFromText(proposalText, '提案主推方案');
+  const critTheme =
+    (critiquePayload?.summary && critiquePayload.summary.slice(0, 20)) ||
+    extractCoreThemeFromText(critiqueText, '红队对抗重构方案');
+  const defTheme =
+    (defensePayload?.summary && defensePayload.summary.slice(0, 20)) ||
+    extractCoreThemeFromText(defenseText || arbiterText, '架构权衡补丁');
 
   const altA = `方案A: 提案主导方案 (${propTheme})`;
   const altB = `方案B: 红队对抗方案 (${critTheme})`;
@@ -2001,9 +2180,13 @@ export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): 
     [altC]: {},
   };
 
-  // 计算实证与论点状态对准则的修正因子
+  // 计算实证、论点状态与结构化契约对准则的修正因子
   const verifiedT1T2Count = evidences.filter((e) => e.truthValue).length;
   const refutedT1T2Count = evidences.filter((e) => !e.truthValue).length;
+  const refutedNodesCount = argumentNodes.filter((n) => n.status === 'refuted').length;
+  const hasDefensePatchPayload = Boolean(defensePayload && defensePayload.defensePatches.length > 0);
+  const isWeakSurrender = defensePayload?.stance === 'full_surrender_without_patch';
+  const hasSevereCritique = (critiquePayload?.fatalFlaws?.length ?? 0) > 0;
 
   for (const crit of criteria) {
     let scoreA = 7.5;
@@ -2019,27 +2202,45 @@ export function generateDeterministicMcdaPayload(options: GenerateMcdaOptions): 
       scoreA = 7.8;
       scoreB = 8.8;
       scoreC = 8.5;
-      if (refutedT1T2Count > 0) {
+      if (refutedT1T2Count > 0 || refutedNodesCount > 0) {
         scoreA = Math.max(3.5, scoreA - 2.5);
-        provA = `实证检验存在 ${refutedT1T2Count} 项未通过/复现反例缺陷`;
+        provA = `实证检验存在 ${refutedT1T2Count || refutedNodesCount} 项未通过/复现反例缺陷`;
         provB = '红队反例获接地实证验证支持';
       } else if (verifiedT1T2Count > 0) {
         scoreA = Math.min(9.5, scoreA + 1.2);
         provA = `接地实证通过 ${verifiedT1T2Count} 项物理检验`;
       }
-      if (defenseText.includes('补丁') || defenseText.includes('容灾') || defenseText.includes('降级')) {
+      if (
+        hasDefensePatchPayload ||
+        defenseText.includes('补丁') ||
+        defenseText.includes('容灾') ||
+        defenseText.includes('降级')
+      ) {
         scoreC = Math.min(9.4, scoreC + 0.8);
         provC = '答辩已融入容灾/降级防御补丁';
+      }
+      if (isWeakSurrender) {
+        scoreA = Math.max(3.5, scoreA - 1.0);
       }
     } else if (crit.id === 'perf') {
       scoreA = 8.5;
       scoreB = 7.2;
       scoreC = 8.2;
-      if (critiqueText.includes('性能') || critiqueText.includes('延迟') || critiqueText.includes('瓶颈')) {
+      if (
+        hasSevereCritique ||
+        critiqueText.includes('性能') ||
+        critiqueText.includes('延迟') ||
+        critiqueText.includes('瓶颈')
+      ) {
         scoreA = Math.max(4.0, scoreA - 1.5);
         provA = '红队指出极端并发/网络抖动下的延迟抖动隐患';
       }
-      if (defenseText.includes('优化') || defenseText.includes('异步') || defenseText.includes('缓存')) {
+      if (
+        hasDefensePatchPayload ||
+        defenseText.includes('优化') ||
+        defenseText.includes('异步') ||
+        defenseText.includes('缓存')
+      ) {
         scoreC = Math.min(9.2, scoreC + 0.8);
         provC = '答辩补丁引入异步/缓冲优化性能';
       }

@@ -11,6 +11,12 @@ import {
   updateModuleBeliefWithFeedback,
 } from './bayesianModuleGovernor';
 import { validateModuleScopeContract } from './stageContractGate';
+import {
+  extractGroundedTrueRatio,
+  parseVerifierOutput,
+  processVerifierEvidenceChain,
+  resolveEvidenceTruthValue,
+} from './tieredGroundingGovernor';
 import { buildScopedModulePrompt } from '../agentCollaboration';
 import { extractModuleDecompositionFromAcpResponse } from '../acpClient';
 import {
@@ -36,7 +42,7 @@ console.log('🧪 [G-Frame Test] Starting Bayesian Modular Governor & Context Is
     allowedFilesCount: 4,
     responsibilityText: '实现高并发互斥锁与 SQLite 事务幂等状态机迁移',
   });
-  assert.ok(highModule.priorRisk >= 0.85, `Expected high critical prior >= 0.85, got ${highModule.priorRisk}`);
+  assert.equal(highModule.priorRisk, 0.8, `Expected high critical prior 0.8, got ${highModule.priorRisk}`);
   assert.equal(highModule.routingMode, 'deep_debate', 'High risk module should route to deep_debate');
 
   console.log('✅ [1/10] Bayesian Prior Estimation & Fast-Track/Deep-Debate Routing Passed');
@@ -165,7 +171,10 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
 
   const fallbackDraft = buildDefaultDecompositionFromTopic('并发数据库迁移与状态同步引擎');
   assert.equal(fallbackDraft.modules.length, 3);
-  assert.equal(fallbackDraft.modules[1].complexityLevel, 'high_critical');
+  assert.equal(fallbackDraft.modules[0].complexityLevel, 'medium_standard');
+  assert.equal(fallbackDraft.modules[0].requiresRedTeam, true);
+  assert.equal(fallbackDraft.modules[1].complexityLevel, 'medium_standard');
+  assert.equal(fallbackDraft.modules[1].requiresRedTeam, true);
 
   console.log('✅ [4/10] Full Module DAG Progression, Blast-Radius Freezing & Scoped Prompt Isolation Passed');
 }
@@ -252,6 +261,8 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
                 allowed_files: ['src/types.ts'],
                 depends_on: [],
                 complexity_level: 'low_deterministic',
+                requires_red_team: false,
+                routing_rationale: '纯类型与接口定义，无运行时副作用',
               },
               {
                 module_id: 'mod-b',
@@ -260,6 +271,8 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
                 allowed_files: ['src/engine.ts'],
                 depends_on: ['mod-a'],
                 complexity_level: 'high_critical',
+                requires_red_team: true,
+                routing_rationale: '涉及并发核心状态机与不可逆副作用',
               },
             ],
           },
@@ -271,7 +284,51 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
   assert.ok(extracted, 'Must extract ModuleDecompositionDraft from MCP tool call');
   assert.equal(extracted?.modules.length, 2);
   assert.equal(extracted?.modules[0].moduleId, 'mod-a');
+  assert.equal(extracted?.modules[0].requiresRedTeam, false);
+  assert.equal(extracted?.modules[0].routingRationale, '纯类型与接口定义，无运行时副作用');
   assert.equal(extracted?.modules[1].complexityLevel, 'high_critical');
+  assert.equal(extracted?.modules[1].requiresRedTeam, true);
+
+  // 原生 MCP 与结构化 JSON 两条通路都必须接受单模块载荷。
+  const singleMcpPayload = {
+    shared_contract: {
+      summary: '单模块聚焦契约',
+      type_signatures: '',
+      invariants: ['只允许修改 demo/index.html'],
+    },
+    modules: [
+      {
+        module_id: 'only-module',
+        title: '单文件静态页',
+        responsibility: '创建单一静态页面',
+        allowed_files: ['demo/index.html'],
+        depends_on: [],
+        complexity_level: 'low_deterministic',
+        requires_red_team: false,
+        routing_rationale: '单文件确定性交付，无需红队深潜',
+      },
+    ],
+  };
+  const singleFromMcp = extractModuleDecompositionFromAcpResponse({
+    textResponse: '单模块拆解',
+    mcpToolCalls: [
+      {
+        server_name: 'shadow-crew-dev-mcp',
+        tool_name: 'submit_module_decomposition',
+        status: 'completed',
+        arguments: singleMcpPayload,
+      },
+    ],
+  });
+  assert.ok(singleFromMcp, 'Single-module native MCP payload must not be dropped');
+  assert.equal(singleFromMcp?.modules.length, 1);
+  assert.equal(singleFromMcp?.modules[0].routingRationale, '单文件确定性交付，无需红队深潜');
+
+  const singleFromBlock = extractModuleDecompositionFromAcpResponse({
+    textResponse: `<<<MODULE_DECOMPOSITION>>>${JSON.stringify(singleMcpPayload)}<<<MODULE_DECOMPOSITION_END>>>`,
+  });
+  assert.ok(singleFromBlock, 'Single-module structured JSON block must not be dropped');
+  assert.equal(singleFromBlock?.modules.length, 1);
 
   console.log('✅ [6/10] MCP submit_module_decomposition Contract Extractor Passed');
 }
@@ -287,7 +344,16 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
   assert.equal(bizDraft.sharedContract.typeSignatures, '', 'Pure business topic must not inject fake TypeScript interfaces');
   assert.deepEqual(bizDraft.modules[0].allowedFiles, [], 'Pure business topic must not hardcode src/types.ts');
   assert.ok(bizDraft.modules[0].title.includes('阶梯定价与毛利测算模型'));
-  assert.equal(bizDraft.modules[1].complexityLevel, 'high_critical', 'Compliance/compensation module must be recognized as high_critical');
+  assert.equal(bizDraft.modules[0].complexityLevel, 'medium_standard', 'Fallback without LLM tool call must default to medium_standard');
+  assert.equal(bizDraft.modules[1].requiresRedTeam, true, 'Fallback without LLM tool call must default to requiresRedTeam=true');
+
+  // 验证大模型显式通过 requires_red_team=true 时即使 complexity_level=low_deterministic 也强制进入 deep_debate
+  const llmForcedRedTeam = estimateModulePriorRisk({
+    complexityLevel: 'low_deterministic',
+    allowedFilesCount: 1,
+    requiresRedTeam: true,
+  });
+  assert.equal(llmForcedRedTeam.routingMode, 'deep_debate', 'LLM requiresRedTeam=true must force deep_debate');
   console.log('✅ [7/10] Domain-Agnostic Business Discussion Decomposition (Zero R&D Hardcoding) Passed');
 }
 
@@ -303,12 +369,23 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
         allowedFiles: [],
         dependsOn: [],
         complexityLevel: 'medium_standard',
+        requiresRedTeam: true,
+        routingRationale: '单模块但涉及不可逆业务决策，保守进入红队对抗',
       },
     ],
   };
   const paddedState = initializeModularOrchestrationState(singleModDraft);
-  assert.equal(paddedState.modules.length, 2, 'EDGE-02: Single-module draft must be padded to minimum 2 modules');
+  assert.equal(paddedState.modules.length, 1, 'EDGE-02: Single-module draft must be preserved without forced multi-module padding');
   assert.equal(paddedState.activeModuleId, 'only-one');
+  assert.equal(paddedState.modules[0].requiresRedTeam, true);
+  assert.equal(paddedState.modules[0].routingRationale, '单模块但涉及不可逆业务决策，保守进入红队对抗');
+
+  const emptyDraft: ModuleDecompositionDraft = {
+    sharedContract: { summary: '空模块输入兜底测试', typeSignatures: '', invariants: [] },
+    modules: [],
+  };
+  const emptyPaddedState = initializeModularOrchestrationState(emptyDraft);
+  assert.equal(emptyPaddedState.modules.length, 2, 'EDGE-02: Empty-module draft must be padded to fallback 2 modules');
 
   // EDGE-05: 连续两次增量传入 verifiedClaims: 1 或 refutedClaims: 1，应累加为 2，且传入 refutedClaims: 0 不得覆盖历史证伪数
   const initialMod = paddedState.modules[0];
@@ -830,7 +907,458 @@ console.log('✅ [2/10] Module DAG Initialization & Topological Root Activation 
   console.log('✅ [14/14] Bayesian Fast-Track Routing & Dynamic Posterior Escalation (N8) Passed\n');
 }
 
-console.log('🎉 [G-Frame Complete] All 14 test suites passed 100%!');
+// =========================================================================
+// Test 15: Clean Defense Resolves Prior Verification Refutations (No Redundant Bounce)
+// =========================================================================
+console.log('--- [Test 15] Clean Defense Resolves Prior Verification Refutations ---');
+{
+  const cleanDefDraft: ModuleDecompositionDraft = {
+    sharedContract: {
+      summary: 'Clean defense contract',
+      typeSignatures: '',
+      invariants: [],
+    },
+    modules: [
+      {
+        moduleId: 'm-clean-def',
+        title: 'Clean Defense Module',
+        responsibility: 'Verify clean defense freezes without redundant SCOPED_DEFENSE_REFINE',
+        allowedFiles: ['src/clean.ts'],
+        dependsOn: [],
+        complexityLevel: 'medium_standard',
+        requiresRedTeam: true,
+      },
+    ],
+  };
+
+  let cdState = initializeModularOrchestrationState(cleanDefDraft);
+  let cdStep = stepModularStageTransition({
+    state: cdState,
+    currentStage: 'proposal',
+    feedbackDelta: {},
+    proposalOrDefenseSnippet: 'Initial Proposal',
+  });
+  cdStep = stepModularStageTransition({
+    state: cdStep.nextState,
+    currentStage: 'challenge',
+    feedbackDelta: { edgeCaseCount: 1 },
+  });
+  cdStep = stepModularStageTransition({
+    state: cdStep.nextState,
+    currentStage: 'verification',
+    feedbackDelta: { verifiedClaims: 1, refutedClaims: 1 },
+  });
+  assert.equal(cdStep.nextGameStage, 'defense');
+
+  // 15.1 答辩产生正向实证 (verifiedClaims: 1) 且无新增证伪/越界 -> 应直接冻结，不回弹 SCOPED_DEFENSE_REFINE
+  const cdFreezeStep = stepModularStageTransition({
+    state: cdStep.nextState,
+    currentStage: 'defense',
+    feedbackDelta: { verifiedClaims: 1, refutedClaims: 0, contractViolations: 0 },
+    proposalOrDefenseSnippet: 'Resolved all prior verification claims cleanly',
+    currentModuleRefineCount: 0,
+  });
+  assert.equal(cdFreezeStep.posteriorAction, 'FREEZE_MODULE');
+  assert.equal(cdFreezeStep.frozenModuleId, 'm-clean-def');
+  assert.ok(!cdFreezeStep.triggeredScopedRefine, 'Clean defense must not trigger SCOPED_DEFENSE_REFINE');
+  assert.equal(cdFreezeStep.allModulesFrozen, true);
+  assert.equal(cdFreezeStep.nextGameStage, 'arbitration');
+
+  // 15.2 若答辩本身仍产生新证伪 (refutedClaims: 1) -> 仍应触发 SCOPED_DEFENSE_REFINE
+  const cdRefineStep = stepModularStageTransition({
+    state: cdStep.nextState,
+    currentStage: 'defense',
+    feedbackDelta: { verifiedClaims: 0, refutedClaims: 1, contractViolations: 0 },
+    proposalOrDefenseSnippet: 'Defense still refuted',
+    currentModuleRefineCount: 0,
+  });
+  assert.equal(cdRefineStep.posteriorAction, 'SCOPED_DEFENSE_REFINE');
+  assert.equal(cdRefineStep.triggeredScopedRefine, true);
+  assert.equal(cdRefineStep.nextGameStage, 'challenge');
+
+  console.log('✅ [15/15] Clean Defense Convergence Passed\n');
+}
+
+// =========================================================================
+// Test 16: Verifier snake_case `truth_value: true` (4 PASS items) in Fast-Track
+// =========================================================================
+console.log('--- [Test 16] Verifier 4-Item snake_case truth_value=true PASS Payload & Fast-Track Freeze ---');
+{
+  const fourPassVerifierPayload = `
+已完成对单模块静态页 \`demo/index.html\` 的四项物理接地核验：
+\`\`\`json
+{
+  "evidences": [
+    {
+      "evidence_id": "ev-data01-1",
+      "source_tool": "read_file",
+      "input_query_or_code": "read demo/index.html",
+      "raw_output": "<!doctype html><html><style>...</style><body>...</body></html>",
+      "truth_value": true,
+      "confidence": 0.95,
+      "claim_id": "claim-pure-html",
+      "verifier_report": "仅包含纯静态 HTML 与内嵌 CSS，结构合法"
+    },
+    {
+      "evidence_id": "ev-data01-2",
+      "source_tool": "ast_grep",
+      "input_query_or_code": "grep -E '<script|<form' demo/index.html",
+      "raw_output": "0 matches",
+      "truth_value": true,
+      "confidence": 0.92,
+      "claim_id": "claim-no-script-form",
+      "verifier_report": "未检测到 <script> 或 <form> 标签"
+    },
+    {
+      "evidence_id": "ev-data01-3",
+      "source_tool": "static_analyzer",
+      "input_query_or_code": "grep -E 'fetch\\\\(|XMLHttpRequest|localStorage|sessionStorage' demo/index.html",
+      "raw_output": "0 matches",
+      "truth_value": true,
+      "confidence": 0.90,
+      "claim_id": "claim-no-network-storage",
+      "verifier_report": "无任何 fetch 网络请求与浏览器持久化逻辑"
+    },
+    {
+      "evidence_id": "ev-data01-4",
+      "source_tool": "git_diff_summary",
+      "input_query_or_code": "git status --short",
+      "raw_output": "M demo/index.html",
+      "truth_value": true,
+      "confidence": 0.95,
+      "claim_id": "claim-single-file",
+      "verifier_report": "变更白名单严格收敛于 demo/index.html"
+    }
+  ]
+}
+\`\`\`
+结论：4 项实证检验全部 PASS。
+`;
+
+  const parsedEvidences = parseVerifierOutput(fourPassVerifierPayload);
+  assert.equal(parsedEvidences.length, 4, 'Must parse all 4 snake_case evidence items');
+  assert.equal(
+    parsedEvidences.filter((e) => e.truthValue).length,
+    4,
+    'All 4 { "truth_value": true } items must resolve to truthValue=true'
+  );
+  assert.equal(
+    parsedEvidences.filter((e) => !e.truthValue).length,
+    0,
+    'Zero falsifications expected for 4 PASS items'
+  );
+  assert.equal(parsedEvidences[0].evidenceId, 'ev-data01-1');
+  assert.equal(parsedEvidences[0].sourceTool, 'read_file');
+  assert.equal(parsedEvidences[0].inputQueryOrCode, 'read demo/index.html');
+  assert.equal(parsedEvidences[0].claimId, 'claim-pure-html');
+  assert.equal(parsedEvidences[1].sourceTool, 'ast_grep');
+
+  const chainRes = processVerifierEvidenceChain({
+    topicId: 'topic-data01-regression',
+    verifierText: fourPassVerifierPayload,
+    isSafetyCharterSigned: false,
+    disputePacket: {
+      disputeId: 'disp-data01',
+      claimTopic: 'DATA-01 单文件纯静态边界校验',
+      proposerClaim: '仅修改 demo/index.html，无 JS/表单/持久化',
+      challengerCritique: 'Fast-Track 旁路待实证',
+      rootCause: '静态合规核验',
+      groundingStatus: 'unverified',
+    },
+  });
+
+  const verifiedClaims = chainRes.evidences.filter((e) => e.truthValue).length;
+  const refutedClaims = chainRes.evidences.filter((e) => !e.truthValue).length;
+  assert.equal(verifiedClaims, 4, 'verifiedClaims must equal 4');
+  assert.equal(refutedClaims, 0, 'Zero falsifications required');
+  assert.ok(
+    chainRes.weightedTrueRatio > 0.5,
+    `weightedTrueRatio must be > 0.5 (got ${chainRes.weightedTrueRatio})`
+  );
+  assert.equal(chainRes.updatedDispute?.groundingStatus, 'verified_true');
+
+  const extractedRatio = extractGroundedTrueRatio(fourPassVerifierPayload);
+  assert.ok(
+    extractedRatio > 0.5,
+    `extractGroundedTrueRatio must be > 0.5 (got ${extractedRatio})`
+  );
+
+  // 驱动单模块 DATA-01 fast_track 状态机，验证不会误触发 ESCALATE_TO_RED_TEAM
+  const data01Draft: ModuleDecompositionDraft = {
+    sharedContract: {
+      summary: 'DATA-01 单文件纯 HTML+CSS 静态展示页契约',
+      typeSignatures: '',
+      invariants: ['仅允许修改 demo/index.html', '严禁包含 <script>、<form>、fetch 与持久化'],
+    },
+    modules: [
+      {
+        moduleId: 'only-static-page',
+        title: '单文件静态产品展示页',
+        responsibility: '纯 HTML+CSS 静态展示页实现',
+        allowedFiles: ['demo/index.html'],
+        dependsOn: [],
+        complexityLevel: 'low_deterministic',
+        requiresRedTeam: false,
+        routingRationale: '单文件、无持久化、无并发、无不可逆副作用',
+      },
+    ],
+  };
+
+  let data01State = initializeModularOrchestrationState(data01Draft);
+  assert.equal(data01State.modules[0].belief.routingMode, 'fast_track');
+
+  const propStep = stepModularStageTransition({
+    state: data01State,
+    currentStage: 'proposal',
+    feedbackDelta: {},
+    proposalOrDefenseSnippet: 'Pure HTML+CSS demo/index.html',
+    hasVerifiers: true,
+  });
+  assert.equal(propStep.nextGameStage, 'verification');
+
+  const verStep = stepModularStageTransition({
+    state: propStep.nextState,
+    currentStage: 'verification',
+    feedbackDelta: {
+      verifiedClaims,
+      refutedClaims,
+      contractViolations: 0,
+    },
+  });
+  assert.notEqual(
+    verStep.posteriorAction,
+    'ESCALATE_TO_RED_TEAM',
+    '4 PASS truth_value=true items must NEVER trigger ESCALATE_TO_RED_TEAM in fast_track'
+  );
+  assert.equal(verStep.posteriorAction, 'FREEZE_MODULE');
+  assert.equal(verStep.allModulesFrozen, true);
+  assert.equal(verStep.nextGameStage, 'arbitration');
+
+  console.log('✅ [16/17] 4-Item truth_value=true PASS Payload & Fast-Track Freeze Passed\n');
+}
+
+// =========================================================================
+// Test 17: resolveEvidenceTruthValue Matrix, Mixed Aliases, Multi-Block JSON & Text Fallback
+// =========================================================================
+console.log('--- [Test 17] TruthValue Matrix, Mixed Keys, Multi-Block JSON & Branch 2 Fallback ---');
+{
+  // 17.1 resolveEvidenceTruthValue 矩阵（含显式 false/"false" 绝不被 PASS 覆盖）
+  assert.equal(resolveEvidenceTruthValue({ truthValue: true }), true);
+  assert.equal(resolveEvidenceTruthValue({ truth_value: true }), true);
+  assert.equal(resolveEvidenceTruthValue({ truthValue: 'true' }), true);
+  assert.equal(resolveEvidenceTruthValue({ truth_value: 'TRUE' }), true);
+  assert.equal(resolveEvidenceTruthValue({ truth_value: ' True ' }), true);
+  assert.equal(resolveEvidenceTruthValue({ truthValue: null, truth_value: 'True' }), true);
+
+  assert.equal(resolveEvidenceTruthValue({ truthValue: false }), false);
+  assert.equal(resolveEvidenceTruthValue({ truth_value: false }), false);
+  assert.equal(
+    resolveEvidenceTruthValue({ truthValue: false, status: 'PASS', verdict: 'PASS' }),
+    false,
+    'Explicit truthValue=false must NEVER be overridden by PASS status/verdict'
+  );
+  assert.equal(
+    resolveEvidenceTruthValue({ truth_value: false, status: 'PASS' }),
+    false,
+    'Explicit truth_value=false must NEVER be overridden by PASS status'
+  );
+  assert.equal(
+    resolveEvidenceTruthValue({ truth_value: 'false', verdict: 'PASS' }),
+    false,
+    'Explicit truth_value="false" must NEVER be overridden by PASS verdict'
+  );
+  assert.equal(
+    resolveEvidenceTruthValue({ truthValue: 'FALSE', status: 'PASS' }),
+    false,
+    'Explicit truthValue="FALSE" must NEVER be overridden by PASS status'
+  );
+  assert.equal(
+    resolveEvidenceTruthValue({ truthValue: null, truth_value: 'false', status: 'PASS' }),
+    false,
+    'Explicit snake truth_value="false" with null truthValue must stay false'
+  );
+
+  // 仅当 truthValue 与 truth_value 均未提供/为 null 时才回退至 PASS
+  assert.equal(resolveEvidenceTruthValue({ status: 'PASS' }), true);
+  assert.equal(resolveEvidenceTruthValue({ verdict: 'PASS' }), true);
+  assert.equal(resolveEvidenceTruthValue({ status: 'pass' }), true);
+  assert.equal(resolveEvidenceTruthValue({ status: 'FAIL' }), false);
+  assert.equal(resolveEvidenceTruthValue({}), false);
+
+  // 17.2 多 fenced 块 + 前置非 JSON 代码块 + 无关 JSON 块 + 混合 camelCase/snake_case 别名键
+  const multiBlockText = `
+先列出校验命令：
+\`\`\`bash
+grep -rn "<script" demo/index.html
+\`\`\`
+
+样本配置（非证据 JSON，不得伪造为失败证据）：
+\`\`\`json
+{ "product": "Widget", "price": 99 }
+\`\`\`
+
+第一批实证：
+\`\`\`json
+[
+  {
+    "evidence_id": "id-snake-1",
+    "tool_name": "ast_grep",
+    "query": "grep <script",
+    "result": "0 matches",
+    "truth_value": true,
+    "conclusion": "无脚本标签"
+  },
+  {
+    "evidenceId": "id-camel-2",
+    "toolName": "read_file",
+    "code": "cat demo/index.html",
+    "output": "pure html",
+    "truthValue": "True",
+    "report": "纯静态页面",
+    "claim_id": "c-static"
+  }
+]
+\`\`\`
+
+第二批实证（混合显式 "false" 拒绝与 status PASS 回退）：
+\`\`\`json
+{
+  "evidences": [
+    {
+      "tool": "static_analyzer",
+      "input": "check forms",
+      "rawOutput": "no form",
+      "status": "PASS",
+      "verifier_report": "无表单元素",
+      "claimId": "c-no-form"
+    },
+    {
+      "sourceTool": "rag_search",
+      "input_query_or_code": "check fetch",
+      "raw_output": "found fetch('/api')",
+      "truth_value": "false",
+      "status": "PASS",
+      "verifierReport": "显式字符串 false 不得被 status PASS 覆盖"
+    }
+  ]
+}
+\`\`\`
+`;
+
+  const multiEvidences = parseVerifierOutput(multiBlockText);
+  assert.equal(multiEvidences.length, 4, 'Must extract all 4 evidence items across multiple ```json blocks');
+  assert.equal(multiEvidences[0].evidenceId, 'id-snake-1');
+  assert.equal(multiEvidences[0].sourceTool, 'ast_grep');
+  assert.equal(multiEvidences[0].inputQueryOrCode, 'grep <script');
+  assert.equal(multiEvidences[0].rawOutput, '0 matches');
+  assert.equal(multiEvidences[0].verifierReport, '无脚本标签');
+  assert.equal(multiEvidences[0].truthValue, true);
+
+  assert.equal(multiEvidences[1].evidenceId, 'id-camel-2');
+  assert.equal(multiEvidences[1].sourceTool, 'read_file');
+  assert.equal(multiEvidences[1].inputQueryOrCode, 'cat demo/index.html');
+  assert.equal(multiEvidences[1].rawOutput, 'pure html');
+  assert.equal(multiEvidences[1].verifierReport, '纯静态页面');
+  assert.equal(multiEvidences[1].claimId, 'c-static');
+  assert.equal(multiEvidences[1].truthValue, true);
+
+  assert.equal(multiEvidences[2].sourceTool, 'static_analyzer');
+  assert.equal(multiEvidences[2].inputQueryOrCode, 'check forms');
+  assert.equal(multiEvidences[2].rawOutput, 'no form');
+  assert.equal(multiEvidences[2].verifierReport, '无表单元素');
+  assert.equal(multiEvidences[2].claimId, 'c-no-form');
+  assert.equal(multiEvidences[2].truthValue, true);
+
+  assert.equal(multiEvidences[3].sourceTool, 'rag_search');
+  assert.equal(multiEvidences[3].inputQueryOrCode, 'check fetch');
+  assert.equal(multiEvidences[3].rawOutput, "found fetch('/api')");
+  assert.equal(multiEvidences[3].truthValue, false, 'Explicit "false" string must resolve to false');
+
+  // 17.3 MCP submit_grounding_evidence 通道对字符串 "false" 的精确解析与多次调用聚合
+  const mcpStringFalseEvidences = parseVerifierOutput('MCP fallback check', [
+    {
+      tool_name: 'submit_grounding_evidence',
+      arguments: {
+        evidences: [
+          {
+            source_tool: 'static_analyzer',
+            input_query_or_code: 'scan script',
+            raw_output: '<script> detected',
+            truth_value: 'false',
+            status: 'PASS',
+            verifier_report: 'MCP string "false" must stay false',
+          },
+        ],
+      },
+    },
+    {
+      tool_name: 'submit_grounding_evidence',
+      arguments: {
+        evidences: [
+          {
+            tool_name: 'ast_grep',
+            code: 'scan form',
+            result: '0 forms',
+            truth_value: 'TRUE',
+            conclusion: 'No forms found',
+          },
+        ],
+      },
+    },
+  ]);
+  assert.equal(mcpStringFalseEvidences.length, 2);
+  assert.equal(mcpStringFalseEvidences[0].truthValue, false);
+  assert.equal(mcpStringFalseEvidences[1].truthValue, true);
+  assert.equal(mcpStringFalseEvidences[1].sourceTool, 'ast_grep');
+
+  // 17.4 Branch 2 结构化文本兜底：支持 snake_case 与否定汉语词（未通过/不成立）防误判
+  const structuredSnakePass = parseVerifierOutput(`
+- **source_tool**: ast_grep
+- **input_query_or_code**: grep "<script" demo/index.html
+- **raw_output**: 0 matches
+- **truth_value**: true
+- **verifier_report**: 静态检查全部通过
+`);
+  assert.equal(structuredSnakePass.length, 1);
+  assert.equal(structuredSnakePass[0].sourceTool, 'ast_grep');
+  assert.equal(structuredSnakePass[0].truthValue, true);
+  assert.equal(structuredSnakePass[0].rawOutput, '0 matches');
+
+  const structuredNegatedFail = parseVerifierOutput(`
+【验证工具】：static_analyzer
+【真值判定】：未通过
+【实证报告】：静态规则校验不成立
+`);
+  assert.equal(structuredNegatedFail.length, 1);
+  assert.equal(
+    structuredNegatedFail[0].truthValue,
+    false,
+    'Negated Chinese verdict "未通过" must never match as true'
+  );
+
+  // 17.5 JSON 内包含未转义正则反斜杠（如 fetch\(、\s+）时的自动容错恢复
+  const unescapedRegexJson = `
+\`\`\`json
+[
+  {
+    "source_tool": "ast_grep",
+    "input_query_or_code": "grep -E 'fetch\\(|\\s+' demo/index.html",
+    "raw_output": "0 matches\\\\nline1",
+    "truth_value": true,
+    "verifier_report": "正则未双反斜杠转义仍可正常解析"
+  }
+]
+\`\`\`
+`;
+  const recoveredEvidences = parseVerifierOutput(unescapedRegexJson);
+  assert.equal(recoveredEvidences.length, 1);
+  assert.equal(recoveredEvidences[0].truthValue, true);
+  assert.equal(recoveredEvidences[0].sourceTool, 'ast_grep');
+
+  console.log('✅ [17/17] TruthValue Matrix, Mixed Aliases, Multi-Block JSON & Text Fallback Passed\n');
+}
+
+console.log('🎉 [G-Frame Complete] All 17 test suites passed 100%!');
 
 
 

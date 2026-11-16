@@ -10,13 +10,9 @@ import {
   Bot, 
   Sparkles,
   ArrowUp,
-  GitBranch,
-  Plus,
   CornerDownRight,
   X,
   Square,
-  ChevronDown,
-  Users,
   Edit3,
   FileText,
   Loader2,
@@ -37,7 +33,8 @@ import {
 interface MessageInputProps {
   onSendMessage: (
     content: string,
-    attachments?: MessageAttachmentInput[]
+    attachments?: MessageAttachmentInput[],
+    sendOptions?: { swarmMode?: boolean }
   ) => Promise<void> | void;
   activeAgents: Agent[];
   isGenerating?: boolean;
@@ -69,12 +66,18 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   draftId,
 }) => {
   const [content, setContent] = useState('');
+  const [isSwarmMode, setIsSwarmMode] = useState(false);
   const [isMentionOpen, setIsMentionOpen] = useState(false);
+
+  const hasSlashSwarmPrefix = /^\/swarm(?:\s|$)/i.test(content.trim());
+  const isSwarmActive = !isDm && (isSwarmMode || hasSlashSwarmPrefix);
+
+  useEffect(() => {
+    setIsSwarmMode(false);
+  }, [isDm, draftId]);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
-  const [isOverflowOpen, setIsOverflowOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const overflowRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [draftAttachments, setDraftAttachments] = useState<
     Array<{
@@ -224,27 +227,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   };
 
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
-        setIsOverflowOpen(false);
-      }
-    };
-    if (isOverflowOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isOverflowOpen]);
-
-  useEffect(() => {
     if (quotingMessage && textareaRef.current) {
       textareaRef.current.focus();
     }
   }, [quotingMessage]);
-
-  const displayedAgents = activeAgents.slice(0, 3);
-  const overflowAgents = activeAgents.slice(3);
 
   // 频道 @ 候选严格限定在当前频道准入成员内，绝不混入工作区其他 Agent
   const candidateAgents = activeAgents;
@@ -303,8 +289,14 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               draftAttachments.map((attachment) => attachment.file)
             )
           : [];
-      await onSendMessage(finalContent, preparedAttachments);
+      const shouldUseSwarm = !isDm && isSwarmMode;
+      await onSendMessage(
+        finalContent,
+        preparedAttachments,
+        shouldUseSwarm ? { swarmMode: true } : undefined
+      );
       setContent('');
+      setIsSwarmMode(false);
       if (draftType && draftId) {
         clearDraft(draftType, draftId);
       }
@@ -539,105 +531,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         onChange={handleFileSelection}
       />
       <div className="max-w-3xl mx-auto space-y-2">
-        {/* 1. Top Quick-Mention Agent Pills + New Topic Trigger (Scenario-Adaptive & Collapsible - Only in Channel) */}
-        {(activeAgents.length > 0 || onOpenNewTopicModal) && (
-          <div className="flex flex-wrap items-center gap-1.5 pb-0.5 text-[11px] relative min-w-0">
-            {onOpenNewTopicModal && (
-              <button
-                onClick={onOpenNewTopicModal}
-                className="px-2.5 py-1 rounded-full bg-purple-500/15 hover:bg-purple-500/25 text-purple-600 dark:text-purple-300 border border-purple-500/40 text-[11px] font-semibold transition-all flex items-center gap-1 cursor-pointer shrink-0 shadow-2xs"
-                title="新建议题 (开启独立单层推演)"
-              >
-                <GitBranch className="w-3.5 h-3.5 text-purple-500" />
-                <span>+ 新建议题</span>
-              </button>
-            )}
-
-            {/* Render active agent pills (channel or DM Agent) */}
-            {(
-              <>
-                {displayedAgents.map((agent) => (
-                  <button
-                    key={agent.id}
-                    onClick={() => addMention(agent.handle)}
-                    className="px-2.5 py-1 rounded-full bg-surface-subtle hover:bg-surface-hover text-fg-secondary hover:text-fg border border-border hover:border-accent/40 transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
-                    title={`点击召唤 ${agent.name} (${agent.role})`}
-                  >
-                    <UnifiedAvatar agent={agent} avatar={agent.avatar} name={agent.name} size="xs" className="w-4 h-4" />
-                    <span className="font-semibold text-xs text-fg max-w-[110px] truncate">{agent.name}</span>
-                  </button>
-                ))}
-
-                {/* Overflow +N Popover Trigger */}
-                {overflowAgents.length > 0 && (
-                  <div className="relative shrink-0" ref={overflowRef}>
-                    <button
-                      type="button"
-                      onClick={() => setIsOverflowOpen((prev) => !prev)}
-                      className={`px-2 py-1 rounded-full text-[11px] font-medium transition-all flex items-center gap-1 cursor-pointer border ${
-                        isOverflowOpen
-                          ? 'bg-accent/20 text-accent border-accent/40 shadow-xs'
-                          : 'bg-surface-subtle hover:bg-surface-hover text-fg-secondary hover:text-fg border-border hover:border-accent/30'
-                      }`}
-                      title={`查看其余 ${overflowAgents.length} 位受邀 Agent`}
-                    >
-                      <Users className="w-3 h-3 text-fg-muted" />
-                      <span>+{overflowAgents.length}</span>
-                      <ChevronDown className={`w-3 h-3 transition-transform ${isOverflowOpen ? 'rotate-180' : ''}`} />
-                    </button>
-
-                    {/* Popover Card (Popping Upwards to avoid covering textarea) */}
-                    {isOverflowOpen && (
-                      <div className="absolute bottom-full left-0 mb-1.5 w-64 bg-surface border border-border rounded-xl shadow-2xl p-1.5 z-50 animate-in fade-in slide-in-from-bottom-2">
-                        <div className="px-2 py-1 text-[10px] text-fg-muted font-medium border-b border-border mb-1 flex items-center justify-between">
-                          <span>频道内其余 Agent ({overflowAgents.length})</span>
-                          <span className="text-[9px] text-fg-muted font-mono">点击召唤</span>
-                        </div>
-                        <div className="max-h-48 overflow-y-auto space-y-0.5">
-                          {overflowAgents.map((agent) => (
-                            <button
-                              key={agent.id}
-                              type="button"
-                              onClick={() => {
-                                addMention(agent.handle);
-                                setIsOverflowOpen(false);
-                              }}
-                              className="w-full flex items-center justify-between px-2 py-1.5 rounded-lg hover:bg-surface-hover text-left transition-colors cursor-pointer group"
-                            >
-                              <div className="flex items-center gap-2 min-w-0">
-                                <UnifiedAvatar agent={agent} avatar={agent.avatar} name={agent.name} size="sm" className="w-6 h-6" />
-                                <div className="truncate">
-                                  <div className="text-xs font-medium text-fg truncate">{agent.name}</div>
-                                  <div className="text-[10px] text-fg-muted truncate">{agent.role}</div>
-                                </div>
-                              </div>
-                              <span className="text-[10px] text-fg-muted font-mono ml-2 shrink-0 group-hover:text-accent">
-                                {agent.handle}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* @all Button: Only in Channel with >= 2 active agents */}
-                {activeAgents.length >= 2 && (
-                  <button
-                    onClick={() => addMention('@all')}
-                    className="px-2.5 py-1 rounded-full bg-surface-subtle hover:bg-surface-hover text-fg-muted hover:text-fg border border-border font-mono text-[10px] cursor-pointer shrink-0"
-                    title="同时召唤频道内全部 Agent 协同"
-                  >
-                    @all 全员
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {/* 2. Main Textarea Box with Floating Mention Suggestions */}
+        {/* Main Textarea Box with Floating Mention Suggestions */}
         <div className="relative bg-surface-subtle border border-border rounded-2xl p-3 focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/20 transition-all">
           {draftAttachments.length > 0 && (
             <div className="mb-2 flex gap-2 overflow-x-auto pb-1">
@@ -733,6 +627,34 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           <div className="flex items-center justify-between pt-2 border-t border-border mt-1 select-none">
             {/* Left Action Icons */}
             <div className="flex items-center gap-1 text-fg-muted flex-wrap">
+              {!isDm && (
+                <button
+                  type="button"
+                  data-testid="composer-swarm-toggle"
+                  aria-pressed={isSwarmActive}
+                  onClick={() => {
+                    if (hasSlashSwarmPrefix) return;
+                    setIsSwarmMode((prev) => !prev);
+                  }}
+                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium border transition-colors ${
+                    isSwarmActive
+                      ? 'bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-500/35'
+                      : 'border-transparent hover:border-border hover:bg-surface-hover text-fg-secondary hover:text-fg'
+                  }`}
+                  title="开启 Swarm 协同模式：由单个 Lead Agent 拆解任务并暂停等待您确认后并发派发（也支持 /swarm 前缀）"
+                >
+                  <span>🐝</span>
+                  <span>Swarm</span>
+                </button>
+              )}
+              {isSwarmActive && (
+                <span
+                  data-testid="composer-swarm-active-banner"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-500/25"
+                >
+                  Lead 拆解 → 人工确认 → 并行隔离执行
+                </span>
+              )}
               {!isDm ? (
                 <button 
                   onClick={handleToolbarAtClick}

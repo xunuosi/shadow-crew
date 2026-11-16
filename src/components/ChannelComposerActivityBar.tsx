@@ -6,7 +6,7 @@ import { UnifiedAvatar } from './AgentAvatarArtwork';
 interface ChannelComposerActivityBarProps {
   executions: ActiveAgentExecution[];
   agents?: Agent[];
-  onAbortAgent?: (agentId: string) => void;
+  onAbortAgent?: (agentId: string, threadId?: string) => void;
   onOpenAgentSession?: (agentId: string) => void;
 }
 
@@ -70,7 +70,7 @@ export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProp
                   const exAgent = agents?.find((a) => a.id === ex.agentId);
                   return (
                     <div
-                      key={ex.agentId}
+                      key={`${ex.threadId}:${ex.agentId}`}
                       className="relative shrink-0 shadow-2xs"
                     >
                       <UnifiedAvatar
@@ -145,7 +145,7 @@ export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProp
 
             {onAbortAgent && (
               <button
-                onClick={() => onAbortAgent(primary.agentId)}
+                onClick={() => onAbortAgent(primary.agentId, primary.threadId)}
                 className="ml-1 px-1.5 py-0.5 rounded-md bg-red-500/15 hover:bg-red-500/25 text-red-500 text-[10px] font-semibold transition-colors cursor-pointer flex items-center gap-1 border border-red-500/30 shrink-0"
                 title="终止此 Agent 响应 (Esc)"
               >
@@ -176,7 +176,7 @@ export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProp
               const elapsed = ((now - ex.startedAt) / 1000).toFixed(1);
               return (
                 <div
-                  key={ex.agentId}
+                  key={`${ex.threadId}:${ex.agentId}`}
                   className="flex items-center justify-between p-2 rounded-xl bg-surface-subtle hover:bg-surface-hover border border-border/50 transition-colors group"
                 >
                   <div
@@ -217,7 +217,7 @@ export const ChannelComposerActivityBar: React.FC<ChannelComposerActivityBarProp
                     <Loader2 className="w-3.5 h-3.5 text-accent animate-spin" />
                     {onAbortAgent && (
                       <button
-                        onClick={() => onAbortAgent(ex.agentId)}
+                        onClick={() => onAbortAgent(ex.agentId, ex.threadId)}
                         className="p-1 rounded-md hover:bg-red-500/20 text-fg-muted hover:text-red-500 transition-colors cursor-pointer"
                         title={`停止 ${ex.agentName}`}
                       >

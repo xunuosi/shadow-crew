@@ -117,6 +117,44 @@ function runWave1Tests() {
 
   console.log('✓ P0-1 结构化证据解析、T1/T2 分级门禁、原子承诺链绑定与真值率校验通过！');
 
+  // --- 测试 1.2: 原生 MCP 工具 submit_grounding_evidence 直通提取 ---
+  console.log('\n--- 测试 1.2: 原生 MCP 工具 submit_grounding_evidence 直通提取 ---');
+  const mcpToolEvidencesResult = processVerifierEvidenceChain({
+    topicId: 'topic-test-mcp',
+    verifierText: '【实证结论】已通过原生 MCP 工具完成实证检测。',
+    mcpToolCalls: [
+      {
+        tool_name: 'submit_grounding_evidence',
+        arguments: {
+          evidences: [
+            {
+              source_tool: 'ast_grep',
+              input_query_or_code: 'ast-grep --pattern "active_sessions.lock()"',
+              raw_output: 'src/acp_manager.rs:42: match found',
+              truth_value: false,
+              confidence: 0.95,
+              verifier_report: '原生工具实证：复现锁竞争漏洞',
+            },
+          ],
+        },
+      },
+    ],
+    isSafetyCharterSigned: true,
+    disputePacket: initialDispute,
+    committedStates: initialCommittedStates,
+  });
+
+  if (mcpToolEvidencesResult.evidences.length !== 1) {
+    throw new Error(`[FAIL] MCP submit_grounding_evidence 应提取 1 项证据，实际为: ${mcpToolEvidencesResult.evidences.length}`);
+  }
+  if (mcpToolEvidencesResult.evidences[0].sourceTool !== 'ast_grep') {
+    throw new Error(`[FAIL] 证据工具名不匹配: ${mcpToolEvidencesResult.evidences[0].sourceTool}`);
+  }
+  if (mcpToolEvidencesResult.evidences[0].truthValue !== false) {
+    throw new Error(`[FAIL] 证据真值判定不匹配`);
+  }
+  console.log('✓ MCP submit_grounding_evidence 原生工具提取与分级处理通过！');
+
   // --- 测试 2: P0-2 伴生少数派异议报告编译 ---
   console.log('\n--- 测试 2: P0-2 少数派异议报告编译 ---');
   const critiqueSample = `

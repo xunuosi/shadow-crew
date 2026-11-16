@@ -15,8 +15,13 @@
  * - Sequential Consensus for Multi-Agent LLM Debates (2026).
  */
 
-import { SprtGovernorState } from '../../types';
+import { ChallengeCritiquePayload, DefensePatchPayload, SprtGovernorState } from '../../types';
+import {
+  extractChallengeCritiqueFromAcpResponse,
+  extractDefensePatchFromAcpResponse,
+} from '../acpClient';
 import { getMetricBaselineSummary, MetricBaselineSummary } from './metricBaselineTracker';
+import { analyzeStructuredMarkdown } from './structuredTextAnalyzer';
 import { ANALYTICAL_DEFENSE_PHRASES } from './sycophancyGovernor';
 import { getSprtThresholdOverrides } from './sprtThresholdConfig';
 
@@ -34,30 +39,132 @@ export interface TopicDomainProfile {
   groundingWeightWhenPresent: number;
 }
 
-const CODE_DOMAIN_REGEX =
-  /\b(function|class|interface|const|let|var|import|export|return|async|await|rust|cargo|tauri|react|typescript|sql|ast|git|diff|patch|bug|error|exception|stacktrace|compile|lint|test)\b|```|[a-zA-Z0-9_-]+\.(ts|tsx|rs|py|js|json|toml)/i;
+const CODE_DOMAIN_ASCII_TOKENS = new Set([
+  'function',
+  'class',
+  'interface',
+  'const',
+  'let',
+  'var',
+  'import',
+  'export',
+  'return',
+  'async',
+  'await',
+  'rust',
+  'cargo',
+  'tauri',
+  'react',
+  'typescript',
+  'sql',
+  'ast',
+  'git',
+  'diff',
+  'patch',
+  'bug',
+  'error',
+  'exception',
+  'stacktrace',
+  'compile',
+  'lint',
+  'test',
+]);
 
-const ARCH_DOMAIN_REGEX =
-  /(架构|模块|协议|吞吐|延迟|并发|一致性|分布式|状态机|微服务|数据库|缓存|网关|调度|容灾|降级|拓扑|接口契约|schema|architecture|protocol|latency|throughput|scalability|consensus)/i;
+const ARCH_DOMAIN_ASCII_TOKENS = new Set([
+  'schema',
+  'architecture',
+  'protocol',
+  'latency',
+  'throughput',
+  'scalability',
+  'consensus',
+]);
+
+const ARCH_DOMAIN_ZH_TOKENS = [
+  '架构',
+  '模块',
+  '协议',
+  '吞吐',
+  '延迟',
+  '并发',
+  '一致性',
+  '分布式',
+  '状态机',
+  '微服务',
+  '数据库',
+  '缓存',
+  '网关',
+  '调度',
+  '容灾',
+  '降级',
+  '拓扑',
+  '接口契约',
+] as const;
+
+function extractLowerAsciiWordSet(text: string): Set<string> {
+  const words = new Set<string>();
+  let buf = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const code = ch.charCodeAt(0);
+    const isWord =
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) ||
+      ch === '_';
+    if (isWord) {
+      buf += ch;
+    } else if (buf) {
+      words.add(buf.toLowerCase());
+      buf = '';
+    }
+  }
+  if (buf) {
+    words.add(buf.toLowerCase());
+  }
+  return words;
+}
 
 /**
- * 根据议题描述文本自动推断议题域配置画像
+ * 根据显式领域声明或确定性 AST/词元分类推断议题域配置画像
  */
 export function inferTopicDomainProfile(
   topicText?: string,
-  override?: Partial<TopicDomainProfile>
+  override?: Partial<TopicDomainProfile>,
+  explicitDomainType?: TopicDomainType
 ): TopicDomainProfile {
   let domainType: TopicDomainType =
+    explicitDomainType ||
     override?.domainType ||
     (topicText && topicText.trim().length > 0 ? 'open_ended_general' : 'deterministic_code');
 
-  if (!override?.domainType && topicText && topicText.trim().length > 0) {
-    if (CODE_DOMAIN_REGEX.test(topicText)) {
+  if (!explicitDomainType && !override?.domainType && topicText && topicText.trim().length > 0) {
+    const ast = analyzeStructuredMarkdown(topicText);
+    const asciiWords = extractLowerAsciiWordSet(topicText);
+    let isCodeDomain =
+      ast.fencedCodeBlocks.length > 0 || ast.diffFiles.length > 0 || ast.filePaths.length > 0;
+    if (!isCodeDomain) {
+      for (const tok of CODE_DOMAIN_ASCII_TOKENS) {
+        if (asciiWords.has(tok)) {
+          isCodeDomain = true;
+          break;
+        }
+      }
+    }
+
+    if (isCodeDomain) {
       domainType = 'deterministic_code';
-    } else if (ARCH_DOMAIN_REGEX.test(topicText)) {
-      domainType = 'architecture_design';
     } else {
-      domainType = 'open_ended_general';
+      let isArchDomain = ARCH_DOMAIN_ZH_TOKENS.some((kw) => topicText.includes(kw));
+      if (!isArchDomain) {
+        for (const tok of ARCH_DOMAIN_ASCII_TOKENS) {
+          if (asciiWords.has(tok)) {
+            isArchDomain = true;
+            break;
+          }
+        }
+      }
+      domainType = isArchDomain ? 'architecture_design' : 'open_ended_general';
     }
   }
 
@@ -387,9 +494,19 @@ export function stepSprtGovernor(options: EvaluateSprtOptions): SprtGovernorStat
   };
 }
 
+const DEFENSE_POSITIVE_SIGNALS = [
+  '采纳', '补丁', '修复', '重构', '同意', '解决', '优化', '认可', '已修正', '引入锁', '降级',
+  '权衡来看', '折中方案', '分阶段推进', '替代方案', '保留底线', '商业闭环',
+] as const;
+
+const DEFENSE_NEGATIVE_SIGNALS = [
+  '无法认同', '拒绝修改', '并非漏洞', '不予采纳', '死锁', '严重分歧', '坚持原案', '根本不可行',
+] as const;
+
+const SEVERE_CRITIQUE_SIGNALS = ['致命', '崩溃', '数据失真'] as const;
+
 /**
- * 基于文本语义与接地证据评估当前轮次对齐分数 (0~1)
- * 支持代码工程与开放商业/架构双轨特征词库
+ * 基于结构化 MCP 契约 (submit_challenge_critique / submit_defense_patch) 与接地证据评估当前轮次对齐分数 (0~1)
  */
 export function estimateRoundAlignmentScore(options: {
   proposalText?: string;
@@ -401,9 +518,10 @@ export function estimateRoundAlignmentScore(options: {
   agreementsCount?: number;
   disagreementsCount?: number;
   neutralCount?: number;
+  critiquePayload?: ChallengeCritiquePayload | null;
+  defensePayload?: DefensePatchPayload | null;
 }): number {
   const {
-    proposalText = '',
     critiqueText = '',
     defenseText = '',
     groundedTrueRatio,
@@ -412,6 +530,8 @@ export function estimateRoundAlignmentScore(options: {
     agreementsCount,
     disagreementsCount,
     neutralCount = 0,
+    critiquePayload: explicitCritiquePayload,
+    defensePayload: explicitDefensePayload,
   } = options;
 
   if (isExempted) {
@@ -426,46 +546,85 @@ export function estimateRoundAlignmentScore(options: {
     return Number(Math.min(0.95, Math.max(0.05, rawRatio)).toFixed(3));
   }
 
-  // 2. 文本语义对齐度分析
+  const critiqueExtracted = explicitCritiquePayload
+    ? { critiquePayload: explicitCritiquePayload, cleanedText: critiqueText }
+    : extractChallengeCritiqueFromAcpResponse({ textResponse: critiqueText });
+  const defenseExtracted = explicitDefensePayload
+    ? { defensePayload: explicitDefensePayload, cleanedText: defenseText }
+    : extractDefensePatchFromAcpResponse({ textResponse: defenseText });
+
+  const critiquePayload = critiqueExtracted.critiquePayload;
+  const defensePayload = defenseExtracted.defensePayload;
+  const cleanedCritique = critiqueExtracted.cleanedText || critiqueText;
+  const cleanedDefense = defenseExtracted.cleanedText || defenseText;
+
+  // 2. 优先从结构化 MCP 契约中直接读取语义对齐信号与防卫姿态
   let semanticScore = 0.50;
-  const defensePositiveSignals = [
-    '采纳', '补丁', '修复', '重构', '同意', '解决', '优化', '认可', '已修正', '引入锁', '降级',
-    '权衡来看', '折中方案', '分阶段推进', '替代方案', '保留底线', '商业闭环',
-  ];
-  const defenseNegativeSignals = [
-    '无法认同', '拒绝修改', '并非漏洞', '不予采纳', '死锁', '严重分歧', '坚持原案', '根本不可行',
-  ];
+  let usedStructuredSemantics = false;
 
-  let posCount = 0;
-  let negCount = 0;
-
-  defensePositiveSignals.forEach((sig) => {
-    if (defenseText.includes(sig)) posCount++;
-  });
-  defenseNegativeSignals.forEach((sig) => {
-    if (defenseText.includes(sig)) negCount++;
-  });
-
-  // 检查第二层通用分析抗辩词表
-  ANALYTICAL_DEFENSE_PHRASES.forEach((sig) => {
-    if (defenseText.includes(sig)) posCount++;
-  });
-
-  if (defenseText.length > 40) {
-    if (posCount > negCount) {
-      semanticScore += Math.min(0.30, 0.15 + (posCount - negCount) * 0.05);
-    } else if (negCount > posCount) {
-      semanticScore -= Math.min(0.30, 0.15 + (negCount - posCount) * 0.05);
+  if (defensePayload) {
+    usedStructuredSemantics = true;
+    if (typeof defensePayload.alignmentScore === 'number') {
+      semanticScore = defensePayload.alignmentScore;
+    } else {
+      const stanceBase: Record<DefensePatchPayload['stance'], number> = {
+        partial_concession_with_patch: 0.78,
+        uphold_with_patch: 0.72,
+        reject_critique_with_proof: 0.42,
+        full_surrender_without_patch: 0.35,
+      };
+      semanticScore = stanceBase[defensePayload.stance] ?? 0.55;
+      if (defensePayload.patchedClaims.length > 0) {
+        const resolvedCount = defensePayload.patchedClaims.filter(
+          (c) => c.status === 'resolved'
+        ).length;
+        semanticScore += (resolvedCount / defensePayload.patchedClaims.length) * 0.12;
+      }
     }
+    if (typeof critiquePayload?.alignmentScore === 'number') {
+      semanticScore = 0.65 * semanticScore + 0.35 * critiquePayload.alignmentScore;
+    }
+  } else if (typeof critiquePayload?.alignmentScore === 'number') {
+    semanticScore = critiquePayload.alignmentScore;
+    usedStructuredSemantics = true;
   }
 
-  // 检查挑战文本的攻击烈度
-  if (critiqueText.includes('致命') || critiqueText.includes('崩溃') || critiqueText.includes('数据失真')) {
-    semanticScore -= 0.10;
+  // 3. 当未提供结构化对齐字段时，回退至 AST/词表确定性语义分析
+  if (!usedStructuredSemantics) {
+    let posCount = 0;
+    let negCount = 0;
+
+    DEFENSE_POSITIVE_SIGNALS.forEach((sig) => {
+      if (cleanedDefense.includes(sig)) posCount++;
+    });
+    DEFENSE_NEGATIVE_SIGNALS.forEach((sig) => {
+      if (cleanedDefense.includes(sig)) negCount++;
+    });
+    ANALYTICAL_DEFENSE_PHRASES.forEach((sig) => {
+      if (cleanedDefense.includes(sig)) posCount++;
+    });
+
+    if (cleanedDefense.length > 40) {
+      if (posCount > negCount) {
+        semanticScore += Math.min(0.30, 0.15 + (posCount - negCount) * 0.05);
+      } else if (negCount > posCount) {
+        semanticScore -= Math.min(0.30, 0.15 + (negCount - posCount) * 0.05);
+      }
+    }
+
+    const hasSevereCritique =
+      (critiquePayload?.fatalFlaws?.length ?? 0) > 0 ||
+      SEVERE_CRITIQUE_SIGNALS.some((sig) => cleanedCritique.includes(sig));
+    if (hasSevereCritique) {
+      semanticScore -= 0.10;
+    }
+  } else if ((critiquePayload?.fatalFlaws?.length ?? 0) > 0 && typeof defensePayload?.alignmentScore !== 'number') {
+    semanticScore -= 0.05;
   }
+
   semanticScore = Math.max(0.05, Math.min(0.95, semanticScore));
 
-  // 3. 多维联合观测向量融合 (P1-2: Grounding + Semantic + DSS)
+  // 4. 多维联合观测向量融合 (P1-2: Grounding + Semantic + DSS)
   let finalScore = semanticScore;
   if (typeof groundedTrueRatio === 'number' && typeof dssScore === 'number') {
     finalScore = 0.40 * groundedTrueRatio + 0.35 * semanticScore + 0.25 * (1.0 - dssScore);

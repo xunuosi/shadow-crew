@@ -72,10 +72,261 @@ export function getLocalStorageUsageBytes(): number {
   return totalBytes;
 }
 
+const TRANSIENT_PENDING_ID_PREFIXES = ['topic-pending-', 'msg-pending-'] as const;
+
+/**
+ * 判断消息是否为流式/推演期间的瞬态占位快照。
+ * 关键回归约束：被手动终止/成员更新终止并标记为 `agentBadge === '已终止'` 的记录
+ * 属于保留语义的历史消息，绝不能视为瞬态占位。
+ */
+export function isTransientPendingMessage(msg: Message): boolean {
+  if (!msg || typeof msg !== 'object') return false;
+  if (msg.agentBadge === '已终止') return false;
+  if (msg.isPending === true) return true;
+  const id = typeof msg.id === 'string' ? msg.id : '';
+  return TRANSIENT_PENDING_ID_PREFIXES.some((prefix) => id.startsWith(prefix));
+}
+
+/**
+ * 过滤出允许落盘持久化的非瞬态消息集合。
+ */
+export function filterPersistableMessages(messages: Message[]): Message[] {
+  if (!Array.isArray(messages) || messages.length === 0) return [];
+  return messages.filter((msg) => !isTransientPendingMessage(msg));
+}
+
+function parseTopicExecModSuffix(
+  id: string,
+  prefix: 'topic-pending-exec-mod-' | 'topic-reply-exec-mod-'
+): string | null {
+  if (!id.startsWith(prefix)) return null;
+  const rest = id.slice(prefix.length);
+  const dashIdx = rest.indexOf('-');
+  if (dashIdx <= 0) return null;
+  const digits = rest.slice(0, dashIdx);
+  for (let i = 0; i < digits.length; i++) {
+    const code = digits.charCodeAt(i);
+    if (code < 48 || code > 57) return null;
+  }
+  const suffix = rest.slice(dashIdx + 1);
+  return suffix.length > 0 ? suffix : null;
+}
+
+function extractPendingReplySignature(id: string): { kind: string; suffix?: string } | null {
+  if (!id) return null;
+  const execModSuffix =
+    parseTopicExecModSuffix(id, 'topic-pending-exec-mod-') ??
+    parseTopicExecModSuffix(id, 'topic-reply-exec-mod-');
+  if (execModSuffix) {
+    return { kind: 'exec-mod', suffix: execModSuffix };
+  }
+  if (id.startsWith('topic-pending-concurrence-') || id.startsWith('topic-reply-concurrence-')) {
+    return { kind: 'concurrence' };
+  }
+  if (id.startsWith('topic-pending-exec-') || id.startsWith('topic-reply-exec-')) {
+    return { kind: 'exec' };
+  }
+  return null;
+}
+
+function canCarryOverStartedAt(pending: Message, candidate: Message): boolean {
+  if (candidate.agentBadge === '已终止') return false;
+  if ((candidate.threadId || '') !== (pending.threadId || '')) return false;
+  if (candidate.authorId !== pending.authorId) return false;
+  if (
+    candidate.kind === 'system_control' ||
+    candidate.kind === 'guard' ||
+    candidate.kind === 'rollup'
+  ) {
+    return false;
+  }
+  if (typeof candidate.startedAt === 'number' && Number.isFinite(candidate.startedAt)) {
+    return false;
+  }
+  if (
+    pending.gameStage !== undefined &&
+    candidate.gameStage !== undefined &&
+    candidate.gameStage !== pending.gameStage
+  ) {
+    return false;
+  }
+  if (
+    pending.gameRole !== undefined &&
+    candidate.gameRole !== undefined &&
+    candidate.gameRole !== pending.gameRole
+  ) {
+    return false;
+  }
+  if (
+    pending.moduleId !== undefined &&
+    candidate.moduleId !== undefined &&
+    candidate.moduleId !== pending.moduleId
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function scoreReplyMatch(pending: Message, candidate: Message): number {
+  let score = 0;
+  if (pending.gameStage !== undefined && candidate.gameStage === pending.gameStage) {
+    score += 4;
+  }
+  if (pending.gameRole !== undefined && candidate.gameRole === pending.gameRole) {
+    score += 2;
+  }
+  if (pending.moduleId !== undefined && candidate.moduleId === pending.moduleId) {
+    score += 4;
+  }
+  const pendingSig = extractPendingReplySignature(pending.id || '');
+  const candidateSig = extractPendingReplySignature(candidate.id || '');
+  if (pendingSig && candidateSig && pendingSig.kind === candidateSig.kind) {
+    score += 4;
+    if (pendingSig.suffix && candidateSig.suffix && pendingSig.suffix === candidateSig.suffix) {
+      score += 8;
+    }
+  }
+  return score;
+}
+
+/**
+ * 清洗并协调消息列表：
+ * - 剔除所有瞬态 Pending 占位快照并收集待清理 ID（`purgedPendingIds`）；
+ * - 完整保留 `agentBadge === '已终止'` 的中断记录；
+ * - 若终态回复缺少 `startedAt`，从对应的瞬态 Pending 快照继承 `startedAt`。
+ */
+export function reconcileAndSanitizeMessages(list: Message[]): {
+  sanitized: Message[];
+  purgedPendingIds: string[];
+} {
+  if (!Array.isArray(list) || list.length === 0) {
+    return { sanitized: [], purgedPendingIds: [] };
+  }
+
+  const purgedIdSet = new Set<string>();
+  const pendingItems: Array<{ origIdx: number; msg: Message }> = [];
+  const keptItems: Array<{ origIdx: number; msg: Message }> = [];
+
+  list.forEach((rawMsg, origIdx) => {
+    if (!rawMsg || typeof rawMsg !== 'object') return;
+    if (isTransientPendingMessage(rawMsg)) {
+      if (typeof rawMsg.id === 'string' && rawMsg.id.trim().length > 0) {
+        purgedIdSet.add(rawMsg.id);
+      }
+      pendingItems.push({ origIdx, msg: rawMsg });
+      return;
+    }
+
+    const cleaned = { ...rawMsg } as Message & { projectId?: string };
+    delete cleaned.projectId;
+    if (cleaned.isPending) {
+      cleaned.isPending = false;
+    }
+    keptItems.push({ origIdx, msg: cleaned });
+  });
+
+  for (const pendingEntry of pendingItems) {
+    const startedAt = pendingEntry.msg.startedAt;
+    if (typeof startedAt !== 'number' || !Number.isFinite(startedAt)) {
+      continue;
+    }
+
+    const forwardCandidates = keptItems.filter(
+      (entry) =>
+        entry.origIdx > pendingEntry.origIdx &&
+        canCarryOverStartedAt(pendingEntry.msg, entry.msg)
+    );
+    const pool =
+      forwardCandidates.length > 0
+        ? forwardCandidates
+        : keptItems.filter((entry) => canCarryOverStartedAt(pendingEntry.msg, entry.msg));
+
+    if (pool.length === 0) continue;
+
+    let best = pool[0];
+    let bestScore = scoreReplyMatch(pendingEntry.msg, best.msg);
+    for (let i = 1; i < pool.length; i++) {
+      const candidateScore = scoreReplyMatch(pendingEntry.msg, pool[i].msg);
+      if (candidateScore > bestScore) {
+        best = pool[i];
+        bestScore = candidateScore;
+      }
+    }
+    best.msg.startedAt = startedAt;
+  }
+
+  return {
+    sanitized: keptItems.map((entry) => entry.msg),
+    purgedPendingIds: Array.from(purgedIdSet),
+  };
+}
+
+function readWebMessagesFromLocalStorage(): {
+  shape: 'array' | 'map' | 'empty';
+  arrayList: Message[];
+  threadMap: Record<string, Message[]>;
+} {
+  if (typeof localStorage === 'undefined') {
+    return { shape: 'empty', arrayList: [], threadMap: {} };
+  }
+  const raw = localStorage.getItem('shinobi_messages');
+  if (!raw) {
+    return { shape: 'empty', arrayList: [], threadMap: {} };
+  }
+  const parsed = JSON.parse(raw);
+  if (Array.isArray(parsed)) {
+    return { shape: 'array', arrayList: parsed as Message[], threadMap: {} };
+  }
+  if (parsed && typeof parsed === 'object') {
+    return { shape: 'map', arrayList: [], threadMap: parsed as Record<string, Message[]> };
+  }
+  return { shape: 'empty', arrayList: [], threadMap: {} };
+}
+
+function upsertWebMessagesToLocalStorage(persistableMessages: Message[]): void {
+  if (typeof localStorage === 'undefined') return;
+  const current = readWebMessagesFromLocalStorage();
+
+  if (current.shape === 'map') {
+    const nextMap: Record<string, Message[]> = {};
+    for (const [threadId, list] of Object.entries(current.threadMap)) {
+      nextMap[threadId] = filterPersistableMessages(Array.isArray(list) ? list : []);
+    }
+    for (const msg of persistableMessages) {
+      const key = msg.threadId || msg.channelId || 'general';
+      const bucket = nextMap[key] ? [...nextMap[key]] : [];
+      const existingIdx = bucket.findIndex((m) => m.id === msg.id);
+      if (existingIdx >= 0) {
+        bucket[existingIdx] = msg;
+      } else {
+        bucket.push(msg);
+      }
+      nextMap[key] = bucket;
+    }
+    localStorage.setItem('shinobi_messages', JSON.stringify(nextMap));
+    return;
+  }
+
+  const nextList = filterPersistableMessages(current.arrayList);
+  for (const msg of persistableMessages) {
+    const existingIdx = nextList.findIndex((m) => m.id === msg.id);
+    if (existingIdx >= 0) {
+      nextList[existingIdx] = msg;
+    } else {
+      nextList.push(msg);
+    }
+  }
+  localStorage.setItem('shinobi_messages', JSON.stringify(nextList));
+}
+
 /**
  * 保存单条消息到 SQLite (Tauri 优先，降级到本地缓存)
  */
 export async function saveMessageToDb(message: Message): Promise<void> {
+  if (isTransientPendingMessage(message)) {
+    return;
+  }
+
   const invoke = getTauriInvoke();
   if (invoke) {
     try {
@@ -88,15 +339,7 @@ export async function saveMessageToDb(message: Message): Promise<void> {
 
   // 降级模式 (Web 环境)
   try {
-    const raw = localStorage.getItem('shinobi_messages');
-    const list: Message[] = raw ? JSON.parse(raw) : [];
-    const idx = list.findIndex((m) => m.id === message.id);
-    if (idx >= 0) {
-      list[idx] = message;
-    } else {
-      list.push(message);
-    }
-    localStorage.setItem('shinobi_messages', JSON.stringify(list));
+    upsertWebMessagesToLocalStorage([message]);
   } catch (err) {
     failClosed('localStorage 消息写入', err);
   }
@@ -107,32 +350,97 @@ export async function saveMessageToDb(message: Message): Promise<void> {
  */
 export async function saveMessagesBatchToDb(messages: Message[]): Promise<number> {
   if (!messages || messages.length === 0) return 0;
+  const persistableMessages = filterPersistableMessages(messages);
+
   const invoke = getTauriInvoke();
   if (invoke) {
+    if (persistableMessages.length === 0) {
+      return 0;
+    }
     try {
-      const count = await invoke('db_save_messages_batch', { messages });
-      const persisted = Number(count);
-      if (!Number.isFinite(persisted) || persisted < 0) {
-        throw new Error(`原生返回了非法写入条数：${String(count)}`);
+      const count = await invoke('db_save_messages_batch', { messages: persistableMessages });
+      if (typeof count === 'number' && Number.isFinite(count)) {
+        return count;
       }
-      if (persisted < messages.length) {
-        console.warn(
-          `[dbClient] db_save_messages_batch 仅写入 ${persisted}/${messages.length} 条（缺失 id 的消息被跳过）`
-        );
-      }
-      return persisted;
+      const parsedCount = Number(count);
+      return Number.isFinite(parsedCount) && count !== null && count !== undefined
+        ? parsedCount
+        : persistableMessages.length;
     } catch (e) {
       failClosed('db_save_messages_batch', e);
     }
   }
 
-  // Web 降级：真正写入 localStorage，并按批量覆盖语义返回写入条数。
   try {
-    localStorage.setItem('shinobi_messages', JSON.stringify(messages));
-    return messages.length;
+    upsertWebMessagesToLocalStorage(persistableMessages);
   } catch (err) {
-    failClosed('localStorage 批量消息写入', err);
+    console.error('[dbClient] LocalStorage batch fallback write failed:', err);
   }
+
+  return persistableMessages.length;
+}
+
+/**
+ * 按消息 ID 列表从 SQLite（或 Web localStorage）批量删除指定消息记录
+ */
+export async function deleteMessagesByIdsFromDb(ids: string[]): Promise<number> {
+  const cleanIds = Array.from(
+    new Set((ids || []).filter((id): id is string => typeof id === 'string' && id.trim().length > 0))
+  );
+  if (cleanIds.length === 0) return 0;
+
+  const invoke = getTauriInvoke();
+  if (invoke) {
+    try {
+      const deleted = await invoke('db_delete_messages_by_ids', { ids: cleanIds });
+      return Number(deleted) || 0;
+    } catch (e) {
+      console.error('[dbClient] db_delete_messages_by_ids failed:', e);
+    }
+  }
+
+  if (typeof localStorage === 'undefined') return 0;
+  try {
+    const current = readWebMessagesFromLocalStorage();
+    const idSet = new Set(cleanIds);
+    let removedCount = 0;
+
+    if (current.shape === 'array') {
+      const next = current.arrayList.filter((m) => {
+        if (m && typeof m.id === 'string' && idSet.has(m.id)) {
+          removedCount++;
+          return false;
+        }
+        return true;
+      });
+      if (removedCount > 0) {
+        localStorage.setItem('shinobi_messages', JSON.stringify(next));
+      }
+      return removedCount;
+    }
+
+    if (current.shape === 'map') {
+      const nextMap: Record<string, Message[]> = {};
+      for (const [threadId, list] of Object.entries(current.threadMap)) {
+        const safeList = Array.isArray(list) ? list : [];
+        nextMap[threadId] = safeList.filter((m) => {
+          if (m && typeof m.id === 'string' && idSet.has(m.id)) {
+            removedCount++;
+            return false;
+          }
+          return true;
+        });
+      }
+      if (removedCount > 0) {
+        localStorage.setItem('shinobi_messages', JSON.stringify(nextMap));
+      }
+      return removedCount;
+    }
+  } catch (err) {
+    console.error('[dbClient] LocalStorage deleteMessagesByIdsFromDb failed:', err);
+  }
+
+  return 0;
 }
 
 /**
@@ -164,9 +472,14 @@ export async function loadMessagesFromDb(filter?: {
 
   // 降级从 localStorage 读取
   try {
-    const raw = localStorage.getItem('shinobi_messages');
-    if (raw) {
-      const list: Message[] = JSON.parse(raw);
+    const current = readWebMessagesFromLocalStorage();
+    const list: Message[] =
+      current.shape === 'array'
+        ? current.arrayList
+        : current.shape === 'map'
+          ? Object.values(current.threadMap).flat()
+          : [];
+    if (list.length > 0) {
       if (filter?.threadId) {
         return list.filter((m) => m.threadId === filter.threadId);
       }
@@ -230,7 +543,9 @@ export async function clearAllMessagesFromDb(): Promise<number> {
   }
 
   // Web 降级清空
-  localStorage.removeItem('shinobi_messages');
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem('shinobi_messages');
+  }
   return 0;
 }
 
@@ -265,10 +580,14 @@ export async function getStorageStats(): Promise<StorageStats> {
   // 纯浏览器降级估算
   let messagesCount = 0;
   try {
-    const raw = localStorage.getItem('shinobi_messages');
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      messagesCount = Array.isArray(parsed) ? parsed.length : 0;
+    const current = readWebMessagesFromLocalStorage();
+    if (current.shape === 'array') {
+      messagesCount = current.arrayList.length;
+    } else if (current.shape === 'map') {
+      messagesCount = Object.values(current.threadMap).reduce(
+        (sum, list) => sum + (Array.isArray(list) ? list.length : 0),
+        0
+      );
     }
   } catch (err) {
     console.warn('[dbClient] localStorage 消息快照损坏，统计按 0 处理', err);

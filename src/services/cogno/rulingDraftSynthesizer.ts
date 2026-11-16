@@ -12,44 +12,105 @@
 
 import {
   ArbitrationRulingDraft,
+  ArgumentNode,
+  ChallengeCritiquePayload,
+  DefensePatchPayload,
   McdaDecisionPayload,
+  ModularOrchestrationState,
+  ProposalClaimsPayload,
   RulingDecisionType,
 } from '../../types';
+import {
+  extractMcpToolCallArguments,
+  extractStructuredContractEnvelope,
+  matchesMcpToolName,
+  normalizeMcdaMatrixInput,
+} from '../acpClient';
+import {
+  analyzeStructuredMarkdown,
+  extractFilePathsFromTextSegment,
+} from './structuredTextAnalyzer';
+
+const CORE_CLAIM_KEYWORDS = [
+  '架构',
+  '方案',
+  '设计',
+  '重构',
+  '单点',
+  '并发',
+  '延迟',
+  '一致性',
+  '缓存',
+  '数据库',
+  '安全',
+  '异常',
+  '幂等',
+  '分区',
+  '内存',
+  '接口',
+  '死锁',
+  '解耦',
+  '补偿',
+] as const;
+
+const MARKDOWN_INLINE_DECORATORS = new Set(['#', '*', '`', '_']);
+
+function stripMarkdownChars(raw: string): string {
+  let out = '';
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (!MARKDOWN_INLINE_DECORATORS.has(ch)) {
+      out += ch;
+    }
+  }
+  return out.trim();
+}
 
 /**
- * 从长文本中提取核心技术主张与论据切片，剔除 Markdown 标题、多余空行及礼貌套话
+ * 从长文本中基于确定性 AST 与关键词表提取核心技术主张与论据切片，剔除 Markdown 标题、多余空行及礼貌套话
  */
 export function extractCoreClaims(text?: string, maxLen = 140): string {
   if (!text || !text.trim()) return '';
-  const lines = text
+  const ast = analyzeStructuredMarkdown(text);
+  const rawLines = text
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith('#') && !l.startsWith('```') && !l.startsWith('>'));
 
-  // 优先查找包含核心技术架构或判定关键词的行
-  const keywordLine = lines.find((l) =>
-    /架构|方案|设计|重构|单点|并发|延迟|一致性|缓存|数据库|安全|异常|幂等|分区|内存|接口|死锁|解耦|补偿/i.test(l)
+  const candidates = Array.from(
+    new Set([...ast.listItems, ...ast.sentences, ...rawLines].filter(Boolean))
   );
 
-  const candidate = (keywordLine || lines[0] || '').replace(/[#*`_]/g, '').trim();
+  const keywordLine = candidates.find((l) =>
+    CORE_CLAIM_KEYWORDS.some((kw) => l.includes(kw))
+  );
+
+  const candidate = stripMarkdownChars(keywordLine || candidates[0] || '');
   if (candidate.length <= maxLen) return candidate;
   return candidate.slice(0, maxLen).trim() + '...';
 }
 
 /**
- * 从研讨文本列表中提取涉及的文件路径
+ * 从显式受影响路径列表与研讨文本 AST 中确定性提取涉案文件路径
  */
-export function extractImpactedFilesFromDebate(texts: (string | undefined)[]): string[] {
+export function extractImpactedFilesFromDebate(
+  texts: (string | undefined)[],
+  explicitFiles?: string[]
+): string[] {
   const fileSet = new Set<string>();
-  const fileRegex = /(?:[\w.-]+\/)+[\w.-]+\.(?:ts|tsx|js|jsx|rs|json|toml|yaml|yml|md|py|go|sql)/g;
+  if (Array.isArray(explicitFiles)) {
+    for (const f of explicitFiles) {
+      const clean = String(f || '').trim();
+      if (clean && !clean.includes('node_modules') && !clean.includes('dist/')) {
+        fileSet.add(clean);
+      }
+    }
+  }
   for (const text of texts) {
     if (!text) continue;
-    const matches = text.match(fileRegex);
-    if (matches) {
-      for (const m of matches) {
-        if (!m.includes('node_modules') && !m.includes('dist/')) {
-          fileSet.add(m);
-        }
+    for (const p of extractFilePathsFromTextSegment(text)) {
+      if (p.includes('/') && !p.includes('node_modules') && !p.includes('dist/')) {
+        fileSet.add(p);
       }
     }
   }
@@ -57,9 +118,8 @@ export function extractImpactedFilesFromDebate(texts: (string | undefined)[]): s
 }
 
 /**
- * 基于议题的真实立论、反例、答辩、实证与 MCDA 运筹事实，
+ * 基于议题的真实立论、反例、答辩、实证与 MCDA 运筹事实（优先结构化 MCP 契约载荷），
  * 动态合成涵盖 3 种模式 (adopt_proposer, reject_rebuild, trade_off_matrix) 的裁决草案字典。
- * 绝不使用刻板写死模板，每个字句均锚定当前议题背景！
  */
 export function synthesizeContextGroundedRulingDrafts(options: {
   topicTitle: string;
@@ -72,6 +132,11 @@ export function synthesizeContextGroundedRulingDrafts(options: {
   authorName?: string;
   existingDraft?: ArbitrationRulingDraft;
   existingOptions?: Partial<Record<RulingDecisionType, ArbitrationRulingDraft>>;
+  proposalPayload?: ProposalClaimsPayload | null;
+  critiquePayload?: ChallengeCritiquePayload | null;
+  defensePayload?: DefensePatchPayload | null;
+  argumentNodes?: ArgumentNode[];
+  modularState?: ModularOrchestrationState;
 }): Record<RulingDecisionType, ArbitrationRulingDraft> {
   const {
     topicTitle,
@@ -84,22 +149,47 @@ export function synthesizeContextGroundedRulingDrafts(options: {
     authorName,
     existingDraft,
     existingOptions = {},
+    proposalPayload,
+    critiquePayload,
+    defensePayload,
+    argumentNodes,
+    modularState,
   } = options;
 
   const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-  const proposalClaim = extractCoreClaims(proposalText) || topicTitle;
-  const critiqueClaim = extractCoreClaims(critiqueText) || '边界极端工况下的容灾与状态一致性隐患';
-  const defenseClaim = extractCoreClaims(defenseText) || '针对反例质询补齐前置防御与补偿约束';
+  const proposalClaim =
+    proposalPayload?.summary ||
+    proposalPayload?.claims?.[0]?.claim ||
+    argumentNodes?.[0]?.claim ||
+    extractCoreClaims(proposalText) ||
+    topicTitle;
+
+  const critiqueClaim =
+    critiquePayload?.failureScenarios?.[0] ||
+    critiquePayload?.fatalFlaws?.[0] ||
+    critiquePayload?.summary ||
+    extractCoreClaims(critiqueText) ||
+    '边界极端工况下的容灾与状态一致性隐患';
+
+  const defenseClaim =
+    defensePayload?.defensePatches?.[0] ||
+    defensePayload?.summary ||
+    extractCoreClaims(defenseText) ||
+    '针对反例质询补齐前置防御与补偿约束';
+
   const verificationClaim = extractCoreClaims(verificationText);
 
-  const debateImpactedFiles = extractImpactedFilesFromDebate([
-    proposalText,
-    critiqueText,
-    defenseText,
-    verificationText,
-    topicDescription,
-  ]);
+  const explicitFiles: string[] = [
+    ...(proposalPayload?.impactedFiles || []),
+    ...(defensePayload?.impactedFiles || []),
+    ...(modularState?.modules?.flatMap((m) => m.allowedFiles || []) || []),
+  ];
+
+  const debateImpactedFiles = extractImpactedFilesFromDebate(
+    [proposalText, critiqueText, defenseText, verificationText, topicDescription],
+    explicitFiles
+  );
 
   // 从 MCDA 运筹求解中提取最高权重与最低权重的折中准则
   const mcdaTradeOffs: string[] = [];
@@ -201,6 +291,7 @@ export function normalizeSingleRulingDraft(
     : [];
 
   const solution = raw.solution ? String(raw.solution).trim() : undefined;
+  const mcdaMatrix = normalizeMcdaMatrixInput(raw.mcda_matrix || raw.mcdaMatrix);
   const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   return {
@@ -209,6 +300,7 @@ export function normalizeSingleRulingDraft(
     tradeOffPoints: tradeOffs,
     impactedFiles: files,
     solution,
+    mcdaMatrix,
     submittedBy: authorName || raw.submittedBy,
     submittedAt: raw.submittedAt || now,
   };
@@ -228,6 +320,11 @@ export function extractArbitrationRulingOptionsFromAcpResponse(
     verificationText?: string;
     mcdaPayload?: McdaDecisionPayload;
     authorName?: string;
+    proposalPayload?: ProposalClaimsPayload | null;
+    critiquePayload?: ChallengeCritiquePayload | null;
+    defensePayload?: DefensePatchPayload | null;
+    argumentNodes?: ArgumentNode[];
+    modularState?: ModularOrchestrationState;
   }
 ): {
   primaryDraft: ArbitrationRulingDraft;
@@ -239,20 +336,18 @@ export function extractArbitrationRulingOptionsFromAcpResponse(
 
   // 1. 尝试从 MCP 工具调用 `submit_arbitration_ruling` 中提取
   if (acpResp && typeof acpResp === 'object') {
-    const rawCalls =
-      acpResp.raw?.mcp_tool_calls ||
-      acpResp.raw?.result?.mcp_tool_calls ||
-      acpResp.mcpToolCalls ||
-      [];
+    const rawCalls = [
+      ...(Array.isArray(acpResp.raw?.mcp_tool_calls) ? acpResp.raw.mcp_tool_calls : []),
+      ...(Array.isArray(acpResp.raw?.result?.mcp_tool_calls) ? acpResp.raw.result.mcp_tool_calls : []),
+      ...(Array.isArray(acpResp.mcpToolCalls) ? acpResp.mcpToolCalls : []),
+    ];
     if (Array.isArray(rawCalls)) {
-      const rulingCall = rawCalls.find(
-        (c: any) =>
-          c.tool_name === 'submit_arbitration_ruling' ||
-          c.tool === 'submit_arbitration_ruling' ||
-          c.name === 'submit_arbitration_ruling'
+      const rulingCall = rawCalls.find((c: any) =>
+        matchesMcpToolName(c, 'submit_arbitration_ruling')
       );
-      if (rulingCall && (rulingCall.arguments || rulingCall.args)) {
-        let args = rulingCall.arguments || rulingCall.args;
+      const extractedArgs = rulingCall ? extractMcpToolCallArguments(rulingCall) : undefined;
+      if (rulingCall && extractedArgs !== undefined) {
+        let args = extractedArgs;
         if (typeof args === 'string') {
           try {
             args = JSON.parse(args);
@@ -282,42 +377,70 @@ export function extractArbitrationRulingOptionsFromAcpResponse(
     }
   }
 
-  // 2. 尝试从文本中的多选块 <<<RULING_DRAFT_OPTIONS>>> 解析
+  // 2. 确定性边界提取文本中的多选块 <<<RULING_DRAFT_OPTIONS>>>
   const text = acpResp?.textResponse || '';
-  const multiBlockMatch = text.match(/<<<RULING_DRAFT_OPTIONS>>>([\s\S]*?)<<<RULING_DRAFT_OPTIONS_END>>>/i);
-  if (multiBlockMatch && multiBlockMatch[1]) {
-    try {
-      const parsed = JSON.parse(multiBlockMatch[1].trim());
-      if (parsed.recommended_type && ['adopt_proposer', 'reject_rebuild', 'trade_off_matrix'].includes(parsed.recommended_type)) {
-        recommendedType = parsed.recommended_type;
-      }
-      for (const key of ['adopt_proposer', 'reject_rebuild', 'trade_off_matrix'] as RulingDecisionType[]) {
-        if (parsed[key]) {
-          const opt = normalizeSingleRulingDraft(parsed[key], key, context.authorName);
-          if (opt) parsedOptions[key] = opt;
-        }
-      }
-    } catch (e) {
-      console.warn('[rulingDraftSynthesizer] Failed to parse <<<RULING_DRAFT_OPTIONS>>> block:', e);
+  const multiEnvelope = extractStructuredContractEnvelope<Record<string, any>>(
+    text,
+    '<<<RULING_DRAFT_OPTIONS>>>',
+    ['<<<RULING_DRAFT_OPTIONS_END>>>', '<<<END_RULING_DRAFT_OPTIONS>>>']
+  );
+  if (multiEnvelope.parsed && typeof multiEnvelope.parsed === 'object') {
+    const parsed = multiEnvelope.parsed;
+    if (
+      parsed.recommended_type &&
+      ['adopt_proposer', 'reject_rebuild', 'trade_off_matrix'].includes(parsed.recommended_type)
+    ) {
+      recommendedType = parsed.recommended_type;
     }
+    for (const key of ['adopt_proposer', 'reject_rebuild', 'trade_off_matrix'] as RulingDecisionType[]) {
+      if (parsed[key]) {
+        const opt = normalizeSingleRulingDraft(parsed[key], key, context.authorName);
+        if (opt) parsedOptions[key] = opt;
+      }
+    }
+  } else if (multiEnvelope.parseError) {
+    console.warn('[rulingDraftSynthesizer] Failed to parse <<<RULING_DRAFT_OPTIONS>>> block:', multiEnvelope.parseError);
   }
 
-  // 3. 尝试从单选块 <<<RULING_DRAFT>>> 或 ```json 块中解析
+  // 3. 确定性边界提取单选块 <<<RULING_DRAFT>>> 或 Markdown ```json 块
   if (!primaryDraftFromAcp) {
-    const singleBlockMatch =
-      text.match(/<<<RULING_DRAFT>>>([\s\S]*?)<<<RULING_DRAFT_END>>>/i) ||
-      text.match(/```(?:json)?\s*(\{\s*"decision_?type"[\s\S]*?\})\s*```/i);
-    if (singleBlockMatch && singleBlockMatch[1]) {
-      try {
-        const parsed = JSON.parse(singleBlockMatch[1].trim());
-        const singleDraft = normalizeSingleRulingDraft(parsed, 'trade_off_matrix', context.authorName);
-        if (singleDraft) {
-          primaryDraftFromAcp = singleDraft;
-          parsedOptions[singleDraft.decisionType] = singleDraft;
-          recommendedType = singleDraft.decisionType;
+    const singleEnvelope = extractStructuredContractEnvelope<Record<string, any>>(
+      text,
+      '<<<RULING_DRAFT>>>',
+      ['<<<RULING_DRAFT_END>>>', '<<<END_RULING_DRAFT>>>']
+    );
+    let parsedSingle: Record<string, any> | undefined =
+      singleEnvelope.parsed && typeof singleEnvelope.parsed === 'object'
+        ? singleEnvelope.parsed
+        : undefined;
+
+    if (!parsedSingle && singleEnvelope.parseError) {
+      console.warn('[rulingDraftSynthesizer] Failed to parse <<<RULING_DRAFT>>> block:', singleEnvelope.parseError);
+    }
+
+    if (!parsedSingle) {
+      const ast = analyzeStructuredMarkdown(text);
+      for (const block of ast.fencedCodeBlocks) {
+        const lang = block.lang.trim().toLowerCase();
+        if (lang && lang !== 'json' && lang !== 'jsonc') continue;
+        try {
+          const obj = JSON.parse(block.content.trim());
+          if (obj && typeof obj === 'object' && ('decision_type' in obj || 'decisionType' in obj)) {
+            parsedSingle = obj;
+            break;
+          }
+        } catch {
+          // 跳过非 JSON 代码块
         }
-      } catch (e) {
-        console.warn('[rulingDraftSynthesizer] Failed to parse <<<RULING_DRAFT>>> block:', e);
+      }
+    }
+
+    if (parsedSingle) {
+      const singleDraft = normalizeSingleRulingDraft(parsedSingle, 'trade_off_matrix', context.authorName);
+      if (singleDraft) {
+        primaryDraftFromAcp = singleDraft;
+        parsedOptions[singleDraft.decisionType] = singleDraft;
+        recommendedType = singleDraft.decisionType;
       }
     }
   }

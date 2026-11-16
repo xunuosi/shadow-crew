@@ -88,6 +88,7 @@ import {
   prepareMessageAttachments,
 } from '../services/chatAttachmentService';
 import { MessageAttachmentList } from './MessageAttachmentList';
+import { TopicStatusOverviewPopover } from './TopicStatusOverviewPopover';
 
 interface TopicThreadDrawerProps {
   isOpen: boolean;
@@ -115,10 +116,7 @@ interface TopicThreadDrawerProps {
   }) => void;
   onReopenTopic?: (topicId: string) => void;
   onExecuteTopicPatch?: (topicId: string, executorId: string) => void;
-  onApplyTopicPatch?: (
-    topicId: string,
-    customDiffs?: TopicPatchDiffItem[]
-  ) => Promise<void> | void;
+  onApplyTopicPatch?: (topicId: string, customDiffs?: TopicPatchDiffItem[]) => Promise<void> | void;
   onRollbackTopicPatch?: (topicId: string) => Promise<void> | void;
   onCancelWorkflow?: (topicId: string) => void;
   onOpenCodexDiff: (diff: any) => void;
@@ -1059,6 +1057,11 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       // 显式传入抽屉解析出的全量 diff：workflow 模式不写 gameTheoreticState.executionDiffs，
       // 不传会导致合入逻辑读到空数组而静默 return。
       await onApplyTopicPatch(topic.id, topicExecutionDiffs);
+    } catch (err) {
+      console.error('Apply topic patch failed:', err);
+      if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+        window.alert(err instanceof Error ? err.message : '合入工作区失败，请检查工作区绑定或变更内容');
+      }
     } finally {
       setIsApplyingPatch(false);
     }
@@ -1361,6 +1364,15 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     <span>🟢 已达成共识 (Resolved)</span>
                   </span>
                 )
+              ) : isExecuting && topicExecutions.length > 0 ? (
+                <span className="text-purple-600 dark:text-purple-400 font-semibold flex items-center gap-1.5 shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+                  {topicExecutions.length === 1 ? (
+                    <span>🔄 {topicExecutions[0].agentName} 正在推演 ({((now - topicExecutions[0].startedAt) / 1000).toFixed(1)}s)</span>
+                  ) : (
+                    <span>🔄 {topicExecutions.length} 位 Agent 并发推演 ({topicExecutions.map((e) => e.agentName).join('、')})</span>
+                  )}
+                </span>
               ) : isDmDuel ? (
                 <span className="text-amber-700 dark:text-amber-300 font-semibold flex items-center gap-1 shrink-0">
                   <Swords className="w-3 h-3" />
@@ -1371,7 +1383,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   </span>
                 </span>
               ) : topic.discussionMode === 'game_theoretic' && topic.gameRoles ? (
-                <span className="text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1 shrink-0">
+                <span className="text-amber-700 dark:text-amber-300 font-semibold flex items-center gap-1 shrink-0">
                   <Swords className="w-3 h-3" />
                   <span>
                     🏛️ 提案 {topic.gameRoles.proposers?.length || 0} · ⚔️ 红队 {topic.gameRoles.challengers?.length || 0}
@@ -1379,19 +1391,10 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     {' '}· ⚖️ 综合 {topic.gameRoles.humanIsArbiter ? '👤+' : ''}{topic.gameRoles.arbiters?.length || 0}
                   </span>
                 </span>
-              ) : isExecuting && topicExecutions.length > 0 ? (
-                <span className="text-purple-500 font-semibold flex items-center gap-1.5 shrink-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
-                  {topicExecutions.length === 1 ? (
-                    <span>🟡 {topicExecutions[0].agentName} 正在推演 ({((now - topicExecutions[0].startedAt) / 1000).toFixed(1)}s)</span>
-                  ) : (
-                    <span>🟡 {topicExecutions.length} 位 Agent 正在并发推演 ({topicExecutions.map((e) => e.agentName).join('、')})</span>
-                  )}
-                </span>
               ) : (
-                <span className="text-purple-500 font-semibold flex items-center gap-1 shrink-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
-                  <span>🟡 深度推演中 · {participatingAgents.length} 位协作 Agent</span>
+                <span className="text-fg-muted font-medium flex items-center gap-1.5 shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                  <span>待命中 · {participatingAgents.length} 位协作 Agent</span>
                 </span>
               )}
             </div>
@@ -1399,6 +1402,40 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
+          <TopicStatusOverviewPopover
+            topic={topic}
+            messages={messages}
+            agents={agents}
+            activeExecutions={topicExecutions}
+            allActiveExecutions={allActiveExecutions}
+            topicExecutionDiffs={topicExecutionDiffs}
+            now={now}
+            isHeaderCollapsed={isHeaderCollapsed}
+            onToggleHeaderCollapsed={toggleHeaderCollapsed}
+            onAbortAgent={onAbortAgent}
+            onAbortAll={onAbortAll}
+            onSwitchDrawerView={setActiveDrawerView}
+            onOpenCodexDiff={() => {
+              if (topicExecutionDiffs.length > 0) {
+                onOpenCodexDiff({
+                  ...topicExecutionDiffs[0],
+                  topicId: topic.id,
+                  topicTitle: topic.title,
+                  allDiffs: topicExecutionDiffs,
+                  executionStatus: topic.gameTheoreticState?.executionStatus,
+                  artifactsDir: topic.gameTheoreticState?.executionArtifactsDir,
+                });
+              }
+            }}
+            onScrollToMessage={(targetMsgId) => {
+              setActiveDrawerView('stream');
+              setTimeout(() => scrollToTopicMessageTop(targetMsgId), 40);
+            }}
+            onScrollToRulingOrBottom={() => {
+              setActiveDrawerView('stream');
+              setTimeout(() => scrollToRulingCard('smooth'), 40);
+            }}
+          />
           <button
             type="button"
             onClick={toggleHeaderCollapsed}
@@ -1476,6 +1513,9 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               {topic.description || topic.title}
             </span>
           </div>
+
+          {/* 阶段进度由上方常驻 TopicProgressStrip / WorkflowProgressStrip 统一展示，此处不再重复渲染徽标 */}
+
         </div>
       ) : (
         <div className="max-h-[32vh] overflow-y-auto shrink-0">
@@ -2979,9 +3019,20 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                       </span>
                     )}
                     {topic.gameTheoreticState?.executionStatus === 'running' && (
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 font-sans">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-600 dark:bg-amber-400 animate-ping" />
-                        正在执行决议...
+                      activeExecutions.length > 0 ? (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 font-sans">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-600 dark:bg-amber-400 animate-ping" />
+                          正在执行决议...
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30 font-sans font-medium">
+                          执行已中断
+                        </span>
+                      )
+                    )}
+                    {topic.gameTheoreticState?.executionStatus === 'failed' && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30 font-sans font-medium">
+                        执行中断/异常
                       </span>
                     )}
                     {topic.gameTheoreticState?.executionStatus === 'completed' && (

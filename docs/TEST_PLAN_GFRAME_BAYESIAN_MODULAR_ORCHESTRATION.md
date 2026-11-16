@@ -1,13 +1,15 @@
 # 🧪 Shadow Crew G-Frame 模块化分治 × 贝叶斯博弈 验证方案与测试用例集
 
 > **文档编号**：`TEST_PLAN_GFRAME_BAYESIAN_MODULAR_ORCHESTRATION`  
-> **版本**：v1.0.0  
-> **基线提交**：`a6f2647 fix(cogno): remove R&D hardcoding in G-Frame decomposition and contract gates for general business discussions`  
+> **版本**：v1.1.0
+> **当前基线**：2026-11-14 G-Frame 1~4 模块、LLM 自主红队路由与执行管线专项修复
 > **变更范围**：任务分模块（G-Frame Team Game 微观层）+ 贝叶斯动态调控（Bayesian Game 宏观层），落地位于 `549fdb4 / d035a80 / da9686b / a6f2647` 四个提交  
 > **关联文档**：
 > - [`SPEC_GFRAME_BAYESIAN_MODULAR_ORCHESTRATION.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/SPEC_GFRAME_BAYESIAN_MODULAR_ORCHESTRATION.md)
 > - [`SPEC_GAME_THEORETIC_ORCHESTRATION_PROTOCOL.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/SPEC_GAME_THEORETIC_ORCHESTRATION_PROTOCOL.md)
 > - [`TECH_REPORT_GAME_THEORETIC_TOKEN_AND_ACCURACY_GOVERNANCE.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/TECH_REPORT_GAME_THEORETIC_TOKEN_AND_ACCURACY_GOVERNANCE.md)
+>
+> **规范覆盖声明**：本文件后续“历史复验”章节保留当时缺陷快照；当前有效契约以本页顶部、SPEC v1.1.0 与 [`TEST_CASES_GFrame_SINGLE_MODULE_AND_TOPIC_EXECUTION.md`](./TEST_CASES_GFrame_SINGLE_MODULE_AND_TOPIC_EXECUTION.md) 为准。
 
 ---
 
@@ -17,7 +19,7 @@
 
 | # | 待验命题 | 判定依据 |
 | :--- | :--- | :--- |
-| Q1 | **模块分治是否真的生效**：复杂议题被拆为 2~4 个职责正交、上下文物理隔离的原子模块 | 阶段 0 产出 `modularState.modules`，各模块 `allowedFiles` 不重叠越界，Prompt 中仅注入本模块沙箱历史 |
+| Q1 | **模块分治是否真的生效**：任务被自适应拆为 1~4 个职责正交、上下文物理隔离的原子模块 | 阶段 0 产出 `modularState.modules`，单模块不得凑数补齐；各模块 `allowedFiles` 不重叠越界，Prompt 中仅注入本模块沙箱历史 |
 | Q2 | **贝叶斯调控是否符合数学设定**：先验分流准确、后验随反馈向量升降级、低风险模块走 `fast_track` 省 Token | `P_prior → P_posterior` 与 Log-Odds 公式一致；`routingMode` / `posteriorAction` / `status` 迁移符合规则 A/B/C |
 | Q3 | **局部重修不污染全局**：某模块被证伪时，已冻结模块硬锁定不回退 | `frozen` 模块在后续任意阶段状态与 `frozenProposalSnippet` 不变 |
 
@@ -90,11 +92,11 @@ npm run test:cogno:edge
 **贝叶斯计算口径（用于手算核对）**：
 
 ```text
-P_prior = clamp(B_level + 0.05 × max(0, |allowedFiles| - 2) + 0.15 × I_critical, 0.10, 0.90)
+P_prior = clamp(B_level + 0.05 × max(0, |allowedFiles| - 2), 0.10, 0.90)
           B_level ∈ { low_deterministic: 0.20, medium_standard: 0.45, high_critical: 0.70 }
-          I_critical = 命中 CRITICAL_DOMAIN_REGEX（并发/锁/事务/幂等/鉴权/迁移/资损/合规/隐私/不可逆…）
 
-路由分流：P_prior < 0.45 → fast_track ； P_prior ≥ 0.45 → deep_debate
+路由分流：requiresRedTeam === true → deep_debate
+          否则 P_prior < 0.45 → fast_track ； P_prior ≥ 0.45 → deep_debate
 
 logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedClaims
                      + 0.35×EdgeCases − 0.80×VerifiedClaims + penalty(DSS)
@@ -175,7 +177,7 @@ logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedCl
 
 | 用例 ID | 用例名称 | 操作步骤 | 预期结果 | 优先级 |
 | :--- | :--- | :--- | :--- | :--- |
-| **E2E-01** | 阶段 0 真实调用 MCP 拆解工具 | 发起一个跨模块研发议题（如「新增渠道级数据隔离 + 会话缓存 + UI 状态栏」） | 提案官阶段出现模块沙箱矩阵；`modularState.modules.length ∈ [2,4]`；若 Agent 调用 `submit_module_decomposition` 则 `sharedContract` 来自工具载荷 | P0 |
+| **E2E-01** | 阶段 0 真实调用 MCP 拆解工具 | 分别发起单文件任务与跨模块研发议题 | 单文件任务保留 1 个模块；复杂任务为 2~4 个；`modularState.modules.length ∈ [1,4]`；原生 MCP 载荷可被完整提取 | P0 |
 | **E2E-02** | 未调用工具时的兜底拆解 | 用不支持 MCP 工具的 Agent 跑同一议题 | 系统回落到 `buildDefaultDecompositionFromTopic`，仍产出 ≥ 2 个模块且不出现 `src/` 伪造路径 | P1 |
 | **E2E-03** | **多模块循环推演闭环** | 观察 3 模块议题从 阶段0 到 仲裁的完整流转 | 每个模块都经历「提案→（红队→验证）→定案」并被置为 `frozen`；抽屉矩阵显示 `3/3 已冻结` | **P0（高风险）** |
 | **E2E-04** | 沙箱消息归集不串台 | 讨论中切换模块胶囊，检查各模块 `scopedMessageIds` | 每条消息只归属 1 个模块；`activeModuleId` 切换后，该模块消息数单调递增 | P0 |
@@ -200,7 +202,7 @@ logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedCl
 | 用例 ID | 用例名称 | 输入 | 预期结果 | 现状 |
 | :--- | :--- | :--- | :--- | :--- |
 | **EDGE-01** | 模块数超上限 | 提交 5 个模块 | 截断为 4 个，不报错 | ✅ 已实现（`slice(0,4)`），待补断言 |
-| **EDGE-02** | 模块数不足下限 | 提交 1 个模块 | MCP Schema 层 `minItems: 2` 拦截；若绕过 Schema 直传，前端当前**不报错也不补齐** | ⚠️ **无守卫**，建议补用例并评估 |
+| **EDGE-02** | 单模块与空模块 | 分别提交 1 个模块与 0 个模块 | 1 个模块在 MCP、ACP 提取和初始化三层均保留；0 个模块被 MCP 拒绝，初始化器绕过时兜底生成 2 个模块 | ✅ 当前契约 |
 | **EDGE-03** | 依赖成环 | M1 依赖 M2、M2 依赖 M1 | 当前无环检测，`getNextSchedulableModule` 可能返回 `undefined`（全 pending 卡死） | ⚠️ **无守卫**，建议补用例 |
 | **EDGE-04** | allowedFiles 重叠 | M1 与 M2 白名单含同一文件 | 该文件对两模块均为「白名单内」，越界门禁不报错（当前 `activeAllowed` 优先） | ⚠️ 语义需确认（可能双写冲突） |
 | **EDGE-05** | 后验反馈语义 | 连续两次调用 `updateModuleBeliefWithFeedback` 传相同数值 | 当前为**覆盖累计值**而非累加（`?? prev` 语义），后验不叠加 | ⚠️ 语义需确认（`feedbackDelta` 命名易误读） |
@@ -213,7 +215,7 @@ logit(P_posterior) = logit(P_prior) + 1.20×ContractViolations + 0.95×RefutedCl
 1. `npm run lint` → 必须 0 报错。
 2. `npm run test:cogno` → 末尾必须看到 `🎉 [G-Frame Complete] All 7 test suites passed 100%!` 与 `验证汇总：… 通过 16/16`。
 3. `cargo test -p shinobi-dev-mcp` → `9 passed; 0 failed`。
-4. 起一个 `game_theoretic` 议题，确认抽屉顶部出现「🧩 G-Frame 模块沙箱矩阵」且模块数 ∈ [2,4]。
+4. 起一个 `game_theoretic` 议题，确认抽屉顶部出现「🧩 G-Frame 模块沙箱矩阵」且模块数 ∈ [1,4]。
 5. 点击任一模块胶囊，确认时间线被正确过滤且能回到「全部模块」。
 
 ---

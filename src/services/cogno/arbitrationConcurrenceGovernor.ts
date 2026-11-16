@@ -18,6 +18,7 @@ import {
   RulingRecord,
   TopicMessageData,
 } from '../../types';
+import { analyzeStructuredMarkdown } from './structuredTextAnalyzer';
 
 export interface ArbiterStage5TopicContext {
   title: string;
@@ -290,6 +291,295 @@ ${arbiterText.slice(0, 800)}
 }
 <<<ROLE_CONCURRENCE_END>>>
 ${validationError ? `\n【上一次结构化票无效，必须修正】:\n${validationError}\n只允许通过合法工具载荷与 ROLE_CONCURRENCE 契约块重新提交，禁止仅用自然语言回答。` : ''}`;
+}
+
+/**
+ * 格式化当前全员无异议征询投票状态与活跃阻断条件汇总。
+ */
+export function formatConcurrenceBlockingSummary(
+  concurrenceState: GameRoleConcurrenceState
+): string {
+  const items = concurrenceState.items || [];
+  const concurredCount = items.filter((item) => item.status === 'concurred').length;
+  const totalCount = items.length;
+
+  const roleLabels: Record<RoleConcurrenceItem['role'], string> = {
+    proposer: '提案主导方 (proposer)',
+    challenger: '红队对抗方 (challenger)',
+    verifier: '接地实证方 (verifier)',
+    arbiter: '综合裁定官 (arbiter)',
+  };
+
+  const statusLabels: Record<RoleConcurrenceItem['status'], string> = {
+    concurred: '✅ concurred（无异议）',
+    conditional: '⏸️ conditional（条件保留）',
+    objected: '❌ objected（阻断性异议）',
+    pending: '⏳ pending（待审视回复）',
+    invalid: '⛔ invalid（结构化票无效）',
+    unavailable: '⚠️ unavailable（角色离线/不可用）',
+  };
+
+  const activeBlockingConditions: string[] = [];
+  const activeObjections: string[] = [];
+
+  const roleLines = items.map((item) => {
+    const roleLabel = roleLabels[item.role] || item.role;
+    const statusLabel = statusLabels[item.status] || item.status;
+    const handlePart = item.agentHandle ? ` (${item.agentHandle})` : '';
+    const detailParts: string[] = [];
+
+    if (item.conditions && item.conditions.length > 0) {
+      detailParts.push(`前置条件 (conditions): ${item.conditions.join('；')}`);
+      item.conditions.forEach((cond) => {
+        activeBlockingConditions.push(`[${item.agentName} · ${item.role}] ${cond}`);
+      });
+    }
+    if (item.blockingIssueIds && item.blockingIssueIds.length > 0) {
+      detailParts.push(`阻断项 ID (blocking_issue_ids): ${item.blockingIssueIds.join(', ')}`);
+      item.blockingIssueIds.forEach((issueId) => {
+        activeObjections.push(`[${item.agentName} · ${item.role}] ${issueId}`);
+      });
+    }
+    if (item.validationError) {
+      detailParts.push(`票据校验错误: ${item.validationError}`);
+      activeObjections.push(`[${item.agentName} · ${item.role}] 校验失败: ${item.validationError}`);
+    }
+    if (item.statement && item.statement.trim()) {
+      detailParts.push(`陈词依据: ${item.statement.trim()}`);
+      if (item.status === 'objected' && (!item.blockingIssueIds || item.blockingIssueIds.length === 0)) {
+        activeObjections.push(`[${item.agentName} · ${item.role}] ${item.statement.trim()}`);
+      }
+    }
+    if (item.status === 'pending') {
+      activeBlockingConditions.push(`[${item.agentName} · ${item.role}] 尚未提交结构化无异议票 (pending)`);
+    } else if (item.status === 'unavailable') {
+      activeObjections.push(`[${item.agentName} · ${item.role}] 角色离线或不可用 (${item.statement || 'unavailable'})`);
+    }
+
+    const detailSuffix = detailParts.length > 0 ? `\n    - ${detailParts.join('\n    - ')}` : '';
+    return `- **${roleLabel}** · ${item.agentName}${handlePart}：\`${item.status}\` (${statusLabel})${detailSuffix}`;
+  });
+
+  const lines: string[] = [
+    `• **当前无异议进展**：${concurredCount}/${totalCount} 角色已确认无异议（allConcurred=${concurrenceState.allConcurred}）`,
+    `• **锁定方案摘要 (solution_digest)**：\`${concurrenceState.solutionDigest}\``,
+  ];
+  if (concurrenceState.arbiterProposalSummary) {
+    lines.push(`• **当前待签裁决摘要**：${concurrenceState.arbiterProposalSummary}`);
+  }
+  if (roleLines.length > 0) {
+    lines.push('• **各参研角色投票明细**：');
+    lines.push(...roleLines);
+  } else {
+    lines.push('• **各参研角色投票明细**：（暂无参研角色记录）');
+  }
+
+  if (activeBlockingConditions.length > 0) {
+    lines.push('• **当前活跃前置条件 / 阻塞项 (Active Blocking Conditions)**：');
+    activeBlockingConditions.forEach((entry, idx) => {
+      lines.push(`  ${idx + 1}. ${entry}`);
+    });
+  }
+  if (activeObjections.length > 0) {
+    lines.push('• **当前阻断性异议 / 异常 (Active Objections & Blockers)**：');
+    activeObjections.forEach((entry, idx) => {
+      lines.push(`  ${idx + 1}. ${entry}`);
+    });
+  }
+  if (activeBlockingConditions.length === 0 && activeObjections.length === 0) {
+    lines.push('• **阻塞状态**：当前无活跃阻塞条件，全部参研角色均已确认无异议。');
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * 在终局无异议征询处于活跃阻塞状态时，为综合裁定官构造状态答疑守则，
+ * 防止其在人类询问进展（如 `@all 到哪步了？`）时盲目重跑阶段 5 仲裁与重复重询。
+ */
+export function buildArbiterBlockedConcurrenceInquiryDirective(
+  concurrenceState: GameRoleConcurrenceState
+): string {
+  const blockingSummary = formatConcurrenceBlockingSummary(concurrenceState);
+
+  return `\n\n【博弈编排 - ⚖️ 阶段 5 阻塞答疑与状态说明守则 (Active Blocked Concurrence Inquiry)】:
+当前议题已进入终局全员无异议征询阶段（\`isConcurrencePhaseActive=true\` 且 \`allConcurred=false\`），终局定案目前被未满足的条件/异议阻塞挂起。
+
+【当前全员无异议阻塞实况（系统实时状态）】：
+${blockingSummary}
+
+【综合裁定官响应铁律（必须严格执行）】：
+1. **【默认模式 · 仅解释当前进展与阻塞条件】**：若本轮人类/上下文只是在询问进度、卡点原因（如“到哪步了？”“为什么还没定案？”），或并不存在**实质性修改后的新裁决/解决方案**：
+   - 你**只能**基于上方实时状态，清晰、简洁地向用户解释当前卡在哪个环节、各参研角色当前的投票结果（\`conditional\` / \`objected\` / \`pending\` / \`invalid\` / \`unavailable\`）、具体前置阻塞条件或异议细节，以及解除阻塞需要满足的条件；
+   - **严禁**重跑完整的阶段 5 综合仲裁流程；
+   - **严禁**调用 \`submit_arbitration_ruling\` 工具，也**严禁**输出 \`<<<RULING_DRAFT>>>\` 或 \`<<<RULING_DRAFT_OPTIONS>>>\` 结构化裁决块；
+   - **严禁**在正文中用 \`@handle\` 点名各参研角色要求重新投票（如需提及成员，请直接写纯姓名，勿加 \`@\` 符号）。
+2. **【例外条件 · 仅当存在实质性新方案时才重开征询】**：只有在人类明确要求修订原裁决、或已有新的代码补丁/实证结论实质性推翻或更新了裁决方案本身时，才可提交修改后的新裁决并重新发起全员无异议征询。`;
+}
+
+/**
+ * 判断是否应跳过冗余的仲裁无异议重询，避免在原方案摘要未变且无显式新裁决契约时清空现有投票记录。
+ */
+export function shouldSkipRedundantArbitrationConcurrence(options: {
+  existingConcurrenceState?: GameRoleConcurrenceState;
+  nextSolutionDigest: string;
+  hasExplicitNewRulingContract: boolean;
+}): { skip: boolean; reason?: string } {
+  const { existingConcurrenceState, nextSolutionDigest, hasExplicitNewRulingContract } = options;
+
+  if (
+    existingConcurrenceState?.isConcurrencePhaseActive &&
+    !existingConcurrenceState.allConcurred &&
+    !hasExplicitNewRulingContract &&
+    existingConcurrenceState.solutionDigest === nextSolutionDigest
+  ) {
+    return {
+      skip: true,
+      reason: '当前终局裁决方案摘要未发生变化且未提交新的结构化裁决契约，保留既有投票状态与阻塞条件，跳过冗余无异议重询。',
+    };
+  }
+
+  return { skip: false };
+}
+
+function normalizeArbitrationToolName(rawName: unknown): string {
+  if (typeof rawName !== 'string') return '';
+  const trimmed = rawName.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('mcp__')) {
+    const rest = trimmed.slice('mcp__'.length);
+    const sepIdx = rest.indexOf('__');
+    return sepIdx > 0 ? rest.slice(sepIdx + 2).trim() : trimmed;
+  }
+  if (trimmed.startsWith('mcp.')) {
+    const rest = trimmed.slice('mcp.'.length);
+    const sepIdx = rest.indexOf('.');
+    return sepIdx > 0 ? rest.slice(sepIdx + 1).trim() : trimmed;
+  }
+  if (trimmed.startsWith('Tool:')) {
+    const afterPrefix = trimmed.slice('Tool:'.length).trim();
+    const slashIdx = afterPrefix.indexOf('/');
+    return slashIdx > 0 ? afterPrefix.slice(slashIdx + 1).trim() : afterPrefix;
+  }
+  return trimmed;
+}
+
+function isSubmitArbitrationRulingToolCall(call: any): boolean {
+  if (!call || typeof call !== 'object') return false;
+  const status = typeof call.status === 'string' ? call.status.trim().toLowerCase() : '';
+  if (status === 'failed' || status === 'error') {
+    return false;
+  }
+  const candidates = [
+    call.tool_name,
+    call.tool,
+    call.name,
+    call.title,
+    call._meta?.claudeCode?.toolName,
+    call.rawInput?.tool,
+    call.rawInput?.tool_name,
+    call.rawInput?.name,
+  ];
+  return candidates.some(
+    (candidate) => normalizeArbitrationToolName(candidate) === 'submit_arbitration_ruling'
+  );
+}
+
+/**
+ * 判断裁定官本轮 ACP 响应是否显式提交了新的结构化裁决契约
+ * （来源包括 `acpResp.rulingDraft`、`<<<RULING_DRAFT` 文本标记或 `submit_arbitration_ruling` 工具调用）。
+ */
+export function hasExplicitArbitrationRulingContract(acpResp: {
+  rulingDraft?: ArbitrationRulingDraft;
+  textResponse?: string;
+  mcpToolCalls?: any[];
+  raw?: any;
+}): boolean {
+  if (!acpResp || typeof acpResp !== 'object') {
+    return false;
+  }
+  if (acpResp.rulingDraft) {
+    return true;
+  }
+
+  const rawCalls = [
+    ...(Array.isArray(acpResp.raw?.mcp_tool_calls) ? acpResp.raw.mcp_tool_calls : []),
+    ...(Array.isArray(acpResp.raw?.result?.mcp_tool_calls) ? acpResp.raw.result.mcp_tool_calls : []),
+    ...(Array.isArray(acpResp.mcpToolCalls) ? acpResp.mcpToolCalls : []),
+  ];
+  if (rawCalls.some(isSubmitArbitrationRulingToolCall)) {
+    return true;
+  }
+
+  const text = acpResp.textResponse || '';
+  if (text.toUpperCase().includes('<<<RULING_DRAFT')) {
+    return true;
+  }
+
+  const ast = analyzeStructuredMarkdown(text);
+  for (const block of ast.fencedCodeBlocks) {
+    const lang = block.lang.trim().toLowerCase();
+    if (lang && lang !== 'json' && lang !== 'jsonc') continue;
+    try {
+      const parsed = JSON.parse(block.content.trim());
+      if (parsed && typeof parsed === 'object' && ('decision_type' in parsed || 'decisionType' in parsed)) {
+        return true;
+      }
+    } catch {
+      // 跳过非 JSON 代码块
+    }
+  }
+
+  return false;
+}
+
+/**
+ * 统一评估是否命中冗余无异议征询跳过门禁：
+ * 当本轮无显式新裁决契约时，复用议题既有 `rulingDraft` 计算 `nextSolutionDigest`，
+ * 确保答疑回复不会破坏摘要一致性，同时方案内容实质变更时能够正常重开征询。
+ */
+export async function evaluateArbitrationConcurrenceSkip(options: {
+  topic: TopicMessageData;
+  acpResp: {
+    rulingDraft?: ArbitrationRulingDraft;
+    textResponse?: string;
+    mcpToolCalls?: any[];
+    raw?: any;
+  };
+  fallbackDraft?: ArbitrationRulingDraft;
+}): Promise<{
+  hasExplicitNewRulingContract: boolean;
+  nextSolutionDigest: string;
+  skip: boolean;
+  reason?: string;
+}> {
+  const { topic, acpResp, fallbackDraft } = options;
+  const hasExplicitNewRulingContract = hasExplicitArbitrationRulingContract(acpResp);
+  const existingConcurrenceState = topic.gameTheoreticState?.concurrenceState;
+  const existingRulingDraft = topic.gameTheoreticState?.rulingDraft;
+
+  const draftForDigest = !hasExplicitNewRulingContract
+    ? existingRulingDraft ?? fallbackDraft
+    : acpResp.rulingDraft ?? fallbackDraft;
+
+  const nextSolutionDigest = await computeRoleConcurrenceSolutionDigest({
+    topic,
+    arbiterDraft: draftForDigest,
+    arbiterReplyText: acpResp.textResponse || '',
+  });
+
+  const skipResult = shouldSkipRedundantArbitrationConcurrence({
+    existingConcurrenceState,
+    nextSolutionDigest,
+    hasExplicitNewRulingContract,
+  });
+
+  return {
+    hasExplicitNewRulingContract,
+    nextSolutionDigest,
+    skip: skipResult.skip,
+    reason: skipResult.reason,
+  };
 }
 
 /**

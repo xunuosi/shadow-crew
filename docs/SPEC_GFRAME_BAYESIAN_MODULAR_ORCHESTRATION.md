@@ -1,8 +1,9 @@
 # 🥷 Shadow Crew (CognoNexus × G-Frame) 贝叶斯与团队博弈驱动的模块化分治编排规范与落地方案
 
 > **文档编号**：`SPEC_GFRAME_BAYESIAN_MODULAR_ORCHESTRATION`  
-> **版本**：v1.0.0 (G-Frame Dual-Layer Modular Governance)  
+> **版本**：v1.1.0 (G-Frame 1~4 Adaptive Modular Governance)
 > **状态**：架构设计与落地规范 (Implementation Blueprint)  
+> **2026-11-14 当前契约**：模块数统一为 1~4；红队路由由 LLM 通过 `requires_red_team` / `routing_rationale` 自主声明，禁止使用领域关键词正则推断。单模块解除、红队自主路由与干净答辩直接冻结的专项用例见 [`TEST_CASES_GFrame_SINGLE_MODULE_AND_TOPIC_EXECUTION.md`](./TEST_CASES_GFrame_SINGLE_MODULE_AND_TOPIC_EXECUTION.md)。
 > **关联文档**：
 > - [`TECH_REPORT_GAME_THEORETIC_TOKEN_AND_ACCURACY_GOVERNANCE.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/TECH_REPORT_GAME_THEORETIC_TOKEN_AND_ACCURACY_GOVERNANCE.md)
 > - [`SPEC_GAME_THEORETIC_ORCHESTRATION_PROTOCOL.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/SPEC_GAME_THEORETIC_ORCHESTRATION_PROTOCOL.md)
@@ -46,7 +47,7 @@ flowchart TB
     Start["👤 用户发起复杂研发议题"] --> Stage0
 
     subgraph Stage0["🧭 阶段 0：模块拓扑拆解与公共契约锚定 (Stage: decomposition)"]
-        Decomp["🏛️ 提案官调用 MCP 工具 submit_module_decomposition：<br/>1. 拆分为 K 个单一职责模块 (2 ≤ K ≤ 4)<br/>2. 锁定跨模块只读《公共接口契约 (SharedInterfaceContract)》<br/>3. 划定各模块文件白名单 allowedFiles 与贝叶斯先验风险 P_prior"]
+        Decomp["🏛️ 提案官调用 MCP 工具 submit_module_decomposition：<br/>1. 拆分为 K 个单一职责模块 (1 ≤ K ≤ 4)<br/>2. 锁定跨模块只读《公共接口契约 (SharedInterfaceContract)》<br/>3. 划定各模块文件白名单 allowedFiles、LLM 红队路由理由与贝叶斯先验风险 P_prior"]
     end
 
     Stage0 -->|物理上下文隔离：<br/>仅注入 SharedContract + 模块 M1 上下文| Pod1
@@ -179,7 +180,7 @@ export interface TaskModuleSlice {
 export interface ModularOrchestrationState {
   enabled: boolean;                 // 是否启用 G-Frame 模块化隔离分治
   sharedContract?: SharedInterfaceContract;
-  modules: TaskModuleSlice[];       // K 个原子模块切片 (2 ≤ K ≤ 4)
+  modules: TaskModuleSlice[];       // K 个原子模块切片 (1 ≤ K ≤ 4)
   activeModuleId?: string;          // 当前正在推演或聚焦的模块沙箱 ID
   overallEntropyReductionRatio?: number; // 相比全量上下文的 Token/信息熵压缩比 (0~1)
 }
@@ -187,21 +188,21 @@ export interface ModularOrchestrationState {
 
 ---
 
-### 3.2 宿主 Rust MCP 工具契约设计（[`crates/shinobi-dev-mcp/src/tools/mod.rs`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/crates/shinobi-dev-mcp/src/tools/mod.rs)）
+### 3.2 宿主 Rust MCP 工具契约设计（[`crates/shadow-crew-dev-mcp/src/tools/mod.rs`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/crates/shadow-crew-dev-mcp/src/tools/mod.rs)）
 
-遵循项目核心编码准则（**禁止前端脆弱正则猜测，全面采用 MCP 工具结构化契约直通**），在 `shinobi-dev-mcp` 中新增阶段 0 专用工具 `submit_module_decomposition`：
+遵循项目核心编码准则（**禁止前端脆弱正则猜测，全面采用 MCP 工具结构化契约直通**），在 `shadow-crew-dev-mcp` 中新增阶段 0 专用工具 `submit_module_decomposition`：
 
 ```json
 {
   "name": "submit_module_decomposition",
-  "description": "在 G-Frame 博弈阶段 0 (decomposition) 提交任务模块化拆解清单与跨模块公共接口契约。将复杂研发任务拆解为 2~4 个职责正交、上下文隔离的原子模块。",
+  "description": "在 G-Frame 博弈阶段 0 (decomposition) 提交任务模块化拆解清单与跨模块公共接口契约。将任务拆解为 1~4 个职责正交、上下文隔离的原子模块。",
   "inputSchema": {
     "type": "object",
     "required": ["shared_contract", "modules"],
     "properties": {
       "shared_contract": {
         "type": "object",
-        "required": ["summary", "type_signatures", "invariants"],
+        "required": ["summary", "invariants"],
         "properties": {
           "summary": { "type": "string", "description": "跨模块架构边界简述" },
           "type_signatures": { "type": "string", "description": "跨模块共享的接口/数据结构签名定义" },
@@ -214,11 +215,11 @@ export interface ModularOrchestrationState {
       },
       "modules": {
         "type": "array",
-        "minItems": 2,
+        "minItems": 1,
         "maxItems": 4,
         "items": {
           "type": "object",
-          "required": ["module_id", "title", "responsibility", "allowed_files", "depends_on", "complexity_level"],
+          "required": ["module_id", "title", "responsibility", "depends_on", "complexity_level"],
           "properties": {
             "module_id": { "type": "string", "description": "模块 ID，如 mod-1" },
             "title": { "type": "string", "description": "模块标题" },
@@ -237,6 +238,14 @@ export interface ModularOrchestrationState {
               "type": "string",
               "enum": ["low_deterministic", "medium_standard", "high_critical"],
               "description": "模块复杂度自评，用于初始化贝叶斯先验风险 P_prior"
+            },
+            "requires_red_team": {
+              "type": "boolean",
+              "description": "LLM 自主判断是否必须进入红队 deep_debate"
+            },
+            "routing_rationale": {
+              "type": "string",
+              "description": "LLM 对红队路由决策的可追溯理由"
             }
           }
         }
@@ -255,14 +264,15 @@ export interface ModularOrchestrationState {
 新建 [`src/services/cogno/bayesianModuleGovernor.ts`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/src/services/cogno/bayesianModuleGovernor.ts)，负责计算每个模块的先验风险 $P_{\text{prior}}$、融合实时反馈向量 $\Gamma_k$ 并导出后验路由决策 $d^{\text{posterior}}$：
 
 #### 1. 先验风险初始化方程（Prior Initialization）
-结合提案官自评复杂度 `complexity_level`、涉及文件数量 $|F_k|$ 以及高危领域关键词（并发/锁/事务/权限/底层存储）计算初始先验概率：
+结合提案官自评复杂度 `complexity_level`、涉及文件数量 $|F_k|$ 以及 LLM 显式红队路由声明计算初始先验概率，禁止基于职责文本关键词猜测风险：
 
-$$P_{\text{prior}}(m_k) = \text{clamp}\left(B_{\text{level}} + 0.05 \times \max(0, |F_k| - 2) + 0.15 \times \mathbb{I}_{\text{critical}}(m_k),\; 0.10,\; 0.90\right)$$
+$$P_{\text{prior}}(m_k) = \text{clamp}\left(B_{\text{level}} + 0.05 \times \max(0, |F_k| - 2),\; 0.10,\; 0.90\right)$$
 
 其中：
 - $B_{\text{level}} \in \{0.20\text{ (low)},\; 0.45\text{ (medium)},\; 0.70\text{ (high)}\}$；
-- 当 $P_{\text{prior}}(m_k) < 0.45$ 时，初始路由模式设为 `routingMode = 'fast_track'`（跳过红队直接进入验证官契约与静态检查）；
-- 当 $P_{\text{prior}}(m_k) \ge 0.45$ 时，初始路由模式设为 `routingMode = 'deep_debate'`（开启模块内红队挑战）。
+- 当 `requires_red_team === true` 时，无论先验概率高低均强制 `routingMode = 'deep_debate'`；
+- 否则当 $P_{\text{prior}}(m_k) < 0.45$ 时设为 `fast_track`，当 $P_{\text{prior}}(m_k) \ge 0.45$ 时设为 `deep_debate`；
+- LLM 未调用拆解工具时的保守兜底必须设置 `requires_red_team = true`。
 
 #### 2. 贝叶斯后验信念更新方程（Posterior Belief Update）
 在模块推演过程中，每当捕获新的反馈信号 $\Gamma_k$，通过贝叶斯对数赔率（Log-Odds）形式更新后验风险概率：
@@ -276,7 +286,8 @@ $$\mathcal{L}(\Gamma_k) = +1.20 \times \text{ContractViolations}_k + 0.95 \times
 #### 3. 后验决策规则（Posterior Control Policy $d^{\text{posterior}}$）
 - **规则 A（快速冻结 `FREEZE_MODULE`）**：若 $P_{\text{posterior}}(m_k) \le 0.30$ 且 $\text{ContractViolations}_k = 0$ 且 $\text{RefutedClaims}_k = 0$，立即将该模块状态迁移为 `frozen`，提取模块定案摘要并切换至下一个未冻结模块；
 - **规则 B（动态拉起红队 `ESCALATE_TO_RED_TEAM`）**：若模块原本处于 `fast_track`，但因接口违规或静态检查警告导致 $P_{\text{posterior}}(m_k) \ge 0.55$，立即将 `routingMode` 升级为 `deep_debate`，唤醒红队挑战官针对该模块发起攻击；
-- **规则 C（沙箱内局部重修 `SCOPED_DEFENSE_REFINE`）**：若模块在验证后存在 $\text{RefutedClaims}_k > 0$，强制锁定在当前模块沙箱内进入 `defense` 阶段，仅重修当前模块。
+- **规则 C（沙箱内局部重修 `SCOPED_DEFENSE_REFINE`）**：若模块在验证后存在 $\text{RefutedClaims}_k > 0$，强制锁定在当前模块沙箱内进入 `defense` 阶段，仅重修当前模块；
+- **答辩收敛**：defense 阶段若 `verifiedClaims > 0` 且本轮 `refutedClaims = 0`、`contractViolations = 0`，应消解前序遗留证伪并直接 `FREEZE_MODULE`，禁止无意义二次回弹。
 
 ---
 

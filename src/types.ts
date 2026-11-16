@@ -765,6 +765,8 @@ export interface TaskModuleSlice {
   allowedFiles: string[];           // 本模块允许读写的文件路径白名单 (爆炸半径硬约束)
   dependsOnModuleIds: string[];     // 依赖的上游模块 ID 列表 (构成 Module DAG)
   complexityLevel: ModuleComplexityLevel;
+  requiresRedTeam?: boolean;        // 由大模型自主评估是否必须经过红队对抗质询
+  routingRationale?: string;        // 大模型对红队路由决策的可追溯理由
   status: 'pending' | 'proposing' | 'challenging' | 'verifying' | 'defending' | 'frozen' | 'failed';
   belief: BayesianModuleBelief;     // 贝叶斯先验-反馈-后验状态
   scopedMessageIds: string[];       // 物理隔离：仅属于本模块沙箱的消息 ID 集合
@@ -792,6 +794,8 @@ export interface ModuleDecompositionDraft {
     allowedFiles: string[];
     dependsOn: string[];
     complexityLevel: ModuleComplexityLevel;
+    requiresRedTeam?: boolean;
+    routingRationale?: string;
   }>;
   submittedBy?: string;
   submittedAt?: string;
@@ -812,7 +816,7 @@ export interface WhitelistDeduplicationRecord {
 export interface ModularOrchestrationState {
   enabled: boolean;                 // 是否启用 G-Frame 模块化隔离分治
   sharedContract?: SharedInterfaceContract;
-  modules: TaskModuleSlice[];       // K 个原子模块切片 (2 ≤ K ≤ 4)
+  modules: TaskModuleSlice[];       // K 个原子模块切片 (1 ≤ K ≤ 4)
   activeModuleId?: string;          // 当前正在推演或聚焦的模块沙箱 ID
   overallEntropyReductionRatio?: number; // 相比全量上下文的 Token/信息熵压缩比 (0~1)
   whitelistDeduplications?: WhitelistDeduplicationRecord[]; // 白名单拓扑偏序收敛与去重审计记录 (N5)
@@ -942,6 +946,79 @@ export interface GameRoleConcurrenceState {
   concludedAt?: string;              // 敲定时间戳
 }
 
+export type RootCauseCategory =
+  | 'network_partition'
+  | 'concurrency_race'
+  | 'resource_exhaustion'
+  | 'cost_complexity'
+  | 'architecture_coupling'
+  | 'security_boundary'
+  | 'general';
+
+export interface ProposalClaimItem {
+  claimId: string;
+  claim: string;
+  assumptions?: string[];
+  dependsOnClaimIds?: string[];
+  confidence?: number;
+}
+
+export interface ProposalClaimsPayload {
+  summary: string;
+  claims: ProposalClaimItem[];
+  impactedFiles: string[];
+  designDecisions?: string[];
+  source?: 'mcp_tool' | 'text_envelope';
+}
+
+export interface ChallengeCritiquePayload {
+  targetClaimId?: string;
+  disputedClaimIds?: string[];
+  rootCauseCategory?: RootCauseCategory | string;
+  reopeningTriggers?: string[];
+  alignmentScore?: number;
+  fatalFlaws: string[];
+  hiddenAssumptions: string[];
+  failureScenarios: string[];
+  counterDemands: string[];
+  summary: string;
+  source?: 'mcp_tool' | 'text_envelope';
+}
+
+export type DefenseStance =
+  | 'uphold_with_patch'
+  | 'partial_concession_with_patch'
+  | 'reject_critique_with_proof'
+  | 'full_surrender_without_patch';
+
+export interface DefensePatchedClaimItem {
+  claimId: string;
+  resolution: string;
+  status: 'resolved' | 'upheld' | 'conceded';
+}
+
+export interface DefensePatchPayload {
+  summary: string;
+  stance: DefenseStance;
+  patchedClaims: DefensePatchedClaimItem[];
+  defensePatches: string[];
+  quantifiedMetrics?: string[];
+  impactedFiles: string[];
+  alignmentScore?: number;
+  source?: 'mcp_tool' | 'text_envelope';
+}
+
+export interface McdaMatrixInput {
+  criteria: McdaCriterion[];
+  alternatives: string[];
+  scoreMatrix: Record<string, Record<string, number>>;
+  bestCriterionId: string;
+  worstCriterionId: string;
+  bestToOthers: number[];
+  othersToWorst: number[];
+  scoreProvenance?: Record<string, Record<string, string>>;
+}
+
 export interface GameTheoreticState {
   currentStage: GameTheoreticStage;
   gamePolicy?: GameTheoreticPolicy;
@@ -953,6 +1030,9 @@ export interface GameTheoreticState {
   targetVerificationContent?: string;
   targetDefenseMessageId?: string;
   targetDefenseContent?: string;
+  proposalClaims?: ProposalClaimsPayload;
+  challengeCritique?: ChallengeCritiquePayload;
+  defensePatch?: DefensePatchPayload;
   isChallengerResponded?: boolean;
   isChallengerBypassed?: boolean;        // 贝叶斯快速通道按设计旁路红队对抗标记 (N11)
   challengerBypassedReason?: string;     // 旁路审计原因说明
@@ -1227,6 +1307,7 @@ export interface ArbitrationRulingDraft {
   tradeOffPoints: string[];
   impactedFiles: string[];
   solution?: string;
+  mcdaMatrix?: McdaMatrixInput;
   submittedBy?: string;
   submittedAt?: string;
 }
@@ -1493,6 +1574,63 @@ export interface Message {
     filename: string;
     code: string;
   }>;
+  swarmMission?: SwarmMissionData;
+}
+
+export type SwarmMissionStatus =
+  | 'awaiting_approval'
+  | 'running_workers'
+  | 'reducing'
+  | 'completed'
+  | 'cancelled';
+
+export type SwarmSubTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'aborted'
+  | 'skipped';
+
+export type SwarmMissionTriggerMode = 'explicit' | 'autonomous';
+
+export interface SwarmSubTask {
+  taskId: string;
+  title: string;
+  description: string;
+  assignedAgentId: string;
+  originalAgentId?: string;
+  enabled: boolean;
+  allowedFiles?: string[];
+  overlappingFiles?: string[];
+  status: SwarmSubTaskStatus;
+  subThreadId?: string;
+  resultSummary?: string;
+  generatedDiffs?: TopicPatchDiffItem[];
+  startedAt?: number;
+  finishedAt?: number;
+  durationMs?: number;
+  errorMessage?: string;
+}
+
+export interface SwarmMissionData {
+  missionId: string;
+  roomId: string;
+  channelId?: string;
+  originalTask: string;
+  triggerMode: SwarmMissionTriggerMode;
+  leadAgentId: string;
+  sharedContractSummary: string;
+  status: SwarmMissionStatus;
+  subTasks: SwarmSubTask[];
+  finalSynthesis?: string;
+  aggregatedDiffs?: TopicPatchDiffItem[];
+  patchApplied?: boolean;
+  patchApplySummary?: string;
+  createdAt: number;
+  dispatchedAt?: number;
+  completedAt?: number;
+  reduceError?: string;
 }
 
 // 三级子话题 / 细节分支讨论

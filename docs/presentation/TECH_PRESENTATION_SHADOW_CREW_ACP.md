@@ -1,0 +1,245 @@
+# 🎤 Shadow Crew 技术宣讲方案全景指南
+## —— 用 ACP 连接你常用的 Agent 与身边同事的经验，让协作真正发生
+
+> **定位**：技术峰会 / 架构师技术沙龙 / 团队内部技术分享 Keynote 完整演讲策划方案与逐页 PPT 蓝图  
+> **核心主旨**：不重复造 Agent 轮子，基于开源开放的 **ACP (Agent Client Protocol)** 协议标准，把常用的编程 Agent、同事调优好的 Agent 与 `.scpack` 经验包连接在同一个工作台，让 Agent 之间协作，也让经验开始流动。
+
+---
+
+## 目录
+1. [宣讲定位与受众心智分析](#1-宣讲定位与受众心智分析)
+2. [四大核心板块讲解答题规范（针对用户提问）](#2-四大核心板块讲解答题规范针对用户提问)
+   - [板块 1：ACP 协议重点能力剖析（为什么是 ACP？）](#板块-1acp-协议重点能力剖析为什么是-acp)
+   - [板块 2：ACP V1 与 V2 核心差异对比与双栈设计](#板块-2acp-v1-与-v2-核心差异对比与双栈设计)
+   - [板块 3：Shadow Crew 基于 ACP 构建的全景功能版图](#板块-3shadow-crew-基于-acp-构建的全景功能版图)
+   - [板块 4：全球相似开源产品与生态横向对标](#板块-4全球相似开源产品与生态横向对标)
+3. [推荐补充的高价值宣讲板块](#3-推荐补充的高价值宣讲板块)
+   - [高价值补充 1：10 分钟 Live Demo 现场实操闭环设计](#高价值补充-110-分钟-live-demo-现场实操闭环设计)
+   - [高价值补充 2：多角色讨论的失真与纠偏（反从众偏见与运筹学收敛）](#高价值补充-2多角色讨论的失真与纠偏反从众偏见与运筹学收敛)
+   - [高价值补充 3：企业算力成本与工程落地 ROI 全景量化](#高价值补充-3企业算力成本与工程落地-roi-全景量化)
+4. [28 页正文 PPT 蓝图 + 7 页 ACP 实操附录（含排版建议与讲师台词）](#4-28-页-ppt-幻灯片逐页策划蓝图)
+5. [宣讲演练与互动 Q&A 预案指南](#5-宣讲演练与互动-qa-预案指南)
+6. [ACP 协议实操附录（29–35 页）](#6-acp-协议实操附录2935-页)
+
+---
+
+## 1. 宣讲定位与受众心智分析
+
+### 1.1 三个协作工程问题（共鸣建立）
+当前团队在尝试 AI 辅助研发时，常见的不是“模型不够强”，而是三个协作工程问题：
+1. **认知盲区**：Cursor、Cline、Claude Code 加速了个人编码，但本质上仍是“单 Agent 绑定单一大模型”。受单一模型预训练分布与归纳偏置的限制，单模型“自我审视（Self-Refine）”有边界，容易陷入一致性幻觉（Consistency Illusion）。面对跨领域复杂架构，缺少异构视角之间的交叉质疑与闭环纠正能力。
+2. **沉淀难移的记忆孤岛**：老工程师花了数月调优好的 Claude Code / Codex，积累了大量领域知识与特定业务规约，一旦换电脑或新员工入职，记忆无法快速迁移，陷入“重新教一遍 Agent”的低效循环。
+3. **协作失真风险**：传统的 Multi-Agent 框架（如 AutoGen、CrewAI）在缺少角色约束与验证机制时，可能出现多 Agent 之间的互相附和（Sycophancy）、循环复读与不收敛；Token 上升，却不一定产出确定性的结果。问题不在“多 Agent”本身，而在协作机制。
+
+### 1.2 破局之道：Thin Control Plane 与超级个体
+**Shadow Crew 的核心思想**：
+> **“个人不必再造一个 Agent，而是成为连接者：用 ACP 把常用的编程 Agent、同事调优好的 Agent 与活体记忆接进同一个工作台，让协作真正发生，也让经验开始流动。”**
+
+---
+
+## 2. 四大核心板块讲解答题规范（针对用户提问）
+
+### 板块 1：ACP 协议重点能力剖析（为什么是 ACP？）
+- **AI 时代的“LSP 时刻”**：
+  - 微软发明 **LSP**，解耦了“编辑器 ⟷ 语言静态分析”；
+  - Anthropic 发明 **MCP**，解耦了“Agent ⟷ 外部工具/数据源”；
+  - Zed 与社区发起的 **ACP (Agent Client Protocol)**，**解耦了“桌面宿主控制面 ⟷ 自治编程 Agent 运行时”**。
+- **ACP 7 大核心支柱**：
+  1. **stdio 传输**：客户端拉起 Agent 子进程，stdin/stdout 按行传输 JSON-RPC；ACP 核心只定义 stdio，远程 WebSocket / HTTP 传输在独立 RFD 中，Shadow Crew 的 WS / Relay 属于扩展传输。
+  2. **双向对等 JSON-RPC 2.0**：客户端正向派发任务（`session/prompt`），Agent 执行敏感操作时反向申请权限（`session/request_permission`）。
+  3. **严格的会话与 CWD 物理绑定**：`session/new` 将任务上下文与操作系统路径绝对锁定，杜绝路径串扰。
+  4. **全双工流式与内容块**：`session/update` 推送消息、工具与状态；`text` / `resource_link` 是基线，`image` / `audio` / `resource` 需要初始化时协商的 prompt 能力。
+  5. **会话生命周期**：`session/new`、`session/list`、`session/resume`、`session/close`；v1 的 `session/load` 做全量重放，v2 移除 load，改用 resume + `replayFrom` / `replay_complete`。
+  6. **细粒度版本握手与能力协商 (Capability Negotiation)**：`initialize` 交换 `protocolVersion` / `capabilities` / `info`；v1 用布尔标记，v2 用对象标记，省略即不支持。
+  7. **反向权限代理机制 (Permission Broker)**：`session/request_permission` 让 Agent 在敏感操作前回头问宿主；v2 用 `title` + `subject` + `options`，返回 `selected` / `cancelled`。
+
+> **边界说明**：远程 WebSocket / Relay、300s~1800s 心跳、`agentCapabilities.nativeMemory` 属于 Shadow Crew 的传输与记忆扩展，不是 ACP 核心规范；对外宣讲时必须主动区分“核心 vs 扩展”。
+
+### 板块 2：ACP V1 与 V2 核心差异对比与双栈设计
+| 对比维度 | **ACP V1（稳定）** | **ACP V2（Draft）** | **接入影响** |
+| :--- | :--- | :--- | :--- |
+| **版本协商** | 整数 `1`；Agent 返回自己支持的最新版 | 整数 `2`；取 ≤ 请求的最高版；无匹配返回 `-32022`（`requested` / `supported`） | 一个连接只跑一个版本；v1/v2 两套 handler |
+| **能力模型** | `agentCapabilities` / `clientCapabilities`；布尔标记，session 能力分散 | 统一 `capabilities` + 必填 `info`；对象存在即支持，`session` 为基线 | 存在性判断，不做布尔等值；只发对端声明过的能力 |
+| **Prompt 生命周期** | `session/prompt` 挂起到回合结束，响应 `{ stopReason }` | 插入即 ack `{ messageId }`；`state_update` 报 `running` / `idle`，终态带 `stopReason` | UI 不能把 prompt 响应当完成；终态看 idle |
+| **会话恢复** | `session/load` 全量重放；`session/resume` 可选 | `load` 移除；`resume` 必选，支持 `replayFrom` + `replay_complete` | 迁移到 resume；处理 replay 边界与截断 |
+| **客户端工具** | `fs/read_text_file`、`fs/write_text_file`、`terminal/*` | 移除；工具在 Agent 执行，客户端工具改走 MCP | 删除 fs/terminal 调用；用 MCP 提供客户端工具 |
+| **认证与模式** | `authenticate`、`logout`、`session/set_mode` | `auth/login`、`auth/logout`；`set_mode` → `set_config_option` | 方法重命名；模式改配置项 |
+| **工具报告** | `tool_call` + `tool_call_update` | `tool_call` 移除；`tool_call_update` 首次即创建，upsert 语义 | 更新 UI 的增量合并逻辑 |
+| **V2 状态** | — | **Draft**（稳定基线 + experimental） | 特性开关 + 双栈；不要用消息翻译伪装兼容 |
+
+### 板块 3：Shadow Crew 基于 ACP 构建的全景功能版图
+Shadow Crew 在纯粹的 ACP 协议之上，构建了 5 大工业级控制面能力：
+1. **本机与同事 Agent 的双模直连**：
+   - 本地 Stdio 进程安全拉起（防静默偷跑，UI 显式启动）；
+   - 跨机远程连接（局域网/Tailscale 直连或 Axum Relay Hub），挂载同事电脑上调优完毕的高阶 Agent，默认施加 **ReadOnly Guard** 物理保护。
+2. **工业级团队记忆资产化（`.scpack`）**：
+   - 纯 TypeScript 实现 256 位 **BLAKE3 哈希完整性校验** 与 **RFC 8785 规范化签名 (JCS)**；
+   - 独创 **企业网关 503 补偿算法**：即使企业模型抽取出错，仍可直接从原始 Rollout 轨迹提取专家经验；
+   - **零污染只读卡带**：四级记忆漏斗过滤，前置 0 Token，按需工具检索，杜绝污染本地知识库。
+3. **普通敏捷协同流（对标 Buzz）**：
+   - `<delta-events>` 未读增量切片编译，单轮节省 51%~80% Token，实现 Prefix KV Cache 100% 命中；
+   - 派遣时刻并发水位线不变量与 Turn Barrier 同步屏障，优雅支持多人/多 Agent 并发交织研讨。
+4. **CognoNexus 4+1 博弈论决策治理**：
+   - DIANOIA 4+1 角色解耦（提案官 $\rightarrow$ Free-MAD 红队反从众质询 $\rightarrow$ 物理接地实证 $\rightarrow$ 答辩修正 $\rightarrow$ BWM 运筹学仲裁）；
+   - 0-Token 纯数学运筹求解，一致性比率 $\xi^* \le 0.12$ 硬门禁，输出包含《少数派异议报告》的 Living ADR 活体架构画布。
+5. **本地 Rust 级反向权限代理中心 (Local Permission Broker)**：
+   - 拦截 Agent 的 `session/request_permission`，归一化 6 大 Capability；
+   - 工作区沙箱白名单守卫，越界写盘严禁持久化放行，严格遵循 Fail-Closed。
+
+### 板块 4：全球相似开源产品与生态横向对标
+| 维度 | **Shadow Crew** | **Buzz (`buzz-acp`)** | **T3 Code** | **OpenHands** | **Goose / Cline** | **CrewAI / AutoGen** |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **协议标准** | **ACP 双栈**<br>(stdio 核心 + WS 扩展，支持 V1/V2) | **标准 ACP**<br>(Nostr 中继桥接 stdio ACP) | **私有 CLI 包装**<br>(PTY/CLI 进程驱动 + WebSocket 隧道) | **私有 EventStream**<br>+ MCP 工具集成 | **纯 MCP Client**<br>(无 ACP，属被驱动的 Agent 端) | **私有 Python SDK**<br>(内存对象传递，无通用通信协议) |
+| **协同模型** | **双模驱动**：<br>① 普通流：Buzz `<delta-events>` 增量流 + Fan-out；<br>② 议题流：**CognoNexus 4+1 博弈论** (BWM 运筹仲裁) | **频道消息广播**<br>(Nostr 事件驱动，全员自由 `@mention`，异步流式) | **单人多线程并行**<br>(多 Git Worktree 独立任务分配，无 Agent 间协同) | **层级树状派发**<br>(主 Agent 调度专用 Sub-Agent，集中控制) | **纯单 Agent**<br>(无多 Agent 协同，或仅靠人工手动切换 Mode) | **集中式中心化调度**<br>(GroupChatManager 轮询、顺序 SOP 链，缺乏硬收敛) |
+| **记忆共享** | **`.scpack` 跨机专家能力包**：<br>• 6 源一致性快照<br>• BLAKE3 + RFC8785 JCS 签名<br>• 外挂只读 Cartridge (零污染) | **会话级/渠道级滚动**<br>(依赖 Nostr 频道历史，无跨机打包标准) | **工作区隔离**<br>(依赖 Git 分支与历史，无 Agent 记忆导出) | **向量数据库 (Vector DB)**<br>(Chroma 集中式持久化，无法便携分发) | **本地规约文件**<br>(`.clinerules`, Markdown Memory Bank) | **短/长期内存抽象**<br>(SQLite/Chroma 本地持久化，不可移植) |
+| **安全沙箱** | **Rust 级反向权限代理**：<br>• `session/request_permission` 拦截<br>• Topic 级不可变 CWD 物理隔离 | **宿主 OS / 进程权限**<br>(依赖子进程默认权限或人工在 CLI 交互) | **Worktree 隔离**<br>(Git Worktree 目录隔离，命令白名单审批) | **Docker 容器沙箱**<br>(完全容器化隔离，权限由容器环境限制) | **编辑器交互弹窗**<br>(VS Code 级 Tool Call 确认，工作区限定) | **Python 运行沙箱**<br>(缺乏 OS 级细粒度系统调用/文件拦截) |
+
+---
+
+## 3. 推荐补充的高价值宣讲板块
+
+### 高价值补充 1：10 分钟 Live Demo 现场实操闭环设计
+*（建议在演讲中段进行，视觉冲击力与说服力拉满）*
+- **步骤 1：启动与拓扑装载（1 分钟）**
+  - 演示在 UI 启动本地 Codex Agent，并输入同事电脑 IP，秒级挂载同事调优好的“分布式缓存专家 Agent（Remote ACP）”。
+- **步骤 2：导入专家能力卡带（1 分钟）**
+  - 将一份同事导出的 `redis-redlock-expert.scpack` 拖入系统，展示 BLAKE3 验签秒级通过，作为只读卡带挂载（Zero Contamination）。
+- **步骤 3：敏捷增量协同讨论（2 分钟）**
+  - 在 Channel 发起讨论：“我们要在结算链路接入分布式锁”，展示本地 Agent 与远程同事 Agent 并发响应；
+  - 屏幕展示 Token 水位线监控，展示 `<delta-events>` 机制仅发送 200 Token 未读增量，节省 75% 费用。
+- **步骤 4：升维 4+1 博弈推演（4 分钟）**
+  - 遇到“Redlock 在 NTP 时钟跳变下的安全性”分歧，一键将 Topic 升级为 **CognoNexus 4+1 博弈模式**；
+  - 提案官发起方案 $\rightarrow$ Free-MAD 红队尖锐质询时钟漏洞 $\rightarrow$ 验证官拉起本地 Rust 执行真实实证 $\rightarrow$ 答辩官修正逻辑 $\rightarrow$ 综合裁定官启动 BWM 运筹求解，屏幕显示一致性指标 $\xi^* = 0.08 \le 0.12$，瞬间生成规范的 Living ADR 架构决策画布。
+- **步骤 5：Rust 权限仲裁与物理补丁合入（2 分钟）**
+  - 定案后一键派发执行，Agent 发起文件修改，Rust 弹窗拦截 `fs.write` 请求，演示工作区内路径安全放行，代码自动合入 Git 工作区并一次性测试通过。
+
+#### 💡 演讲实战秘籍：现场演示时应对“公司网络封锁”与“本地离线模拟”方案
+在技术宣讲与现场 Demo 中，若遇到“公司 Wi-Fi 开启了 AP 隔离禁止两台电脑互连”或“现场没有双机网络条件”，推荐采用以下两套成熟策略：
+1. **单机 100% 真实协议模拟方案（官方推荐，零风险保底）**：
+   - 项目内置开箱即用的轻量 WebSocket ACP 模拟服务：`npm run mock:remote`（或 `node scripts/mock-remote-acp-agent.mjs 9001 "张工 (分布式锁专家)"`）；
+   - 在 Shadow Crew 连接弹窗中选择 **Remote ACP**，填入 `ws://127.0.0.1:9001`；
+   - **说服力保证**：虽然运行在本地回环，但 Shadow Crew 走的是**完全真实的 WebSocket 网络协议栈**，UI 会展示 **`Remote ACP`** 蓝色高亮徽章，精确触发 40ms 网络 RTT 探针检测与逐字流式推送。对现场观众而言，这就是一个真实的远端同事端点，同时彻底杜绝了现场断网翻车的风险。
+2. **真实跨机网络穿透方案（若坚持使用两台物理电脑演示）**：
+   - **手机热点对联（最稳妥实机方案）**：演示时两台电脑同时连接手机热点（iPhone/Android 默认不设 AP 隔离），直接通过 `172.20.10.x` 或 `192.168.43.x` 直连；
+   - **Tailscale 虚拟 Mesh 网**：两机加入同一个 Tailscale 账号，直接通过 `100.x.y.z` 虚拟内网穿透公司防火墙；
+   - **反向代理/公网穿透**：同事电脑使用 `cloudflared tunnel` 或 `ngrok` 将本地端点暴露为 `wss://*.trycloudflare.com`，甚至直接部署本项目自带的 `crates/shadow-crew-server`（Axum Relay Hub）。
+
+### 高价值补充 2：多角色讨论的失真与纠偏（反从众偏见与运筹学收敛）
+- **学术界痛点**：研究表明（Free-MAD、Sycophancy Propagation 等），LLM 在多轮讨论中可能出现“谄媚效应（Sycophancy）”，即倾向于附和之前发言者的观点，即使前者的观点存在明显逻辑漏洞。
+- **Shadow Crew 的趋真保障机制**：
+  1. **BSS/DSS 谄媚量化与信任折减**：动态追踪 Agent 的发言，对“无任何代码/测试实据却突然屈服妥协”的行为施加 $\gamma$ 信任度折减；
+  2. **Free-MAD 强制红队反从众四部曲**：挑战官必须针对提案寻找 3 类致命反例（死锁、并发竞态、越界）；
+  3. **BWM 运筹学求解**：将架构权衡转化为可检查的数学规划，减少凭空捏造的“虚假共识”；
+  4. **验证门禁**：结论进入裁决前过四道检查——证据可复现、反例逐条回应、一致性达标（$\xi^* \le 0.12$）、法定人数/程序完备；缺证据就退回，不按“看起来一致”放行；
+  5. **《少数派异议报告》**：不抹杀反对声音，伴生保留红队的核心异议与 3 条量化黑天鹅重启触发器。
+
+### 高价值补充 3：企业算力成本与工程落地 ROI 全景量化
+- **Token 消耗直降 73%**：通过 LMAD 局部冲突切片、未读增量截断、BWM 纯数学求解卸载与“静默即成功”公约，单场架构研讨将原本 120,000 Token 的上下文压缩至 32,000 Token。
+- **专家经验复用周期从“周级”缩减至“秒级”**：以前资深架构师需花 2 周带新人熟悉项目规范，现在直接分发 `.scpack` 专家能力包，新员工的 Agent 即可秒级具备相同的架构规范约束。
+
+---
+
+## 4. 28 页 PPT 幻灯片逐页策划蓝图
+
+> 正文 28 页；另附 7 页 ACP 实操附录（29–35 页），见第 6 节。
+
+| 页码 | 页面标题 | 视觉焦点与图表布局 | 讲师核心话术与展开重点 |
+| :--- | :--- | :--- | :--- |
+| **01** | **连接 Agent，连接彼此**<br>—— 基于 ACP 协议的 Agent 连接与协作新范式 | 极简深色封面，中央为发光的组织网络，节点连接着各类 Agent 与应用图标 | “欢迎各位同行。今天我们要探讨的，不仅是如何用 AI 提效，而是如何利用标准协议，把常用的 Agent 和同事的经验连接起来，让协作真正发生。” |
+| **02** | **单 Agent 与多 Agent：两种工作方式**<br>不比较优劣，先看取舍 | 左右对比卡片：单 Agent（链路短、上下文集中、单点偏差） vs 多 Agent（角色分工、交叉验证、协调成本） | “这不是代际替代。单 Agent 链路短，多 Agent 增加分工与验证，但协调、Token、时延都会上升。协作的目的不是证明谁更强，而是把过程交给工作流，让人只关注结果。” |
+| **03** | **协作的三个工程问题**<br>认知、经验、收敛 | 三列卡片：认知盲区、记忆孤岛、协作失真 | “三个问题都不是‘多 Agent 一定不好’，而是缺少外部挑战、经验资产化与验证门禁。论文依据与边界见附录 A7。” |
+| **04** | **解局思路：Thin Control Plane**<br>不造 Agent 轮子，做 Agent 之间的协作枢纽 | 左右对比图：左侧“假设全栈自建”清单（模型训练/向量库不做、Agent 运行时外置、工具链只做边界、权限/UI 自建），右侧为 Shadow Crew 控制面 + 外置 Agent | “左边不是我们的功能清单，而是取舍：模型训练与向量库不做，Agent 运行时外置给 ACP，工具链只做权限/工作区边界；权限审计、协同 UI 与协议自建。把执行面外置，控制面才轻。” |
+| **05** | **AI 时代的“LSP 时刻”：初识 ACP**<br>Agent Client Protocol 协议诞生记 | LSP vs MCP vs ACP 三大协议生态架构全景图 | “微软的 LSP 拯救了编辑器生态，Anthropic 的 MCP 统一了工具世界，而 Zed 发起的 ACP，则是连接宿主与 AI Agent 运行时的‘黄金总线’。” |
+| **06** | **ACP 的核心架构理念**<br>职责彻底解耦与对等双向通信 | 双向通信泳道图：展示 Client 与 Agent 之间正向派发与反向权限请求 | 强调 ACP 是真正的双向对等协议，宿主专注工作区隔离与权限，Agent 专注自主推理与 Tool Loop，职责边界异常分明。 |
+| **07** | **ACP 7 大能力支柱剖析**<br>支撑工业级协同的底层骨架 | 7 宫格蜂窝架构图：stdio、RPC、CWD、流式、生命周期、能力、反向权限 | 逐一拆解 stdio 按行传输、session 生命周期、内容块与不可变 CWD；明确 WS / 心跳 / nativeMemory 是 Shadow Crew 扩展。 |
+| **08** | **CWD 不可变约束与会话生命周期**<br>杜绝路径篡改与多任务串扰 | 目录隔离架构图：Topic 与物理目录的一对一永久绑定 | 解释为什么必须保证 Session 与 CWD 的不可变性，彻底杜绝多任务并发执行时的路径漂移与跨项目文件误写风险。 |
+| **09** | **反向权限代理（Permission Broker）**<br>把危险操作关进确定性笼子里 | 权限请求流程图：Agent 触发 $\rightarrow$ Rust 拦截 $\rightarrow$ 6 大 Capability 映射 $\rightarrow$ 弹窗审批 | “当 Agent 试图格式化磁盘或访问外部网络时，ACP 允许宿主建立 Rust 级的反向拦截。不放过任何未授权的越界行为。” |
+| **10** | **协议的演进跃迁：从 V1 到 V2**<br>一次生命周期重构，而不是版本号加一 | V1 稳定 vs V2 Draft 对比列表 | 讲清 V2 真正改的是 prompt 生命周期、能力模型、客户端工具面；V2 目前仍是 Draft。 |
+| **11** | **六维核心差异全景对照表**<br>ACP V1 vs V2 的工程级深度对账 | 6 行对比表（版本、能力、生命周期、恢复、客户端工具、认证/模式） | 逐项讲透 V2 的 `{ messageId }` ack、`state_update` 终态、`session/resume`、客户端工具改走 MCP 与对象化能力。 |
+| **12** | **记忆归端点：原生优先，避免外部拼贴**<br>Native Memory First | 左右方案对比图：左侧外部拼贴（短期可用、长期冲突），右侧端点原生接入 | “`agentCapabilities.nativeMemory` 是 Shadow Crew 的扩展字段，不是 ACP 核心。端点自己管理长期记忆，宿主只做状态探测与策略引导；未声明时按 unsupported 处理。” |
+| **13** | **Shadow Crew 的双栈协商**<br>一个连接，只讲一个版本 | 协商状态机图：initialize 选版本 $\rightarrow$ 2 / 1 / `-32022` | 讲解官方协商规则：请求最新、Agent 选 ≤ 请求的最高版、无匹配返回 `-32022`；按连接选 handler，不做消息翻译；V2 是 Draft，用特性开关。 |
+| **14** | **Shadow Crew 全景版图**<br>五大核心系统筑造桌面级协作枢纽 | 整体架构蓝图：双模连接、.scpack 记忆、Buzz 并发流、CognoNexus 博弈、Rust 权限 | 整体介绍 Shadow Crew 是如何在 ACP 之上长出丰富的团队协作、跨机组网与运筹决策能力的。 |
+| **15** | **跨机互联：连接身边同事的 Agent**<br>从单机 stdio 到局域网 / Relay Hub | 网络拓扑图：本地 Agent、同事 A 电脑（Tailscale 直连）、中心 Relay Hub（Shadow Crew 扩展传输） | “张工精通 Linux 内核，他的 Claude Code 调优得很顺手。通过 Shadow Crew 连接他的端点，他的 Agent 就能和我一起工作。产品最期望的方向，是同事不在场时，他的 Agent 和经验仍然在线。” |
+| **16** | **团队记忆资产化：便携经验包 (.scpack)**<br>工业级加密、脱敏与防篡改封装 | 打包解构图：6 源一致性快照、BLAKE3 校验、RFC 8785 JCS 签名 | 详细解析 `.scpack` 规范，如何通过密码学手段确保经验的安全流转，以及针对企业网关 503 报错独创的 Rollout 补偿提取算法。产品意图：同事休假、换机、离职，经验仍然在线。 |
+| **17** | **零污染只读卡带机制**<br>四级漏斗过滤，零 Token 前置消耗 | 漏斗过滤流转图：原始数据 $\rightarrow$ 高密卡片 $\rightarrow$ JIT 检索 $\rightarrow$ 动态注入 | 阐明外部记忆严禁物理写入本地知识库的“零污染原则”，采用挂载只读卡带与动态检索，守住本地知识库的纯净度。 |
+| **18** | **普通协同流：对标 Buzz 的敏捷增量**<br>`<delta-events>` 与并发水位线不变量 | 消息流水线图：增量切片提取、Turn Barrier 屏障、`@mention` 去重 | 讲解日常敏捷协作流，未读增量切片降低 70% Token 消耗并保持 100% KV Cache 命中率，Turn Barrier 保证多人并发不乱序。 |
+| **19** | **深度博弈流：CognoNexus 4+1 引擎**<br>多角色、任务拆解与证据链 | DIANOIA 4+1 状态机流转图：立论 $\rightarrow$ 质询 $\rightarrow$ 接地 $\rightarrow$ 答辩 $\rightarrow$ 仲裁 | “面对复杂架构分歧，我们启动 4+1 流程：红队提出可证伪反例，验证官拿真实代码跑实证。多角色与任务拆解有论文依据（Free-MAD / ColMAD / LMAD / ReConcile），但结论有任务边界；详见附录 A7。” |
+| **20** | **BWM 运筹学 0-Token 仲裁**<br>把架构权衡写成可检查的数学问题 | 单纯形法凸优化图与 $\xi^* \le 0.12$ 一致性门禁判定 | 讲解如何用线性规划求解权重，一致性不达标退回重审。BWM 不替代讨论，只把最后一步变成可检查的门禁；参考见附录 A7。 |
+| **21** | **四种协作形态，不同取舍**<br>不是代际替代 | 2×2 卡片：硬编码 SOP 框架、IDE 单 Agent 扩展、沙盒执行平台、解耦型控制面 | 不做代际排名。四种形态各解决不同问题，选择取决于任务、团队与治理成本；没有唯一正确形态。 |
+| **22** | **核心四维横向对比矩阵**<br>不同选择，不同取舍 | 四维大矩阵表格（协议标准、协同模型、记忆共享、权限沙箱） | 逐格讲事实，不做排名。Buzz、T3 Code、OpenHands、AutoGen 各有取舍，不是敌人，也不是落后的代际。 |
+| **23** | **五个设计选择：我们如何取舍**<br>不是五个功能，而是五个取舍 | 5 张卡片：执行面解耦、经验可携带、收敛有门禁、按任务选双模、边界在本地 | 每条选择都有代价与适用边界；不做排名或壁垒的断言，讲清为什么这样取舍。 |
+| **24** | **现场演示：10 分钟 Live Demo 实战**<br>一次真实的跨端团队协同与博弈之旅 | 现场实操投影 / 关键步骤截图卡片流 | 现场还原端到端实操：挂载同事远端 Agent $\rightarrow$ 挂载只读记忆卡带 $\rightarrow$ 敏捷讨论 $\rightarrow$ 升维 4+1 博弈 $\rightarrow$ Living ADR 补丁合入。 |
+| **25** | **认知防从众治理机制**<br>Sycophancy 偏见防御与《少数派异议报告》 | 偏见折减流程与少数派报告导出示意图 | 讲解谄媚传播、信任折减、红队反例与异议保留。研究依据（Sycophancy Propagation / Free-MAD / ColMAD / ReConcile）与适用边界见附录 A7。 |
+| **26** | **企业落地 ROI 全景量化**<br>降本增效的真实数字与落地路径 | 柱状图对比：Token 费用降低 73%，知识传承周期缩短 90% | 用翔实的数据向企业管理者与技术决策者证明：标准协议与组织化协同带来的巨大工程与经济效益。 |
+| **27** | **接下来的三个方向**<br>不做时间预测 | 三张卡片：现在（桌面协同） $\rightarrow$ 下一步（P2P 组网） $\rightarrow$ 探索（组织经验网络） | 讲方向，不承诺时间点；把“探索”明确标为探索，不包装成必然。 |
+| **28** | **结语与致谢**<br>让 Agent 彼此连接，让经验彼此流动 | 极简留白页面，项目 GitHub 仓库二维码与联系方式 | “协作不是目的。把人从过程里抽出来，只关注结果，才是。同事不在场，他们的经验也一直在线。感谢大家！” |
+
+---
+
+## 5. 宣讲演练与互动 Q&A 预案指南
+
+### Q1：为什么要专门用 ACP 协议，而不是直接用大模型的 REST API 或者 OpenAI 格式？
+> **讲师回答要点**：  
+> OpenAI REST API 只是“无状态的单次补全接口”，它不包含 Agent 自治运行所需的“多轮 ReAct 循环、操作系统权限反向申请、工作目录锁定、流式取消与会话状态同步”。如果宿主去拼装这些，就必须在前端实现大量厚重的 Agent 执行逻辑；而 ACP 将执行黑盒完整交给外部独立进程（如 Claude Code、Codex），宿主只做轻量的组织协同，架构极其纯粹。
+
+### Q2：连接同事的 Agent，是否会把同事电脑的敏感文件或密钥泄露过来？
+> **讲师回答要点**：  
+> 设计上不会。Shadow Crew 采用双向安全防御：
+> 1. 远程 Agent 在连接时默认施加 **ReadOnly Guard**，阻断文件写与执行指令；
+> 2. 跨机流转的专家记忆包（`.scpack`）内置**硬脱敏网关**，自动剔除 API 密钥、内网 Token 并将绝对路径相对化；同时记忆以外挂**只读卡带**方式读取，零污染本地环境。
+
+### Q3：4+1 博弈推演会不会耗费太多时间和 Token？
+> **讲师回答要点**：  
+> 这正是我们设计**双模协同（Dual-Mode Orchestration）**的原因。日常 80% 的普通任务走对标 Buzz 的敏捷协同流，增量切片让 Token 直降 70%；只有在遇到高危架构争议时，才一键升维至 4+1 博弈。同时，我们在博弈中采用 **LMAD 局部冲突切片**、**BWM 0-Token 纯数学运筹求解** 与 **Wald-SPRT 早停机制**，减少无休止讨论，兼顾效率与严谨。
+
+---
+
+## 6. ACP 协议实操附录（29–35 页）
+
+> 面向需要落地接入的听众。现场讲不完时，放到 Q&A 或会后资料；正文节奏不变。
+
+| 页码 | 页面 | 核心内容 |
+| :--- | :--- | :--- |
+| **29** | **一次 ACP 调用，从头到尾** | `initialize` → `session/new` → `session/prompt` → `session/update` → `session/request_permission` → `idle`；v1/v2 终态差异 |
+| **30** | **capabilities 是什么** | 握手时交换的能力清单：`session` 总开关、prompt / MCP / systemPrompt / auth.terminal / elicitation；v1 布尔 vs v2 对象 |
+| **31** | **V1 方法地图** | 基线方法、能力门控、`fs/*` / `terminal/*` 客户端工具、布尔能力 |
+| **32** | **V2 方法地图** | 基线方法、六个断点、V2 Draft 状态 |
+| **33** | **最小接入：四段报文** | `initialize` / `session/new` / `prompt` / `update + permission` 的可照抄 JSON-RPC |
+| **34** | **接入检查清单** | 传输、版本、能力、会话、内容、流式、权限、取消、恢复、双栈 |
+| **35** | **参考论文与适用边界** | Free-MAD / ColMAD / LMAD / ReConcile / Sycophancy Propagation / DIANOIA / LLM+BWM / Disagreement-Aware，以及 G-Frame 内部规范 |
+
+### 6.1 最小接入步骤
+
+1. **传输**：客户端拉起 Agent 子进程，stdin/stdout 每行一个 JSON-RPC 对象；stdout 只写 ACP 消息，日志走 stderr。
+2. **握手**：`initialize` 带 `protocolVersion`、`capabilities`、`info`；读返回的 `protocolVersion` 决定后续 handler。
+3. **建会话**：`session/new` 带绝对路径 `cwd` 与 `mcpServers`，拿 `sessionId`。
+4. **发消息**：`session/prompt` 带 `ContentBlock[]`；v2 立即收到 `{ messageId }`，v1 等回合结束收 `{ stopReason }`。
+5. **收流**：按序处理 `session/update`；需要审批时响应 `session/request_permission`。
+6. **收口**：v2 等 `state_update` 的 `idle` + `stopReason`；取消用 `session/cancel`，恢复用 `session/resume`，关闭用 `session/close`。
+
+### 6.2 方法速查（V1 → V2）
+
+| 场景 | V1 | V2 |
+| :--- | :--- | :--- |
+| 建会话 | `session/new`（`cwd` + `mcpServers`） | `session/new`（`cwd` + 可选 `mcpServers` / `systemPrompt` / `additionalDirectories`） |
+| 发消息 | `session/prompt`，响应 `{ stopReason }` | `session/prompt`，响应 `{ messageId }`；终态看 `state_update` |
+| 恢复 | `session/load`（重放） / `session/resume`（可选） | `session/resume`（必选，可带 `replayFrom`） |
+| 取消 | `session/cancel` 通知 | `session/cancel` 通知；等 `idle stopReason: cancelled` |
+| 审批 | `session/request_permission`（`toolCall` + `options`） | `session/request_permission`（`title` + `subject` + `options`） |
+| 工具 | `tool_call` / `tool_call_update` | `tool_call_update`（首次创建，upsert） |
+
+### 6.3 论文依据与适用边界
+
+- **Free-MAD**：反从众的多 Agent 辩论；挑战者迫使提案给出可证伪反例。
+- **ColMAD**：协作式多 Agent 辩论；角色分工与协同增量。
+- **LMAD**：局部多 Agent 辩论；按冲突切片，减少无关上下文。
+- **ReConcile**：异构模型共识与置信度校准；用校准置信度而非简单投票。
+- **Sycophancy Propagation**：谄媚在多轮讨论中传播；需要量化与信任折减。
+- **DIANOIA**：角色正交的认知流程；4+1 阶段划分的依据之一。
+- **LLM + BWM**：用 BWM 把准则权重变成可检查的数学问题。
+- **Disagreement-Aware**：保留少数派异议与黑天鹅重启触发器。
+- **G-Frame**（内部规范，不是论文）：用贝叶斯先验 / 后验做模块路由（宣讲中可称“贝叶斯博弈”），把大任务拆成 2–4 个原子模块，按模块选择模型与验证强度。
+
+> **引用边界**：论文结论依赖任务、模型与提示；不把“多 Agent 必然更准”当作普遍结论。宣讲时先讲条件，再讲证据。
+
+> **资料来源**：ACP 官方规范 v1 / v2（agentclientprotocol.com）。V2 目前仍为 Draft；正式对外演讲前请再核对一次版本状态与 schema。

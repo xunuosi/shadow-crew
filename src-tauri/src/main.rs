@@ -376,6 +376,7 @@ async fn send_prompt_to_agent(
     _cwd: Option<String>,
     _env_vars: Option<Vec<acp_manager::AcpEnvVar>>,
     system_prompt: Option<String>,
+    persona_prompt: Option<String>,
     discussion_mode: Option<String>,
     native_memory_enabled: Option<bool>,
     native_memory_auto_generate: Option<bool>,
@@ -412,6 +413,7 @@ async fn send_prompt_to_agent(
             attachments.as_deref().unwrap_or(&[]),
             &prompt,
             system_prompt.as_deref(),
+            persona_prompt.as_deref(),
             discussion_mode.as_deref(),
             native_memory_enabled,
             native_memory_auto_generate,
@@ -433,6 +435,7 @@ async fn ensure_agent_session(
     workspace_cwd: Option<String>,
     scope_type: Option<String>,
     system_prompt: Option<String>,
+    persona_prompt: Option<String>,
     discussion_mode: Option<String>,
     local_history_intact: Option<bool>,
     desired_model: Option<String>,
@@ -462,6 +465,7 @@ async fn ensure_agent_session(
             workspace_cwd.as_deref(),
             scope_type.as_deref(),
             system_prompt.as_deref(),
+            persona_prompt.as_deref(),
             discussion_mode.as_deref(),
             local_history_intact,
             desired_model.as_deref(),
@@ -823,105 +827,169 @@ fn reconstruct_content_from_diff(diff: &str, code_content: Option<&str>) -> Stri
     lines.join("\n") + "\n"
 }
 
-/// 解析 unified diff 的 hunk 头：`@@ -oldStart[,oldCount] +newStart[,newCount] @@`
-fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
-    let rest = line.strip_prefix("@@ -")?;
-    let end = rest.find(" +")?;
-    let old_part = &rest[..end];
-    let mut pieces = old_part.split(',');
-    let old_start: usize = pieces.next()?.trim().parse().ok()?;
-    let old_count: usize = match pieces.next() {
-        Some(raw) => raw.trim().parse().ok()?,
-        None => 1,
-    };
-    Some((old_start, old_count))
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UnifiedDiffLine<'a> {
+    Context(&'a str),
+    Remove(&'a str),
+    Add(&'a str),
 }
 
-struct DiffHunk {
+#[derive(Debug, Clone)]
+struct UnifiedDiffHunk<'a> {
     old_start: usize,
-    old_lines: Vec<String>,
-    new_lines: Vec<String>,
+    lines: Vec<UnifiedDiffLine<'a>>,
 }
 
-fn parse_diff_hunks(diff: &str) -> Vec<DiffHunk> {
-    let mut hunks: Vec<DiffHunk> = Vec::new();
-    let mut current: Option<DiffHunk> = None;
-    for line in diff.lines() {
-        if let Some((old_start, _old_count)) = parse_hunk_header(line) {
-            if let Some(hunk) = current.take() {
-                hunks.push(hunk);
+fn parse_unified_diff_hunk_header(line: &str) -> Option<usize> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with("@@") {
+        return None;
+    }
+    let after_first = trimmed.strip_prefix("@@")?.trim_start();
+    let end_idx = after_first.find("@@")?;
+    let range_part = after_first[..end_idx].trim();
+    let old_token = range_part.split_whitespace().next()?;
+    let old_range = old_token.strip_prefix('-')?;
+    let old_start_str = old_range.split(',').next()?;
+    old_start_str.parse::<usize>().ok()
+}
+
+fn parse_unified_diff_hunks(diff: &str) -> Vec<UnifiedDiffHunk<'_>> {
+    let mut hunks: Vec<UnifiedDiffHunk<'_>> = Vec::new();
+    let mut current: Option<UnifiedDiffHunk<'_>> = None;
+    let mut saw_hunk_header = false;
+
+    for raw_line in diff.lines() {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        if line.starts_with("diff --git")
+            || line.starts_with("index ")
+            || line.starts_with("--- ")
+            || line.starts_with("+++ ")
+            || line.starts_with("\\ No newline at end of file")
+        {
+            continue;
+        }
+        if let Some(old_start) = parse_unified_diff_hunk_header(line) {
+            saw_hunk_header = true;
+            if let Some(prev) = current.take() {
+                hunks.push(prev);
             }
-            current = Some(DiffHunk {
+            current = Some(UnifiedDiffHunk {
                 old_start,
-                old_lines: Vec::new(),
-                new_lines: Vec::new(),
+                lines: Vec::new(),
             });
             continue;
         }
-        let Some(hunk) = current.as_mut() else {
-            // diff --git / index / --- / +++ 等头部
-            continue;
-        };
-        if line.starts_with('\\') {
-            // "\ No newline at end of file"
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix('-') {
-            hunk.old_lines.push(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix('+') {
-            hunk.new_lines.push(rest.to_string());
+
+        let op = if let Some(rest) = line.strip_prefix('+') {
+            Some(UnifiedDiffLine::Add(rest))
+        } else if let Some(rest) = line.strip_prefix('-') {
+            Some(UnifiedDiffLine::Remove(rest))
         } else if let Some(rest) = line.strip_prefix(' ') {
-            hunk.old_lines.push(rest.to_string());
-            hunk.new_lines.push(rest.to_string());
-        } else if line.is_empty() {
-            // 某些生成器会省略上下文空行的前导空格，按空行处理
-            hunk.old_lines.push(String::new());
-            hunk.new_lines.push(String::new());
+            Some(UnifiedDiffLine::Context(rest))
+        } else if line.is_empty() && saw_hunk_header {
+            Some(UnifiedDiffLine::Context(""))
+        } else {
+            None
+        };
+
+        if let Some(parsed_line) = op {
+            if current.is_none() {
+                current = Some(UnifiedDiffHunk {
+                    old_start: 1,
+                    lines: Vec::new(),
+                });
+            }
+            if let Some(hunk) = current.as_mut() {
+                hunk.lines.push(parsed_line);
+            }
         }
     }
-    if let Some(hunk) = current.take() {
-        hunks.push(hunk);
+
+    if let Some(last) = current {
+        if !last.lines.is_empty() {
+            hunks.push(last);
+        }
     }
+
     hunks
 }
 
-/// 按 hunk 行号定位修改，而不是把全部 `-` 行拼成字符串做「首次出现」替换。
-/// 任一 hunk 的旧内容与目标位置不一致时返回 None（调用方据此判定冲突），绝不盲目覆盖。
 fn try_block_replace_on_existing_file(existing: &str, diff: &str) -> Option<String> {
-    let mut hunks = parse_diff_hunks(diff);
+    let hunks = parse_unified_diff_hunks(diff);
     if hunks.is_empty() {
         return None;
     }
 
     let had_trailing_newline = existing.ends_with('\n');
-    let mut lines: Vec<String> = existing.split('\n').map(|s| s.to_string()).collect();
-    if had_trailing_newline {
-        lines.pop();
-    }
+    let mut file_lines: Vec<String> = existing
+        .lines()
+        .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+        .collect();
 
-    // 从后往前应用，前面的 hunk 行号不会被后续修改影响
-    hunks.sort_by(|a, b| b.old_start.cmp(&a.old_start));
+    let mut line_delta: isize = 0;
+
     for hunk in hunks {
-        let start_index = if hunk.old_lines.is_empty() {
-            // 纯插入：`@@ -N,0 +...` 表示在第 N 行之后插入（0 表示文件开头）
-            hunk.old_start
-        } else if hunk.old_start == 0 {
-            0
-        } else {
-            hunk.old_start - 1
-        };
-        let end_index = start_index.checked_add(hunk.old_lines.len())?;
-        if end_index > lines.len() {
+        let old_seq: Vec<&str> = hunk
+            .lines
+            .iter()
+            .filter_map(|l| match l {
+                UnifiedDiffLine::Context(s) | UnifiedDiffLine::Remove(s) => Some(*s),
+                UnifiedDiffLine::Add(_) => None,
+            })
+            .collect();
+        let new_seq: Vec<String> = hunk
+            .lines
+            .iter()
+            .filter_map(|l| match l {
+                UnifiedDiffLine::Context(s) | UnifiedDiffLine::Add(s) => Some((*s).to_string()),
+                UnifiedDiffLine::Remove(_) => None,
+            })
+            .collect();
+
+        if old_seq.is_empty() {
+            if new_seq.is_empty() {
+                continue;
+            }
+            let raw_idx = (hunk.old_start as isize + line_delta).max(0) as usize;
+            let insert_idx = raw_idx.min(file_lines.len());
+            let new_len = new_seq.len() as isize;
+            file_lines.splice(insert_idx..insert_idx, new_seq);
+            line_delta += new_len;
+            continue;
+        }
+
+        if old_seq.len() > file_lines.len() {
             return None;
         }
-        if lines[start_index..end_index] != hunk.old_lines[..] {
-            return None;
+
+        let expected_idx =
+            (hunk.old_start.saturating_sub(1) as isize + line_delta).max(0) as usize;
+        let max_start = file_lines.len() - old_seq.len();
+        let mut best_match: Option<(usize, isize)> = None;
+
+        for idx in 0..=max_start {
+            let matched = file_lines[idx..idx + old_seq.len()]
+                .iter()
+                .zip(old_seq.iter())
+                .all(|(a, b)| a == b);
+            if matched {
+                let dist = (idx as isize - expected_idx as isize).abs();
+                if best_match.is_none_or(|(_, best_dist)| dist < best_dist) {
+                    best_match = Some((idx, dist));
+                }
+            }
         }
-        lines.splice(start_index..end_index, hunk.new_lines.iter().cloned());
+
+        let (match_idx, _) = best_match?;
+        let old_len = old_seq.len() as isize;
+        let new_len = new_seq.len() as isize;
+        file_lines.splice(match_idx..match_idx + old_seq.len(), new_seq);
+        line_delta += new_len - old_len;
     }
 
-    let mut result = lines.join("\n");
-    if had_trailing_newline {
+    let mut result = file_lines.join("\n");
+    if had_trailing_newline && !result.is_empty() {
         result.push('\n');
     }
     Some(result)
@@ -1738,6 +1806,15 @@ fn db_delete_messages(
     state.db_manager.delete_messages(thread_id, channel_id).map_err(|e| e.to_string())
 }
 
+/// Tauri Command: 按消息 ID 列表批量删除消息记录
+#[tauri::command]
+fn db_delete_messages_by_ids(
+    ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    state.db_manager.delete_messages_by_ids(&ids).map_err(|e| e.to_string())
+}
+
 /// Tauri Command: 清空所有历史消息 (保留 acp_memories 核心记忆)
 #[tauri::command]
 fn db_clear_all_messages(state: State<'_, AppState>) -> Result<usize, String> {
@@ -2185,13 +2262,27 @@ pub struct HttpResponsePayload {
     pub raw_text: String,
 }
 
+fn is_valid_llm_success_json(val: &serde_json::Value) -> bool {
+    let Some(obj) = val.as_object() else {
+        return false;
+    };
+    if obj.get("error").is_some_and(|e| !e.is_null()) {
+        return false;
+    }
+    obj.get("choices").is_some_and(|v| v.is_array())
+        || obj.get("models").is_some_and(|v| v.is_array())
+        || obj.get("data").is_some_and(|v| v.is_array())
+        || (obj.get("content").is_some_and(|v| v.is_array() || v.is_string())
+            && (obj.contains_key("role") || obj.contains_key("type") || obj.contains_key("id")))
+}
+
 /// Tauri Command: 原生无跨域 HTTP 请求转发 (彻底消除前端 WebView CORS 限制)
 ///
 /// 安全基线：
 /// - 默认校验 TLS 证书；企业内网自签证书需显式设置
 ///   `SHADOW_CREW_NATIVE_HTTP_INSECURE_TLS=1` 才关闭校验；
 /// - 代理只使用环境变量 (https_proxy / http_proxy / ALL_PROXY)，不再猜测硬编码端口；
-/// - 成功判定以 HTTP 状态码为准，不再从响应文本里猜字段。
+/// - 成功判定以 HTTP 状态码与结构化载荷校验为准，不从响应文本里猜字段。
 #[tauri::command]
 async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, String> {
     let timeout = req.timeout_secs.unwrap_or(20).max(1).to_string();
@@ -2245,13 +2336,21 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
     let mut raw_output = String::from_utf8_lossy(&output.stdout).to_string();
     let mut err_output = String::from_utf8_lossy(&output.stderr).to_string();
 
-    // 直连失败时，仅使用用户显式配置的环境变量代理重试；不猜测本地代理端口。
+    // 检查首次直连响应是否已经包含合法的 LLM JSON 响应体（结构化判定，严禁含 error 字段或以裸子串猜测）
+    let initial_has_payload = serde_json::from_str::<serde_json::Value>(&raw_output)
+        .ok()
+        .is_some_and(|val| is_valid_llm_success_json(&val));
+
+    // 直连失败且未获得有效载荷时，仅使用用户显式配置的环境变量代理重试；不猜测本地代理端口。
     let proxy_addr = std::env::var("https_proxy")
         .or_else(|_| std::env::var("http_proxy"))
         .or_else(|_| std::env::var("ALL_PROXY"))
         .ok()
         .filter(|value| !value.trim().is_empty());
-    if !output.status.success() && raw_output.trim().is_empty() {
+    if !initial_has_payload
+        && (!output.status.success() || raw_output.trim().is_empty())
+        && !req.url.contains("127.0.0.1")
+    {
         if let Some(proxy_addr) = proxy_addr.as_deref() {
             if let Ok(retry_out) = build_command(Some(proxy_addr), "5").output().await {
                 let retry_str = String::from_utf8_lossy(&retry_out.stdout).to_string();
@@ -2310,6 +2409,15 @@ async fn native_http_post(req: HttpPostRequest) -> Result<HttpResponsePayload, S
         ));
     }
 
+    // 仅在 HTTP 状态未报 4xx/5xx 错误且响应体为合法无 error 的 LLM 载荷时，允许 curl 尾包提前断开恢复
+    let has_valid_llm_payload = is_valid_llm_success_json(&parsed_json);
+
+    if !output.status.success() && status_code == 200 && !has_valid_llm_payload {
+        status_code = 500;
+        if response_text.is_empty() {
+            response_text = format!("网络请求异常: {}", err_output.trim());
+        }
+    }
     let is_ok = (200..300).contains(&status_code);
 
     Ok(HttpResponsePayload {
@@ -3179,6 +3287,7 @@ async fn main() {
             db_get_messages,
             db_search_messages,
             db_delete_messages,
+            db_delete_messages_by_ids,
             db_clear_all_messages,
             db_get_storage_stats,
             db_clear_safe_cache,
@@ -3812,5 +3921,70 @@ mod attachment_tests {
         assert!(bin_preview.content.is_empty());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unified_diff_hunk_applier_handles_context_interleaved_and_multi_hunk_diffs() {
+        let existing = "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\n";
+        let diff = "\
+--- a/sample.txt
++++ b/sample.txt
+@@ -1,4 +1,4 @@
+ alpha
+-beta
++BETA
+ gamma
+-delta
++DELTA
+@@ -5,2 +5,3 @@
+ epsilon
++inserted_middle
+ zeta
+";
+        let updated = try_block_replace_on_existing_file(existing, diff)
+            .expect("hunk applier must succeed when interleaved context & multiple hunks match");
+        assert_eq!(
+            updated,
+            "alpha\nBETA\ngamma\nDELTA\nepsilon\ninserted_middle\nzeta\n"
+        );
+
+        let drifted_diff = "\
+--- a/sample.txt
++++ b/sample.txt
+@@ -1,3 +1,3 @@
+ alpha
+-nonexistent_line
+ gamma
+";
+        assert!(
+            try_block_replace_on_existing_file(existing, drifted_diff).is_none(),
+            "drifted hunk must fail atomically with None"
+        );
+    }
+
+    #[test]
+    fn is_valid_llm_success_json_rejects_error_payloads_with_id_or_content() {
+        let error_with_id_and_content = serde_json::json!({
+            "id": "req-401",
+            "error": {
+                "message": "invalid content token",
+                "code": "unauthorized"
+            }
+        });
+        assert!(!is_valid_llm_success_json(&error_with_id_and_content));
+
+        let valid_openai = serde_json::json!({
+            "id": "chatcmpl-123",
+            "choices": [{ "message": { "role": "assistant", "content": "ok" } }]
+        });
+        assert!(is_valid_llm_success_json(&valid_openai));
+
+        let valid_anthropic = serde_json::json!({
+            "id": "msg-1",
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "hello" }]
+        });
+        assert!(is_valid_llm_success_json(&valid_anthropic));
     }
 }

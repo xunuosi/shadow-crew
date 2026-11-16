@@ -32,8 +32,59 @@ import {
   checkAllRolesConcurred,
   buildFinalRulingFromConcurrence,
   evaluateRulingGates,
+  evaluateArbitrationConcurrenceSkip,
   formatFullDateTime,
 } from '../services/cogno';
+
+/**
+ * 将综合裁定官回复安全合入议题消息流，并同步更新父频道议题卡片摘要。
+ */
+function buildUpdatedTopicMessagesWithArbiterReply(
+  prev: Record<string, Message[]>,
+  topicId: string,
+  arbiterPendingId: string | undefined,
+  arbiterReply: Message,
+  extraNotice?: Message
+): Record<string, Message[]> {
+  const existing = prev[topicId] || [];
+  const hasPending = arbiterPendingId ? existing.some((m) => m.id === arbiterPendingId) : false;
+  const hasReply = existing.some((m) => m.id === arbiterReply.id);
+  const baseMsgs = hasPending
+    ? existing.map((m) => (m.id === arbiterPendingId ? arbiterReply : m))
+    : hasReply
+    ? existing
+    : [...existing, arbiterReply];
+  const nextTopicMsgs = extraNotice ? [...baseMsgs, extraNotice] : baseMsgs;
+
+  let parentThreadId: string | null = null;
+  for (const [tId, msgList] of Object.entries(prev) as [string, Message[]][]) {
+    if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
+      parentThreadId = tId;
+      break;
+    }
+  }
+  const updatedChannelMsgs = parentThreadId
+    ? (prev[parentThreadId] || []).map((m) => {
+        if (m.type === 'topic' && m.topicData?.id === topicId) {
+          return {
+            ...m,
+            topicData: {
+              ...m.topicData,
+              repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
+              latestReplyPreview: arbiterReply.content.slice(0, 60),
+            },
+          };
+        }
+        return m;
+      })
+    : [];
+
+  return {
+    ...prev,
+    [topicId]: nextTopicMsgs,
+    ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
+  };
+}
 import { isAgentOnline } from '../utils/agentRuntime';
 
 export interface UseArbitrationConcurrenceParams {
@@ -97,7 +148,11 @@ export function useArbitrationConcurrence({
   isTurnStale,
   getTopicWorkspaceBinding,
   handleResolveTopic,
-}: UseArbitrationConcurrenceParams) {
+}: UseArbitrationConcurrenceParams): {
+  processArbitrationConcurrence: (
+    options: ProcessArbitrationConcurrenceOptions
+  ) => Promise<void>;
+} {
   /**
    * 统一处理综合裁定官发言完毕后的全员无异议核验征询与终局方案敲定闭环
    * 无论是系统 FSM 自动流转 (triggerGameTheoreticStageHandover) 还是用户手动 @点名唤醒仲裁官 (handleSendTopicMessage)，
@@ -126,8 +181,23 @@ export function useArbitrationConcurrence({
       const latestTopicForArbitration = currentTopic;
 
       try {
+        // 阻塞征询态防重入守卫：当处于活跃但未全票通过的征询阶段且本轮无显式新裁决契约、方案摘要未变时，仅保留裁定官说明回复，严禁重启征询轮询
+        const earlySkipCheck = await evaluateArbitrationConcurrenceSkip({
+          topic: latestTopicForArbitration,
+          acpResp,
+        });
+        if (earlySkipCheck.skip) {
+          console.log(
+            `[GameTheoretic] 跳过重复仲裁无异议征询 (topic=${topicId}, arbiter=${arbiterAgent.id}): ${earlySkipCheck.reason}`
+          );
+          setMessages((prev) =>
+            buildUpdatedTopicMessagesWithArbiterReply(prev, topicId, arbiterPendingId, arbiterReply)
+          );
+          return;
+        }
+
         // 契约门禁校验
-        const contractValidation = validateStageContract('arbitration', acpResp.textResponse, arbiterAgent.name);
+        const contractValidation = validateStageContract('arbitration', acpResp.textResponse, arbiterAgent.name, acpResp.mcpToolCalls);
         logGameTheoreticTelemetry('stage_contract_validation', topicId, {
           stage: 'arbitration',
           agentId: arbiterAgent.id,
@@ -147,6 +217,10 @@ export function useArbitrationConcurrence({
           evidences: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain,
           sycophancy: currentTopic.gameTheoreticState?.latestSycophancy,
           modelDiversity: currentTopic.gameTheoreticState?.modelDiversity,
+          mcdaMatrix: acpResp.rulingDraft?.mcdaMatrix,
+          proposalPayload: currentTopic.gameTheoreticState?.proposalClaims,
+          critiquePayload: currentTopic.gameTheoreticState?.challengeCritique,
+          defensePayload: currentTopic.gameTheoreticState?.defensePatch,
         });
 
         logGameTheoreticTelemetry('consistency_gate_evaluation', topicId, {
@@ -159,12 +233,16 @@ export function useArbitrationConcurrence({
         const colMadReport = calculateColMadContributions({
           topicId,
           agents: agentsRef.current.length > 0 ? agentsRef.current : candidateAgents,
+          gameRoles: currentTopic.gameRoles,
           proposalText: targetProposalText,
           critiqueText: targetChallengeText,
           verificationText: targetVerificationText || currentTopic.gameTheoreticState?.targetVerificationContent,
           defenseText: targetDefenseText,
           argumentNodes: currentTopic.gameTheoreticState?.cognoNexus?.committedStates,
           evidences: currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.evidenceChain,
+          proposalPayload: currentTopic.gameTheoreticState?.proposalClaims,
+          critiquePayload: currentTopic.gameTheoreticState?.challengeCritique,
+          defensePayload: currentTopic.gameTheoreticState?.defensePatch,
         });
 
         // 提取由 Arbiter Agent 通过 submit_arbitration_ruling 工具或结构化契约提交的裁决书草案与 3 种模式预案
@@ -177,8 +255,29 @@ export function useArbitrationConcurrence({
           verificationText: targetVerificationText || latestTopicForArbitration.gameTheoreticState?.targetVerificationContent,
           mcdaPayload,
           authorName: arbiterAgent.name,
+          proposalPayload: latestTopicForArbitration.gameTheoreticState?.proposalClaims,
+          critiquePayload: latestTopicForArbitration.gameTheoreticState?.challengeCritique,
+          defensePayload: latestTopicForArbitration.gameTheoreticState?.defensePatch,
+          argumentNodes: latestTopicForArbitration.gameTheoreticState?.cognoNexus?.committedStates,
+          modularState: latestTopicForArbitration.gameTheoreticState?.modularState,
         });
         const extractedRulingDraft = acpResp.rulingDraft || extractedRulingOptions.primaryDraft;
+        if (!latestTopicForArbitration.gameTheoreticState?.rulingDraft) {
+          const fallbackSkipCheck = await evaluateArbitrationConcurrenceSkip({
+            topic: latestTopicForArbitration,
+            acpResp,
+            fallbackDraft: extractedRulingDraft,
+          });
+          if (fallbackSkipCheck.skip) {
+            console.log(
+              `[GameTheoretic] 跳过重复仲裁无异议征询(兜底摘要命中) (topic=${topicId}, arbiter=${arbiterAgent.id}): ${fallbackSkipCheck.reason}`
+            );
+            setMessages((prev) =>
+              buildUpdatedTopicMessagesWithArbiterReply(prev, topicId, arbiterPendingId, arbiterReply)
+            );
+            return;
+          }
+        }
         const concurrenceSolutionDigest = await computeRoleConcurrenceSolutionDigest({
           topic: latestTopicForArbitration,
           arbiterDraft: extractedRulingDraft,
@@ -232,44 +331,15 @@ export function useArbitrationConcurrence({
           content: `🤝 **[全员无异议审视征询已启动]** 综合裁定官已就终局架构方案完成综合权衡并 @ 参研关键角色（提案方、红队对抗方、接地实证方）。平台正在自动调度各角色进行独立专业审视，保证回复无异议后，由综合裁定官正式敲定方案并出具最后的活体决策看板 (Living ADR Canvas)。`,
         };
 
-        setMessages((prev) => {
-          const existing = prev[topicId] || [];
-          const hasPending = arbiterPendingId ? existing.some((m) => m.id === arbiterPendingId) : false;
-          const hasReply = existing.some((m) => m.id === arbiterReply.id);
-          const baseMsgs = hasPending
-            ? existing.map((m) => (m.id === arbiterPendingId ? arbiterReply : m))
-            : hasReply
-            ? existing
-            : [...existing, arbiterReply];
-          const nextTopicMsgs = [...baseMsgs, humanNotice];
-          let parentThreadId: string | null = null;
-          for (const [tId, msgList] of Object.entries(prev) as [string, Message[]][]) {
-            if (msgList.some((m) => m.type === 'topic' && m.topicData?.id === topicId)) {
-              parentThreadId = tId;
-              break;
-            }
-          }
-          const updatedChannelMsgs = parentThreadId
-            ? (prev[parentThreadId] || []).map((m) => {
-                if (m.type === 'topic' && m.topicData?.id === topicId) {
-                  return {
-                    ...m,
-                    topicData: {
-                      ...m.topicData,
-                      repliesCount: nextTopicMsgs.filter((msg) => !msg.isPending).length,
-                      latestReplyPreview: arbiterReply.content.slice(0, 60),
-                    },
-                  };
-                }
-                return m;
-              })
-            : [];
-          return {
-            ...prev,
-            [topicId]: nextTopicMsgs,
-            ...(parentThreadId ? { [parentThreadId]: updatedChannelMsgs } : {}),
-          };
-        });
+        setMessages((prev) =>
+          buildUpdatedTopicMessagesWithArbiterReply(
+            prev,
+            topicId,
+            arbiterPendingId,
+            arbiterReply,
+            humanNotice
+          )
+        );
 
         // 启动各参研角色的无异议复核确认与终局敲定出具活体看板流程 (同步 await 保持交接锁互斥完整覆盖)
         if (initialConcurrence.items.length > 0) {

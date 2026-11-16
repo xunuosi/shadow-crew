@@ -14,7 +14,15 @@ import {
   RoleConcurrenceDecisionStatus,
   RoleConcurrenceSource,
   RoleConcurrenceSubmission,
+  ProposalClaimItem,
+  ProposalClaimsPayload,
+  ChallengeCritiquePayload,
+  DefenseStance,
+  DefensePatchedClaimItem,
+  DefensePatchPayload,
+  McdaMatrixInput,
 } from '../types';
+export type { ChallengeCritiquePayload } from '../types';
 import { isAgentOffline } from '../utils/agentRuntime';
 import { buildAgentPersonaPrompt } from './agentCollaboration';
 import {
@@ -23,6 +31,11 @@ import {
   parseNativeMemoryCapability,
 } from './agentMemory';
 import { retrieveScpackExpertise } from './scpackService';
+import {
+  analyzeStructuredMarkdown,
+  extractFilePathsFromTextSegment,
+  normalizeRepoPath,
+} from './cogno/structuredTextAnalyzer';
 export {
   extractArbitrationRulingOptionsFromAcpResponse,
   synthesizeContextGroundedRulingDrafts,
@@ -36,6 +49,7 @@ export interface AcpSendPromptOptions {
   workspaceCwd?: string;
   channelId?: string;
   systemPrompt?: string;
+  personaPrompt?: string;
   isDm?: boolean;
   scopeType?: 'channel' | 'topic' | 'dm' | 'dm_topic';
   discussionMode?: DiscussionMode;
@@ -503,57 +517,332 @@ export function setOnAcpNativeMemoryCapabilityUpdated(
   onNativeMemoryCapabilityUpdated = listener;
 }
 
+function normalizeMcpToolNameCandidate(rawName: unknown): string {
+  if (typeof rawName !== 'string') {
+    return '';
+  }
+  const trimmed = rawName.trim();
+  if (!trimmed) {
+    return '';
+  }
+  if (trimmed.startsWith('mcp__')) {
+    const rest = trimmed.slice('mcp__'.length);
+    const sepIdx = rest.indexOf('__');
+    if (sepIdx > 0) {
+      return rest.slice(sepIdx + 2).trim();
+    }
+  }
+  if (trimmed.startsWith('mcp.')) {
+    const rest = trimmed.slice('mcp.'.length);
+    const sepIdx = rest.indexOf('.');
+    if (sepIdx > 0) {
+      return rest.slice(sepIdx + 1).trim();
+    }
+  }
+  if (trimmed.startsWith('Tool:')) {
+    const afterPrefix = trimmed.slice('Tool:'.length).trim();
+    const slashIdx = afterPrefix.indexOf('/');
+    if (slashIdx > 0) {
+      return afterPrefix.slice(slashIdx + 1).trim();
+    }
+    return afterPrefix;
+  }
+  return trimmed;
+}
+
+/**
+ * 匹配规范化后的 MCP 工具名（兼容裸名、`mcp__<server>__<tool>` 与 `mcp.<server>.<tool>` 前缀形式）。
+ */
+export function matchesMcpToolName(call: any, expectedToolName: string): boolean {
+  if (!call || typeof call !== 'object' || !expectedToolName) {
+    return false;
+  }
+  const candidates = [
+    call.tool_name,
+    call.tool,
+    call.name,
+    call.title,
+    call._meta?.claudeCode?.toolName,
+    call.rawInput?.tool,
+    call.rawInput?.tool_name,
+    call.rawInput?.name,
+  ];
+  return candidates.some((candidate) => normalizeMcpToolNameCandidate(candidate) === expectedToolName);
+}
+
+/**
+ * 提取 MCP 工具调用参数（兼容 `arguments`、`args`、字符串 JSON 与 Codex `{ server, tool, arguments }` 包装）。
+ */
+export function extractMcpToolCallArguments(call: any): any {
+  if (!call || typeof call !== 'object') {
+    return undefined;
+  }
+  let rawArgs = call.arguments ?? call.args;
+  if (rawArgs === undefined || rawArgs === null) {
+    rawArgs = call.rawInput;
+  }
+  if (typeof rawArgs === 'string') {
+    try {
+      rawArgs = JSON.parse(rawArgs);
+    } catch {
+      return rawArgs;
+    }
+  }
+  if (
+    rawArgs &&
+    typeof rawArgs === 'object' &&
+    !Array.isArray(rawArgs) &&
+    'server' in rawArgs &&
+    'tool' in rawArgs &&
+    'arguments' in rawArgs
+  ) {
+    let innerArgs = rawArgs.arguments;
+    if (typeof innerArgs === 'string') {
+      try {
+        innerArgs = JSON.parse(innerArgs);
+      } catch {
+        return innerArgs;
+      }
+    }
+    return innerArgs;
+  }
+  return rawArgs;
+}
+
+function stripTagEnvelopePairs(
+  rawText: string,
+  pairs: Array<[string, string]>
+): string {
+  let result = rawText;
+  for (const [startTag, endTag] of pairs) {
+    const startUpper = startTag.toUpperCase();
+    const endUpper = endTag.toUpperCase();
+    while (true) {
+      const upper = result.toUpperCase();
+      const sIdx = upper.indexOf(startUpper);
+      if (sIdx < 0) break;
+      const eIdx = upper.indexOf(endUpper, sIdx + startTag.length);
+      if (eIdx < 0) break;
+      result = result.slice(0, sIdx) + result.slice(eIdx + endTag.length);
+    }
+  }
+  return result.trim();
+}
+
+function stripJsonCodeFence(rawInner: string): string {
+  let s = rawInner.trim();
+  if (s.startsWith('```')) {
+    const firstNewline = s.indexOf('\n');
+    if (firstNewline >= 0) {
+      s = s.slice(firstNewline + 1);
+    } else if (s.toLowerCase().startsWith('```json')) {
+      s = s.slice(7);
+    } else {
+      s = s.slice(3);
+    }
+  }
+  s = s.trim();
+  if (s.endsWith('```')) {
+    s = s.slice(0, -3).trim();
+  }
+  return s;
+}
+
+/**
+ * 确定性结构化契约信封解析器（基于精确 indexOf 边界切片与 JSON.parse，零正则猜测）
+ */
+export function extractStructuredContractEnvelope<T = Record<string, any>>(
+  text: string,
+  startMarker: string,
+  endMarkers: string | string[]
+): {
+  parsed?: T;
+  rawBlock?: string;
+  cleanedText: string;
+  parseError?: string;
+  count: number;
+} {
+  if (!text) {
+    return { cleanedText: '', count: 0 };
+  }
+  const endList = Array.isArray(endMarkers) ? endMarkers : [endMarkers];
+  const upperText = text.toUpperCase();
+  const startUpper = startMarker.toUpperCase();
+
+  const matches: Array<{ startIdx: number; endIdx: number; endLen: number; inner: string; rawBlock: string }> = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    const sIdx = upperText.indexOf(startUpper, cursor);
+    if (sIdx < 0) break;
+    const afterStart = sIdx + startMarker.length;
+    let bestEnd = -1;
+    let bestEndLen = 0;
+    for (const em of endList) {
+      const idx = upperText.indexOf(em.toUpperCase(), afterStart);
+      if (idx >= 0 && (bestEnd < 0 || idx < bestEnd)) {
+        bestEnd = idx;
+        bestEndLen = em.length;
+      }
+    }
+    if (bestEnd < 0) break;
+    const rawBlock = text.slice(sIdx, bestEnd + bestEndLen);
+    const inner = stripJsonCodeFence(text.slice(afterStart, bestEnd));
+    matches.push({ startIdx: sIdx, endIdx: bestEnd + bestEndLen, endLen: bestEndLen, inner, rawBlock });
+    cursor = bestEnd + bestEndLen;
+  }
+
+  if (matches.length === 0) {
+    return { cleanedText: text, count: 0 };
+  }
+
+  // 剥离所有已匹配的契约块得到纯净文本
+  let cleaned = '';
+  let lastPos = 0;
+  for (const m of matches) {
+    cleaned += text.slice(lastPos, m.startIdx);
+    lastPos = m.endIdx;
+  }
+  cleaned += text.slice(lastPos);
+  cleaned = cleaned.trim();
+
+  try {
+    const parsed = JSON.parse(matches[0].inner) as T;
+    return {
+      parsed,
+      rawBlock: matches[0].rawBlock,
+      cleanedText: cleaned,
+      count: matches.length,
+    };
+  } catch (err) {
+    return {
+      rawBlock: matches[0].rawBlock,
+      cleanedText: cleaned,
+      parseError: err instanceof Error ? err.message : String(err),
+      count: matches.length,
+    };
+  }
+}
+
+export function normalizeMcdaMatrixInput(raw: any): McdaMatrixInput | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const criteriaRaw = Array.isArray(raw.criteria) ? raw.criteria : [];
+  const alternatives = Array.isArray(raw.alternatives) ? raw.alternatives.map(String).filter(Boolean) : [];
+  const scoreMatrix = raw.score_matrix || raw.scoreMatrix;
+  if (
+    criteriaRaw.length < 2 ||
+    alternatives.length < 2 ||
+    !scoreMatrix ||
+    typeof scoreMatrix !== 'object'
+  ) {
+    return undefined;
+  }
+  return {
+    criteria: criteriaRaw.map((c: any, idx: number) => ({
+      id: String(c.id || `c_${idx + 1}`),
+      name: String(c.name || `准则 ${idx + 1}`),
+      direction: c.direction === 'minimize' ? 'minimize' : 'maximize',
+    })),
+    alternatives,
+    scoreMatrix,
+    bestCriterionId: String(raw.best_criterion_id || raw.bestCriterionId || criteriaRaw[0]?.id || ''),
+    worstCriterionId: String(
+      raw.worst_criterion_id || raw.worstCriterionId || criteriaRaw[criteriaRaw.length - 1]?.id || ''
+    ),
+    bestToOthers: Array.isArray(raw.best_to_others || raw.bestToOthers)
+      ? (raw.best_to_others || raw.bestToOthers).map(Number)
+      : [],
+    othersToWorst: Array.isArray(raw.others_to_worst || raw.othersToWorst)
+      ? (raw.others_to_worst || raw.othersToWorst).map(Number)
+      : [],
+    scoreProvenance: raw.score_provenance || raw.scoreProvenance,
+  };
+}
+
 /**
  * 从执行 Agent 响应正文中解析结构化 UI 描述契约块 <<<EXECUTION_META>>>...<<<EXECUTION_META_END>>>
  * 并自动剥离原始契约标签，确保展示给用户的 Markdown 正文干净无协议噪音
  */
-export function extractExecutionMetaFromAcpResponse(rawText: string): {
+export function extractExecutionMetaFromAcpResponse(
+  rawText: string,
+  mcpToolCalls?: any[]
+): {
   executionMeta?: TopicExecutionUiMeta;
   cleanedText: string;
 } {
+  // 1. 优先尝试从原生 MCP 工具调用 submit_execution_deliverable 中直接提取
+  let executionMetaFromTool: TopicExecutionUiMeta | undefined;
+  if (Array.isArray(mcpToolCalls) && mcpToolCalls.length > 0) {
+    const toolCall = mcpToolCalls.find((c: any) =>
+      matchesMcpToolName(c, 'submit_execution_deliverable')
+    );
+    if (toolCall) {
+      let args = extractMcpToolCallArguments(toolCall);
+      if (typeof args === 'string') {
+        try {
+          args = JSON.parse(args);
+        } catch (e) {
+          console.warn('[acpClient] Failed to parse JSON arguments from submit_execution_deliverable:', e);
+        }
+      }
+      if (args && typeof args === 'object') {
+        const rawKind = args.deliverable_kind || args.deliverableKind;
+        const deliverableKind: 'workspace_files' | 'report_only' =
+          rawKind === 'report_only' ? 'report_only' : 'workspace_files';
+        executionMetaFromTool = {
+          sectionTitle: String(args.section_title || args.sectionTitle || '决议落地执行与交付产物').trim(),
+          podTitle: String(args.pod_title || args.podTitle || '🛠️ 决议落地交付').trim(),
+          statusSummary: String(args.status_summary || args.statusSummary || '已完成定案决议落地交付').trim(),
+          deliverableKind,
+          reviewActionLabel: args.review_action_label || args.reviewActionLabel ? String(args.review_action_label || args.reviewActionLabel).trim() : undefined,
+          applyActionLabel: args.apply_action_label || args.applyActionLabel ? String(args.apply_action_label || args.applyActionLabel).trim() : undefined,
+        };
+      }
+    }
+  }
+
   if (!rawText || !rawText.trim()) {
-    return { cleanedText: rawText };
+    return { executionMeta: executionMetaFromTool, cleanedText: rawText || '' };
   }
 
   // 物理剥离模型思维链与中间推演标签，纯净保留最终结论与代码产物
-  let strippedText = rawText
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
-    .replace(/<<<DEEP_THINKING>>>[\s\S]*?<<<DEEP_THINKING_END>>>/gi, '')
-    .replace(/<<<THINKING>>>[\s\S]*?<<<THINKING_END>>>/gi, '')
-    .trim();
+  const strippedText = stripTagEnvelopePairs(rawText, [
+    ['<thinking>', '</thinking>'],
+    ['<<<DEEP_THINKING>>>', '<<<DEEP_THINKING_END>>>'],
+    ['<<<THINKING>>>', '<<<THINKING_END>>>'],
+  ]);
 
-  const metaRegex = /<<<EXECUTION_META>>>([\s\S]*?)<<<EXECUTION_META_END>>>/i;
-  const fallbackJsonRegex = /```(?:json)?\s*(\{\s*"sectionTitle"[\s\S]*?"podTitle"[\s\S]*?\})\s*```/i;
+  const envelope = extractStructuredContractEnvelope<Record<string, any>>(
+    strippedText,
+    '<<<EXECUTION_META>>>',
+    ['<<<EXECUTION_META_END>>>', '<<<END_EXECUTION_META>>>']
+  );
 
-  const match = strippedText.match(metaRegex) || strippedText.match(fallbackJsonRegex);
-  if (!match || !match[1]) {
-    return { cleanedText: strippedText || rawText };
+  let executionMetaFromBlock: TopicExecutionUiMeta | undefined;
+  if (envelope.parsed && typeof envelope.parsed === 'object') {
+    const parsed = envelope.parsed;
+    const deliverableKind: 'workspace_files' | 'report_only' =
+      (parsed.deliverableKind || parsed.deliverable_kind) === 'report_only' ? 'report_only' : 'workspace_files';
+    executionMetaFromBlock = {
+      sectionTitle: String(parsed.sectionTitle || parsed.section_title || '决议落地执行与交付产物').trim(),
+      podTitle: String(parsed.podTitle || parsed.pod_title || '🛠️ 决议落地交付').trim(),
+      statusSummary: String(parsed.statusSummary || parsed.status_summary || '已完成定案决议落地交付').trim(),
+      deliverableKind,
+      reviewActionLabel: (parsed.reviewActionLabel || parsed.review_action_label)
+        ? String(parsed.reviewActionLabel || parsed.review_action_label).trim()
+        : undefined,
+      applyActionLabel: (parsed.applyActionLabel || parsed.apply_action_label)
+        ? String(parsed.applyActionLabel || parsed.apply_action_label).trim()
+        : undefined,
+    };
+  } else if (envelope.parseError) {
+    console.warn('[acpClient] Failed to parse <<<EXECUTION_META>>> block:', envelope.parseError);
   }
 
-  let executionMeta: TopicExecutionUiMeta | undefined;
-  try {
-    const jsonRaw = match[1].trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
-    const parsed = JSON.parse(jsonRaw);
-    if (parsed && typeof parsed === 'object') {
-      const deliverableKind: 'workspace_files' | 'report_only' =
-        parsed.deliverableKind === 'report_only' ? 'report_only' : 'workspace_files';
-      executionMeta = {
-        sectionTitle: String(parsed.sectionTitle || '决议落地执行与交付产物').trim(),
-        podTitle: String(parsed.podTitle || '🛠️ 决议落地交付').trim(),
-        statusSummary: String(parsed.statusSummary || '已完成定案决议落地交付').trim(),
-        deliverableKind,
-        reviewActionLabel: parsed.reviewActionLabel ? String(parsed.reviewActionLabel).trim() : undefined,
-        applyActionLabel: parsed.applyActionLabel ? String(parsed.applyActionLabel).trim() : undefined,
-      };
-    }
-  } catch (e) {
-    console.warn('[acpClient] Failed to parse <<<EXECUTION_META>>> block:', e);
-  }
-
-  const cleanedText = strippedText.replace(match[0], '').trim();
   return {
-    executionMeta,
-    cleanedText: cleanedText || strippedText || rawText,
+    executionMeta: executionMetaFromTool || executionMetaFromBlock,
+    cleanedText: envelope.cleanedText || strippedText || rawText,
   };
 }
 
@@ -568,25 +857,15 @@ export function extractArbitrationRulingFromAcpResponse(
   const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   // 1. 优先从 MCP Tool 调用记录或 raw 中提取 submit_arbitration_ruling 参数
-  if (acpResp.raw && typeof acpResp.raw === 'object') {
-    const rawCalls =
-      acpResp.raw.mcp_tool_calls ||
-      acpResp.raw.result?.mcp_tool_calls ||
-      acpResp.mcpToolCalls ||
-      [];
+  if (acpResp && typeof acpResp === 'object') {
+    const rawCalls = collectAcpMcpToolCalls(acpResp);
     if (Array.isArray(rawCalls)) {
-      const rulingCall = rawCalls.find(
-        (c: any) =>
-          c.tool_name === 'submit_arbitration_ruling' ||
-          c.tool === 'submit_arbitration_ruling' ||
-          c.name === 'submit_arbitration_ruling'
+      const rulingCall = rawCalls.find((c: any) =>
+        matchesMcpToolName(c, 'submit_arbitration_ruling')
       );
-      if (
-        rulingCall &&
-        isSuccessfulMcpCallStatus(rulingCall.status) &&
-        (rulingCall.arguments || rulingCall.args)
-      ) {
-        const args = rulingCall.arguments || rulingCall.args;
+      const rulingArgs = rulingCall ? extractMcpToolCallArguments(rulingCall) : undefined;
+      if (rulingCall && rulingArgs !== undefined) {
+        const args = rulingArgs;
         const rawDecision = args.decision_type || args.decisionType || 'trade_off_matrix';
         const validDecision: RulingDecisionType =
           rawDecision === 'adopt_proposer' || rawDecision === 'reject_rebuild' || rawDecision === 'trade_off_matrix'
@@ -595,13 +874,14 @@ export function extractArbitrationRulingFromAcpResponse(
         return {
           decisionType: validDecision,
           summary: String(args.summary || '已通过 MCP 工具提交仲裁定案裁决').trim(),
-          tradeOffPoints: Array.isArray(args.trade_off_points)
-            ? (args.trade_off_points as unknown[]).map((item) => String(item)).filter((s: string) => s.trim().length > 0)
+          tradeOffPoints: Array.isArray(args.trade_off_points || args.tradeOffPoints)
+            ? (args.trade_off_points || args.tradeOffPoints).map(String).filter((s: string) => s.trim().length > 0)
             : [],
-          impactedFiles: Array.isArray(args.impacted_files)
-            ? (args.impacted_files as unknown[]).map((item) => String(item)).filter((s: string) => s.trim().length > 0)
+          impactedFiles: Array.isArray(args.impacted_files || args.impactedFiles)
+            ? (args.impacted_files || args.impactedFiles).map(String).filter((s: string) => s.trim().length > 0)
             : [],
           solution: args.solution ? String(args.solution).trim() : undefined,
+          mcdaMatrix: normalizeMcdaMatrixInput(args.mcda_matrix || args.mcdaMatrix),
           submittedBy: authorName,
           submittedAt: now,
         };
@@ -610,41 +890,42 @@ export function extractArbitrationRulingFromAcpResponse(
   }
 
   // 2. 尝试从文本正文中的结构化块 <<<RULING_DRAFT>>> { ... } <<<RULING_DRAFT_END>>> 解析
-  const blockMatch =
-    text.match(/<<<RULING_DRAFT>>>([\s\S]*?)<<<RULING_DRAFT_END>>>/i) ||
-    text.match(/```(?:json)?\s*(\{\s*"decision_?type"[\s\S]*?\})\s*```/i);
+  const envelope = extractStructuredContractEnvelope<Record<string, any>>(
+    text,
+    '<<<RULING_DRAFT>>>',
+    ['<<<RULING_DRAFT_END>>>', '<<<END_RULING_DRAFT>>>']
+  );
 
-  if (blockMatch && blockMatch[1]) {
-    try {
-      const parsed = JSON.parse(blockMatch[1].trim());
-      const rawDecision = parsed.decision_type || parsed.decisionType || 'trade_off_matrix';
-      const validDecision: RulingDecisionType =
-        rawDecision === 'adopt_proposer' || rawDecision === 'reject_rebuild' || rawDecision === 'trade_off_matrix'
-          ? rawDecision
-          : 'trade_off_matrix';
+  if (envelope.parsed && typeof envelope.parsed === 'object') {
+    const parsed = envelope.parsed;
+    const rawDecision = parsed.decision_type || parsed.decisionType || 'trade_off_matrix';
+    const validDecision: RulingDecisionType =
+      rawDecision === 'adopt_proposer' || rawDecision === 'reject_rebuild' || rawDecision === 'trade_off_matrix'
+        ? rawDecision
+        : 'trade_off_matrix';
 
-      const tradeOffs = Array.isArray(parsed.trade_off_points || parsed.tradeOffPoints)
-        ? (parsed.trade_off_points || parsed.tradeOffPoints).map(String).filter((s: string) => s.trim().length > 0)
-        : [];
+    const tradeOffs = Array.isArray(parsed.trade_off_points || parsed.tradeOffPoints)
+      ? (parsed.trade_off_points || parsed.tradeOffPoints).map(String).filter((s: string) => s.trim().length > 0)
+      : [];
 
-      const files = Array.isArray(parsed.impacted_files || parsed.impactedFiles)
-        ? (parsed.impacted_files || parsed.impactedFiles).map(String).filter((s: string) => s.trim().length > 0)
-        : typeof (parsed.impacted_files || parsed.impactedFiles) === 'string'
-        ? (parsed.impacted_files || parsed.impactedFiles).split(',').map((s: string) => s.trim()).filter(Boolean)
-        : [];
+    const files = Array.isArray(parsed.impacted_files || parsed.impactedFiles)
+      ? (parsed.impacted_files || parsed.impactedFiles).map(String).filter((s: string) => s.trim().length > 0)
+      : typeof (parsed.impacted_files || parsed.impactedFiles) === 'string'
+      ? (parsed.impacted_files || parsed.impactedFiles).split(',').map((s: string) => s.trim()).filter(Boolean)
+      : [];
 
-      return {
-        decisionType: validDecision,
-        summary: String(parsed.summary || '经综合仲裁审议定案').trim(),
-        tradeOffPoints: tradeOffs,
-        impactedFiles: files,
-        solution: parsed.solution ? String(parsed.solution).trim() : undefined,
-        submittedBy: authorName,
-        submittedAt: now,
-      };
-    } catch (e) {
-      console.warn('[acpClient] Failed to parse structured ruling draft block:', e);
-    }
+    return {
+      decisionType: validDecision,
+      summary: String(parsed.summary || '经综合仲裁审议定案').trim(),
+      tradeOffPoints: tradeOffs,
+      impactedFiles: files,
+      solution: parsed.solution ? String(parsed.solution).trim() : undefined,
+      mcdaMatrix: normalizeMcdaMatrixInput(parsed.mcda_matrix || parsed.mcdaMatrix),
+      submittedBy: authorName,
+      submittedAt: now,
+    };
+  } else if (envelope.parseError) {
+    console.warn('[acpClient] Failed to parse structured ruling draft block:', envelope.parseError);
   }
 
   return undefined;
@@ -822,11 +1103,14 @@ export function extractRoleConcurrenceFromAcpResponse(
   acpResp: Partial<AcpAgentResponse>
 ): RoleConcurrenceExtractionResult {
   const rawText = acpResp.textResponse || '';
-  const blockRegex = /<<<ROLE_CONCURRENCE>>>([\s\S]*?)<<<ROLE_CONCURRENCE_END>>>/gi;
-  const blockMatches = Array.from(rawText.matchAll(blockRegex));
-  const cleanedText = rawText.replace(blockRegex, '').trim();
+  const envelope = extractStructuredContractEnvelope<unknown>(
+    rawText,
+    '<<<ROLE_CONCURRENCE>>>',
+    ['<<<ROLE_CONCURRENCE_END>>>', '<<<END_ROLE_CONCURRENCE>>>']
+  );
+  const cleanedText = envelope.cleanedText;
 
-  if (blockMatches.length > 1) {
+  if (envelope.count > 1) {
     return {
       cleanedText,
       error: '检测到多个 ROLE_CONCURRENCE 契约块；每轮必须且只能提交一张票',
@@ -835,9 +1119,7 @@ export function extractRoleConcurrenceFromAcpResponse(
 
   const toolCalls = collectAcpMcpToolCalls(acpResp);
   const roleCalls = toolCalls.filter((call: any) =>
-    call?.tool_name === 'submit_role_concurrence' ||
-    call?.tool === 'submit_role_concurrence' ||
-    call?.name === 'submit_role_concurrence'
+    matchesMcpToolName(call, 'submit_role_concurrence')
   );
 
   const toolCandidates: RoleConcurrenceSubmission[] = [];
@@ -847,7 +1129,7 @@ export function extractRoleConcurrenceFromAcpResponse(
       toolErrors.push(`submit_role_concurrence 工具调用状态异常: ${roleCall?.status}`);
       continue;
     }
-    const rawToolArguments = roleCall?.arguments ?? roleCall?.args;
+    const rawToolArguments = extractMcpToolCallArguments(roleCall);
     if (rawToolArguments === undefined || rawToolArguments === null) {
       continue;
     }
@@ -878,14 +1160,13 @@ export function extractRoleConcurrenceFromAcpResponse(
 
   let blockCandidate: RoleConcurrenceSubmission | undefined;
   let blockError: string | undefined;
-  if (blockMatches.length === 1) {
-    try {
-      const parsed = JSON.parse(blockMatches[0][1].trim());
-      const normalized = normalizeRoleConcurrencePayload(parsed, 'contract_block');
+  if (envelope.count === 1) {
+    if (envelope.parseError) {
+      blockError = 'ROLE_CONCURRENCE 契约块不是合法 JSON';
+    } else {
+      const normalized = normalizeRoleConcurrencePayload(envelope.parsed, 'contract_block');
       blockCandidate = normalized.submission;
       blockError = normalized.error;
-    } catch {
-      blockError = 'ROLE_CONCURRENCE 契约块不是合法 JSON';
     }
   }
 
@@ -932,6 +1213,8 @@ export function extractModuleDecompositionFromAcpResponse(
         rawLevel === 'low_deterministic' || rawLevel === 'medium_standard' || rawLevel === 'high_critical'
           ? rawLevel
           : 'medium_standard';
+      const rawRedTeam = m.requires_red_team ?? m.requiresRedTeam;
+      const rawRoutingRationale = m.routing_rationale ?? m.routingRationale;
       return {
         moduleId: String(m.module_id || m.moduleId || `mod-${idx + 1}`).trim(),
         title: String(m.title || `模块 ${idx + 1}`).trim(),
@@ -943,28 +1226,27 @@ export function extractModuleDecompositionFromAcpResponse(
           ? (m.depends_on || m.dependsOn).map(String).filter(Boolean)
           : [],
         complexityLevel,
+        requiresRedTeam: typeof rawRedTeam === 'boolean' ? rawRedTeam : undefined,
+        routingRationale:
+          typeof rawRoutingRationale === 'string' && rawRoutingRationale.trim()
+            ? rawRoutingRationale.trim()
+            : undefined,
       };
     });
   };
 
   // 1. 优先从原生 MCP Tool 调用记录提取 submit_module_decomposition 参数
-  const rawCalls =
-    acpResp.raw?.mcp_tool_calls ||
-    acpResp.raw?.result?.mcp_tool_calls ||
-    acpResp.mcpToolCalls ||
-    [];
+  const rawCalls = collectAcpMcpToolCalls(acpResp);
   if (Array.isArray(rawCalls)) {
-    const decompCall = rawCalls.find(
-      (c: any) =>
-        c.tool_name === 'submit_module_decomposition' ||
-        c.tool === 'submit_module_decomposition' ||
-        c.name === 'submit_module_decomposition'
+    const decompCall = rawCalls.find((c: any) =>
+      matchesMcpToolName(c, 'submit_module_decomposition')
     );
-    if (decompCall && (decompCall.arguments || decompCall.args)) {
-      const args = decompCall.arguments || decompCall.args;
+    const decompArgs = decompCall ? extractMcpToolCallArguments(decompCall) : undefined;
+    if (decompCall && decompArgs !== undefined) {
+      const args = decompArgs;
       const sc = args.shared_contract || args.sharedContract || {};
       const mods = Array.isArray(args.modules) ? normalizeModules(args.modules) : [];
-      if (mods.length >= 2) {
+      if (mods.length >= 1) {
         return {
           sharedContract: {
             summary: String(sc.summary || '跨模块公共接口契约').trim(),
@@ -980,33 +1262,304 @@ export function extractModuleDecompositionFromAcpResponse(
   }
 
   // 2. 尝试从结构化契约块 <<<MODULE_DECOMPOSITION>>>...<<<MODULE_DECOMPOSITION_END>>> 解析
-  const blockMatch =
-    text.match(/<<<MODULE_DECOMPOSITION>>>([\s\S]*?)<<<MODULE_DECOMPOSITION_END>>>/i) ||
-    text.match(/```(?:json)?\s*(\{\s*"shared_?contract"[\s\S]*?"modules"[\s\S]*?\})\s*```/i);
+  const envelope = extractStructuredContractEnvelope<Record<string, any>>(
+    text,
+    '<<<MODULE_DECOMPOSITION>>>',
+    ['<<<MODULE_DECOMPOSITION_END>>>', '<<<END_MODULE_DECOMPOSITION>>>']
+  );
 
-  if (blockMatch && blockMatch[1]) {
+  let parsed = envelope.parsed;
+  if (!parsed && !envelope.parseError && text.trim().startsWith('{')) {
     try {
-      const parsed = JSON.parse(blockMatch[1].trim());
-      const sc = parsed.shared_contract || parsed.sharedContract || {};
-      const mods = Array.isArray(parsed.modules) ? normalizeModules(parsed.modules) : [];
-      if (mods.length >= 2) {
-        return {
-          sharedContract: {
-            summary: String(sc.summary || '跨模块公共接口契约').trim(),
-            typeSignatures: String(sc.type_signatures || sc.typeSignatures || '').trim(),
-            invariants: Array.isArray(sc.invariants) ? sc.invariants.map(String) : [],
-          },
-          modules: mods,
-          submittedBy: authorName,
-          submittedAt: now,
-        };
+      const obj = JSON.parse(text.trim());
+      if (obj && typeof obj === 'object' && Array.isArray(obj.modules)) {
+        parsed = obj;
       }
-    } catch (e) {
-      console.warn('[acpClient] Failed to parse structured module decomposition block:', e);
+    } catch {
+      // ignore non-JSON prose
     }
   }
 
+  if (parsed && typeof parsed === 'object') {
+    const sc = parsed.shared_contract || parsed.sharedContract || {};
+    const mods = Array.isArray(parsed.modules) ? normalizeModules(parsed.modules) : [];
+    if (mods.length >= 1) {
+      return {
+        sharedContract: {
+          summary: String(sc.summary || '跨模块公共接口契约').trim(),
+          typeSignatures: String(sc.type_signatures || sc.typeSignatures || '').trim(),
+          invariants: Array.isArray(sc.invariants) ? sc.invariants.map(String) : [],
+        },
+        modules: mods,
+        submittedBy: authorName,
+        submittedAt: now,
+      };
+    }
+  } else if (envelope.parseError) {
+    console.warn('[acpClient] Failed to parse structured module decomposition block:', envelope.parseError);
+  }
+
   return undefined;
+}
+
+function normalizeProposalClaimsObject(
+  raw: Record<string, any>,
+  source: 'mcp_tool' | 'text_envelope'
+): ProposalClaimsPayload | undefined {
+  const rawClaims = Array.isArray(raw.claims) ? raw.claims : [];
+  const claims: ProposalClaimItem[] = rawClaims
+    .map((item: any, idx: number): ProposalClaimItem | null => {
+      if (!item || typeof item !== 'object') return null;
+      const claimId = String(item.claim_id || item.claimId || `claim-${idx + 1}`).trim();
+      const claimText = String(item.claim || '').trim();
+      if (!claimText) return null;
+      const depsRaw = item.depends_on_claim_ids || item.dependsOnClaimIds;
+      return {
+        claimId,
+        claim: claimText,
+        assumptions: Array.isArray(item.assumptions) ? item.assumptions.map(String).filter(Boolean) : undefined,
+        dependsOnClaimIds: Array.isArray(depsRaw) ? depsRaw.map(String).filter(Boolean) : undefined,
+        confidence: typeof item.confidence === 'number' ? item.confidence : undefined,
+      };
+    })
+    .filter((c): c is ProposalClaimItem => c !== null);
+
+  if (claims.length === 0) {
+    return undefined;
+  }
+
+  const impactedRaw = raw.impacted_files || raw.impactedFiles;
+  const decisionsRaw = raw.design_decisions || raw.designDecisions;
+  return {
+    summary: String(raw.summary || claims[0].claim).trim(),
+    claims,
+    impactedFiles: Array.isArray(impactedRaw) ? impactedRaw.map(String).filter(Boolean) : [],
+    designDecisions: Array.isArray(decisionsRaw) ? decisionsRaw.map(String).filter(Boolean) : undefined,
+    source,
+  };
+}
+
+/**
+ * 从 ACP 响应（原生 MCP 工具 submit_proposal_claims 或结构化块 <<<PROPOSAL_CLAIMS>>>）提取提案论点节点与 DAG
+ */
+export function extractProposalClaimsFromAcpResponse(
+  acpResp: Partial<AcpAgentResponse>
+): {
+  proposalPayload?: ProposalClaimsPayload;
+  cleanedText: string;
+} {
+  const toolCalls = collectAcpMcpToolCalls(acpResp);
+  const proposalCall = toolCalls.find((c: any) =>
+    matchesMcpToolName(c, 'submit_proposal_claims')
+  );
+
+  let proposalPayload: ProposalClaimsPayload | undefined;
+  if (proposalCall) {
+    let args = extractMcpToolCallArguments(proposalCall);
+    if (typeof args === 'string') {
+      try {
+        args = JSON.parse(args);
+      } catch (e) {
+        console.warn('[acpClient] Failed to parse JSON arguments from submit_proposal_claims:', e);
+      }
+    }
+    if (args && typeof args === 'object') {
+      proposalPayload = normalizeProposalClaimsObject(args, 'mcp_tool');
+    }
+  }
+
+  const rawText = acpResp.textResponse || '';
+  const envelope = extractStructuredContractEnvelope<Record<string, any>>(
+    rawText,
+    '<<<PROPOSAL_CLAIMS>>>',
+    ['<<<PROPOSAL_CLAIMS_END>>>', '<<<END_PROPOSAL_CLAIMS>>>']
+  );
+
+  if (!proposalPayload && envelope.parsed && typeof envelope.parsed === 'object') {
+    proposalPayload = normalizeProposalClaimsObject(envelope.parsed, 'text_envelope');
+  } else if (envelope.parseError) {
+    console.warn('[acpClient] Failed to parse <<<PROPOSAL_CLAIMS>>> block:', envelope.parseError);
+  }
+
+  return { proposalPayload, cleanedText: envelope.count > 0 ? envelope.cleanedText : rawText };
+}
+
+function normalizeChallengeCritiqueObject(
+  raw: Record<string, any>,
+  source: 'mcp_tool' | 'text_envelope'
+): ChallengeCritiquePayload {
+  const disputedRaw = raw.disputed_claim_ids || raw.disputedClaimIds;
+  const reopeningRaw = raw.reopening_triggers || raw.reopeningTriggers;
+  const alignmentRaw = raw.alignment_score ?? raw.alignmentScore;
+  return {
+    targetClaimId: raw.target_claim_id || raw.targetClaimId,
+    disputedClaimIds: Array.isArray(disputedRaw) ? disputedRaw.map(String).filter(Boolean) : undefined,
+    rootCauseCategory: typeof (raw.root_cause_category || raw.rootCauseCategory) === 'string'
+      ? String(raw.root_cause_category || raw.rootCauseCategory).trim()
+      : undefined,
+    reopeningTriggers: Array.isArray(reopeningRaw) ? reopeningRaw.map(String).filter(Boolean) : undefined,
+    alignmentScore: typeof alignmentRaw === 'number' && Number.isFinite(alignmentRaw)
+      ? Math.max(0, Math.min(1, alignmentRaw))
+      : undefined,
+    fatalFlaws: Array.isArray(raw.fatal_flaws || raw.fatalFlaws)
+      ? (raw.fatal_flaws || raw.fatalFlaws).map(String)
+      : [],
+    hiddenAssumptions: Array.isArray(raw.hidden_assumptions || raw.hiddenAssumptions)
+      ? (raw.hidden_assumptions || raw.hiddenAssumptions).map(String)
+      : [],
+    failureScenarios: Array.isArray(raw.failure_scenarios || raw.failureScenarios)
+      ? (raw.failure_scenarios || raw.failureScenarios).map(String)
+      : [],
+    counterDemands: Array.isArray(raw.counter_demands || raw.counterDemands)
+      ? (raw.counter_demands || raw.counterDemands).map(String)
+      : [],
+    summary: String(raw.summary || '').trim(),
+    source,
+  };
+}
+
+/**
+ * 从 ACP 响应（原生 MCP 工具 submit_challenge_critique 或结构化块）中提取红队质询四部曲载荷
+ */
+export function extractChallengeCritiqueFromAcpResponse(
+  acpResp: Partial<AcpAgentResponse>
+): {
+  critiquePayload?: ChallengeCritiquePayload;
+  cleanedText: string;
+} {
+  const toolCalls = collectAcpMcpToolCalls(acpResp);
+  const critiqueCall = toolCalls.find((c: any) =>
+    matchesMcpToolName(c, 'submit_challenge_critique')
+  );
+
+  let critiquePayload: ChallengeCritiquePayload | undefined;
+  if (critiqueCall) {
+    let args = extractMcpToolCallArguments(critiqueCall);
+    if (typeof args === 'string') {
+      try {
+        args = JSON.parse(args);
+      } catch (e) {
+        console.warn('[acpClient] Failed to parse JSON arguments from submit_challenge_critique:', e);
+      }
+    }
+    if (args && typeof args === 'object') {
+      critiquePayload = normalizeChallengeCritiqueObject(args, 'mcp_tool');
+    }
+  }
+
+  const rawText = acpResp.textResponse || '';
+  const envelope = extractStructuredContractEnvelope<Record<string, any>>(
+    rawText,
+    '<<<CHALLENGER_CRITIQUE>>>',
+    ['<<<CHALLENGER_CRITIQUE_END>>>', '<<<END_CHALLENGER_CRITIQUE>>>']
+  );
+
+  if (!critiquePayload && envelope.parsed && typeof envelope.parsed === 'object') {
+    critiquePayload = normalizeChallengeCritiqueObject(envelope.parsed, 'text_envelope');
+  } else if (envelope.parseError) {
+    console.warn('[acpClient] Failed to parse <<<CHALLENGER_CRITIQUE>>> block:', envelope.parseError);
+  }
+
+  return { critiquePayload, cleanedText: envelope.count > 0 ? envelope.cleanedText : rawText };
+}
+
+function normalizeDefensePatchObject(
+  raw: Record<string, any>,
+  source: 'mcp_tool' | 'text_envelope'
+): DefensePatchPayload | undefined {
+  const rawStance = String(raw.stance || '').trim();
+  const validStances: DefenseStance[] = [
+    'uphold_with_patch',
+    'partial_concession_with_patch',
+    'reject_critique_with_proof',
+    'full_surrender_without_patch',
+  ];
+  const stance: DefenseStance = validStances.includes(rawStance as DefenseStance)
+    ? (rawStance as DefenseStance)
+    : 'uphold_with_patch';
+
+  const rawPatched: unknown[] = Array.isArray(raw.patched_claims || raw.patchedClaims)
+    ? (raw.patched_claims || raw.patchedClaims)
+    : [];
+  const patchedClaims: DefensePatchedClaimItem[] = rawPatched
+    .map((item: any, idx: number): DefensePatchedClaimItem | null => {
+      if (!item || typeof item !== 'object') return null;
+      const claimId = String(item.claim_id || item.claimId || `claim-${idx + 1}`).trim();
+      const resolution = String(item.resolution || '').trim();
+      if (!resolution) return null;
+      const status = item.status === 'upheld' || item.status === 'conceded' ? item.status : 'resolved';
+      return { claimId, resolution, status };
+    })
+    .filter((c): c is DefensePatchedClaimItem => c !== null);
+
+  const patchesRaw = raw.defense_patches || raw.defensePatches;
+  const defensePatches = Array.isArray(patchesRaw) ? patchesRaw.map(String).filter(Boolean) : [];
+  const metricsRaw = raw.quantified_metrics || raw.quantifiedMetrics;
+  const impactedRaw = raw.impacted_files || raw.impactedFiles;
+  const alignmentRaw = raw.alignment_score ?? raw.alignmentScore;
+  const summary = String(raw.summary || '').trim();
+
+  if (!summary && patchedClaims.length === 0 && defensePatches.length === 0) {
+    return undefined;
+  }
+
+  return {
+    summary: summary || patchedClaims[0]?.resolution || defensePatches[0] || '',
+    stance,
+    patchedClaims,
+    defensePatches,
+    quantifiedMetrics: Array.isArray(metricsRaw) ? metricsRaw.map(String).filter(Boolean) : undefined,
+    impactedFiles: Array.isArray(impactedRaw) ? impactedRaw.map(String).filter(Boolean) : [],
+    alignmentScore: typeof alignmentRaw === 'number' && Number.isFinite(alignmentRaw)
+      ? Math.max(0, Math.min(1, alignmentRaw))
+      : undefined,
+    source,
+  };
+}
+
+/**
+ * 从 ACP 响应（原生 MCP 工具 submit_defense_patch 或结构化块 <<<DEFENSE_PATCH>>>）提取答辩修正立场与补丁
+ */
+export function extractDefensePatchFromAcpResponse(
+  acpResp: Partial<AcpAgentResponse>
+): {
+  defensePayload?: DefensePatchPayload;
+  cleanedText: string;
+} {
+  const toolCalls = collectAcpMcpToolCalls(acpResp);
+  const defenseCall = toolCalls.find((c: any) =>
+    matchesMcpToolName(c, 'submit_defense_patch')
+  );
+
+  let defensePayload: DefensePatchPayload | undefined;
+  if (defenseCall) {
+    let args = extractMcpToolCallArguments(defenseCall);
+    if (typeof args === 'string') {
+      try {
+        args = JSON.parse(args);
+      } catch (e) {
+        console.warn('[acpClient] Failed to parse JSON arguments from submit_defense_patch:', e);
+      }
+    }
+    if (args && typeof args === 'object') {
+      defensePayload = normalizeDefensePatchObject(args, 'mcp_tool');
+    }
+  }
+
+  const rawText = acpResp.textResponse || '';
+  const envelope = extractStructuredContractEnvelope<Record<string, any>>(
+    rawText,
+    '<<<DEFENSE_PATCH>>>',
+    ['<<<DEFENSE_PATCH_END>>>', '<<<END_DEFENSE_PATCH>>>']
+  );
+
+  if (!defensePayload && envelope.parsed && typeof envelope.parsed === 'object') {
+    defensePayload = normalizeDefensePatchObject(envelope.parsed, 'text_envelope');
+  } else if (envelope.parseError) {
+    console.warn('[acpClient] Failed to parse <<<DEFENSE_PATCH>>> block:', envelope.parseError);
+  }
+
+  return { defensePayload, cleanedText: envelope.count > 0 ? envelope.cleanedText : rawText };
 }
 
 /**
@@ -1613,9 +2166,9 @@ export async function sendPromptToAcpAgent(
   registerActiveAcpSessionForKey(unifiedSessionKey);
 
   // 0. 统一解析并注入 Agent 自身专属专精人设与行为硬性约束
-  const personaPrompt = buildAgentPersonaPrompt(agent);
+  const personaPrompt = options.personaPrompt || buildAgentPersonaPrompt(agent);
   const resolvedSystemPrompt = options.systemPrompt
-    ? (options.systemPrompt.includes(agent.name) && options.systemPrompt.includes('智能体专属专精人设')
+    ? (options.systemPrompt.startsWith(personaPrompt)
         ? options.systemPrompt
         : `${personaPrompt}\n\n${options.systemPrompt}`)
     : personaPrompt;
@@ -1768,6 +2321,7 @@ export async function sendPromptToAcpAgent(
         cwd: targetCwd,
         envVars: launchEnvVars,
         systemPrompt: resolvedSystemPrompt,
+        personaPrompt: options.personaPrompt || personaPrompt,
         nativeMemoryEnabled: effectiveNativeMemoryEnabled,
         nativeMemoryAutoGenerate: effectiveNativeMemoryAutoGenerate,
         discussionMode: options.discussionMode,
@@ -1786,7 +2340,7 @@ export async function sendPromptToAcpAgent(
         const hasMcpToolCalls = Array.isArray(res.mcp_tool_calls) && res.mcp_tool_calls.length > 0;
         const isEmpty = !rawText.trim() && !hasMcpToolCalls;
         const fullText = rawText || (res.stopReason ? `【${agent.name}】ACP 任务已完成 (stopReason: ${res.stopReason})` : JSON.stringify(res));
-        const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(fullText);
+        const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(fullText, res.mcp_tool_calls);
         const nativeDiffs: TopicPatchDiffItem[] = Array.isArray(res.workspace_diffs) && res.workspace_diffs.length > 0
           ? res.workspace_diffs
           : extractWorkspaceDiffsFromText(cleanedText);
@@ -1805,7 +2359,7 @@ export async function sendPromptToAcpAgent(
           raw: response,
         };
       } else if (response && response.text_response) {
-        const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(response.text_response);
+        const { executionMeta, cleanedText } = extractExecutionMetaFromAcpResponse(response.text_response, response.mcp_tool_calls);
         const nativeDiffs: TopicPatchDiffItem[] = Array.isArray(response.workspace_diffs) && response.workspace_diffs.length > 0
           ? response.workspace_diffs
           : extractWorkspaceDiffsFromText(cleanedText);
@@ -1833,7 +2387,22 @@ export async function sendPromptToAcpAgent(
           (response.status === 'timeout' ? 'Agent 响应空闲超时 (等待超时)' : 'Agent 进程异常关闭');
 
         let formattedHelp = '';
-        if (rawErrMsg.toLowerCase().includes('authentication required')) {
+        const errObj = typeof response.error === 'object' && response.error !== null ? (response.error as Record<string, any>) : null;
+        const errCode = errObj?.code;
+        const errCategory = errObj?.data?.category || errObj?.data?.code;
+        const isAuthRequired =
+          errCode === -32003 ||
+          errCategory === 'auth_required' ||
+          errCategory === 'authentication_required' ||
+          rawErrMsg.toLowerCase().includes('authentication required');
+        const isTimeout =
+          response.status === 'timeout' ||
+          errCategory === 'timeout' ||
+          errCategory === 'idle_timeout' ||
+          rawErrMsg.toLowerCase().includes('idle timeout') ||
+          rawErrMsg.toLowerCase().includes('timeout');
+
+        if (isAuthRequired) {
           formattedHelp =
             `\n\n💡 **认证排障指南 (Claude Code ACP)**：\n` +
             `• **原因**：Anthropic 官方规范限制，第三方客户端集成（如 Shadow Crew）**不支持**复用本机的 \`claude.ai\` 网页/OAuth 订阅，需要提供 \`ANTHROPIC_API_KEY\`。\n` +
@@ -1842,7 +2411,7 @@ export async function sendPromptToAcpAgent(
             `  2. 在「环境变量 (ENV)」中填入您的 \`ANTHROPIC_API_KEY\`（格式如 \`sk-ant-api03-...\`）；\n` +
             `  3. *(可选)* 若使用第三方反代/中转网关，可额外添加 \`ANTHROPIC_BASE_URL\`；\n` +
             `  4. 保存后重新发送消息或点击「Start」重新拉起即可。`;
-        } else if (rawErrMsg.toLowerCase().includes('idle timeout') || rawErrMsg.toLowerCase().includes('timeout')) {
+        } else if (isTimeout) {
           formattedHelp =
             `\n\n💡 **慢模型 / 深度推理排障建议**：\n` +
             `• **原因**：复杂推理模型（如 DeepSeek-R1、o1/o3-mini、Claude 3.7 Thinking）首字思考耗时较长，或模型服务提供商处于排队状态。\n` +
@@ -1883,6 +2452,69 @@ export async function sendPromptToAcpAgent(
 /**
  * 从 Agent 响应 Markdown 文本中确定性提取 Unified Diff 块或带路径标注的工程代码补丁
  */
+const SUPPORTED_CODE_BLOCK_LANGS = new Set([
+  'ts', 'tsx', 'js', 'jsx', 'rs', 'rust', 'py', 'python', 'go', 'sql', 'toml', 'yaml', 'yml', 'css', 'html', 'sh',
+]);
+
+function stripDiffPrefix(rawPath: string): string {
+  const trimmed = rawPath.trim();
+  const withoutAb = trimmed.startsWith('a/') || trimmed.startsWith('b/') ? trimmed.slice(2) : trimmed;
+  return normalizeRepoPath(withoutAb);
+}
+
+function parseDiffHeaderPath(lines: string[], prefix: '---' | '+++'): string {
+  for (const line of lines) {
+    if (!line.startsWith(prefix)) continue;
+    const rest = line.slice(prefix.length).trim();
+    if (!rest) continue;
+    const token = rest.split(/\s/)[0] || '';
+    if (!token || token === '/dev/null') continue;
+    return stripDiffPrefix(token);
+  }
+  return '';
+}
+
+function parseFileHeaderCommentLine(line: string | undefined): string {
+  if (!line) return '';
+  let trimmed = line.trim();
+  if (trimmed.startsWith('//')) {
+    trimmed = trimmed.slice(2).trim();
+  } else if (trimmed.startsWith('#')) {
+    trimmed = trimmed.slice(1).trim();
+  } else if (trimmed.startsWith('/*')) {
+    trimmed = trimmed.slice(2);
+    const endIdx = trimmed.indexOf('*/');
+    if (endIdx >= 0) trimmed = trimmed.slice(0, endIdx);
+    trimmed = trimmed.trim();
+  } else {
+    return '';
+  }
+
+  const lower = trimmed.toLowerCase();
+  for (const label of ['filepath', 'file', 'path']) {
+    if (lower.startsWith(label)) {
+      let rest = trimmed.slice(label.length).trimStart();
+      if (rest.startsWith(':') || rest.startsWith('：')) {
+        rest = rest.slice(1).trimStart();
+      } else if (rest.length === trimmed.slice(label.length).length) {
+        continue;
+      }
+      const token = rest.split(/\s/)[0]?.replace(/[`'",;*]+$/g, '') || '';
+      if (token) return stripDiffPrefix(token);
+    }
+  }
+  return '';
+}
+
+function isDecisionRulingJsonBlock(rawBody: string): boolean {
+  try {
+    const parsed = JSON.parse(rawBody);
+    return Boolean(parsed && typeof parsed === 'object' && 'decisionType' in parsed);
+  } catch {
+    return rawBody.includes('"decisionType"');
+  }
+}
+
 export function extractWorkspaceDiffsFromText(
   text: string,
   fallbackFiles: string[] = []
@@ -1890,18 +2522,18 @@ export function extractWorkspaceDiffsFromText(
   if (!text || !text.trim()) return [];
   const results: TopicPatchDiffItem[] = [];
   const seenFiles = new Set<string>();
+  const ast = analyzeStructuredMarkdown(text);
 
-  const codeBlockRegex = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g;
-  let match: RegExpExecArray | null;
   let blockIndex = 0;
+  let searchCursor = 0;
 
-  while ((match = codeBlockRegex.exec(text)) !== null) {
-    const lang = (match[1] || '').toLowerCase().trim();
-    const rawBody = (match[2] || '').trim();
+  for (const block of ast.fencedCodeBlocks) {
+    const lang = block.lang.toLowerCase().trim();
+    const rawBody = block.content.trim();
     if (!rawBody) continue;
 
     // 跳过 JSON 契约块或 Mermaid 图表
-    if (lang === 'mermaid' || (lang === 'json' && rawBody.includes('"decisionType"'))) {
+    if (lang === 'mermaid' || (lang === 'json' && isDecisionRulingJsonBlock(rawBody))) {
       continue;
     }
 
@@ -1914,22 +2546,25 @@ export function extractWorkspaceDiffsFromText(
       lines.some((l) => l.startsWith('@@ '));
 
     // 查找代码块前方的上下文是否标注了文件名
-    const precedingText = text.slice(Math.max(0, match.index - 220), match.index);
-    const precedingFileMatch = precedingText.match(
-      /`([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)`|\*\*([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)\*\*|(?:文件|路径|File|Path)[:：\s]*`?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)`?/i
-    );
-    const contextFilename =
-      precedingFileMatch?.[1] || precedingFileMatch?.[2] || precedingFileMatch?.[3];
+    let contextFilename = '';
+    const bodyPos = text.indexOf(rawBody, searchCursor);
+    if (bodyPos >= 0) {
+      const fenceStart = text.lastIndexOf('```', bodyPos);
+      const anchor = fenceStart >= 0 ? fenceStart : bodyPos;
+      const precedingText = text.slice(Math.max(0, anchor - 220), anchor);
+      const extractedPaths = extractFilePathsFromTextSegment(precedingText);
+      contextFilename = extractedPaths[extractedPaths.length - 1] || '';
+      searchCursor = bodyPos + rawBody.length;
+    }
 
     if (isUnifiedDiff) {
-      let filename = '';
-      const plusMatch = rawBody.match(/^\+\+\+\s+(?:b\/)?([^\s\n]+)/m);
-      const minusMatch = rawBody.match(/^---\s+(?:a\/)?([^\s\n]+)/m);
-      const commentFileMatch = lines[0]?.match(/^(?:\/\/|#)\s*(?:filepath|file|path)[:：\s]*([^\s]+)/i);
-      filename =
-        (plusMatch?.[1] && plusMatch[1] !== '/dev/null' ? plusMatch[1] : '') ||
-        (minusMatch?.[1] && minusMatch[1] !== '/dev/null' ? minusMatch[1] : '') ||
-        commentFileMatch?.[1] ||
+      const plusPath = parseDiffHeaderPath(lines, '+++');
+      const minusPath = parseDiffHeaderPath(lines, '---');
+      const commentPath = parseFileHeaderCommentLine(lines[0]);
+      const filename =
+        plusPath ||
+        minusPath ||
+        commentPath ||
         contextFilename ||
         fallbackFiles[blockIndex] ||
         `patch_${blockIndex + 1}.ts`;
@@ -1944,47 +2579,47 @@ export function extractWorkspaceDiffsFromText(
         additions = lines.length;
       }
 
+      const normalizedName = stripDiffPrefix(filename);
       results.push({
-        filename: filename.replace(/^[ab]\//, ''),
+        filename: normalizedName,
         additions,
         deletions,
         diff: rawBody,
       });
-      seenFiles.add(filename);
+      seenFiles.add(normalizedName);
       blockIndex++;
-    } else if (
-      ['ts', 'tsx', 'js', 'jsx', 'rs', 'rust', 'py', 'python', 'go', 'sql', 'toml', 'yaml', 'yml', 'css', 'html', 'sh'].includes(lang) ||
-      lines[0]?.match(/^(?:\/\/|#|\/\*)\s*(?:filepath|file|path)[:：\s]*([^\s*]+)/i)
-    ) {
-      const commentFileMatch = lines[0]?.match(/^(?:\/\/|#|\/\*)\s*(?:filepath|file|path)[:：\s]*([^\s*]+)/i);
-      const filename =
-        commentFileMatch?.[1] ||
-        contextFilename ||
-        fallbackFiles.find((f) => !seenFiles.has(f)) ||
-        fallbackFiles[blockIndex] ||
-        '';
+    } else {
+      const commentPath = parseFileHeaderCommentLine(lines[0]);
+      if (SUPPORTED_CODE_BLOCK_LANGS.has(lang) || commentPath) {
+        const filename =
+          commentPath ||
+          contextFilename ||
+          fallbackFiles.find((f) => !seenFiles.has(f)) ||
+          fallbackFiles[blockIndex] ||
+          '';
 
-      if (filename || lines.length >= 4) {
-        const resolvedName = (filename || `src/patch_${blockIndex + 1}.${lang || 'ts'}`).replace(/^[ab]\//, '');
-        const cleanLines = commentFileMatch ? lines.slice(1) : lines;
-        const cleanCode = cleanLines.join('\n').trim();
-        const codeLines = cleanCode.split('\n');
-        const syntheticDiff = [
-          `--- a/${resolvedName}`,
-          `+++ b/${resolvedName}`,
-          `@@ -1,0 +1,${codeLines.length} @@`,
-          ...codeLines.map((l) => `+${l}`),
-        ].join('\n');
+        if (filename || lines.length >= 4) {
+          const resolvedName = stripDiffPrefix(filename || `src/patch_${blockIndex + 1}.${lang || 'ts'}`);
+          const cleanLines = commentPath ? lines.slice(1) : lines;
+          const cleanCode = cleanLines.join('\n').trim();
+          const codeLines = cleanCode.split('\n');
+          const syntheticDiff = [
+            `--- a/${resolvedName}`,
+            `+++ b/${resolvedName}`,
+            `@@ -1,0 +1,${codeLines.length} @@`,
+            ...codeLines.map((l) => `+${l}`),
+          ].join('\n');
 
-        results.push({
-          filename: resolvedName,
-          additions: codeLines.length,
-          deletions: 0,
-          diff: syntheticDiff,
-          codeContent: cleanCode,
-        });
-        seenFiles.add(resolvedName);
-        blockIndex++;
+          results.push({
+            filename: resolvedName,
+            additions: codeLines.length,
+            deletions: 0,
+            diff: syntheticDiff,
+            codeContent: cleanCode,
+          });
+          seenFiles.add(resolvedName);
+          blockIndex++;
+        }
       }
     }
   }
@@ -2843,6 +3478,7 @@ export async function ensureAcpAgentSession(options: {
   roomId: string;
   channelId?: string;
   systemPrompt?: string;
+  personaPrompt?: string;
   discussionMode?: string;
   workspaceBindingId?: string;
   workspaceCwd?: string;
@@ -2894,6 +3530,7 @@ export async function ensureAcpAgentSession(options: {
       workspaceBindingId: options.workspaceBindingId || null,
       workspaceCwd: options.workspaceCwd || null,
       systemPrompt: options.systemPrompt || null,
+      personaPrompt: options.personaPrompt || null,
       discussionMode: options.discussionMode || null,
       scopeType: options.scopeType || null,
       localHistoryIntact: options.localHistoryIntact ?? null,
