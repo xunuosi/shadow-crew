@@ -44,7 +44,7 @@ open docs/presentation/shadow-crew-acp-keynote.html
 | 页码 | 板块 |
 | :--- | :--- |
 | 01–04 | 开场、单/多 Agent 取舍、三个协作问题、责任边界（Thin Control Plane） |
-| 05–08 | ACP 对等架构、七大支柱、CWD 约束、权限代理 |
+| 05–08 | ACP 对等架构、宿主控制层、CWD 约束、权限代理 |
 | 09–12 | V1 → V2、六维对照、Native Memory First、双栈协商 |
 | 13–16 | 五大控制面、跨机互联、`.scpack`、零污染卡带 |
 | 17–19 | 增量协同流、4+1 博弈、BWM 运筹仲裁 |
