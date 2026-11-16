@@ -25,3 +25,7 @@ thiserror.workspace = true
 chrono = "0.4"
 rusqlite.workspace = true
 uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# 进程组终止（SIGTERM/SIGKILL）所需的 POSIX 信号常量与 kill(2) 绑定。
+libc = "0.2"

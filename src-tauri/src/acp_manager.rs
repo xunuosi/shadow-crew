@@ -1432,6 +1432,45 @@ pub struct RunningAgent {
     pub session_config_options: Arc<TokioMutex<HashMap<String, Vec<serde_json::Value>>>>,
 }
 
+/// 终止 ACP 子进程及其派生的整棵进程树。
+///
+/// - Windows：`taskkill /T /F` 递归终止（npx / cmd 包装器会派生孙进程）。
+/// - Unix：spawn 时子进程已通过 `process_group(0)` 独立成组，这里向进程组发送
+///   SIGTERM 等待优雅退出，再以 SIGKILL 兜底清扫顽固孙进程。
+///
+/// 安全性：SIGKILL 清扫发生在 `child.wait()` 之前，此时直接子进程仍以僵尸态
+/// 占用 pid/pgid，进程组 ID 不会被内核回收复用，因此不会误杀无关进程。
+async fn terminate_process_tree(child: &mut Child) {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(pid) = child.id() {
+            let _ = tokio::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await;
+        }
+    }
+    #[cfg(unix)]
+    {
+        if let Some(pid) = child.id() {
+            let pgid = pid as i32;
+            // 负数 pid 表示向整个进程组发送信号。
+            unsafe {
+                libc::kill(-pgid, libc::SIGTERM);
+            }
+            // 给包装器与子进程一个优雅退出的时间窗；僵尸态保持 pgid 不被复用。
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
 pub struct AcpProcessManager {
     agents: HashMap<String, RunningAgent>,
     db_manager: Option<Arc<crate::db_manager::DatabaseManager>>,
@@ -1686,20 +1725,9 @@ impl AcpProcessManager {
             agent.is_alive.store(false, Ordering::SeqCst);
             drop(agent.stdin_tx);
             if let Some(mut child) = agent.child.lock().await.take() {
-                // 包装型启动命令（npx / cmd / sh）会派生出孙进程，child.kill() 只杀直接子进程。
-                // Windows 下用 taskkill /T 整树终止；其余平台保留 child.kill()。
-                #[cfg(target_os = "windows")]
-                if let Some(pid) = child.id() {
-                    let _ = tokio::process::Command::new("taskkill")
-                        .args(["/PID", &pid.to_string(), "/T", "/F"])
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status()
-                        .await;
-                }
-                let _ = child.kill().await;
-                // 回收进程句柄，避免僵尸进程与句柄泄漏
-                let _ = child.wait().await;
+                // 包装型启动命令（npx / cmd / sh）会派生出孙进程，必须整树终止：
+                // Windows 用 taskkill /T；Unix 用独立进程组 + SIGTERM/SIGKILL。
+                terminate_process_tree(&mut child).await;
             }
             log_acp_event(agent_id, "STOPPED", "Agent process terminated by user");
         }
@@ -1729,8 +1757,8 @@ impl AcpProcessManager {
             old_agent.is_alive.store(false, Ordering::SeqCst);
             drop(old_agent.stdin_tx);
             if let Some(mut old_child) = old_agent.child.lock().await.take() {
-                let _ = old_child.kill().await;
-                let _ = old_child.wait().await;
+                // 重启前同样整树终止旧进程，避免包装器派生的孙进程残留。
+                terminate_process_tree(&mut old_child).await;
             }
             log_acp_event(
                 agent_id,
@@ -1930,6 +1958,14 @@ impl AcpProcessManager {
             cmd.env("SHADOW_CREW_PORTABLE_EXPERT_AGENT", "1");
             cmd.env_remove("CODEX_DANGEROUSLY_BYPASS_SANDBOX");
         }
+
+        // Unix：将子进程独立成组（pgid = child pid），以便停止时向整棵进程树
+        // 发送信号，彻底回收 npx / sh 包装器派生的孙进程。
+        #[cfg(unix)]
+        {
+            cmd.process_group(0);
+        }
+
         let mut child: Child = cmd.spawn().with_context(|| {
             format!(
                 "Failed to spawn command '{}' (resolved from '{}')",
