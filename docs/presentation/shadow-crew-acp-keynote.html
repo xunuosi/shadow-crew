@@ -1159,53 +1159,67 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 04 ------------------------------------------------------------ -->
-<section class="slide" data-no="04" data-section="破局" data-title="Thin Control Plane"
-  data-notes="先澄清一个常见误解：左边不是 Shadow Crew 的功能清单，而是“如果全栈自建”要维护的层。模型训练不做；Agent 运行时（ReAct/Tool Loop）外置给 ACP Agent；向量记忆库不自建，用端点原生记忆 + .scpack；工具链与执行沙箱只做权限/工作区边界；权限审计、协同 UI 与协议是自建的。选择是把执行面外置，宿主只负责连接、协作与边界。">
+<section class="slide" data-no="04" data-section="破局" data-title="不造 Agent 轮子：划清责任边界"
+  data-notes="先澄清：这不是能力清单，也不是“我们没有/不想要”。模型训练与微调不属于 Agent 协作范畴，不提。真正要划的是责任：推理循环与 Tool Loop 在 ACP 端点里；工具可以两端提供，但执行发生在 Agent 侧；宿主真正自建的是会话绑定、权限审计、协同与决策。工具数按 dev MCP 实际注册的 17 个算。">
   <div class="slide-head">
     <div class="eyebrow reveal">03 / 破局</div>
-    <h2 class="reveal">不造 Agent 轮子，做 Agent 之间的协作枢纽</h2>
-    <p class="lede reveal">执行交给成熟的 Agent，连接与协作交给工作台。</p>
+    <h2 class="reveal">不造 Agent 轮子：先划清责任边界</h2>
+    <p class="lede reveal">不是“谁更强”，而是每一层由谁负责；Shadow Crew 只承接控制面。</p>
   </div>
   <div class="slide-body">
-    <div class="grid cols-2 gap-32">
+    <div class="appx-grid wide">
       <div class="reveal">
-        <div class="flex items-center gap-12" style="margin-bottom:14px">
-          <span class="badge plain">假设：全栈自建</span>
-          <span class="small">不是 Shadow Crew 的功能清单</span>
+        <div class="tbl-wrap">
+          <table class="tbl compact">
+            <thead><tr><th style="width:29%">层</th><th style="width:25%">谁负责</th><th style="width:46%">Shadow Crew 的做法</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><strong>Agent 运行时</strong><span class="mini">推理循环 · Tool Loop · 上下文管理</span></td>
+                <td>ACP Agent 端点<span class="mini">Claude Code / Codex / 同事 Agent</span></td>
+                <td>通过 ACP <strong>连接与调度</strong>，不实现运行时</td>
+              </tr>
+              <tr>
+                <td><strong>工具执行</strong><span class="mini">读写 · 搜索 · Shell · 结构化提交</span></td>
+                <td>Agent 自带工具；宿主可经 MCP 供工具</td>
+                <td>提供本地 dev MCP 工具（17 个）；<strong>执行仍在 Agent 侧</strong>，宿主只管权限与工作区边界</td>
+              </tr>
+              <tr>
+                <td><strong>会话 · 权限 · 审计</strong></td>
+                <td>协议定义 + 宿主执行</td>
+                <td><strong>自建</strong>：CWD 绑定、反向权限代理、五级授权、Fail-Closed</td>
+              </tr>
+              <tr>
+                <td><strong>记忆</strong><span class="mini">长期记忆 · 跨机经验</span></td>
+                <td>端点原生记忆为主</td>
+                <td>记忆策略 + <span class="mono">.scpack</span> 经验包；<strong>不自建向量索引</strong></td>
+              </tr>
+              <tr>
+                <td><strong>协同 · 决策 · 经验流转</strong></td>
+                <td>Shadow Crew</td>
+                <td><strong>自建</strong>：增量协同、4+1、BWM 门禁、Living ADR、跨机经验包</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
-        <div class="stack">
-          <div class="blk">模型训练与微调 <span class="st no">HEAVY · 不做</span></div>
-          <div class="blk">Agent 运行时（ReAct / Tool Loop） <span class="st out">HEAVY · 外置</span></div>
-          <div class="blk">向量记忆库 <span class="st no">HEAVY · 不做</span></div>
-          <div class="blk">工具链与执行沙箱 <span class="st edge">HEAVY · 只做边界</span></div>
-          <div class="blk">权限与审计 <span class="st self">HEAVY · 自建</span></div>
-          <div class="blk">协同 UI 与协议 <span class="st self">HEAVY · 自建</span></div>
-        </div>
-        <p class="small mt-16">左侧是“如果全栈自建”要维护的层；带“不做 / 外置 / 只做边界”的层，正是 Shadow Crew 选择不自己造的部分。</p>
+        <p class="small mt-12">这不是能力清单，而是责任划分：运行时本就不属于宿主，工具两端都可以提供，<b style="color:var(--fg)">宿主真正自建的是会话、权限、协同与决策</b>。</p>
       </div>
 
       <div class="reveal">
-        <div class="flex items-center gap-12" style="margin-bottom:14px">
-          <span class="badge ok">连接现成</span>
-          <span class="small">Thin Control Plane</span>
-        </div>
         <div class="thin-bar">
-          <div><b>Shadow Crew</b><div class="small" style="margin-top:2px">工作区 · 权限 · 协同 · 记忆调度</div></div>
-          <span class="badge ok">轻</span>
+          <div><b>Shadow Crew</b><div class="small" style="margin-top:2px">控制面：连接 · 调度 · 权限 · 收敛</div></div>
+          <span class="badge ok">薄</span>
+        </div>
+        <div class="flex items-center gap-8 mt-12" style="justify-content:center">
+          <span class="chip mono">ACP</span>
+          <span class="small">同一套调用约定</span>
         </div>
         <div class="agents">
-          <div class="agent-box"><div class="nm">Claude Code</div><div class="sub">LOCAL STDIO</div></div>
-          <div class="agent-box"><div class="nm">Codex</div><div class="sub">LOCAL STDIO</div></div>
-          <div class="agent-box"><div class="nm">同事 Agent</div><div class="sub">REMOTE WS</div></div>
+          <div class="agent-box"><div class="nm">Claude Code</div><div class="sub">RUNTIME INSIDE</div></div>
+          <div class="agent-box"><div class="nm">Codex</div><div class="sub">RUNTIME INSIDE</div></div>
+          <div class="agent-box"><div class="nm">同事 Agent</div><div class="sub">REMOTE · WS</div></div>
         </div>
-        <p class="small mt-16">执行黑盒外置。宿主不碰推理循环，只负责连接、协作与边界；代价是依赖协议与端点。</p>
+        <p class="small mt-12">执行黑盒外置：宿主不碰推理循环，只决定“谁在什么边界内做什么”；代价是依赖协议与端点。</p>
       </div>
-    </div>
-
-    <div class="grid cols-3 gap-16 mt-32 reveal">
-      <div class="callout"><span class="tag">01</span><span><b>执行面外置</b><br>Agent 进程独立演进</span></div>
-      <div class="callout"><span class="tag">02</span><span><b>控制面轻量</b><br>只做连接、协作与治理</span></div>
-      <div class="callout"><span class="tag">03</span><span><b>记忆资产化</b><br>经验可打包、可迁移</span></div>
     </div>
   </div>
 </section>
