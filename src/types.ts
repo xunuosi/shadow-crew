@@ -1099,6 +1099,13 @@ export interface SprtGovernorState {
     neutralThreshold: number;
     sensitivity: number;
     isFunnelActive: boolean;
+    // 生效阈值快照：供真实流量 trace 离线回放 / 阈值标定使用（R-4 校准闭环）
+    alpha?: number;
+    beta?: number;
+    minExplorationRounds?: number;
+    funnelDecayRate?: number;
+    groundingWeightWhenPresent?: number;
+    thresholdSource?: 'default' | 'fitted' | 'external';
   };
 }
 

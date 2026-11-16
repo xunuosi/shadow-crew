@@ -38,6 +38,7 @@ import {
 } from '../services/acpClient';
 import { isAgentOffline, isAgentOnline } from '../utils/agentRuntime';
 import { resolveCorrectionRetryLimit } from '../services/agentRuntimePolicy';
+import { recordSprtDecisionFromStep } from '../services/cogno/sprtTraceRecorder';
 import type { ProcessArbitrationConcurrenceOptions } from './useArbitrationConcurrence';
 
 export interface GameTheoreticStageHandoverOptions {
@@ -780,10 +781,18 @@ export function useGameTheoreticFsm({
         });
         // 关键门禁：若存在未验证核心冲突切片，拦截 early_exit (P1-2 / P0-1)
         const hasUnverifiedDispute = Boolean(disputePacket && disputePacket.groundingStatus === 'unverified');
-        const sprtState = stepSprtGovernor({
+        const sprtOptions = {
           currentRound: 2,
           alignmentScore: sprtScore,
           hasUnverifiedCriticalDispute: hasUnverifiedDispute,
+        };
+        const sprtState = stepSprtGovernor(sprtOptions);
+        // 真实流量 trace 采集：完整落盘入参/生效阈值/决策，供离线回放标定。
+        recordSprtDecisionFromStep({
+          topicId,
+          stage: 'challenge',
+          options: sprtOptions,
+          state: sprtState,
         });
 
         // 记录 SPRT 似然比迁移打点 (R-1)
@@ -1898,13 +1907,20 @@ export function useGameTheoreticFsm({
           currentTopic.gameTheoreticState?.cognoNexus?.currentDispute?.groundingStatus === 'unverified'
         );
 
-        const sprtStateAfterDefense = stepSprtGovernor({
+        const sprtOptionsAfterDefense = {
           priorState: currentTopic.gameTheoreticState?.sprtState,
           currentRound: (currentTopic.gameTheoreticState?.roundCount || 1) + 2,
           alignmentScore: sprtScoreAfterDefense,
           groundedTrueRatio,
           dssScore: sycophancyEval.dss,
           hasUnverifiedCriticalDispute: hasUnverifiedDisputeAfterDefense,
+        };
+        const sprtStateAfterDefense = stepSprtGovernor(sprtOptionsAfterDefense);
+        recordSprtDecisionFromStep({
+          topicId,
+          stage: 'defense',
+          options: sprtOptionsAfterDefense,
+          state: sprtStateAfterDefense,
         });
 
         logGameTheoreticTelemetry('decisionState_transition', topicId, {

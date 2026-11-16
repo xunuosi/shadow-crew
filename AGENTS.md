@@ -27,6 +27,8 @@ Shadow Crew —— 多 Agent 协同桌面应用（Tauri + React 19 + Vite）。
   - **定位**：CognoNexus × G-Frame 贝叶斯与团队博弈驱动的模块化分治编排规范与落地方案（阶段 0 拓扑拆解与跨模块只读《公共接口契约》、模块级上下文物理隔离沙箱、贝叶斯先验分流与后验动态升降级、模块爆炸半径硬冻结与 Wave 1~3 实施路线图）。
 - **[`docs/SPEC_NORMAL_MODE_BUZZ_CONTEXT_AND_CONCURRENT_ORCHESTRATION.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/SPEC_NORMAL_MODE_BUZZ_CONTEXT_AND_CONCURRENT_ORCHESTRATION.md)**
   - **定位**：普通协同模式（Channel 主消息流 & Topic 标准讨论模式 `discussionMode === 'standard'`）对标 `buzz-acp` 的增量上下文与并发协同编排设计规范（会话水位线 `<delta-events>` 未读增量提取与并发水位线不变量、冷启动 vs 热会话双态 Prompt 编译、首轮并发 Fan-out + `Promise.allSettled` Turn Barrier 轮次同步屏障、`aggregateTurnBarrierMentions` 跨回复 `@mention` 去重聚合与越界守卫）。
+- **[`docs/TECH_SPEC_SPRT_TRACE_AND_THRESHOLD_CALIBRATION.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/TECH_SPEC_SPRT_TRACE_AND_THRESHOLD_CALIBRATION.md)**
+  - **定位**：SPRT 早停参数的真实流量标定闭环：自包含决策 trace 采集（输入/生效阈值/输出）、`ignoreExternalThresholds` 确定性回放、`scripts/replay-sprt-traces.ts` 离线 CLI 与阈值外置配置白名单/区间校验。修改 SPRT 判定或阈值前必须先读此文档。
 - **[`docs/SPEC_WORKFLOW_ORCHESTRATION_MODES.md`](file:///Users/xunuosi/Code/Lx/AI/shadow-crew/docs/SPEC_WORKFLOW_ORCHESTRATION_MODES.md)**
   - **定位**：日常研发工作流模式（`discussionMode === 'workflow'`）规范：咨询产出（`consult`）/ 评审审查（`review`）/ 交付实施（`build`）三套声明式阶段规格、角色分离不变量（实现者 ≠ 验收者、并行评审互不可见、验收隔离实现者自述）、完整原文交接物总线、结构化评审/验收门禁（无证据降级、验收 fail-closed、返工上限）与运行期取消语义。维护工作流编排前必须先读此文档，禁止在 FSM 中继续堆叠场景分支。
 

@@ -18,6 +18,7 @@
 import { SprtGovernorState } from '../../types';
 import { getMetricBaselineSummary, MetricBaselineSummary } from './metricBaselineTracker';
 import { ANALYTICAL_DEFENSE_PHRASES } from './sycophancyGovernor';
+import { getSprtThresholdOverrides } from './sprtThresholdConfig';
 
 export type TopicDomainType =
   | 'deterministic_code'
@@ -196,6 +197,11 @@ export interface EvaluateSprtOptions {
   topicText?: string;
   topicProfile?: Partial<TopicDomainProfile>;
   scoreHistory?: number[];
+  /**
+   * 离线回放专用：忽略 `sprtThresholdConfig` 中的外置阈值，完全以显式入参复现历史决策。
+   * 真实流量决策链路不得设置此字段。
+   */
+  ignoreExternalThresholds?: boolean;
 }
 
 /**
@@ -221,23 +227,51 @@ export function stepSprtGovernor(options: EvaluateSprtOptions): SprtGovernorStat
     scoreHistory,
   } = options;
 
+  // 外置阈值（真实流量标定结果）：显式入参 > 外置配置 > 历史拟合 > 领域默认。
+  // 离线回放会显式忽略外置配置，以保证历史决策可确定性复现。
+  const external = options.ignoreExternalThresholds ? {} : getSprtThresholdOverrides();
+
   const currentRound = Math.max(1, rawRound);
-  const maxRounds = Math.max(currentRound, rawMaxRounds ?? 4);
+  const maxRounds = Math.max(currentRound, rawMaxRounds ?? external.maxRounds ?? 4);
 
   // 1. 领域画像与自适应校准拟合
-  const profile = inferTopicDomainProfile(topicText, overrideProfile);
+  const externalProfileOverride: Partial<TopicDomainProfile> = {};
+  if (external.neutralThreshold !== undefined) {
+    externalProfileOverride.neutralThreshold = external.neutralThreshold;
+  }
+  if (external.minExplorationRounds !== undefined) {
+    externalProfileOverride.minExplorationRounds = external.minExplorationRounds;
+  }
+  if (external.funnelDecayRate !== undefined) {
+    externalProfileOverride.funnelDecayRate = external.funnelDecayRate;
+  }
+  if (external.groundingWeightWhenPresent !== undefined) {
+    externalProfileOverride.groundingWeightWhenPresent = external.groundingWeightWhenPresent;
+  }
+  const profile = inferTopicDomainProfile(topicText, {
+    ...externalProfileOverride,
+    ...overrideProfile,
+  });
   const fitted = fitSprtCalibrationParams(undefined, {
     topicText,
     domainType: profile.domainType,
   });
 
-  const alpha = explicitAlpha ?? fitted.alpha;
-  const beta = explicitBeta ?? fitted.beta;
-  const baseSensitivity = explicitSensitivity ?? fitted.sensitivity ?? profile.baseSensitivity;
-  const neutralThreshold = fitted.neutralThreshold ?? profile.neutralThreshold;
-  const minExplorationRounds = fitted.minExplorationRounds ?? profile.minExplorationRounds;
-  const funnelDecayRate = fitted.funnelDecayRate ?? profile.funnelDecayRate;
+  const alpha = explicitAlpha ?? external.alpha ?? fitted.alpha;
+  const beta = explicitBeta ?? external.beta ?? fitted.beta;
+  const baseSensitivity =
+    explicitSensitivity ?? external.sensitivity ?? fitted.sensitivity ?? profile.baseSensitivity;
+  // 领域画像（含外置覆盖）优先于拟合默认值：拟合只负责 alpha/beta/sensitivity 的自适应。
+  const neutralThreshold = profile.neutralThreshold;
+  const minExplorationRounds = profile.minExplorationRounds;
+  const funnelDecayRate = profile.funnelDecayRate;
   const calibrationStatus = explicitCalibrationStatus ?? fitted.calibrationStatus;
+  const thresholdSource: 'default' | 'fitted' | 'external' =
+    Object.keys(external).length > 0
+      ? 'external'
+      : fitted.calibrationStatus === 'calibrated'
+        ? 'fitted'
+        : 'default';
 
   // 2. 联合观测得分与权重重分配（当非代码/开放议题无物理接地证据时，平滑转移给语义对齐分）
   const rawScore = modernScore ?? legacyScore ?? 0.50;
@@ -343,6 +377,12 @@ export function stepSprtGovernor(options: EvaluateSprtOptions): SprtGovernorStat
       neutralThreshold,
       sensitivity: effectiveSensitivity,
       isFunnelActive: upperThresholdA < baseUpperA,
+      alpha,
+      beta,
+      minExplorationRounds,
+      funnelDecayRate,
+      groundingWeightWhenPresent: profile.groundingWeightWhenPresent,
+      thresholdSource,
     },
   };
 }
