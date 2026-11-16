@@ -37,6 +37,7 @@
     "test:acp-config-options": "tsx src/services/test-acp-config-options.ts",
     "test:sprt-calibration": "tsx src/services/cogno/test-sprt-calibration.ts",
     "test:swarm": "npx tsx src/services/test-normal-mode-swarm-orchestration.ts",
+    "test:team-channel": "tsx src/services/test-team-channel-launch.ts",
     "mock:remote": "node scripts/mock-remote-acp-agent.mjs 9001",
     "sprt:replay": "tsx scripts/replay-sprt-traces.ts"
   },

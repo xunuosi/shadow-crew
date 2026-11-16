@@ -846,7 +846,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     <button
                       onClick={() => onLaunchTeamThread(team)}
                       className="text-[10px] text-accent-text bg-accent hover:bg-accent-hover px-2.5 py-0.5 rounded-lg font-medium transition-all shrink-0 cursor-pointer flex items-center gap-1 shadow-xs"
-                      title="以此编队在当前频道发起新议题"
+                      title="为该编队建立专属频道并开聊（不影响既有频道）"
                     >
                       <Zap className="w-2.5 h-2.5" />
                       <span>开聊</span>

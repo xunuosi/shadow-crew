@@ -50,6 +50,11 @@ import {
   getDefaultTopicCwd,
   normalizeDuelRoles,
 } from '../services/workspaceBindings';
+import {
+  buildTeamChannel,
+  buildTeamChannelThread,
+  getTeamChannelId,
+} from '../services/teamChannelLaunch';
 import { isAgentOffline } from '../utils/agentRuntime';
 
 /**
@@ -345,41 +350,83 @@ export function useChannelAndTopicCrud(params: UseChannelAndTopicCrudParams) {
     setMainView('chat');
   };
 
-  // Handle Quick Launch Team Thread from Agent Dashboard
-  const handleLaunchTeamThread = (team: AgentTeam) => {
-    const threadId = `thread-team-${team.id}-${Date.now()}`;
-    const newThread: Thread = {
-      id: threadId,
-      channelId: activeChannel?.id || 'channel-default',
-      channelName: activeChannel?.name || team.name,
-      type: 'thread',
-      title: `[${team.name}] 协同攻坚议题`,
-      authorId: 'user-norris',
-      authorName: 'Norris_M5Pro',
-      authorAvatar: '👨‍💻',
-      authorHandle: '@Norris_M5Pro',
-      timestamp: 'Just now',
-      preview: `已由编队【${team.name}】接管此议题。包含成员：${team.agentIds.map((id) => agents.find((a) => a.id === id)?.name).filter(Boolean).join('、')}。`,
-      activeAgentIds: team.agentIds,
-    };
-    setThreads((prev) => [newThread, ...prev]);
-    setActiveThreadId(threadId);
-    setMessages((prev) => ({
-      ...prev,
-      [threadId]: [
-        {
-          id: `msg-${Date.now()}`,
-          threadId,
-          authorId: 'user-norris',
-          authorName: 'Norris_M5Pro',
-          authorHandle: '@Norris_M5Pro',
-          authorAvatar: '👨‍💻',
-          isAgent: false,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: `已召唤编队 **${team.icon || '⚡'} ${team.name}**！\n编队职责：${team.description}\n协同成员：${team.agentIds.map((id) => agents.find((a) => a.id === id)?.handle).filter(Boolean).join(' ')} 已就位。随时可以开启多 Agent 联合作业。`,
-        },
-      ],
-    }));
+  // Handle Quick Launch Team from Agent Dashboard
+  // 编队「开聊」建立/聚焦该编队的专属频道，绝不改写当前频道的既有线程与消息历史。
+  const handleLaunchTeamThread = async (team: AgentTeam) => {
+    const teamChannelId = getTeamChannelId(team.id);
+    const existingChannel = channels.find(
+      (channel) => channel.id === teamChannelId && channel.status !== 'deleted'
+    );
+
+    if (existingChannel) {
+      const existingThread = threads.find(
+        (thread) => thread.channelId === existingChannel.id && thread.type !== 'dm'
+      );
+      setActiveChannelId(existingChannel.id);
+      if (existingThread) {
+        setActiveThreadId(existingThread.id);
+      } else {
+        const now = Date.now();
+        const { thread, greeting } = buildTeamChannelThread({
+          team,
+          channel: existingChannel,
+          agents,
+          now,
+          currentUserId,
+        });
+        setThreads((prev) => [thread, ...prev.filter((item) => item.id !== thread.id)]);
+        setMessages((prev) => ({
+          ...prev,
+          [thread.id]: prev[thread.id]?.length ? prev[thread.id] : [greeting],
+        }));
+        setActiveThreadId(thread.id);
+      }
+      setActiveTopicId(null);
+      setQuotingMessage(null);
+      setMainView('chat');
+      return;
+    }
+
+    // 工作区继承当前频道：编队频道只隔离频道身份与线程，物理工作目录仍落在用户既有工程内，
+    // 避免把编队频道强行落到 ~/.shadow-crew 默认目录（受限环境下会被拒绝创建）。
+    const baseChannel =
+      activeChannel ?? channels.find((channel) => channel.status !== 'deleted');
+    const activeBinding = baseChannel
+      ? findWorkspaceBinding(workspaceBindings, 'channel', baseChannel.id)
+      : undefined;
+    const baseCwd = activeBinding?.cwd ?? getDefaultChannelCwd(teamChannelId);
+    const baseMode = activeBinding?.mode ?? 'default';
+    const resolvedCwd = await resolveWorkspaceCwd(baseCwd, baseMode === 'default');
+    const now = Date.now();
+    const { channel, binding } = buildTeamChannel({
+      team,
+      agents,
+      currentUserId,
+      cwd: resolvedCwd,
+      mode: baseMode,
+      createdAt: now,
+    });
+    const { thread, greeting } = buildTeamChannelThread({
+      team,
+      channel,
+      agents,
+      now,
+      currentUserId,
+    });
+
+    const nextBindings = [
+      ...workspaceBindings.filter((item) => item.id !== binding.id),
+      binding,
+    ];
+    await saveWorkspaceBindingsToDb(nextBindings);
+    setWorkspaceBindings(nextBindings);
+    setChannels((prev) => [...prev.filter((item) => item.id !== channel.id), channel]);
+    setThreads((prev) => [thread, ...prev.filter((item) => item.id !== thread.id)]);
+    setMessages((prev) => ({ ...prev, [thread.id]: [greeting] }));
+    setActiveChannelId(channel.id);
+    setActiveThreadId(thread.id);
+    setActiveTopicId(null);
+    setQuotingMessage(null);
     setMainView('chat');
   };
 
