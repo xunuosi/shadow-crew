@@ -3358,8 +3358,10 @@ impl RunningAgent {
         clear_generation: Option<u64>,
     ) {
         // 关键：若该 Agent 有 prompt 回合在途，绝不能在持有全局 manager 锁时长时间等待
-        // prompt_lock（单回合可长达 1800s），否则 start/stop、权限审批、状态轮询与退出清理都会被堵死。
+        // prompt_lock（单回合可长达 900s），否则 start/stop、权限审批、状态轮询与退出清理都会被堵死。
         // 这里只做不依赖管道空闲的即时清理；尽力而为的 session/close 仅在拿到锁时发送。
+        // 注：prompt 指令路径已由 acquire_prompt_lock 提供排队上限（默认 120s），
+        // 清理路径则保持非阻塞探测，避免长任务期间清理请求反向堵死全局管理器锁。
         let prompt_guard = self.prompt_lock.try_lock().ok();
 
         let removed_sessions = {
@@ -3814,6 +3816,33 @@ where
 }
 
 impl RunningAgent {
+    /// 获取同一 Agent 的指令串行锁（带排队上限）。
+    /// 目的：上一轮长任务尚未收敛时，新的指令不会静默排队到最大执行时限（默认 900s），
+    /// 而是在明确的等待窗口后返回可读错误，避免用户长时间干等却看不到任何进展。
+    async fn acquire_prompt_lock_with<'a>(
+        &'a self,
+        wait_secs: u64,
+        label: &str,
+    ) -> Result<tokio::sync::MutexGuard<'a, ()>> {
+        match tokio::time::timeout(Duration::from_secs(wait_secs), self.prompt_lock.lock()).await {
+            Ok(guard) => Ok(guard),
+            Err(_) => anyhow::bail!(
+                "{} 排队等待 {}s 仍未获得执行权（该 Agent 上一条指令仍在执行），请稍后重试或在界面终止当前推演",
+                label,
+                wait_secs
+            ),
+        }
+    }
+
+    async fn acquire_prompt_lock(&self) -> Result<tokio::sync::MutexGuard<'_, ()>> {
+        let wait_secs = std::env::var("SHADOW_CREW_ACP_LOCK_WAIT_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(120)
+            .max(5);
+        self.acquire_prompt_lock_with(wait_secs, "该 Agent").await
+    }
+
     /// 预检并确保指定 Agent 在当前会话下拥有已建立或已恢复的 ACP sessionId (加锁保护)
     pub async fn ensure_session(
         &self,
@@ -3828,7 +3857,7 @@ impl RunningAgent {
         local_history_intact: Option<bool>,
         desired_model: Option<&str>,
     ) -> Result<EnsureSessionResult> {
-        let _prompt_guard = self.prompt_lock.lock().await;
+        let _prompt_guard = self.acquire_prompt_lock().await?;
         self.ensure_session_locked(
             agent_id,
             room_id,
@@ -4590,7 +4619,7 @@ impl RunningAgent {
         native_memory_auto_generate: Option<bool>,
         desired_model: Option<&str>,
     ) -> Result<serde_json::Value> {
-        let _prompt_guard = self.prompt_lock.lock().await;
+        let _prompt_guard = self.acquire_prompt_lock().await?;
 
         let ensure_res = self
             .ensure_session_locked(
@@ -4766,19 +4795,22 @@ impl RunningAgent {
             .as_millis() as u64;
         self.last_activity.store(prompt_start_ms, Ordering::Relaxed);
 
-        // 等待 Agent 响应 (对标 Buzz 架构: 动态空闲超时 300s~1500s + 最大硬上限 1800s)
+        // 等待 Agent 响应 (对标 Buzz 架构: 动态空闲超时 180s + 最大硬上限 900s)
+        // 默认值收敛说明：原默认 600s 空闲 / 1800s 硬上限意味着一次卡死要让用户干等 10~30 分钟，
+        // 简单问答场景几乎无法接受；超时后前端会按「已收敛」结束本轮，用户可重新发问，
+        // 需要超长推演时仍可通过 SHADOW_CREW_ACP_IDLE_TIMEOUT / SHADOW_CREW_ACP_MAX_DURATION 放大。
         let idle_timeout_secs = std::env::var("SHADOW_CREW_ACP_IDLE_TIMEOUT")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(600);
+            .unwrap_or(180);
         let max_duration_secs = std::env::var("SHADOW_CREW_ACP_MAX_DURATION")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(1800);
+            .unwrap_or(900);
         let permission_timeout_secs = std::env::var("SHADOW_CREW_ACP_PERMISSION_TIMEOUT")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(600);
+            .unwrap_or(300);
 
         let start_time = std::time::Instant::now();
         let idle_timeout = Duration::from_secs(idle_timeout_secs);

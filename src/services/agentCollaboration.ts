@@ -83,6 +83,8 @@ export interface CollaborationCascade {
   agentCallCounts: Record<string, number>;
   isAborted: boolean;
   terminationReason?: 'max_depth_reached' | 'loop_detected' | 'user_abort' | 'none';
+  /** 链路级调用预算：防止多 Agent 长链路在跳数内无上限烧 token（缺省时退化为仅按跳数兜底） */
+  budget?: CollaborationCascadeBudget;
 }
 
 /**
@@ -303,6 +305,28 @@ export function checkLoopGuard(
       reason: `多智能体协同已达安全轮次兜底上限 (${cascade.maxDepth} 轮)，静默收敛`,
       isSilentEnd: true,
     };
+  }
+
+  // 1.05 链路级总额度兜底：模型调用次数或提示词字符总量触及上限时收敛。
+  // 与深度/频次兜底不同，预算耗尽是「用户可感知的资源限制」，必须显式说明由来与续跑方式，
+  // 否则看起来像讨论莫名停住（静默收敛只用于异常失控场景）。
+  if (cascade.budget) {
+    if (cascade.budget.usedModelCalls >= cascade.budget.maxModelCalls) {
+      return {
+        allowed: false,
+        reason: `本轮协同已达到模型调用预算上限 (${cascade.budget.maxModelCalls} 次)，已按当前结论收敛；如需继续，请直接 @ 目标 Agent 追加一轮`,
+        isSilentEnd: false,
+      };
+    }
+    if (cascade.budget.usedPromptChars >= cascade.budget.maxPromptChars) {
+      return {
+        allowed: false,
+        reason: `本轮协同上下文投递量已达预算上限 (${Math.round(
+          cascade.budget.maxPromptChars / 1000
+        )}k 字符)，已按当前结论收敛；如需继续，请直接 @ 目标 Agent 追加一轮`,
+        isSilentEnd: false,
+      };
+    }
   }
 
   // 1.1 Agent 级轮次预算：用户在身份配置中为该 Agent 设定的最大参与轮次
@@ -897,9 +921,220 @@ ${requestSection}${peerList}`;
  */
 
 /**
- * 单次增量批次冲刷的最大事件数上限 (对标 Buzz queue.rs MAX_BATCH_EVENTS = 50)
+ * 单次增量批次冲刷的最大事件数上限。
+ * 24 条约等于一屏协同对话，足以覆盖上一跳全部并发产出，
+ * 又不会把数十条长回复整批塞进每个 Agent 的提示词（原 50 条在 4 Agent 频道下是 200 份长文输入）。
  */
-export const MAX_DELTA_BATCH_EVENTS = 50;
+export const MAX_DELTA_BATCH_EVENTS = 24;
+
+/** 单条增量消息注入提示词时的最大字符数（超出折叠首尾），避免每跳重复灌入全量长文 */
+export const MAX_DELTA_ENTRY_CHARS = 1200;
+
+/** 用户未显式点名时，单轮最多唤醒的 Agent 数 */
+export const DEFAULT_MAX_UNMENTIONED_RESPONDERS = 3;
+
+/**
+ * Turn Barrier 汇合硬超时（毫秒）：防止个别 Agent 无响应导致整条级联永久停摆。
+ * 取 5 分钟是为了兜住「卡死」而不是误伤「慢」：单 Agent 复杂推演常需 2~4 分钟，
+ * 而 Rust 侧单次请求硬上限为 900s，两层阈值叠加后最坏等待仍在可接受范围。
+ */
+export const DEFAULT_TURN_BARRIER_TIMEOUT_MS = 300_000;
+
+/** 读取 Vite 环境变量中的正整数，非法值回落到默认值 */
+function readEnvPositiveInt(name: string, fallback: number): number {
+  try {
+    const env = (import.meta as any)?.env as Record<string, unknown> | undefined;
+    const parsed = Number.parseInt(String(env?.[name] ?? ''), 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  } catch {
+    // 非 Vite 运行环境（如纯 Node 单测）下 import.meta.env 不可用，直接回落默认值
+  }
+  return fallback;
+}
+
+export function resolveMaxUnmentionedResponders(): number {
+  return Math.max(
+    1,
+    readEnvPositiveInt('VITE_MAX_UNMENTIONED_RESPONDERS', DEFAULT_MAX_UNMENTIONED_RESPONDERS)
+  );
+}
+
+export function resolveTurnBarrierTimeoutMs(): number {
+  return Math.max(
+    5_000,
+    readEnvPositiveInt('VITE_TURN_BARRIER_TIMEOUT_MS', DEFAULT_TURN_BARRIER_TIMEOUT_MS)
+  );
+}
+
+/** 折叠超长文本，保留开头背景与结尾结论，中段以省略标记占位 */
+export function foldLongTextForPrompt(text: string, maxChars: number = MAX_DELTA_ENTRY_CHARS): string {
+  const value = text || '';
+  // 含代码块 / 补丁 / 堆栈的消息是「结论载体」，折叠中段会直接改变下游 Agent 的判断依据，
+  // 因此对这类内容放高上限（仍设上限，避免整份文件被逐跳重发）。
+  const hasCodePayload = /```|^\+\+\+ |^--- /m.test(value);
+  const effectiveMax = hasCodePayload ? Math.max(maxChars, 4_000) : maxChars;
+  if (value.length <= effectiveMax) return value;
+  const headLen = Math.floor(effectiveMax * 0.6);
+  const tailLen = Math.max(0, effectiveMax - headLen - 24);
+  const head = value.slice(0, headLen);
+  const tail = tailLen > 0 ? value.slice(value.length - tailLen) : '';
+  const omitted = value.length - head.length - tail.length;
+  return `${head}\n…（此处折叠 ${omitted} 字，避免重复占用上下文）…\n${tail}`;
+}
+
+/**
+ * 极短社交/确认类输入识别：这类输入不需要唤起全员推演，只需最近活跃的一位成员回应。
+ */
+export function isTrivialSocialTurn(content: string): boolean {
+  const text = (content || '').replace(/\s+/g, '').toLowerCase();
+  // 空正文不等于寒暄：通常是「只发附件/图片」的消息，此时收敛到单一成员会漏掉
+  // 多角色视角（如设计+实现同时评估截图），因此按「非寒暄」处理。
+  if (!text) return false;
+  if (text.length > 12) return false;
+  return /^(ok|okay|好|好的|好滴|行|可以|嗯|嗯嗯|收到|谢谢|多谢|辛苦了|继续|go|yes|no|1)$/.test(text);
+}
+
+/** 轻量关键词切分：中文按二元组、英文/数字按词，用于零依赖相关性打分 */
+function tokenizeForRelevance(content: string): string[] {
+  const text = (content || '').toLowerCase();
+  const asciiWords = text.match(/[a-z0-9_\-]{2,}/g) || [];
+  const cjkChars = text.replace(/[^\u4e00-\u9fa5]/g, '');
+  const bigrams: string[] = [];
+  for (let i = 0; i + 1 < cjkChars.length; i += 1) {
+    bigrams.push(cjkChars.slice(i, i + 2));
+  }
+  return Array.from(new Set([...asciiWords, ...bigrams]));
+}
+
+export interface SelectRespondersOptions {
+  candidateAgents: Agent[];
+  userContent?: string;
+  recentMessages?: Message[];
+  maxResponders?: number;
+}
+
+/**
+ * 未 @ 点名时的响应者启发式选择（零依赖打分）：
+ * 1. 极短确认/寒暄只唤醒最近活跃的一位，避免一句「好」引发全员 N 倍模型调用；
+ * 2. 候选数不超过上限时保持全量，维持小群自然讨论体验；
+ * 3. 超出上限时按「名称/角色/描述关键词命中 + 近期活跃度」收敛，杜绝频道规模直接放大 token 成本。
+ */
+export function selectRespondersForUnmentionedTurn(options: SelectRespondersOptions): Agent[] {
+  const { candidateAgents, userContent = '', recentMessages = [], maxResponders } = options;
+  if (candidateAgents.length === 0) return [];
+
+  const recentAgentOrder: string[] = [];
+  for (let i = recentMessages.length - 1; i >= 0 && recentAgentOrder.length < 8; i -= 1) {
+    const authorId = recentMessages[i]?.authorId;
+    if (authorId && !recentAgentOrder.includes(authorId)) recentAgentOrder.push(authorId);
+  }
+
+  const mostRecentlyActive =
+    candidateAgents.find((a) => a.id === recentAgentOrder[0]) || candidateAgents[0];
+
+  if (isTrivialSocialTurn(userContent)) {
+    return mostRecentlyActive ? [mostRecentlyActive] : [];
+  }
+
+  const limit = Math.max(1, maxResponders || resolveMaxUnmentionedResponders());
+  if (candidateAgents.length <= limit) return candidateAgents;
+
+  const keywords = tokenizeForRelevance(userContent);
+  const scored = candidateAgents.map((agent) => {
+    const haystack = `${agent.name || ''} ${agent.role || ''} ${agent.description || ''}`.toLowerCase();
+    let score = 0;
+    keywords.forEach((kw) => {
+      if (kw && haystack.includes(kw)) score += 3;
+    });
+    const recentIdx = recentAgentOrder.indexOf(agent.id);
+    if (recentIdx === 0) score += 3;
+    else if (recentIdx > 0) score += Math.max(1, 3 - recentIdx);
+    return { agent, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+  const selected = scored.slice(0, limit).map((item) => item.agent);
+  if (mostRecentlyActive && !selected.some((a) => a.id === mostRecentlyActive.id)) {
+    selected.splice(Math.max(0, selected.length - 1), 1, mostRecentlyActive);
+  }
+  return selected;
+}
+
+/**
+ * Turn Barrier 硬超时汇合：所有任务在时限内完成取真实结果，超时任务标记为超时并放弃等待。
+ * 保证「个别 Agent 卡死」不会让整条协同链永久停在推演中。
+ */
+export interface DeadlineSettleResult<T> {
+  results: PromiseSettledResult<T>[];
+  timedOut: number;
+  /** 超时任务在入参数组中的下标，供调用方回收对应 Agent 的执行态（否则界面会一直停在「推演中」） */
+  timedOutIndexes: number[];
+}
+
+export async function settleWithDeadline<T>(
+  tasks: Promise<T>[],
+  timeoutMs: number = resolveTurnBarrierTimeoutMs()
+): Promise<DeadlineSettleResult<T>> {
+  if (tasks.length === 0) return { results: [], timedOut: 0, timedOutIndexes: [] };
+  const timedOutIndexes: number[] = [];
+  const guarded: Promise<T>[] = tasks.map((task, index) => {
+    let settled = false;
+    return Promise.race<T>([
+      // 用 once 标记包一层：任务在时限内真正结束时不记超时
+      Promise.resolve(task).finally(() => {
+        settled = true;
+      }),
+      new Promise<T>((_, reject) => {
+        const timer = setTimeout(() => {
+          if (!settled) timedOutIndexes.push(index);
+          reject(new Error(`turn-barrier-timeout:${timeoutMs}ms`));
+        }, timeoutMs);
+        Promise.resolve(task)
+          .finally(() => clearTimeout(timer))
+          .catch(() => undefined);
+      }),
+    ]);
+  });
+  const results = await Promise.allSettled(guarded);
+  return { results, timedOut: timedOutIndexes.length, timedOutIndexes };
+}
+
+/** 链路级调用预算：给多 Agent 长链路加总量闸门，避免跳数内无上限烧 token */
+export interface CollaborationCascadeBudget {
+  maxModelCalls: number;
+  usedModelCalls: number;
+  maxPromptChars: number;
+  usedPromptChars: number;
+}
+
+/**
+ * 按参与规模与最大跳数推导链路预算。
+ * 取值依据：正常讨论 = 每跳 1~2 个参与者，故按「参与者 × 有效跳数」给量，单人上限仍受既有 8 次兜底约束；
+ * 2 人议题约 16 次调用、4 人频道约 32 次，复杂任务可跑完整轮次，异常放大则被总额度截住。
+ */
+export function createCascadeBudget(agentCount: number, maxDepth: number): CollaborationCascadeBudget {
+  const participants = Math.max(1, agentCount);
+  const effectiveHops = Math.max(1, Math.min(maxDepth, 8));
+  return {
+    maxModelCalls: Math.max(8, Math.min(40, participants * effectiveHops)),
+    usedModelCalls: 0,
+    maxPromptChars: Math.max(240_000, Math.min(960_000, participants * 80_000)),
+    usedPromptChars: 0,
+  };
+}
+
+export function consumeCascadeBudget(
+  cascade: CollaborationCascade | undefined | null,
+  modelCalls: number,
+  promptChars: number
+): void {
+  // 级联可能在派发途中被回收（终止/新建同名 cascadeId），此处必须容忍空值，
+  // 否则一次记账就会把整条派发链路抛成 TypeError
+  const budget = cascade?.budget;
+  if (!budget) return;
+  budget.usedModelCalls += Math.max(0, modelCalls);
+  budget.usedPromptChars += Math.max(0, promptChars);
+}
 
 /**
  * 转义嵌入在语义标签内部的非受信文本，防止消息正文中的 `</delta-events>` 或 `<system>` 破坏提示词语义边界
@@ -954,6 +1189,12 @@ export interface DeltaBatchResult {
   latestWatermarkMessageId?: string;
   /** 该 Agent 在当前会话 Scope 是否已完成首次冷启动（存在历史水位线即为热会话） */
   isWarmSession: boolean;
+  /**
+   * 因超出单批上限而被丢弃的更早未读消息条数。
+   * 该值必须透传到提示词里，否则 Agent 会在「看起来只聊了几句」的错觉下回答，
+   * 用户也无法判断结论是否建立在不完整上下文上。
+   */
+  droppedCount?: number;
 }
 
 /**
@@ -1109,6 +1350,7 @@ export function extractUnreadDeltaMessages(options: {
     deltaMessages: boundedDelta,
     latestWatermarkMessageId,
     isWarmSession,
+    droppedCount: filteredDelta.length - boundedDelta.length,
   };
 }
 
@@ -1125,6 +1367,8 @@ export interface BuildNormalModeTurnPromptOptions {
   topic?: TopicPromptContext;
   isDm?: boolean;
   isParallelFirstTurn?: boolean;
+  /** 上游 extractUnreadDeltaMessages 因批次上限丢弃的更早未读消息条数 */
+  droppedDeltaCount?: number;
 }
 
 /**
@@ -1134,7 +1378,9 @@ function formatDeltaEntryLine(entry: RoomTranscriptEntry): string {
   const handlePart = entry.authorHandle ? ` (${entry.authorHandle})` : '';
   const roleTag = entry.isAgent ? 'Agent' : 'User';
   const timePart = entry.timestamp ? ` @ ${entry.timestamp}` : '';
-  return `[${roleTag}: ${entry.authorName}${handlePart}${timePart}]:\n${escapeSemanticText(entry.content.trim())}`;
+  // 超长回复折叠首尾：每跳都整段重发长文是多 Agent 场景最大的隐性 token 开销
+  const body = foldLongTextForPrompt(escapeSemanticText((entry.content || '').trim()));
+  return `[${roleTag}: ${entry.authorName}${handlePart}${timePart}]:\n${body}`;
 }
 
 /**
@@ -1163,15 +1409,25 @@ export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOpti
     topic,
     isDm = false,
     isParallelFirstTurn = false,
+    droppedDeltaCount = 0,
   } = options;
+
+  // 增量被批次上限截断时，必须在正文里显式交代，避免 Agent 把残缺上下文当作全部信息
+  const droppedNote =
+    droppedDeltaCount > 0
+      ? `[提示] 更早的 ${droppedDeltaCount} 条未读消息因批次上限未随本次投递携带；若结论依赖它们，请在回复中说明需要补读。`
+      : '';
 
   // 1. 私聊 (DM) 极简直通：若为热会话且存在多条未读增量则包裹 delta-events，否则直传最新消息
   if (isDm) {
     if (isWarmSession && deltaMessages.length > 1) {
-      const body = deltaMessages.map(formatDeltaEntryLine).join('\n\n');
+      const body = [droppedNote, deltaMessages.map(formatDeltaEntryLine).join('\n\n')]
+        .filter(Boolean)
+        .join('\n\n');
       return wrapSemanticSection('delta-events', body, {
         scope: roomId,
         count: deltaMessages.length,
+        dropped: droppedDeltaCount > 0 ? droppedDeltaCount : undefined,
       });
     }
     return triggerContent || deltaMessages[deltaMessages.length - 1]?.content || '';
@@ -1209,11 +1465,14 @@ export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOpti
     ? [...deltaMessages, fallbackTriggerEntry]
     : deltaMessages;
 
-  const deltaBody = effectiveEntries.map(formatDeltaEntryLine).join('\n\n');
+  const deltaBody = [droppedNote, effectiveEntries.map(formatDeltaEntryLine).join('\n\n')]
+    .filter(Boolean)
+    .join('\n\n');
   const deltaSection = wrapSemanticSection('delta-events', deltaBody, {
     scope: roomId,
     hop,
     count: effectiveEntries.length,
+    dropped: droppedDeltaCount > 0 ? droppedDeltaCount : undefined,
   });
 
   // 2. 热会话 (Warm Session)：仅投递水位线之后的新增消息批次 (<delta-events>) + 单行收敛指引

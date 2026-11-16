@@ -1231,9 +1231,11 @@ export async function sendPromptToRemoteAcpWebSocket(
   return new Promise((resolve) => {
     let resolved = false;
     let ws: WebSocket | null = null;
-    // 对标 Buzz 架构: 动态空闲心跳超时 (每次收到流式数据/心跳自动续期 300s，上限 1800s)
-    const IDLE_TIMEOUT_MS = 300_000;
-    const MAX_DURATION_MS = 1800_000;
+    // 动态空闲心跳超时：每次收到流式数据/心跳自动续期，空闲 180s 判死、硬上限 900s
+    // 与 Rust 侧默认值保持一致：空闲 180s、硬上限 900s。
+    // 两端口径不一致时，用户会在前端继续等一个后端早已判死的请求。
+    const IDLE_TIMEOUT_MS = 180_000;
+    const MAX_DURATION_MS = 900_000;
     let idleTimer: NodeJS.Timeout | null = null;
     let maxTimer: NodeJS.Timeout | null = null;
 
