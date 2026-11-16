@@ -1342,103 +1342,15 @@ table.method .req.b { color: var(--accent); }
       <div class="ctrl-mini reveal"><div class="t"><span class="n">07</span>安全隔离</div><div class="d">CWD 绑定 + 反向权限代理 + Fail-Closed；越界、超时、选项不全一律拒绝。</div></div>
     </div>
 
-    <p class="small mt-12 reveal">ACP 核心只有 <b style="color:var(--fg)">stdio + JSON-RPC</b>；远程 WebSocket、心跳、<span class="mono">nativeMemory</span> 是宿主扩展。上面四块，是多 Agent 协作的宿主增量。</p>
+    <p class="small mt-12 reveal">ACP 核心只有 <b style="color:var(--fg)">stdio + JSON-RPC</b>；远程 WebSocket、心跳、<span class="mono">nativeMemory</span> 是宿主扩展。上面这些控制，是多 Agent 协作的宿主增量。</p>
   </div>
 </section>
 
 <!-- 07 ------------------------------------------------------------ -->
-<section class="slide" data-no="07" data-section="ACP · 协议" data-title="CWD 不可变约束"
-  data-notes="这页是很多多 Agent 系统的隐雷。并发任务共享工作区，路径一旦漂移，就是跨项目误写。ACP 把 session 与 CWD 物理绑定，宿主再叠加路径校验与符号链接防护，才谈得上并发安全。">
-  <div class="slide-head">
-    <div class="eyebrow reveal">06 / 协议</div>
-    <h2 class="reveal">路径不是参数，是契约</h2>
-    <p class="lede reveal">会话建立即锁定 CWD。多任务并发时，任何一次路径漂移都是生产事故的第一张多米诺。</p>
-  </div>
-  <div class="slide-body">
-    <div class="grid" style="grid-template-columns:1.25fr .75fr;gap:32px">
-      <div class="cwd-diagram reveal">
-        <div class="topic-node">
-          <span class="id">TOPIC-01</span>
-          <span class="path">/repo/payments</span>
-          <span class="lock">CWD LOCKED</span>
-        </div>
-        <div class="x-zone">
-          <span class="x-line"></span>
-          <span class="x">✕ 路径串扰 / 跨项目误写</span>
-          <span class="x-line"></span>
-        </div>
-        <div class="topic-node">
-          <span class="id">TOPIC-02</span>
-          <span class="path">/repo/risk-engine</span>
-          <span class="lock">CWD LOCKED</span>
-        </div>
-        <div class="divider" style="margin:22px 0"></div>
-        <div class="flex items-center between">
-          <span class="small">一个议题 · 一个物理目录 · 一个不可变会话</span>
-          <span class="badge ok"><span class="d"></span>Fail-Closed</span>
-        </div>
-      </div>
-
-      <div class="reveal">
-        <ul class="lst">
-          <li><b>建立即锁定</b><br><span class="mono" style="font-size:11.5px">session/new</span> 将任务上下文与操作系统路径绝对绑定</li>
-          <li><b>运行期不可变</b><br>中途切换目录的请求被拒绝，而不是“尽量兼容”</li>
-          <li><b>并发互不越界</b><br>多议题并行执行时，文件写入各归其位</li>
-          <li><b>宿主二次校验</b><br>路径白名单、符号链接与 TOCTOU 防护叠加在协议之上</li>
-        </ul>
-        <div class="quote mt-24">Agent 可以很自由，但它的世界必须有边界。</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- 08 ------------------------------------------------------------ -->
-<section class="slide" data-no="08" data-section="ACP · 协议" data-title="反向权限代理中心"
-  data-notes="讲清“反向”两个字：不是宿主去问 Agent 能不能做，而是 Agent 在真正动手前，必须回头问宿主。归一化成六类能力后，策略可以统一，审计可以统一，授权范围也可以精确到议题。最后落一句 Fail-Closed。">
-  <div class="slide-head">
-    <div class="eyebrow reveal">07 / 协议</div>
-    <h2 class="reveal">把危险操作关进确定性的笼子</h2>
-    <p class="lede reveal">Agent 动手之前，必须回头问一次宿主。拦截点在 Rust，不在提示词。</p>
-  </div>
-  <div class="slide-body">
-    <div class="grid" style="grid-template-columns:1.15fr .85fr;gap:32px">
-      <div class="steps reveal">
-        <div class="step"><span class="sn">1</span><span><b>Agent 发起敏感操作</b> · 读写文件、执行命令、访问网络</span><span class="r">tool_call</span></div>
-        <div class="step"><span class="sn">2</span><span><b>宿主拦截</b> · 解析工具调用的 <span class="mono">kind / name</span></span><span class="r">request_permission</span></div>
-        <div class="step"><span class="sn">3</span><span><b>归一化 6 大能力面（Shadow Crew）</b> · 把五花八门的工具名收敛成稳定能力面</span><span class="r">classify</span></div>
-        <div class="step"><span class="sn">4</span><span><b>Rust 策略判定 + 人工审批</b> · 工作区白名单、越界路径、授权范围</span><span class="r">policy</span></div>
-        <div class="step"><span class="sn">5</span><span><b>放行，或 Fail-Closed</b> · 超时、越界、未知能力一律拒绝</span><span class="r">decision</span></div>
-      </div>
-
-      <div class="reveal">
-        <div class="small" style="margin-bottom:10px">六类能力面（Shadow Crew 映射）</div>
-        <div class="flex wrap gap-8">
-          <span class="chip mono">fs.read</span><span class="chip mono">fs.write</span><span class="chip mono">fs.delete</span>
-          <span class="chip mono">shell.execute</span><span class="chip mono">network.access</span><span class="chip mono">other</span>
-        </div>
-        <div class="small" style="margin-top:8px">ACP 原始：<span class="mono">ToolKind</span> + <span class="mono">PermissionOption.kind</span></div>
-        <div class="small" style="margin:22px 0 10px">授权范围：一次 / 本会话 / 四种作用域</div>
-        <div class="flex wrap gap-8">
-          <span class="chip">Once</span><span class="chip">Session</span><span class="chip">Channel</span><span class="chip">Topic</span><span class="chip">DM</span><span class="chip">DM Topic</span>
-        </div>
-        <div class="card mt-24" style="border-color:var(--bad-line);background:var(--bad-soft)">
-          <div class="card-t" style="color:var(--bad)">越界写盘，永不持久放行</div>
-          <div class="card-d">授权只对声明范围生效；范围外请求不会因为“上次点过允许”而被静默继承。</div>
-        </div>
-      </div>
-    </div>
-    <div class="callout mt-20 reveal">
-      <span class="tag">原则</span>
-      <span>拦截点必须在宿主进程内。<b>提示词里的“请不要”不是安全边界</b>，只有确定性代码才是。</span>
-    </div>
-  </div>
-</section>
-
-<!-- 09 ------------------------------------------------------------ -->
-<section class="slide" data-no="09" data-section="ACP · 协议" data-title="从 V1 到 V2 的演进跃迁"
+<section class="slide" data-no="07" data-section="ACP · 协议" data-title="从 V1 到 V2 的演进跃迁"
   data-notes="V1 不是不能用，而是每个宿主都要自己兜底；V2 把 prompt 生命周期、能力模型、会话方法重写。重点不是字段，而是“谁在什么时候算完成”。V2 目前仍是 Draft，生产落地要双栈和特性开关。">
   <div class="slide-head">
-    <div class="eyebrow reveal">08 / 协议</div>
+    <div class="eyebrow reveal">06 / 协议</div>
     <h2 class="reveal">从 V1 到 V2：一次生命周期重构</h2>
     <p class="lede reveal">V2 不是版本号加一，而是把“回合”与“能力模型”重新定义了。注意：V2 目前仍是 Draft。</p>
   </div>
@@ -1482,11 +1394,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 10 ------------------------------------------------------------ -->
-<section class="slide" data-no="10" data-section="ACP · 协议" data-title="六维核心差异全景对照"
+<!-- 08 ------------------------------------------------------------ -->
+<section class="slide" data-no="08" data-section="ACP · 协议" data-title="六维核心差异全景对照"
   data-notes="挑三行：版本协商、prompt 生命周期、客户端工具。V2 的 prompt 响应不是完成，state_update 才是；fs/terminal 被移除，客户端工具改走 MCP；V2 仍是 Draft，不能当成已完全稳定的标准。">
   <div class="slide-head">
-    <div class="eyebrow reveal">09 / 协议</div>
+    <div class="eyebrow reveal">07 / 协议</div>
     <h2 class="reveal">六维差异，逐项对账</h2>
     <p class="lede reveal">同一份协议，两代生命周期；差异不在功能，而在“完成”与“能力”怎么定义。</p>
   </div>
@@ -1548,52 +1460,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 11 ------------------------------------------------------------ -->
-<section class="slide" data-no="11" data-section="ACP · 协议" data-title="原生记忆第一原则"
-  data-notes="这页有一个容易讲反的点：宿主不是记忆的所有者。端点原生记忆是长期事实源；宿主在 Prompt 里拼贴向量记忆，短期可能可用，长期容易与端点索引冲突。原则是 Native Memory First；端点没开就显式关闭，不越权注入。nativeMemory 是 Shadow Crew 扩展，不是 ACP 核心。">
-  <div class="slide-head">
-    <div class="eyebrow reveal">10 / 协议</div>
-    <h2 class="reveal">记忆归端点：原生优先，避免外部拼贴</h2>
-    <p class="lede reveal">ACP 不规定长期记忆；<b class="mono">agentCapabilities.nativeMemory</b> 是 Shadow Crew 的扩展能力。</p>
-  </div>
-  <div class="slide-body">
-    <div class="grid cols-2 gap-24">
-      <div class="cmp bad reveal">
-        <div class="cmp-h"><span class="mark">✕</span>宿主拼贴向量记忆</div>
-        <ul class="lst bad tight">
-          <li>把检索结果硬塞进每一次 Prompt</li>
-          <li>与端点自己的长期索引互相打架</li>
-          <li>上下文被污染，Token 白白消耗</li>
-          <li>换一个端点就全部重做</li>
-        </ul>
-        <div class="verdict">外部拼贴：短期可用，长期冲突</div>
-      </div>
-      <div class="cmp ok reveal">
-        <div class="cmp-h"><span class="mark">✓</span>Native Memory First</div>
-        <ul class="lst ok tight">
-          <li>端点声明 <b class="mono">nativeMemory</b>，宿主尊重其索引</li>
-          <li>未开启则启动注入 <b class="mono">--disable memories</b></li>
-          <li>宿主只做状态探测与策略引导</li>
-          <li>记忆随端点走，不越权、不污染</li>
-        </ul>
-        <div class="verdict">NATIVE MEMORY FIRST / 端点原生优先</div>
-      </div>
-    </div>
-
-    <div class="code mt-24 reveal"><span class="c">// Shadow Crew 扩展：握手时探测 nativeMemory（标准 ACP 无此字段）</span>
-<span class="k">agentCapabilities</span>.nativeMemory === <span class="n">true</span>  <span class="c">→ 尊重端点索引</span>
-<span class="k">agentCapabilities</span>.nativeMemory === <span class="n">false</span> <span class="c">→ spawn(--disable memories)，绝不越权</span></div>
-
-    <div class="flex items-center between mt-16 reveal"><span class="small">未声明时按 <b class="mono">unsupported</b> 处理，不猜测、不缓存。</span><span class="badge purple">Shadow Crew 扩展</span></div>
-    <div class="quote mt-16 reveal" style="font-size:16px">记忆的所有权属于端点，调度权属于宿主。</div>
-  </div>
-</section>
-
-<!-- 12 ------------------------------------------------------------ -->
-<section class="slide" data-no="12" data-section="ACP · 协议" data-title="双栈协商"
+<!-- 09 ------------------------------------------------------------ -->
+<section class="slide" data-no="09" data-section="ACP · 协议" data-title="双栈协商"
   data-notes="双栈不是同时说两套，而是一个连接选一个版本。Client 请求最新；Agent 选不超过请求的最高版本；无匹配返回 -32022；v1-only 端点返回 1，Client 用 v1 形状重来或重连。V2 还是 Draft，生产用特性开关。">
   <div class="slide-head">
-    <div class="eyebrow reveal">11 / 协议</div>
+    <div class="eyebrow reveal">08 / 协议</div>
     <h2 class="reveal">双栈：一个连接，只讲一个版本</h2>
     <p class="lede reveal">先请求 V2；Agent 返回它能支持的最高版本。不匹配就明确失败，不猜。</p>
   </div>
@@ -1643,184 +1514,57 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 13 ------------------------------------------------------------ -->
-<section class="slide" data-no="13" data-section="能力版图" data-title="五大核心系统全景"
-  data-notes="从协议切换到产品。强调这五层不是五个功能，而是五个控制面：连接、记忆、协同、决策、安全。它们共同长在 ACP 这条总线上，所以可以独立演进。">
+<!-- 10 ------------------------------------------------------------ -->
+<section class="slide" data-no="10" data-section="ACP · 协议" data-title="CWD 不可变约束"
+  data-notes="这页是很多多 Agent 系统的隐雷。并发任务共享工作区，路径一旦漂移，就是跨项目误写。ACP 把 session 与 CWD 物理绑定，宿主再叠加路径校验与符号链接防护，才谈得上并发安全。">
   <div class="slide-head">
-    <div class="eyebrow reveal">12 / 版图</div>
-    <h2 class="reveal">长在 ACP 总线上的五个控制面</h2>
-    <p class="lede reveal">连接、记忆、协同、决策、安全，五个面各自独立演进。</p>
+    <div class="eyebrow reveal">09 / 会话</div>
+    <h2 class="reveal">路径不是参数，是契约</h2>
+    <p class="lede reveal">会话建立即锁定 CWD。多任务并发时，任何一次路径漂移都是生产事故的第一张多米诺。</p>
   </div>
   <div class="slide-body">
-    <div class="arch">
-      <div class="arch-layer reveal">
-        <div class="lab">Experience</div>
-        <div class="endpoint-row">
-          <span class="chip">频道 / 私聊</span><span class="chip">标准议题</span><span class="chip">4+1 博弈议题</span><span class="chip">Living ADR 画布</span><span class="chip">权限中心</span>
+    <div class="grid" style="grid-template-columns:1.25fr .75fr;gap:32px">
+      <div class="cwd-diagram reveal">
+        <div class="topic-node">
+          <span class="id">TOPIC-01</span>
+          <span class="path">/repo/payments</span>
+          <span class="lock">CWD LOCKED</span>
         </div>
-      </div>
-
-      <div class="arch-layer reveal" style="align-items:start">
-        <div class="lab" style="padding-top:6px">Control<br>Planes</div>
-        <div class="sys-grid">
-          <div class="sys"><div class="no">01</div><b>双模直连</b><span>本地 stdio + 扩展 WS / Relay</span></div>
-          <div class="sys"><div class="no">02</div><b>记忆资产</b><span>.scpack 经验包 · 验签 · 只读卡带</span></div>
-          <div class="sys"><div class="no">03</div><b>敏捷协同</b><span>增量上下文 · Fan-out · Turn Barrier</span></div>
-          <div class="sys"><div class="no">04</div><b>博弈治理</b><span>4+1 · BWM 仲裁 · 少数派异议</span></div>
-          <div class="sys"><div class="no">05</div><b>权限中心</b><span>Rust 反向代理 · 作用域授权 · Fail-Closed</span></div>
+        <div class="x-zone">
+          <span class="x-line"></span>
+          <span class="x">✕ 路径串扰 / 跨项目误写</span>
+          <span class="x-line"></span>
         </div>
-      </div>
-
-      <div class="arch-layer bus reveal">
-        <div class="lab">ACP Bus</div>
-        <div class="flex items-center between wrap gap-12">
-          <span class="mono" style="font-size:12px;color:var(--accent)">JSON-RPC 2.0 · stdio（核心）+ WS（扩展）</span>
-          <div class="endpoint-row">
-            <span class="chip">Local Agent</span><span class="chip">Remote Agent</span><span class="chip">Relay Hub</span><span class="chip">ReadOnly Guard</span>
-          </div>
+        <div class="topic-node">
+          <span class="id">TOPIC-02</span>
+          <span class="path">/repo/risk-engine</span>
+          <span class="lock">CWD LOCKED</span>
         </div>
-      </div>
-    </div>
-
-    <div class="flex items-center between mt-24 reveal">
-      <span class="small">五个控制面共享同一条协议总线，因此可以 <b style="color:var(--fg)">独立演进、互不绑架</b>。</span>
-      <span class="badge ok">ACP 执行面 · stdio 核心 + WS 扩展</span>
-    </div>
-  </div>
-</section>
-
-<!-- 14 ------------------------------------------------------------ -->
-<section class="slide" data-no="14" data-section="能力版图" data-title="跨机互联：连接同事的 Agent"
-  data-notes="这一幕很有画面感：张工调优了半年的 Claude Code，你不需要复制，只需要连接。讲清三种网络路径，并强调远程默认 ReadOnly Guard；WebSocket / Relay 是 Shadow Crew 的扩展传输，不是 ACP 核心。连接的不是一个冷冰冰的端点，而是同事积累下来的工作方式。产品最期望的方向，是让同事不在场时，他的 Agent 和经验仍然在线——像一直在你身边。现场若网络受限，Demo 页有单机模拟方案。">
-  <div class="slide-head">
-    <div class="eyebrow reveal">13 / 版图</div>
-    <h2 class="reveal">把同事调优好的 Agent，接进同一个工作台</h2>
-    <p class="lede reveal">ACP 核心是 stdio；Shadow Crew 在其上扩展 WebSocket / Relay，让同事的 Agent 和你的 Agent 一起工作。</p>
-  </div>
-  <div class="slide-body">
-    <div class="topo">
-      <div class="topo-card host reveal">
-        <div class="h"><b>你的桌面</b><span class="badge ok">HOST</span></div>
-        <div class="sub">SHADOW CREW</div>
-        <div class="body">
-          <span class="chip mono">local · codex</span>
-          <span class="chip mono">session · /repo/payments</span>
-          <span class="chip mono">4+1 topic</span>
+        <div class="divider" style="margin:22px 0"></div>
+        <div class="flex items-center between">
+          <span class="small">一个议题 · 一个物理目录 · 一个不可变会话</span>
+          <span class="badge ok"><span class="d"></span>Fail-Closed</span>
         </div>
-      </div>
-
-      <div class="route reveal">
-        <span class="small" style="text-align:center;letter-spacing:.14em;color:var(--fg3)">跨机路径</span>
-        <span class="r">手机热点 172.20.10.x</span>
-        <span class="r">Tailscale 100.x.y.z</span>
-        <span class="r">Axum Relay Hub</span>
-        <span class="small" style="text-align:center">40ms RTT 探针</span>
-      </div>
-
-      <div class="reveal">
-        <div class="topo-card remote">
-          <div class="h"><b>张工 · 分布式锁专家</b><span class="badge info">REMOTE</span></div>
-          <div class="sub">ws://100.x.y.z · CLAUDE CODE</div>
-          <div class="mt-12"><span class="badge ok">ReadOnly Guard</span><span class="badge plain" style="margin-left:6px">流式</span></div>
-        </div>
-        <div class="topo-card remote mt-12">
-          <div class="h"><b>李工 · 内核调试</b><span class="badge info">REMOTE</span></div>
-          <div class="sub">wss://relay · CODEX</div>
-          <div class="mt-12"><span class="badge ok">ReadOnly Guard</span><span class="badge plain" style="margin-left:6px">读写隔离</span></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="grid cols-3 gap-16 mt-28 reveal">
-      <div class="callout"><span class="tag">NET</span><span><b>同一套协议</b><br>本地与远程共享 session 语义</span></div>
-      <div class="callout"><span class="tag">SAFE</span><span><b>默认只读</b><br>远程端点禁止写盘与执行</span></div>
-      <div class="callout"><span class="tag">ALWAYS-ON</span><span><b>同事不在场，经验仍在线</b><br>Agent 与经验包继续可用</span></div>
-    </div>
-  </div>
-</section>
-
-<!-- 15 ------------------------------------------------------------ -->
-<section class="slide" data-no="15" data-section="能力版图" data-title="团队记忆资产化 .scpack"
-  data-notes="把 .scpack 讲成“可以带走的经验包”。重点不是压缩，而是三件事：六源一致、密码学验签、硬脱敏。它实现的产品意图是：同事不在场，经验仍然在线；换机、换人、离职都不会让经验归零。再补一个工程细节：企业网关 503 时，Rollout 补偿提取能救回同事的经验。">
-  <div class="slide-head">
-    <div class="eyebrow reveal">14 / 版图</div>
-    <h2 class="reveal">把同事调优好的经验，装进一个文件</h2>
-    <p class="lede reveal">工业级完整性校验、规范化签名与硬脱敏。同事休假、换机、离职，经验仍然可检索、可连接。</p>
-  </div>
-  <div class="slide-body">
-    <div class="grid" style="grid-template-columns:1.05fr .95fr;gap:32px">
-      <div class="pkg reveal">
-        <div class="pkg-head">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style="fill:none;stroke:var(--accent);stroke-width:1.6"><path d="M4 7l8-4 8 4v10l-8 4-8-4Z M4 7l8 4 8-4 M12 11v10"/></svg>
-          <span class="fn">redis-redlock-expert.scpack</span>
-          <span class="badge ok">READ ONLY</span>
-        </div>
-        <div class="pkg-row"><span class="k">SNAPSHOT</span><span><b>6 源一致性快照</b> · 记忆 / 规约 / 工具 / 会话 / 项目 / 版本</span></div>
-        <div class="pkg-row"><span class="k">INTEGRITY</span><span><b>BLAKE3-256</b> · 256 位内容哈希，篡改即拒载</span></div>
-        <div class="pkg-row"><span class="k">SIGNATURE</span><span><b>RFC 8785 JCS</b> · 规范化 JSON 签名，跨实现可验证</span></div>
-        <div class="pkg-row"><span class="k">REDACTION</span><span><b>硬脱敏网关</b> · 剔除密钥、内网 Token，绝对路径相对化</span></div>
-        <div class="pkg-row"><span class="k">FALLBACK</span><span><b>503 补偿提取</b> · 企业网关失败时，从 Rollout 轨迹还原同事的经验</span></div>
-      </div>
-
-      <div class="reveal">
-        <div class="grid gap-12">
-          <div class="card"><div class="card-k">PORTABLE</div><div class="card-t">跨机分发</div><div class="card-d">一个文件带走领域记忆，新同事的 Agent 秒级获得同样的架构约束。</div></div>
-          <div class="card"><div class="card-k">VERIFIABLE</div><div class="card-t">防篡改</div><div class="card-d">哈希与签名双重校验，验签失败直接拒绝挂载。</div></div>
-          <div class="card"><div class="card-k">CONTAINED</div><div class="card-t">零污染</div><div class="card-d">以只读卡带方式外挂，绝不物理写入本地知识库。</div></div>
-        </div>
-        <div class="flex items-center gap-8 mt-20">
-          <span class="badge ok"><span class="d"></span>BLAKE3</span>
-          <span class="badge ok"><span class="d"></span>RFC 8785</span>
-          <span class="badge plain">AES 可选</span>
-          <span class="badge plain">脱敏审计</span>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- 16 ------------------------------------------------------------ -->
-<section class="slide" data-no="16" data-section="能力版图" data-title="零污染只读卡带"
-  data-notes="四级漏斗讲的是“什么时候把记忆送进上下文”。答案是：不到需要的时候不送。前置零 Token，按需 JIT 检索，动态注入当前阶段。这样既不污染本地知识库，也不把上下文塞爆。">
-  <div class="slide-head">
-    <div class="eyebrow reveal">15 / 版图</div>
-    <h2 class="reveal">四级漏斗，前置 0 Token</h2>
-    <p class="lede reveal">外部记忆只读挂载，按需检索，动态注入。绝不写进本地知识库。</p>
-  </div>
-  <div class="slide-body">
-    <div class="grid" style="grid-template-columns:1.1fr .9fr;gap:36px">
-      <div class="reveal">
-        <div class="funnel">
-          <div class="fn-row l1" style="width:100%"><span class="t">原始数据 · 6 源快照</span><span class="d">记忆 / 规约 / 会话<br>全量留存</span></div>
-          <div class="fn-row l2" style="width:84%"><span class="t">高密卡片</span><span class="d">结构化摘要<br>去噪压缩</span></div>
-          <div class="fn-row l3" style="width:64%"><span class="t">JIT 检索</span><span class="d">按当前阶段<br>按需召回</span></div>
-          <div class="fn-row l4" style="width:44%"><span class="t">动态注入</span><span class="d">只给当前<br>上下文</span></div>
-        </div>
-        <div class="fn-meta mt-12"><span>PRELOAD 0 TOKEN</span><span>ON-DEMAND ONLY</span></div>
       </div>
 
       <div class="reveal">
         <ul class="lst">
-          <li><b>只读挂载</b><br>卡带不落库，不参与本地索引重建</li>
-          <li><b>零前置消耗</b><br>未检索到的记忆不进入 Prompt</li>
-          <li><b>按阶段注入</b><br>博弈/执行阶段各自只取所需片段</li>
-          <li><b>可卸载</b><br>会话结束即失效，不留下隐性依赖</li>
+          <li><b>建立即锁定</b><br><span class="mono" style="font-size:11.5px">session/new</span> 将任务上下文与操作系统路径绝对绑定</li>
+          <li><b>运行期不可变</b><br>中途切换目录的请求被拒绝，而不是“尽量兼容”</li>
+          <li><b>并发互不越界</b><br>多议题并行执行时，文件写入各归其位</li>
+          <li><b>宿主二次校验</b><br>路径白名单、符号链接与 TOCTOU 防护叠加在协议之上</li>
         </ul>
-        <div class="card mt-24" style="border-color:var(--bad-line);background:var(--bad-soft)">
-          <div class="card-k" style="color:var(--bad)">ANTI-PATTERN</div>
-          <div class="card-t" style="color:var(--bad)">把外部记忆直接写进本地知识库</div>
-          <div class="card-d">污染不可逆、来源不可追溯、权限不可回收。零污染是硬约束，不是优化项。</div>
-        </div>
+        <div class="quote mt-24">Agent 可以很自由，但它的世界必须有边界。</div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- 17 ------------------------------------------------------------ -->
-<section class="slide" data-no="17" data-section="决策引擎" data-title="普通协同流与增量上下文"
+<!-- 11 ------------------------------------------------------------ -->
+<section class="slide" data-no="11" data-section="决策引擎" data-title="普通协同流与增量上下文"
   data-notes="这是多数日常场景。核心是两条：只发未读增量，保证 Prefix KV Cache 命中；并发用 Turn Barrier 收口，避免消息乱序。数字记住 51–80% 的 Token 节省和 100% 缓存命中。">
   <div class="slide-head">
-    <div class="eyebrow reveal">16 / 决策</div>
+    <div class="eyebrow reveal">10 / 上下文</div>
     <h2 class="reveal">日常协同：更少的 Token，更稳的并发</h2>
     <p class="lede reveal">对标 Buzz 的增量协同流：只发未读，只等本轮，不抢下一跳。</p>
   </div>
@@ -1843,11 +1587,53 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 18 ------------------------------------------------------------ -->
-<section class="slide" data-no="18" data-section="决策引擎" data-title="CognoNexus 4+1 博弈引擎"
+<!-- 12 ------------------------------------------------------------ -->
+<section class="slide" data-no="12" data-section="ACP · 协议" data-title="反向权限代理中心"
+  data-notes="讲清“反向”两个字：不是宿主去问 Agent 能不能做，而是 Agent 在真正动手前，必须回头问宿主。归一化成六类能力后，策略可以统一，审计可以统一，授权范围也可以精确到议题。最后落一句 Fail-Closed。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">11 / 安全</div>
+    <h2 class="reveal">把危险操作关进确定性的笼子</h2>
+    <p class="lede reveal">Agent 动手之前，必须回头问一次宿主。拦截点在 Rust，不在提示词。</p>
+  </div>
+  <div class="slide-body">
+    <div class="grid" style="grid-template-columns:1.15fr .85fr;gap:32px">
+      <div class="steps reveal">
+        <div class="step"><span class="sn">1</span><span><b>Agent 发起敏感操作</b> · 读写文件、执行命令、访问网络</span><span class="r">tool_call</span></div>
+        <div class="step"><span class="sn">2</span><span><b>宿主拦截</b> · 解析工具调用的 <span class="mono">kind / name</span></span><span class="r">request_permission</span></div>
+        <div class="step"><span class="sn">3</span><span><b>归一化 6 大能力面（Shadow Crew）</b> · 把五花八门的工具名收敛成稳定能力面</span><span class="r">classify</span></div>
+        <div class="step"><span class="sn">4</span><span><b>Rust 策略判定 + 人工审批</b> · 工作区白名单、越界路径、授权范围</span><span class="r">policy</span></div>
+        <div class="step"><span class="sn">5</span><span><b>放行，或 Fail-Closed</b> · 超时、越界、未知能力一律拒绝</span><span class="r">decision</span></div>
+      </div>
+
+      <div class="reveal">
+        <div class="small" style="margin-bottom:10px">六类能力面（Shadow Crew 映射）</div>
+        <div class="flex wrap gap-8">
+          <span class="chip mono">fs.read</span><span class="chip mono">fs.write</span><span class="chip mono">fs.delete</span>
+          <span class="chip mono">shell.execute</span><span class="chip mono">network.access</span><span class="chip mono">other</span>
+        </div>
+        <div class="small" style="margin-top:8px">ACP 原始：<span class="mono">ToolKind</span> + <span class="mono">PermissionOption.kind</span></div>
+        <div class="small" style="margin:22px 0 10px">授权范围：一次 / 本会话 / 四种作用域</div>
+        <div class="flex wrap gap-8">
+          <span class="chip">Once</span><span class="chip">Session</span><span class="chip">Channel</span><span class="chip">Topic</span><span class="chip">DM</span><span class="chip">DM Topic</span>
+        </div>
+        <div class="card mt-24" style="border-color:var(--bad-line);background:var(--bad-soft)">
+          <div class="card-t" style="color:var(--bad)">越界写盘，永不持久放行</div>
+          <div class="card-d">授权只对声明范围生效；范围外请求不会因为“上次点过允许”而被静默继承。</div>
+        </div>
+      </div>
+    </div>
+    <div class="callout mt-20 reveal">
+      <span class="tag">原则</span>
+      <span>拦截点必须在宿主进程内。<b>提示词里的“请不要”不是安全边界</b>，只有确定性代码才是。</span>
+    </div>
+  </div>
+</section>
+
+<!-- 13 ------------------------------------------------------------ -->
+<section class="slide" data-no="13" data-section="决策引擎" data-title="CognoNexus 4+1 博弈引擎"
   data-notes="这是全场的技术高潮。5 个角色不是 5 个 Agent 聊天，而是一个单向 FSM：每个阶段有契约、有产物、有门禁。红队要给出可证伪的反例，验证官要拿真实证据说话。多角色与任务拆解有论文依据，但结论有任务边界；详见附录 A7。强调 Human 仍在环内。">
   <div class="slide-head">
-    <div class="eyebrow reveal">17 / 决策</div>
+    <div class="eyebrow reveal">12 / 决策</div>
     <h2 class="reveal">4+1：把讨论变成一场有规则的博弈</h2>
     <p class="lede reveal">角色正交、阶段单向、产物可验。红队负责挑刺，验证官负责拿证据。</p>
   </div>
@@ -1891,11 +1677,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 19 ------------------------------------------------------------ -->
-<section class="slide" data-no="19" data-section="决策引擎" data-title="BWM 运筹学 0-Token 仲裁"
+<!-- 14 ------------------------------------------------------------ -->
+<section class="slide" data-no="14" data-section="决策引擎" data-title="BWM 运筹学 0-Token 仲裁"
   data-notes="这一页讲一个可检查的收敛办法：BWM 把架构权衡变成权重求解，求解过程不调用 LLM，所以是 0-Token。一致性 ξ* 是门禁：不达标退回重审，而不是继续凭感觉讨论。BWM 不替代讨论，只把最后一步变成可检查的数学问题；参考见附录 A7。">
   <div class="slide-head">
-    <div class="eyebrow reveal">18 / 决策</div>
+    <div class="eyebrow reveal">13 / 决策</div>
     <h2 class="reveal">把架构权衡，写成可检查的数学问题</h2>
     <p class="lede reveal">BWM 运筹求解，0 次 LLM 调用；一致性不达标，退回重审。</p>
   </div>
@@ -1949,11 +1735,272 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
+<!-- 15 ------------------------------------------------------------ -->
+<section class="slide" data-no="15" data-section="落地" data-title="认知防从众治理机制"
+  data-notes="这一页讲机制，不做“所有多 Agent 都会谄媚”的判断。LLM 存在谄媚倾向；做法是量化、折减、用红队逼出反例、用数学门禁兜底，并把反对意见保留下来。研究依据与边界见附录 A7。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">14 / 决策</div>
+    <h2 class="reveal">尽量让结论落在证据上</h2>
+    <p class="lede reveal">LLM 存在谄媚倾向；用机制把结论拉回证据。</p>
+  </div>
+  <div class="slide-body">
+    <div class="grid" style="grid-template-columns:1.05fr .95fr;gap:32px">
+      <div class="chains reveal">
+        <div class="chain"><span class="cno">01</span><span><b>BSS / DSS 谄媚量化</b> · 识别“无实据却突然妥协”</span><span class="ar">DETECT</span></div>
+        <div class="chain"><span class="cno">02</span><span><b>γ 信任折减</b> · 对该 Agent 后续发言降权</span><span class="ar">DISCOUNT</span></div>
+        <div class="chain"><span class="cno">03</span><span><b>Free-MAD 红队</b> · 强制给出死锁 / 竞态 / 越界反例</span><span class="ar">CHALLENGE</span></div>
+        <div class="chain"><span class="cno">04</span><span><b>BWM 门禁</b> · ξ* &gt; 0.12 退回重审，不进入裁决</span><span class="ar">GATE</span></div>
+        <div class="chain"><span class="cno">05</span><span><b>少数派异议报告</b> · 反对意见完整保留、不抹平</span><span class="ar">PRESERVE</span></div>
+        <div class="chain"><span class="cno">06</span><span><b>黑天鹅触发器</b> · 3 条量化条件触发重启评审</span><span class="ar">REOPEN</span></div>
+      </div>
+
+      <div class="reveal">
+        <div class="card" style="border-color:var(--purple-line);background:linear-gradient(180deg,var(--purple-soft),var(--surface2) 60%)">
+          <div class="card-k" style="color:var(--purple)">DISAGREEMENT-AWARE</div>
+          <div class="card-t">共识不是把异议删掉</div>
+          <div class="card-d">一份只有结论的 ADR 是危险的。系统强制伴生《少数派异议报告》，把红队的核心反例、未实证假设与重启条件一并交付。</div>
+        </div>
+        <div class="quote mt-20" style="font-size:15.5px">谄媚让团队“感觉很好”，博弈让团队“结果更好”。</div>
+        <div class="flex wrap gap-8 mt-20">
+          <span class="chip">Sycophancy Propagation</span>
+          <span class="chip">Free-MAD</span>
+          <span class="chip">ColMAD</span>
+          <span class="chip">ReConcile</span>
+          <span class="chip">BWM</span>
+        </div>
+        <div class="card mt-20">
+          <div class="card-k">REVIEW CHECK</div>
+          <div class="card-t">裁决前的三问</div>
+          <ul class="lst tight mt-12">
+            <li>结论有没有可复现的实据？</li>
+            <li>红队的三类反例是否逐条回应？</li>
+            <li>少数派异议是否被完整保留？</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 16 ------------------------------------------------------------ -->
+<section class="slide" data-no="16" data-section="能力版图" data-title="五大核心系统全景"
+  data-notes="从协议切换到产品。强调这五层不是五个功能，而是五个控制面：连接、记忆、协同、决策、安全。它们共同长在 ACP 这条总线上，所以可以独立演进。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">15 / 版图</div>
+    <h2 class="reveal">长在 ACP 总线上的五个控制面</h2>
+    <p class="lede reveal">连接、记忆、协同、决策、安全，五个面各自独立演进。</p>
+  </div>
+  <div class="slide-body">
+    <div class="arch">
+      <div class="arch-layer reveal">
+        <div class="lab">Experience</div>
+        <div class="endpoint-row">
+          <span class="chip">频道 / 私聊</span><span class="chip">标准议题</span><span class="chip">4+1 博弈议题</span><span class="chip">Living ADR 画布</span><span class="chip">权限中心</span>
+        </div>
+      </div>
+
+      <div class="arch-layer reveal" style="align-items:start">
+        <div class="lab" style="padding-top:6px">Control<br>Planes</div>
+        <div class="sys-grid">
+          <div class="sys"><div class="no">01</div><b>双模直连</b><span>本地 stdio + 扩展 WS / Relay</span></div>
+          <div class="sys"><div class="no">02</div><b>记忆资产</b><span>.scpack 经验包 · 验签 · 只读卡带</span></div>
+          <div class="sys"><div class="no">03</div><b>敏捷协同</b><span>增量上下文 · Fan-out · Turn Barrier</span></div>
+          <div class="sys"><div class="no">04</div><b>博弈治理</b><span>4+1 · BWM 仲裁 · 少数派异议</span></div>
+          <div class="sys"><div class="no">05</div><b>权限中心</b><span>Rust 反向代理 · 作用域授权 · Fail-Closed</span></div>
+        </div>
+      </div>
+
+      <div class="arch-layer bus reveal">
+        <div class="lab">ACP Bus</div>
+        <div class="flex items-center between wrap gap-12">
+          <span class="mono" style="font-size:12px;color:var(--accent)">JSON-RPC 2.0 · stdio（核心）+ WS（扩展）</span>
+          <div class="endpoint-row">
+            <span class="chip">Local Agent</span><span class="chip">Remote Agent</span><span class="chip">Relay Hub</span><span class="chip">ReadOnly Guard</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="flex items-center between mt-24 reveal">
+      <span class="small">五个控制面共享同一条协议总线，因此可以 <b style="color:var(--fg)">独立演进、互不绑架</b>。</span>
+      <span class="badge ok">ACP 执行面 · stdio 核心 + WS 扩展</span>
+    </div>
+  </div>
+</section>
+
+<!-- 17 ------------------------------------------------------------ -->
+<section class="slide" data-no="17" data-section="ACP · 协议" data-title="原生记忆第一原则"
+  data-notes="这页有一个容易讲反的点：宿主不是记忆的所有者。端点原生记忆是长期事实源；宿主在 Prompt 里拼贴向量记忆，短期可能可用，长期容易与端点索引冲突。原则是 Native Memory First；端点没开就显式关闭，不越权注入。nativeMemory 是 Shadow Crew 扩展，不是 ACP 核心。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">16 / 记忆</div>
+    <h2 class="reveal">记忆归端点：原生优先，避免外部拼贴</h2>
+    <p class="lede reveal">ACP 不规定长期记忆；<b class="mono">agentCapabilities.nativeMemory</b> 是 Shadow Crew 的扩展能力。</p>
+  </div>
+  <div class="slide-body">
+    <div class="grid cols-2 gap-24">
+      <div class="cmp bad reveal">
+        <div class="cmp-h"><span class="mark">✕</span>宿主拼贴向量记忆</div>
+        <ul class="lst bad tight">
+          <li>把检索结果硬塞进每一次 Prompt</li>
+          <li>与端点自己的长期索引互相打架</li>
+          <li>上下文被污染，Token 白白消耗</li>
+          <li>换一个端点就全部重做</li>
+        </ul>
+        <div class="verdict">外部拼贴：短期可用，长期冲突</div>
+      </div>
+      <div class="cmp ok reveal">
+        <div class="cmp-h"><span class="mark">✓</span>Native Memory First</div>
+        <ul class="lst ok tight">
+          <li>端点声明 <b class="mono">nativeMemory</b>，宿主尊重其索引</li>
+          <li>未开启则启动注入 <b class="mono">--disable memories</b></li>
+          <li>宿主只做状态探测与策略引导</li>
+          <li>记忆随端点走，不越权、不污染</li>
+        </ul>
+        <div class="verdict">NATIVE MEMORY FIRST / 端点原生优先</div>
+      </div>
+    </div>
+
+    <div class="code mt-24 reveal"><span class="c">// Shadow Crew 扩展：握手时探测 nativeMemory（标准 ACP 无此字段）</span>
+<span class="k">agentCapabilities</span>.nativeMemory === <span class="n">true</span>  <span class="c">→ 尊重端点索引</span>
+<span class="k">agentCapabilities</span>.nativeMemory === <span class="n">false</span> <span class="c">→ spawn(--disable memories)，绝不越权</span></div>
+
+    <div class="flex items-center between mt-16 reveal"><span class="small">未声明时按 <b class="mono">unsupported</b> 处理，不猜测、不缓存。</span><span class="badge purple">Shadow Crew 扩展</span></div>
+    <div class="quote mt-16 reveal" style="font-size:16px">记忆的所有权属于端点，调度权属于宿主。</div>
+  </div>
+</section>
+
+<!-- 18 ------------------------------------------------------------ -->
+<section class="slide" data-no="18" data-section="能力版图" data-title="团队记忆资产化 .scpack"
+  data-notes="把 .scpack 讲成“可以带走的经验包”。重点不是压缩，而是三件事：六源一致、密码学验签、硬脱敏。它实现的产品意图是：同事不在场，经验仍然在线；换机、换人、离职都不会让经验归零。再补一个工程细节：企业网关 503 时，Rollout 补偿提取能救回同事的经验。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">17 / 记忆</div>
+    <h2 class="reveal">把同事调优好的经验，装进一个文件</h2>
+    <p class="lede reveal">工业级完整性校验、规范化签名与硬脱敏。同事休假、换机、离职，经验仍然可检索、可连接。</p>
+  </div>
+  <div class="slide-body">
+    <div class="grid" style="grid-template-columns:1.05fr .95fr;gap:32px">
+      <div class="pkg reveal">
+        <div class="pkg-head">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style="fill:none;stroke:var(--accent);stroke-width:1.6"><path d="M4 7l8-4 8 4v10l-8 4-8-4Z M4 7l8 4 8-4 M12 11v10"/></svg>
+          <span class="fn">redis-redlock-expert.scpack</span>
+          <span class="badge ok">READ ONLY</span>
+        </div>
+        <div class="pkg-row"><span class="k">SNAPSHOT</span><span><b>6 源一致性快照</b> · 记忆 / 规约 / 工具 / 会话 / 项目 / 版本</span></div>
+        <div class="pkg-row"><span class="k">INTEGRITY</span><span><b>BLAKE3-256</b> · 256 位内容哈希，篡改即拒载</span></div>
+        <div class="pkg-row"><span class="k">SIGNATURE</span><span><b>RFC 8785 JCS</b> · 规范化 JSON 签名，跨实现可验证</span></div>
+        <div class="pkg-row"><span class="k">REDACTION</span><span><b>硬脱敏网关</b> · 剔除密钥、内网 Token，绝对路径相对化</span></div>
+        <div class="pkg-row"><span class="k">FALLBACK</span><span><b>503 补偿提取</b> · 企业网关失败时，从 Rollout 轨迹还原同事的经验</span></div>
+      </div>
+
+      <div class="reveal">
+        <div class="grid gap-12">
+          <div class="card"><div class="card-k">PORTABLE</div><div class="card-t">跨机分发</div><div class="card-d">一个文件带走领域记忆，新同事的 Agent 秒级获得同样的架构约束。</div></div>
+          <div class="card"><div class="card-k">VERIFIABLE</div><div class="card-t">防篡改</div><div class="card-d">哈希与签名双重校验，验签失败直接拒绝挂载。</div></div>
+          <div class="card"><div class="card-k">CONTAINED</div><div class="card-t">零污染</div><div class="card-d">以只读卡带方式外挂，绝不物理写入本地知识库。</div></div>
+        </div>
+        <div class="flex items-center gap-8 mt-20">
+          <span class="badge ok"><span class="d"></span>BLAKE3</span>
+          <span class="badge ok"><span class="d"></span>RFC 8785</span>
+          <span class="badge plain">AES 可选</span>
+          <span class="badge plain">脱敏审计</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 19 ------------------------------------------------------------ -->
+<section class="slide" data-no="19" data-section="能力版图" data-title="零污染只读卡带"
+  data-notes="四级漏斗讲的是“什么时候把记忆送进上下文”。答案是：不到需要的时候不送。前置零 Token，按需 JIT 检索，动态注入当前阶段。这样既不污染本地知识库，也不把上下文塞爆。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">18 / 记忆</div>
+    <h2 class="reveal">四级漏斗，前置 0 Token</h2>
+    <p class="lede reveal">外部记忆只读挂载，按需检索，动态注入。绝不写进本地知识库。</p>
+  </div>
+  <div class="slide-body">
+    <div class="grid" style="grid-template-columns:1.1fr .9fr;gap:36px">
+      <div class="reveal">
+        <div class="funnel">
+          <div class="fn-row l1" style="width:100%"><span class="t">原始数据 · 6 源快照</span><span class="d">记忆 / 规约 / 会话<br>全量留存</span></div>
+          <div class="fn-row l2" style="width:84%"><span class="t">高密卡片</span><span class="d">结构化摘要<br>去噪压缩</span></div>
+          <div class="fn-row l3" style="width:64%"><span class="t">JIT 检索</span><span class="d">按当前阶段<br>按需召回</span></div>
+          <div class="fn-row l4" style="width:44%"><span class="t">动态注入</span><span class="d">只给当前<br>上下文</span></div>
+        </div>
+        <div class="fn-meta mt-12"><span>PRELOAD 0 TOKEN</span><span>ON-DEMAND ONLY</span></div>
+      </div>
+
+      <div class="reveal">
+        <ul class="lst">
+          <li><b>只读挂载</b><br>卡带不落库，不参与本地索引重建</li>
+          <li><b>零前置消耗</b><br>未检索到的记忆不进入 Prompt</li>
+          <li><b>按阶段注入</b><br>博弈/执行阶段各自只取所需片段</li>
+          <li><b>可卸载</b><br>会话结束即失效，不留下隐性依赖</li>
+        </ul>
+        <div class="card mt-24" style="border-color:var(--bad-line);background:var(--bad-soft)">
+          <div class="card-k" style="color:var(--bad)">ANTI-PATTERN</div>
+          <div class="card-t" style="color:var(--bad)">把外部记忆直接写进本地知识库</div>
+          <div class="card-d">污染不可逆、来源不可追溯、权限不可回收。零污染是硬约束，不是优化项。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- 20 ------------------------------------------------------------ -->
-<section class="slide" data-no="20" data-section="生态对标" data-title="四种协作形态"
+<section class="slide" data-no="20" data-section="能力版图" data-title="跨机互联：连接同事的 Agent"
+  data-notes="这一幕很有画面感：张工调优了半年的 Claude Code，你不需要复制，只需要连接。讲清三种网络路径，并强调远程默认 ReadOnly Guard；WebSocket / Relay 是 Shadow Crew 的扩展传输，不是 ACP 核心。连接的不是一个冷冰冰的端点，而是同事积累下来的工作方式。产品最期望的方向，是让同事不在场时，他的 Agent 和经验仍然在线——像一直在你身边。现场若网络受限，Demo 页有单机模拟方案。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">19 / 记忆</div>
+    <h2 class="reveal">把同事调优好的 Agent，接进同一个工作台</h2>
+    <p class="lede reveal">ACP 核心是 stdio；Shadow Crew 在其上扩展 WebSocket / Relay，让同事的 Agent 和你的 Agent 一起工作。</p>
+  </div>
+  <div class="slide-body">
+    <div class="topo">
+      <div class="topo-card host reveal">
+        <div class="h"><b>你的桌面</b><span class="badge ok">HOST</span></div>
+        <div class="sub">SHADOW CREW</div>
+        <div class="body">
+          <span class="chip mono">local · codex</span>
+          <span class="chip mono">session · /repo/payments</span>
+          <span class="chip mono">4+1 topic</span>
+        </div>
+      </div>
+
+      <div class="route reveal">
+        <span class="small" style="text-align:center;letter-spacing:.14em;color:var(--fg3)">跨机路径</span>
+        <span class="r">手机热点 172.20.10.x</span>
+        <span class="r">Tailscale 100.x.y.z</span>
+        <span class="r">Axum Relay Hub</span>
+        <span class="small" style="text-align:center">40ms RTT 探针</span>
+      </div>
+
+      <div class="reveal">
+        <div class="topo-card remote">
+          <div class="h"><b>张工 · 分布式锁专家</b><span class="badge info">REMOTE</span></div>
+          <div class="sub">ws://100.x.y.z · CLAUDE CODE</div>
+          <div class="mt-12"><span class="badge ok">ReadOnly Guard</span><span class="badge plain" style="margin-left:6px">流式</span></div>
+        </div>
+        <div class="topo-card remote mt-12">
+          <div class="h"><b>李工 · 内核调试</b><span class="badge info">REMOTE</span></div>
+          <div class="sub">wss://relay · CODEX</div>
+          <div class="mt-12"><span class="badge ok">ReadOnly Guard</span><span class="badge plain" style="margin-left:6px">读写隔离</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid cols-3 gap-16 mt-28 reveal">
+      <div class="callout"><span class="tag">NET</span><span><b>同一套协议</b><br>本地与远程共享 session 语义</span></div>
+      <div class="callout"><span class="tag">SAFE</span><span><b>默认只读</b><br>远程端点禁止写盘与执行</span></div>
+      <div class="callout"><span class="tag">ALWAYS-ON</span><span><b>同事不在场，经验仍在线</b><br>Agent 与经验包继续可用</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 21 ------------------------------------------------------------ -->
+<section class="slide" data-no="21" data-section="生态对标" data-title="四种协作形态"
   data-notes="不做代际排名。四种形态各解决不同问题：硬编码框架、IDE 单 Agent 扩展、沙盒执行平台、解耦型控制面。选择取决于任务、团队与治理成本，不是谁替代谁。">
   <div class="slide-head">
-    <div class="eyebrow reveal">19 / 对标</div>
+    <div class="eyebrow reveal">20 / 对标</div>
     <h2 class="reveal">四种协作形态，不同取舍</h2>
     <p class="lede reveal">不同产品解决不同问题；没有唯一正确形态。</p>
   </div>
@@ -1996,11 +2043,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 21 ------------------------------------------------------------ -->
-<section class="slide" data-no="21" data-section="生态对标" data-title="核心四维横向对比矩阵"
+<!-- 22 ------------------------------------------------------------ -->
+<section class="slide" data-no="22" data-section="生态对标" data-title="核心四维横向对比矩阵"
   data-notes="不要逐格念表，也不做排名。讲三句：Shadow Crew 选择纯 ACP 执行面、双模协同、可分发经验、Rust 反向代理；其他产品各有取舍，不是敌人，也不是落后的代际。">
   <div class="slide-head">
-    <div class="eyebrow reveal">20 / 对标</div>
+    <div class="eyebrow reveal">21 / 对标</div>
     <h2 class="reveal">四维矩阵：不同选择，不同取舍</h2>
     <p class="lede reveal">四个维度，六种解法；看取舍，不排名。</p>
   </div>
@@ -2071,11 +2118,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 22 ------------------------------------------------------------ -->
-<section class="slide" data-no="22" data-section="生态对标" data-title="五个设计选择"
+<!-- 23 ------------------------------------------------------------ -->
+<section class="slide" data-no="23" data-section="生态对标" data-title="五个设计选择"
   data-notes="这一页讲五个设计选择，不做竞争优势的断言：执行面解耦、经验可携带、收敛有门禁、按任务选双模、边界在本地。每一条都有代价，也都有适用边界。">
   <div class="slide-head">
-    <div class="eyebrow reveal">21 / 对标</div>
+    <div class="eyebrow reveal">22 / 落地</div>
     <h2 class="reveal">五个设计选择：我们如何取舍</h2>
     <p class="lede reveal">不是五个功能，而是五个取舍；每一条都有代价。</p>
   </div>
@@ -2117,11 +2164,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 23 ------------------------------------------------------------ -->
-<section class="slide" data-no="23" data-section="落地" data-title="10 分钟 Live Demo 实战"
+<!-- 24 ------------------------------------------------------------ -->
+<section class="slide" data-no="24" data-section="落地" data-title="10 分钟 Live Demo 实战"
   data-notes="Demo 的关键不是炫技，是让每一步都可视：远端蓝标、验签通过、Token 水位线、ξ* 数字、权限弹窗。若现场网络受限，直接切 npm run mock:remote，协议栈依然真实，观众看到的是 Remote ACP 端点。">
   <div class="slide-head">
-    <div class="eyebrow reveal">22 / 落地</div>
+    <div class="eyebrow reveal">23 / 实战</div>
     <h2 class="reveal">一次真实的跨端协同与博弈</h2>
     <p class="lede reveal">10 分钟，五个动作，从连接同事到补丁合入。</p>
   </div>
@@ -2162,53 +2209,6 @@ table.method .req.b { color: var(--accent); }
     <div class="callout mt-24 reveal" style="border-color:var(--warn-line);background:var(--warn-soft)">
       <span class="tag" style="color:var(--warn)">保底方案</span>
       <span>现场断网？运行 <b class="mono">npm run mock:remote</b>，连接 <b class="mono">ws://127.0.0.1:9001</b>。UI 显示 <b>Remote ACP</b> 蓝色徽章，走完整真实 WebSocket 协议栈，可触发 RTT 探针与逐字流式。</span>
-    </div>
-  </div>
-</section>
-
-<!-- 24 ------------------------------------------------------------ -->
-<section class="slide" data-no="24" data-section="落地" data-title="认知防从众治理机制"
-  data-notes="这一页讲机制，不做“所有多 Agent 都会谄媚”的判断。LLM 存在谄媚倾向；做法是量化、折减、用红队逼出反例、用数学门禁兜底，并把反对意见保留下来。研究依据与边界见附录 A7。">
-  <div class="slide-head">
-    <div class="eyebrow reveal">23 / 落地</div>
-    <h2 class="reveal">尽量让结论落在证据上</h2>
-    <p class="lede reveal">LLM 存在谄媚倾向；用机制把结论拉回证据。</p>
-  </div>
-  <div class="slide-body">
-    <div class="grid" style="grid-template-columns:1.05fr .95fr;gap:32px">
-      <div class="chains reveal">
-        <div class="chain"><span class="cno">01</span><span><b>BSS / DSS 谄媚量化</b> · 识别“无实据却突然妥协”</span><span class="ar">DETECT</span></div>
-        <div class="chain"><span class="cno">02</span><span><b>γ 信任折减</b> · 对该 Agent 后续发言降权</span><span class="ar">DISCOUNT</span></div>
-        <div class="chain"><span class="cno">03</span><span><b>Free-MAD 红队</b> · 强制给出死锁 / 竞态 / 越界反例</span><span class="ar">CHALLENGE</span></div>
-        <div class="chain"><span class="cno">04</span><span><b>BWM 门禁</b> · ξ* &gt; 0.12 退回重审，不进入裁决</span><span class="ar">GATE</span></div>
-        <div class="chain"><span class="cno">05</span><span><b>少数派异议报告</b> · 反对意见完整保留、不抹平</span><span class="ar">PRESERVE</span></div>
-        <div class="chain"><span class="cno">06</span><span><b>黑天鹅触发器</b> · 3 条量化条件触发重启评审</span><span class="ar">REOPEN</span></div>
-      </div>
-
-      <div class="reveal">
-        <div class="card" style="border-color:var(--purple-line);background:linear-gradient(180deg,var(--purple-soft),var(--surface2) 60%)">
-          <div class="card-k" style="color:var(--purple)">DISAGREEMENT-AWARE</div>
-          <div class="card-t">共识不是把异议删掉</div>
-          <div class="card-d">一份只有结论的 ADR 是危险的。系统强制伴生《少数派异议报告》，把红队的核心反例、未实证假设与重启条件一并交付。</div>
-        </div>
-        <div class="quote mt-20" style="font-size:15.5px">谄媚让团队“感觉很好”，博弈让团队“结果更好”。</div>
-        <div class="flex wrap gap-8 mt-20">
-          <span class="chip">Sycophancy Propagation</span>
-          <span class="chip">Free-MAD</span>
-          <span class="chip">ColMAD</span>
-          <span class="chip">ReConcile</span>
-          <span class="chip">BWM</span>
-        </div>
-        <div class="card mt-20">
-          <div class="card-k">REVIEW CHECK</div>
-          <div class="card-t">裁决前的三问</div>
-          <ul class="lst tight mt-12">
-            <li>结论有没有可复现的实据？</li>
-            <li>红队的三类反例是否逐条回应？</li>
-            <li>少数派异议是否被完整保留？</li>
-          </ul>
-        </div>
-      </div>
     </div>
   </div>
 </section>

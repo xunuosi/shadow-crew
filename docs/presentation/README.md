@@ -44,13 +44,13 @@ open docs/presentation/shadow-crew-acp-keynote.html
 | 页码 | 板块 |
 | :--- | :--- |
 | 01–04 | 开场、单/多 Agent 取舍、三个协作问题、责任边界（Thin Control Plane） |
-| 05–08 | ACP 对等架构、宿主控制层、CWD 约束、权限代理 |
-| 09–12 | V1 → V2、六维对照、Native Memory First、双栈协商 |
-| 13–16 | 五大控制面、跨机互联、`.scpack`、零污染卡带 |
-| 17–19 | 增量协同流、4+1 博弈、BWM 运筹仲裁 |
-| 20–22 | 四种协作形态、四维矩阵、五个设计选择 |
-| 23–26 | Live Demo、防从众治理、ROI、方向 |
-| 27 | 结语 |
+| 05–06 | ACP 对等架构、宿主控制层（协议之外补了什么） |
+| 07–09 | V1 → V2、六维对照、双栈协商 |
+| 10–11 | CWD 会话约束、增量上下文水位线 |
+| 12–15 | 反向权限代理、4+1 博弈、BWM 仲裁、防从众治理 |
+| 16–20 | 五大控制面、原生记忆、`.scpack`、零污染卡带、跨机互联 |
+| 21–23 | 四种协作形态、四维矩阵、五个设计选择 |
+| 24–27 | Live Demo、ROI、方向、结语 |
 | 28–34 | ACP 实操附录：全流程、capabilities、V1/V2 方法地图、最小报文、接入检查清单、参考论文 |
 
 每页的讲师话术来自 [`TECH_PRESENTATION_SHADOW_CREW_ACP.md`](./TECH_PRESENTATION_SHADOW_CREW_ACP.md)，按“先结论、再展开”的节奏改写，直接按 `N` 即可看到。
