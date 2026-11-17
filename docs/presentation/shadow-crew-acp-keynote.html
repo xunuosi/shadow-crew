@@ -774,18 +774,18 @@ table.matrix { font-size: 13px; }
 .hs-label { font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; color: var(--fg3); text-align: center; }
 
 /* ---------- 14 architecture ---------- */
-.arch { display: flex; flex-direction: column; gap: 12px; }
+.arch { display: flex; flex-direction: column; gap: 16px; }
 .arch-layer {
   display: grid; grid-template-columns: 118px 1fr; gap: 18px; align-items: center;
-  padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface2);
+  padding: 19px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface2);
 }
 .arch-layer .lab { font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; color: var(--fg3); text-transform: uppercase; }
 .arch-layer.bus { border-color: var(--accent-line); background: linear-gradient(90deg, var(--accent-soft), var(--surface2) 65%); }
 .sys-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-.sys { padding: 15px 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); min-width: 0; }
+.sys { padding: 17px 15px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); min-width: 0; }
 .sys .no { font-family: var(--mono); font-size: 9px; color: var(--accent); letter-spacing: .1em; }
-.sys b { display: block; font-size: 14.5px; margin-top: 4px; line-height: 1.35; }
-.sys span { display: block; font-size: 11.5px; color: var(--fg3); margin-top: 3px; line-height: 1.4; }
+.sys b { display: block; font-size: 15.5px; margin-top: 5px; line-height: 1.35; }
+.sys span { display: block; font-size: 12px; color: var(--fg3); margin-top: 4px; line-height: 1.45; }
 .endpoint-row { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ---------- 15 topology ---------- */
@@ -2113,8 +2113,8 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 19 ------------------------------------------------------------ -->
-<section class="slide" data-no="19" data-section="能力版图" data-title="五大核心系统全景"
-  data-notes="从协议切换到产品。强调这五层不是五个功能，而是五个控制面：连接、记忆、协同、决策、安全。它们共同长在 ACP 这条总线上，所以可以独立演进。">
+<section class="slide" data-no="19" data-section="能力版图" data-title="五个控制面全景"
+  data-notes="从协议切换到产品。三层要看清楚：最上面是用户能看到的入口（频道、议题、ADR 画布、权限中心）；中间是五个控制面，连接、记忆、协同、决策、安全；最下面是 ACP 总线，JSON-RPC 2.0，stdio 是核心、WS 是扩展。注意别说“双模直连”，双模在别处指普通讨论与 4+1 两种讨论模式，这里讲的是本地与远程两种连接方式。">
   <div class="slide-head">
     <div class="eyebrow reveal">18 / 版图</div>
     <h2 class="reveal">长在 ACP 总线上的五个控制面</h2>
@@ -2123,16 +2123,16 @@ table.method .req.b { color: var(--accent); }
   <div class="slide-body">
     <div class="arch">
       <div class="arch-layer reveal">
-        <div class="lab">Experience</div>
+        <div class="lab">入口<br>Experience</div>
         <div class="endpoint-row">
           <span class="chip">频道 / 私聊</span><span class="chip">标准议题</span><span class="chip">4+1 博弈议题</span><span class="chip">Living ADR 画布</span><span class="chip">权限中心</span>
         </div>
       </div>
 
       <div class="arch-layer reveal" style="align-items:start">
-        <div class="lab" style="padding-top:6px">Control<br>Planes</div>
+        <div class="lab" style="padding-top:6px">控制面<br>Control Planes</div>
         <div class="sys-grid">
-          <div class="sys"><div class="no">01</div><b>双模直连</b><span>本地 stdio + 扩展 WS / Relay</span></div>
+          <div class="sys"><div class="no">01</div><b>本地 + 远程</b><span>本地 stdio · 远程 WS / Relay</span></div>
           <div class="sys"><div class="no">02</div><b>记忆资产</b><span>.scpack 经验包 · 验签 · 只读卡带</span></div>
           <div class="sys"><div class="no">03</div><b>敏捷协同</b><span>增量上下文 · Fan-out · Turn Barrier</span></div>
           <div class="sys"><div class="no">04</div><b>博弈治理</b><span>4+1 · BWM 仲裁 · 少数派异议</span></div>
@@ -2141,18 +2141,20 @@ table.method .req.b { color: var(--accent); }
       </div>
 
       <div class="arch-layer bus reveal">
-        <div class="lab">ACP Bus</div>
+        <div class="lab">总线<br>ACP Bus</div>
         <div class="flex items-center between wrap gap-12">
           <span class="mono" style="font-size:12px;color:var(--accent)">JSON-RPC 2.0 · stdio（核心）+ WS（扩展）</span>
           <div class="endpoint-row">
-            <span class="chip">Local Agent</span><span class="chip">Remote Agent</span><span class="chip">Relay Hub</span><span class="chip">ReadOnly Guard</span>
+            <span class="chip">Local Agent</span><span class="chip">Remote Agent</span><span class="chip">Relay Hub</span><span class="chip">ACP Adapter</span>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="flex items-center between mt-24 reveal">
-      <span class="small">五个控制面共享同一条协议总线，因此可以 <b style="color:var(--fg)">独立演进、互不绑架</b>。</span>
+    <p class="small mt-16 reveal">读法：越往上越靠近人，越往下越靠近协议。<b style="color:var(--fg)">入口</b>是用户能点的界面，<b style="color:var(--fg)">控制面</b>是宿主自己拥有的能力，<b style="color:var(--fg)">总线</b>只负责把请求送到端点。</p>
+
+    <div class="flex items-center between mt-16 reveal">
+      <span class="small">执行面换端点，五个控制面不用跟着改：总线是<b style="color:var(--fg)">稳定的接缝</b>，不是又一个要维护的层。</span>
       <span class="badge ok">ACP 执行面 · stdio 核心 + WS 扩展</span>
     </div>
   </div>
