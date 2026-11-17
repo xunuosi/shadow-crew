@@ -893,6 +893,10 @@ table.matrix { font-size: 13px; }
 .rank .rk.first { color: var(--ok); border-color: var(--ok-line); background: var(--ok-soft); }
 .rank b { flex: 1; font-weight: 650; color: var(--fg); }
 .rank .rv { font-family: var(--mono); font-size: 10.5px; color: var(--fg3); }
+.formula { padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface2); }
+.fm-k { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; color: var(--accent); margin-bottom: 5px; }
+.fm-l { font-size: 11px; line-height: 1.7; color: var(--fg3); }
+.fm-l .mono { color: var(--fg2); font-size: 10.5px; }
 
 /* ---------- 20 gate ---------- */
 .meter { position: relative; height: 12px; border-radius: 999px; background: var(--surface3); border: 1px solid var(--line); }
@@ -1956,7 +1960,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 17 ------------------------------------------------------------ -->
 <section class="slide" data-no="17" data-section="决策引擎" data-title="BWM 最佳-最差法：0-Token 仲裁"
-  data-notes="这页用一个具体例子讲 BWM 怎么落地。场景是高并发网关的限流与状态存储选型。先看三步：输入只要求最优/最差准则加两组 1–9 比值和方案打分；求解是线性规划，不调模型；门禁看 ξ*，不过就退回。再看右边的数：一致性权重 0.563、性能 0.311、复杂度 0.125，ξ*=0.065 过门禁，最后 C 方案（Redis Lua + 降级补丁）效用最高。注意口径：这里的打分和比值是规则或模型给的，BWM 只保证给定这些数之后推导自洽。">
+  data-notes="这页用一个具体例子讲 BWM 怎么落地。场景是高并发网关的限流与状态存储选型。先看三步：输入只要求最优/最差准则加两组 1–9 比值和方案打分；求解是线性规划，不调模型；门禁看 ξ*，不过就退回。再看右边的数：一致性权重 0.563、性能 0.311、复杂度 0.125，ξ*=0.065 过门禁，最后 C 方案（Redis Lua + 降级补丁）效用最高。注意口径：这里的打分和比值是规则或模型给的，BWM 只保证给定这些数之后推导自洽。打分怎么来的：词频从议题加四方发言里选出准则；实证反例让 A 的一致性扣 2.5，答辩补丁让 C 加 0.8；比值由仲裁陈词关键词定最优（cons）与最差（comp）后按规则填充。效用是把分数归一化后按权重加权求和。若要现场复算：solveExactBwmOptionB({n:3, bestIdx:0, worstIdx:2, bestToOthers:[1,2,4], othersToWorst:[4,3,1]})。">
   <div class="slide-head">
     <div class="eyebrow reveal">16 / 决策</div>
     <h2 class="reveal">把架构权衡，写成可检查的数学问题</h2>
@@ -1986,7 +1990,12 @@ table.method .req.b { color: var(--accent); }
           <span class="rl-k">最优比其余</span><span class="mono">[1, 2, 4]</span>
           <span class="rl-k">其余比最差</span><span class="mono">[4, 3, 1]</span>
         </div>
-        <p class="small mt-10">打分怎么来的：词频选出准则，实证反例给 A 扣分，答辩补丁给 C 加分；比值由仲裁陈词的关键词定最优/最差后按规则填充。</p>
+        <div class="formula mt-10">
+          <div class="fm-k">怎么算</div>
+          <div class="fm-l"><span class="mono">min ξ</span> &nbsp;s.t.&nbsp; <span class="mono">|w_B − a_Bj·w_j| ≤ ξ</span></div>
+          <div class="fm-l"><span class="mono">　　　　　|w_j − a_jW·w_W| ≤ ξ</span>，<span class="mono">Σw = 1</span></div>
+          <div class="fm-l">效用 <span class="mono">U = Σ w_i · s_i</span>（越大越好 <span class="mono">s/10</span>，越小越好 <span class="mono">(10−s)/10</span>）</div>
+        </div>
       </div>
 
       <div class="reveal">
