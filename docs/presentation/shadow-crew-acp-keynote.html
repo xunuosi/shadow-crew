@@ -145,7 +145,7 @@ body::after {
 }
 
 .slide::after {
-  content: attr(data-no) " / 34";
+  content: attr(data-no) " / 35";
   position: absolute; right: 44px; bottom: 30px; z-index: 2;
   font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
   color: var(--fg3);
@@ -710,6 +710,15 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; }
 .dm-mono b { color: var(--fg2); font-weight: 500; }
 .dm-card p { margin-top: 10px; font-size: 12.5px; line-height: 1.6; color: var(--fg2); }
 
+/* ---------- 13 swarm ---------- */
+.swarm-flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+.sw-step { position: relative; padding: 18px 18px 16px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface2); min-height: 172px; }
+.sw-step::after { content: ""; position: absolute; top: 28px; right: -9px; width: 6px; height: 6px; border-top: 1.4px solid var(--fg3); border-right: 1.4px solid var(--fg3); transform: rotate(45deg); opacity: .6; }
+.sw-step:last-child::after { display: none; }
+.sw-n { font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; color: var(--accent); }
+.sw-step h4 { margin-top: 7px; font-size: 14.5px; }
+.sw-step p { margin-top: 8px; font-size: 12.5px; line-height: 1.6; color: var(--fg2); }
+
 /* ---------- 11/22 tables ---------- */
 .tbl .mini { display: block; font-size: 11.5px; color: var(--fg3); margin-top: 3px; line-height: 1.4; }
 .tbl .note { display: block; margin-top: 5px; font-size: 12.5px; line-height: 1.55; color: var(--fg3); }
@@ -1098,7 +1107,7 @@ table.method .req.b { color: var(--accent); }
       <h1 class="reveal">连接 Agent，<br>连接<span class="grad">彼此</span>。</h1>
       <p class="lede reveal">不重复造 Agent。用 ACP 连接两样东西：<br>你常用的编程 Agent，和同事调优好的 Agent；<br>以及同事沉淀的经验包——过程交给工作流，你只看结果。</p>
       <div class="cover-meta reveal">
-        <span class="chip accent"><span class="d" style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>34 页 · 约 34 分钟</span>
+        <span class="chip accent"><span class="d" style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>35 页 · 约 35 分钟</span>
         <span class="chip">技术峰会 / 架构师沙龙</span>
         <span class="chip">Agent Client Protocol</span>
       </div>
@@ -1713,10 +1722,56 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 13 ------------------------------------------------------------ -->
-<section class="slide" data-no="13" data-section="决策引擎" data-title="CognoNexus 4+1 博弈引擎"
+<section class="slide" data-no="13" data-section="产品 · 频道" data-title="普通讨论里的 Swarm 模式"
+  data-notes="频道普通讨论模式里还有一条支线：Swarm。一个 Lead Agent 把大任务拆成子任务，派给频道里的其他 Agent 并行做，最后自己 Reduce 汇总。触发有两条路：输入 /swarm 前缀，或在输入框打开 Swarm 开关。拆解结果先出卡片，人确认才派发；派发前会检测 allowedFiles 是否重叠，重叠会提示。Worker 只在自己的子任务里干，禁止横向 @；全部结束后 Lead 汇总，Diff 按任务顺序合并。">
+  <div class="slide-head">
+    <div class="eyebrow reveal">12 / 频道</div>
+    <h2 class="reveal">普通讨论里的 Swarm：一个拆，多个做，一个收</h2>
+    <p class="lede reveal">频道普通模式下，Lead Agent 把大任务拆给同伴并行执行；人确认后才派发，最后统一汇总。</p>
+  </div>
+  <div class="slide-body">
+    <div class="swarm-flow">
+      <div class="sw-step reveal">
+        <div class="sw-n">01</div>
+        <h4>触发</h4>
+        <p>输入 <span class="mono">/swarm</span> 前缀，或在输入框打开 Swarm 开关；也可由 Lead 在回复里附 <span class="mono">&lt;&lt;&lt;SWARM_PLAN&gt;&gt;&gt;</span> 提案块。</p>
+      </div>
+      <div class="sw-step reveal">
+        <div class="sw-n">02</div>
+        <h4>拆解</h4>
+        <p>Lead 输出子任务：<span class="mono">taskId</span> / 标题 / 说明 / 指定执行人 / <span class="mono">allowedFiles</span>。拆不出来时用列表兜底解析。</p>
+      </div>
+      <div class="sw-step reveal">
+        <div class="sw-n">03</div>
+        <h4>人工确认</h4>
+        <p>生成 Swarm 卡片，状态「待确认派发」。派发前检测 <span class="mono">allowedFiles</span> 路径交集，重叠会提示冲突。</p>
+      </div>
+      <div class="sw-step reveal">
+        <div class="sw-n">04</div>
+        <h4>并行执行</h4>
+        <p>每个子任务一个子房间与子线程，Worker 只在白名单内改动，禁止横向 @，互不打听兄弟任务。</p>
+      </div>
+      <div class="sw-step reveal">
+        <div class="sw-n">05</div>
+        <h4>Reduce 汇总</h4>
+        <p>全部子任务结束（完成或跳过）后，Lead 收齐报告与 Diff，按任务顺序合并，生成交付结论。</p>
+      </div>
+    </div>
+
+    <div class="grid cols-2 gap-16 mt-18">
+      <div class="callout reveal"><span class="tag">隔离怎么写死的</span><span>Worker 的 Prompt 是四段语义块：执行契约 / 原始任务 / 公共契约 / 本子任务。写死两条：<b>只聚焦自己的子任务</b>，<b>禁止横向 @</b>。</span></div>
+      <div class="callout reveal"><span class="tag">谁决定结束</span><span>不靠模型自觉：<span class="mono">areAllEnabledSwarmSubTasksFinished</span> 判全部终态；<span class="mono">canAutoTriggerSwarmReduce</span> 要求至少一个完成、其余非跳过即未完成。</span></div>
+    </div>
+
+    <p class="small mt-12 reveal">与 4+1 的分工：Swarm 是<b style="color:var(--fg)">并行拆分</b>（Map-Reduce），4+1 是<b style="color:var(--fg)">串行对抗</b>（提案→挑战→验证→答辩→裁决）；前者快，后者稳。</p>
+  </div>
+</section>
+
+<!-- 14 ------------------------------------------------------------ -->
+<section class="slide" data-no="14" data-section="决策引擎" data-title="CognoNexus 4+1 博弈引擎"
   data-notes="这是全场的技术高潮。5 个角色不是 5 个 Agent 聊天，而是一个单向 FSM：每个阶段有契约、有产物、有门禁。红队要给出可证伪的反例，验证官要拿真实证据说话。多角色与任务拆解有论文依据，但结论有任务边界；详见附录 A7。强调 Human 仍在环内。">
   <div class="slide-head">
-    <div class="eyebrow reveal">12 / 决策</div>
+    <div class="eyebrow reveal">13 / 决策</div>
     <h2 class="reveal">4+1：把讨论变成一场有规则的博弈</h2>
     <p class="lede reveal">角色正交、阶段单向、产物可验。红队负责挑刺，验证官负责拿证据。</p>
   </div>
@@ -1760,11 +1815,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 14 ------------------------------------------------------------ -->
-<section class="slide" data-no="14" data-section="决策引擎" data-title="BWM 运筹学 0-Token 仲裁"
+<!-- 15 ------------------------------------------------------------ -->
+<section class="slide" data-no="15" data-section="决策引擎" data-title="BWM 运筹学 0-Token 仲裁"
   data-notes="这一页讲一个可检查的收敛办法：BWM 把架构权衡变成权重求解，求解过程不调用 LLM，所以是 0-Token。一致性 ξ* 是门禁：不达标退回重审，而不是继续凭感觉讨论。BWM 不替代讨论，只把最后一步变成可检查的数学问题；参考见附录 A7。">
   <div class="slide-head">
-    <div class="eyebrow reveal">13 / 决策</div>
+    <div class="eyebrow reveal">14 / 决策</div>
     <h2 class="reveal">把架构权衡，写成可检查的数学问题</h2>
     <p class="lede reveal">BWM 运筹求解，0 次 LLM 调用；一致性不达标，退回重审。</p>
   </div>
@@ -1818,11 +1873,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 15 ------------------------------------------------------------ -->
-<section class="slide" data-no="15" data-section="落地" data-title="认知防从众治理机制"
+<!-- 16 ------------------------------------------------------------ -->
+<section class="slide" data-no="16" data-section="落地" data-title="认知防从众治理机制"
   data-notes="这一页讲机制，不做“所有多 Agent 都会谄媚”的判断。LLM 存在谄媚倾向；做法是量化、折减、用红队逼出反例、用数学门禁兜底，并把反对意见保留下来。研究依据与边界见附录 A7。">
   <div class="slide-head">
-    <div class="eyebrow reveal">14 / 决策</div>
+    <div class="eyebrow reveal">15 / 决策</div>
     <h2 class="reveal">尽量让结论落在证据上</h2>
     <p class="lede reveal">LLM 存在谄媚倾向；用机制把结论拉回证据。</p>
   </div>
@@ -1865,11 +1920,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 16 ------------------------------------------------------------ -->
-<section class="slide" data-no="16" data-section="能力版图" data-title="五大核心系统全景"
+<!-- 17 ------------------------------------------------------------ -->
+<section class="slide" data-no="17" data-section="能力版图" data-title="五大核心系统全景"
   data-notes="从协议切换到产品。强调这五层不是五个功能，而是五个控制面：连接、记忆、协同、决策、安全。它们共同长在 ACP 这条总线上，所以可以独立演进。">
   <div class="slide-head">
-    <div class="eyebrow reveal">15 / 版图</div>
+    <div class="eyebrow reveal">16 / 版图</div>
     <h2 class="reveal">长在 ACP 总线上的五个控制面</h2>
     <p class="lede reveal">连接、记忆、协同、决策、安全，五个面各自独立演进。</p>
   </div>
@@ -1911,11 +1966,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 17 ------------------------------------------------------------ -->
-<section class="slide" data-no="17" data-section="ACP · 协议" data-title="原生记忆第一原则"
+<!-- 18 ------------------------------------------------------------ -->
+<section class="slide" data-no="18" data-section="ACP · 协议" data-title="原生记忆第一原则"
   data-notes="这页有一个容易讲反的点：宿主不是记忆的所有者。端点原生记忆是长期事实源；宿主在 Prompt 里拼贴向量记忆，短期可能可用，长期容易与端点索引冲突。原则是 Native Memory First；端点没开就显式关闭，不越权注入。nativeMemory 是 Shadow Crew 扩展，不是 ACP 核心。">
   <div class="slide-head">
-    <div class="eyebrow reveal">16 / 记忆</div>
+    <div class="eyebrow reveal">17 / 记忆</div>
     <h2 class="reveal">记忆归端点：原生优先，避免外部拼贴</h2>
     <p class="lede reveal">ACP 不规定长期记忆；<b class="mono">agentCapabilities.nativeMemory</b> 是 Shadow Crew 的扩展能力。</p>
   </div>
@@ -1952,11 +2007,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 18 ------------------------------------------------------------ -->
-<section class="slide" data-no="18" data-section="能力版图" data-title="团队记忆资产化 .scpack"
+<!-- 19 ------------------------------------------------------------ -->
+<section class="slide" data-no="19" data-section="能力版图" data-title="团队记忆资产化 .scpack"
   data-notes="把 .scpack 讲成“可以带走的经验包”。重点不是压缩，而是三件事：六源一致、密码学验签、硬脱敏。它实现的产品意图是：同事不在场，经验仍然在线；换机、换人、离职都不会让经验归零。再补一个工程细节：企业网关 503 时，Rollout 补偿提取能救回同事的经验。">
   <div class="slide-head">
-    <div class="eyebrow reveal">17 / 记忆</div>
+    <div class="eyebrow reveal">18 / 记忆</div>
     <h2 class="reveal">把同事调优好的经验，装进一个文件</h2>
     <p class="lede reveal">工业级完整性校验、规范化签名与硬脱敏。同事休假、换机、离职，经验仍然可检索、可连接。</p>
   </div>
@@ -1992,11 +2047,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 19 ------------------------------------------------------------ -->
-<section class="slide" data-no="19" data-section="能力版图" data-title="零污染只读卡带"
+<!-- 20 ------------------------------------------------------------ -->
+<section class="slide" data-no="20" data-section="能力版图" data-title="零污染只读卡带"
   data-notes="四级漏斗讲的是“什么时候把记忆送进上下文”。答案是：不到需要的时候不送。前置零 Token，按需 JIT 检索，动态注入当前阶段。这样既不污染本地知识库，也不把上下文塞爆。">
   <div class="slide-head">
-    <div class="eyebrow reveal">18 / 记忆</div>
+    <div class="eyebrow reveal">19 / 记忆</div>
     <h2 class="reveal">四级漏斗，前置 0 Token</h2>
     <p class="lede reveal">外部记忆只读挂载，按需检索，动态注入。绝不写进本地知识库。</p>
   </div>
@@ -2029,11 +2084,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 20 ------------------------------------------------------------ -->
-<section class="slide" data-no="20" data-section="能力版图" data-title="跨机互联：连接同事的 Agent"
+<!-- 21 ------------------------------------------------------------ -->
+<section class="slide" data-no="21" data-section="能力版图" data-title="跨机互联：连接同事的 Agent"
   data-notes="这一幕很有画面感：张工调优了半年的 Claude Code，你不需要复制，只需要连接。讲清三种网络路径，并强调远程默认 ReadOnly Guard；WebSocket / Relay 是 Shadow Crew 的扩展传输，不是 ACP 核心。连接的不是一个冷冰冰的端点，而是同事积累下来的工作方式。产品最期望的方向，是让同事不在场时，他的 Agent 和经验仍然在线——像一直在你身边。现场若网络受限，Demo 页有单机模拟方案。">
   <div class="slide-head">
-    <div class="eyebrow reveal">19 / 记忆</div>
+    <div class="eyebrow reveal">20 / 记忆</div>
     <h2 class="reveal">把同事调优好的 Agent，接进同一个工作台</h2>
     <p class="lede reveal">ACP 核心是 stdio；Shadow Crew 在其上扩展 WebSocket / Relay，让同事的 Agent 和你的 Agent 一起工作。</p>
   </div>
@@ -2079,11 +2134,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 21 ------------------------------------------------------------ -->
-<section class="slide" data-no="21" data-section="生态对标" data-title="四种协作形态"
+<!-- 22 ------------------------------------------------------------ -->
+<section class="slide" data-no="22" data-section="生态对标" data-title="四种协作形态"
   data-notes="不做代际排名。四种形态各解决不同问题：硬编码框架、IDE 单 Agent 扩展、沙盒执行平台、解耦型控制面。选择取决于任务、团队与治理成本，不是谁替代谁。">
   <div class="slide-head">
-    <div class="eyebrow reveal">20 / 对标</div>
+    <div class="eyebrow reveal">21 / 对标</div>
     <h2 class="reveal">四种协作形态，不同取舍</h2>
     <p class="lede reveal">不同产品解决不同问题；没有唯一正确形态。</p>
   </div>
@@ -2126,11 +2181,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 22 ------------------------------------------------------------ -->
-<section class="slide" data-no="22" data-section="生态对标" data-title="核心四维横向对比矩阵"
+<!-- 23 ------------------------------------------------------------ -->
+<section class="slide" data-no="23" data-section="生态对标" data-title="核心四维横向对比矩阵"
   data-notes="不要逐格念表，也不做排名。讲三句：Shadow Crew 选择纯 ACP 执行面、双模协同、可分发经验、Rust 反向代理；其他产品各有取舍，不是敌人，也不是落后的代际。">
   <div class="slide-head">
-    <div class="eyebrow reveal">21 / 对标</div>
+    <div class="eyebrow reveal">22 / 对标</div>
     <h2 class="reveal">四维矩阵：不同选择，不同取舍</h2>
     <p class="lede reveal">四个维度，六种解法；看取舍，不排名。</p>
   </div>
@@ -2201,11 +2256,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 23 ------------------------------------------------------------ -->
-<section class="slide" data-no="23" data-section="生态对标" data-title="五个设计选择"
+<!-- 24 ------------------------------------------------------------ -->
+<section class="slide" data-no="24" data-section="生态对标" data-title="五个设计选择"
   data-notes="这一页讲五个设计选择，不做竞争优势的断言：执行面解耦、经验可携带、收敛有门禁、按任务选双模、边界在本地。每一条都有代价，也都有适用边界。">
   <div class="slide-head">
-    <div class="eyebrow reveal">22 / 落地</div>
+    <div class="eyebrow reveal">23 / 落地</div>
     <h2 class="reveal">五个设计选择：我们如何取舍</h2>
     <p class="lede reveal">不是五个功能，而是五个取舍；每一条都有代价。</p>
   </div>
@@ -2247,11 +2302,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 24 ------------------------------------------------------------ -->
-<section class="slide" data-no="24" data-section="落地" data-title="10 分钟 Live Demo 实战"
+<!-- 25 ------------------------------------------------------------ -->
+<section class="slide" data-no="25" data-section="落地" data-title="10 分钟 Live Demo 实战"
   data-notes="Demo 的关键不是炫技，是让每一步都可视：远端蓝标、验签通过、Token 水位线、ξ* 数字、权限弹窗。若现场网络受限，直接切 npm run mock:remote，协议栈依然真实，观众看到的是 Remote ACP 端点。">
   <div class="slide-head">
-    <div class="eyebrow reveal">23 / 实战</div>
+    <div class="eyebrow reveal">24 / 实战</div>
     <h2 class="reveal">一次真实的跨端协同与博弈</h2>
     <p class="lede reveal">10 分钟，五个动作，从连接同事到补丁合入。</p>
   </div>
@@ -2296,11 +2351,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 25 ------------------------------------------------------------ -->
-<section class="slide" data-no="25" data-section="落地" data-title="企业落地 ROI 全景量化"
+<!-- 26 ------------------------------------------------------------ -->
+<section class="slide" data-no="26" data-section="落地" data-title="企业落地 ROI 全景量化"
   data-notes="给管理者算账：单场架构研讨从 12 万 Token 压到 3.2 万，降 73%；经验复用从周级变秒级。最后一定要说数据边界：这是特定任务分布下的实测，不是所有场景的承诺。">
   <div class="slide-head">
-    <div class="eyebrow reveal">24 / 落地</div>
+    <div class="eyebrow reveal">25 / 落地</div>
     <h2 class="reveal">降本 73%，传承从周级到秒级</h2>
     <p class="lede reveal">把效率收益，换算成管理者听得懂的数字。</p>
   </div>
@@ -2338,11 +2393,11 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 26 ------------------------------------------------------------ -->
-<section class="slide" data-no="26" data-section="落地" data-title="接下来的三个方向"
+<!-- 27 ------------------------------------------------------------ -->
+<section class="slide" data-no="27" data-section="落地" data-title="接下来的三个方向"
   data-notes="收束到方向，不做时间预测。现在的桌面协同、下一步的 P2P 组网、探索中的组织级经验网络；不承诺时间点，也不把探索说成必然。">
   <div class="slide-head">
-    <div class="eyebrow reveal">25 / 落地</div>
+    <div class="eyebrow reveal">26 / 落地</div>
     <h2 class="reveal">接下来的三个方向</h2>
     <p class="lede reveal">先连起来，再让经验流动，最后尝试组织级推理。</p>
   </div>
@@ -2378,10 +2433,10 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 27 ------------------------------------------------------------ -->
-<section class="slide closing" data-no="27" data-section="结语" data-title="让 Agent 彼此连接，让经验彼此流动"
+<!-- 28 ------------------------------------------------------------ -->
+<section class="slide closing" data-no="28" data-section="结语" data-title="让 Agent 彼此连接，让经验彼此流动"
   data-notes="收尾要慢。停在“让 Agent 彼此连接，让经验彼此流动”这句话上，然后落到主题：协作不是目的，让人只关注结果才是；同事不在场，他们的经验也一直在线。不做未来预测，只留一个愿望和一个行动号召。">
-  <div class="eyebrow reveal">26 / 结语</div>
+  <div class="eyebrow reveal">27 / 结语</div>
   <h1 class="reveal">让 Agent 彼此连接，<br><span class="grad">让经验彼此流动。</span></h1>
   <p class="lede reveal">协作不是目的。把人从过程里抽出来，只关注结果，才是。<br>同事不在场，他们的经验也一直在线。</p>
   <div class="end-mark reveal">
@@ -2392,8 +2447,8 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 
-<!-- 28 ------------------------------------------------------------ -->
-<section class="slide" data-no="28" data-section="附录 · ACP" data-title="一次 ACP 调用，从头到尾"
+<!-- 29 ------------------------------------------------------------ -->
+<section class="slide" data-no="29" data-section="附录 · ACP" data-title="一次 ACP 调用，从头到尾"
   data-notes="这是全流程地图：先握手，再建会话，再发 prompt，然后靠 session/update 流式回传，必要时反向审批，最后以 idle 收口。强调 v1 与 v2 的终点不同：v1 的 prompt 响应才结束回合，v2 的 prompt 响应只是插入确认。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A1 / 实操</div>
@@ -2442,9 +2497,9 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 29 ------------------------------------------------------------ -->
 <!-- 30 ------------------------------------------------------------ -->
-<section class="slide" data-no="29" data-section="附录 · ACP" data-title="capabilities 是什么"
+<!-- 31 ------------------------------------------------------------ -->
+<section class="slide" data-no="30" data-section="附录 · ACP" data-title="capabilities 是什么"
   data-notes="capabilities 不是权限，也不是版本。它是 initialize 时双方交换的一张清单：我会哪些可选方法、哪些内容类型、哪些 MCP 传输。v1 用布尔，v2 用对象存在性；省略即不支持。后续只发对端声明过的能力，否则可能 -32602。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A2 / 基础</div>
@@ -2497,7 +2552,7 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<section class="slide" data-no="30" data-section="附录 · ACP" data-title="V1 方法地图与能力"
+<section class="slide" data-no="31" data-section="附录 · ACP" data-title="V1 方法地图与能力"
   data-notes="V1 的基线很小：initialize、session/new、session/prompt、session/cancel，加上客户端的 session/request_permission。fs 与 terminal 是可选能力，让客户端替 Agent 执行。逐行讲的时候，强调‘基线 vs 能力门控’。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A3 / ACP V1</div>
@@ -2562,8 +2617,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 31 ------------------------------------------------------------ -->
-<section class="slide" data-no="31" data-section="附录 · ACP" data-title="V2 方法地图与断点"
+<!-- 32 ------------------------------------------------------------ -->
+<section class="slide" data-no="32" data-section="附录 · ACP" data-title="V2 方法地图与断点"
   data-notes="v2 的基线更大：只要 advertise capabilities.session，就必须实现 new/list/resume/close/prompt/cancel/update。客户端变薄：fs/terminal 移除，客户端工具改走 MCP。右边六个断点是迁移时最容易踩的坑。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A4 / ACP V2 (Draft)</div>
@@ -2617,8 +2672,8 @@ table.method .req.b { color: var(--accent); }
   </div>
 </section>
 
-<!-- 32 ------------------------------------------------------------ -->
-<section class="slide" data-no="32" data-section="附录 · ACP" data-title="最小接入：四段报文跑通"
+<!-- 33 ------------------------------------------------------------ -->
+<section class="slide" data-no="33" data-section="附录 · ACP" data-title="最小接入：四段报文跑通"
   data-notes="这页是可以直接照抄的最小闭环：握手、建会话、发 prompt、收口与审批。以 stdio + v2 为例；v1 的差异在页脚：clientCapabilities/clientInfo，以及 prompt 响应在结束时才返回 stopReason。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A5 / 接入</div>
@@ -2677,8 +2732,8 @@ C→A {"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}</div
   </div>
 </section>
 
-<!-- 33 ------------------------------------------------------------ -->
-<section class="slide" data-no="33" data-section="附录 · ACP" data-title="接入检查清单"
+<!-- 34 ------------------------------------------------------------ -->
+<section class="slide" data-no="34" data-section="附录 · ACP" data-title="接入检查清单"
   data-notes="最后给一张检查清单：传输、版本、能力、会话、内容、流式、权限、取消、恢复、双栈。每一条都对应一个真实踩坑点，讲完这一页，听众回去就能接。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A6 / 落地</div>
@@ -2711,8 +2766,8 @@ C→A {"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}</div
   </div>
 </section>
 
-<!-- 34 ------------------------------------------------------------ -->
-<section class="slide" data-no="34" data-section="附录 · 参考" data-title="参考论文与适用边界"
+<!-- 35 ------------------------------------------------------------ -->
+<section class="slide" data-no="35" data-section="附录 · 参考" data-title="参考论文与适用边界"
   data-notes="这页是论文依据，不是必胜宣言。每篇只讲它支撑什么：反从众、协作讨论、局部切片、异构校准、谄媚传播、角色正交、BWM、异议保留。G-Frame 是内部规范，不是论文。最后强调边界：论文结论依赖任务、模型与提示，不能外推成“多 Agent 一定更准”。">
   <div class="slide-head">
     <div class="eyebrow reveal">附录 A7 / 依据</div>
@@ -2760,7 +2815,7 @@ C→A {"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}</div
 <div class="overlay" id="overview" role="dialog" aria-modal="true" aria-label="幻灯片总览">
   <div class="ov-inner">
     <div class="ov-head">
-      <h2>全部 34 页</h2>
+      <h2>全部 35 页</h2>
       <span class="small">点击跳转 · Esc 关闭 · ← / → 翻页</span>
     </div>
     <div class="ov-grid" id="ov-grid"></div>
