@@ -953,6 +953,11 @@ table.matrix { font-size: 13px; }
 .chain .cno { font-family: var(--mono); font-size: 9.5px; color: var(--bad); flex: none; }
 .chain b { color: var(--fg); }
 .chain .ar { color: var(--fg3); margin-left: auto; font-family: var(--mono); font-size: 9.5px; }
+.chain .cs { display: inline-block; margin-top: 3px; font-size: 11.5px; line-height: 1.5; color: var(--fg3); }
+.calc { padding: 14px 16px; border: 1px solid var(--line2); border-radius: 11px; background: var(--surface2); }
+.calc-l { font-size: 12.5px; line-height: 1.85; color: var(--fg2); }
+.calc-l .mono { font-size: 11.5px; color: var(--fg); }
+.calc-l.hl { margin-top: 4px; padding-top: 6px; border-top: 1px dashed var(--line); }
 
 /* ---------- 26 bars ---------- */
 .bars { display: flex; align-items: flex-end; gap: 46px; height: 250px; padding-left: 6px; }
@@ -2031,48 +2036,50 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 18 ------------------------------------------------------------ -->
-<section class="slide" data-no="18" data-section="落地" data-title="认知防从众治理机制"
-  data-notes="这一页讲机制，不做“所有多 Agent 都会谄媚”的判断。LLM 存在谄媚倾向；做法是量化、折减、用红队逼出反例、用数学门禁兜底，并把反对意见保留下来。研究依据与边界见附录 A7。">
+<section class="slide" data-no="18" data-section="决策引擎" data-title="防谄媚：让服软拿不到分"
+  data-notes="这页只讲一件事：怎么让谄媚在机制上不划算。四步。第一步量化：BSS 是模型基线分，按模型标识查表，默认 0.35；DSS 是这一轮的分，投降词每个 0.34 或 0.14，工程补丁 0.20、分析论证 0.16、结构化证据 0.45 抵扣。第二步判投降：结构化契约里写 full_surrender_without_patch 且没有补丁，直接判；或者两个以上谄媚词又没有代码和论证。第三步折减：γ 等于 1 减去惩罚，惩罚取 0.4×DSS 加 0.2×BSS 与 0.6 的较小值；把对齐分往中性 0.5 拉。第四步兜底：红队三类反例、BWM 门禁、少数派报告。右边的算例可以现场算：DSS 0.68、BSS 0.35，惩罚 0.342，γ 0.658，原始分 0.90 被拉回 0.763。口径：这是启发式词表加结构信号，不是心理学测量。">
   <div class="slide-head">
     <div class="eyebrow reveal">17 / 决策</div>
-    <h2 class="reveal">尽量让结论落在证据上</h2>
-    <p class="lede reveal">LLM 存在谄媚倾向；用机制把结论拉回证据。</p>
+    <h2 class="reveal">防谄媚：让“服软”拿不到分</h2>
+    <p class="lede reveal">LLM 被质疑时容易改口。与其求它自觉，不如让妥协在计分上吃亏。</p>
   </div>
   <div class="slide-body">
-    <div class="grid" style="grid-template-columns:1.05fr .95fr;gap:32px">
+    <div class="grid" style="grid-template-columns:1.1fr .9fr;gap:26px">
       <div class="chains reveal">
-        <div class="chain"><span class="cno">01</span><span><b>BSS / DSS 谄媚量化</b> · 识别“无实据却突然妥协”</span><span class="ar">DETECT</span></div>
-        <div class="chain"><span class="cno">02</span><span><b>γ 信任折减</b> · 对该 Agent 后续发言降权</span><span class="ar">DISCOUNT</span></div>
-        <div class="chain"><span class="cno">03</span><span><b>Free-MAD 红队</b> · 强制给出死锁 / 竞态 / 越界反例</span><span class="ar">CHALLENGE</span></div>
-        <div class="chain"><span class="cno">04</span><span><b>BWM 门禁</b> · ξ* &gt; 0.12 退回重审，不进入裁决</span><span class="ar">GATE</span></div>
-        <div class="chain"><span class="cno">05</span><span><b>少数派异议报告</b> · 反对意见完整保留、不抹平</span><span class="ar">PRESERVE</span></div>
-        <div class="chain"><span class="cno">06</span><span><b>黑天鹅触发器</b> · 3 条量化条件触发重启评审</span><span class="ar">REOPEN</span></div>
+        <div class="chain"><span class="cno">01</span><span><b>量化 · BSS / DSS</b><br><span class="cs">BSS 按模型查基线（默认 0.35）；DSS 按本轮文本算：投降词加分，补丁与证据减分</span></span><span class="ar">SCORE</span></div>
+        <div class="chain"><span class="cno">02</span><span><b>判投降 · 先看结构化契约</b><br><span class="cs">声明“全盘投降且无补丁”直接判；否则 ≥2 个谄媚词且无代码/论证也判</span></span><span class="ar">DETECT</span></div>
+        <div class="chain"><span class="cno">03</span><span><b>折减 · γ 把分数拉回中性</b><br><span class="cs">惩罚 = min(0.6, 0.4·DSS + 0.2·BSS)，γ = 1 − 惩罚；对齐分向 0.5 收缩</span></span><span class="ar">DAMP</span></div>
+        <div class="chain"><span class="cno">04</span><span><b>兜底 · 反例与门禁</b><br><span class="cs">红队三类反例、BWM 的 ξ* 门禁、少数派异议与重开触发器</span></span><span class="ar">BACKSTOP</span></div>
       </div>
 
       <div class="reveal">
-        <div class="card" style="border-color:var(--purple-line);background:linear-gradient(180deg,var(--purple-soft),var(--surface2) 60%)">
-          <div class="card-k" style="color:var(--purple)">DISAGREEMENT-AWARE</div>
-          <div class="card-t">共识不是把异议删掉</div>
-          <div class="card-d">一份只有结论的 ADR 是危险的。系统强制伴生《少数派异议报告》，把红队的核心反例、未实证假设与重启条件一并交付。</div>
+        <div class="calc">
+          <div class="fm-k">算一遍</div>
+          <div class="calc-l">设 <span class="mono">DSS = 0.68</span>、<span class="mono">BSS = 0.35</span></div>
+          <div class="calc-l">惩罚 <span class="mono">= 0.40×0.68 + 0.20×0.35 = 0.342</span></div>
+          <div class="calc-l">折减 <span class="mono">γ = 1 − 0.342 = 0.658</span></div>
+          <div class="calc-l">原始对齐分 <span class="mono">0.90</span> → 折减后</div>
+          <div class="calc-l hl"><span class="mono">0.5 + (0.90−0.5)×0.658 = 0.763</span></div>
         </div>
-        <div class="quote mt-20" style="font-size:15.5px">谄媚让团队“感觉很好”，博弈让团队“结果更好”。</div>
-        <div class="flex wrap gap-8 mt-20">
-          <span class="chip">Sycophancy Propagation</span>
-          <span class="chip">Free-MAD</span>
-          <span class="chip">ColMAD</span>
-          <span class="chip">ReConcile</span>
-          <span class="chip">BWM</span>
-        </div>
-        <div class="card mt-20">
+        <p class="small mt-10">0.90 看着像“已经谈拢了”，折减后只有 0.763；靠服软刷出来的共识，推不动收敛。</p>
+
+        <div class="card mt-14" style="padding:16px 18px">
           <div class="card-k">REVIEW CHECK</div>
           <div class="card-t">裁决前的三问</div>
-          <ul class="lst tight mt-12">
+          <ul class="lst tight mt-10">
             <li>结论有没有可复现的实据？</li>
             <li>红队的三类反例是否逐条回应？</li>
             <li>少数派异议是否被完整保留？</li>
           </ul>
         </div>
       </div>
+    </div>
+
+    <div class="flex items-center between mt-12 reveal">
+      <span class="small">不是要求模型“别谄媚”，而是让<b style="color:var(--fg)">服软不加分、反例才加分</b>。</span>
+      <span class="flex wrap gap-8">
+        <span class="chip">Sycophancy Propagation</span><span class="chip">Free-MAD</span><span class="chip">BWM</span>
+      </span>
     </div>
   </div>
 </section>
