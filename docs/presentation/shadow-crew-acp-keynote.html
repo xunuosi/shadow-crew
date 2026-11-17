@@ -851,6 +851,12 @@ table.matrix { font-size: 13px; }
 .stage.s4 .big { color: var(--warn); } .stage.s4 { border-color: var(--warn-line); }
 .stage.s5 .big { color: var(--purple); } .stage.s5 { border-color: var(--purple-line); }
 
+/* ---------- 14 gate minis ---------- */
+.gate-mini { padding: 12px 14px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface2); }
+.gm-k { font-family: var(--mono); font-size: 9px; letter-spacing: .12em; color: var(--accent); }
+.gm-t { margin-top: 5px; font-size: 13px; font-weight: 650; color: var(--fg); }
+.gm-d { margin-top: 5px; font-size: 11.5px; line-height: 1.5; color: var(--fg3); }
+
 /* ---------- 20 gate ---------- */
 .meter { position: relative; height: 12px; border-radius: 999px; background: var(--surface3); border: 1px solid var(--line); }
 .meter .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent2)); }
@@ -1198,7 +1204,7 @@ table.method .req.b { color: var(--accent); }
         <h3 style="margin-top:8px">多 Agent：角色分工，交叉验证</h3>
         <p class="card-d">把任务拆成角色与步骤，适合高风险、跨领域、需要证据链的任务。</p>
         <ul class="lst tight mt-16">
-          <li><b>工作方式</b>：提案、挑战、验证、答辩、收敛</li>
+          <li><b>工作方式</b>：提案、红方质询、落地验证、收敛</li>
           <li><b>优势</b>：多视角交叉检查，任务可拆解</li>
           <li><b>代价</b>：协调、Token 与时延上升，可能出现伪协同</li>
         </ul>
@@ -1302,7 +1308,7 @@ table.method .req.b { color: var(--accent); }
                 <td><strong>协同 · 决策 · 经验流转</strong></td>
                 <td>Shadow Crew</td>
                 <td><strong>自建</strong>，这是产品的主战场
-                  <span class="note"><b>增量协同</b>＝只发未读的新消息，省 Token｜<b>4+1</b>＝提案→挑战→验证→答辩→裁决五阶段｜<b>BWM 门禁</b>＝把权衡交给数学求权重，不自洽就退回｜<b>Living ADR</b>＝可导出的活体决策记录｜<b>跨机经验包</b>＝同事调好的经验可带走</span>
+                  <span class="note"><b>增量协同</b>＝只发未读的新消息，省 Token｜<b>4+1</b>＝提案→红方→落地验证→综合→人类裁决（答辩由提案方补）｜<b>BWM 门禁</b>＝把权衡交给数学求权重，不自洽就退回｜<b>Living ADR</b>＝可导出的活体决策记录｜<b>跨机经验包</b>＝同事调好的经验可带走</span>
                 </td>
               </tr>
             </tbody>
@@ -1787,48 +1793,48 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 14 ------------------------------------------------------------ -->
 <section class="slide" data-no="14" data-section="决策引擎" data-title="CognoNexus 4+1 博弈引擎"
-  data-notes="这是全场的技术高潮。5 个角色不是 5 个 Agent 聊天，而是一个单向 FSM：每个阶段有契约、有产物、有门禁。红队要给出可证伪的反例，验证官要拿真实证据说话。多角色与任务拆解有论文依据，但结论有任务边界；详见附录 A7。强调 Human 仍在环内。">
+  data-notes="先把角色说准：4+1 是 4 类 AI 角色 + 1 类人类。提案、红方、落地验证、综合（AI 主席）、裁决（人类法槌）。答辩不是第 5 个角色——defense 阶段由提案方自己出防御补丁。流程是 6 阶段单向 FSM：decomposition → proposal → challenge → verification → defense → arbitration。下面四个门禁要讲清归属：有界重试是阶段契约校验失败后的 Self-Refine 次数（≤2），超限 stageFailed 转人工；SPRT 死锁熔断是似然比跌破下界时停自动推演；LoopGuard 管的是普通协同的级联跳数，不是这个 FSM。">
   <div class="slide-head">
     <div class="eyebrow reveal">13 / 决策</div>
-    <h2 class="reveal">4+1：把讨论变成一场有规则的博弈</h2>
-    <p class="lede reveal">角色正交、阶段单向、产物可验。红队负责挑刺，验证官负责拿证据。</p>
+    <h2 class="reveal">4+1：四类 AI 角色，加一把人类法槌</h2>
+    <p class="lede reveal">角色正交、阶段单向、产物可验。答辩不是新角色，由提案方在 defense 阶段自己补。</p>
   </div>
   <div class="slide-body">
     <div class="stages">
       <div class="stage s1 reveal">
-        <div class="role">PROPOSER</div><div class="big">P</div><h4>提案官</h4>
-        <p>立论：目标、约束、方案与取舍。必须给出可被挑战的具体承诺。</p>
-        <div class="out">产物：方案草案 + 约束清单</div>
+        <div class="role">PROPOSER</div><div class="big">P</div><h4>提案</h4>
+        <p>立论：目标、约束、方案与取舍，给出可被挑战的具体承诺；defense 阶段由它自己出防御补丁。</p>
+        <div class="out">产物：方案草案 + 约束清单 + 修正稿</div>
       </div>
       <div class="stage s2 reveal">
-        <div class="role">CHALLENGER · FREE-MAD</div><div class="big">C</div><h4>挑战官</h4>
-        <p>红队质询：死锁、并发竞态、越界三类致命反例，拒绝泛泛而谈。</p>
+        <div class="role">RED TEAM · FREE-MAD</div><div class="big">C</div><h4>红方</h4>
+        <p>指定异议者：死锁、并发竞态、越界三类致命反例，拒绝泛泛而谈。</p>
         <div class="out">产物：质询清单 + 可复现反例</div>
       </div>
       <div class="stage s3 reveal">
-        <div class="role">VERIFIER · T1/T2</div><div class="big">V</div><h4>验证官</h4>
-        <p>物理接地：拉起真实代码与测试，产出可核查的运行证据。</p>
+        <div class="role">VERIFIER · T1/T2</div><div class="big">V</div><h4>落地验证</h4>
+        <p>不参与辩论：拉起真实代码与测试，输出布尔真值与可复现的运行证据。</p>
         <div class="out">产物：证据链 / 未实证标记</div>
       </div>
-      <div class="stage s4 reveal">
-        <div class="role">DEFENDER</div><div class="big">D</div><h4>答辩官</h4>
-        <p>逐条回应质询：修正或坚持。有界重试，最多两轮，不允许无限拉扯。</p>
-        <div class="out">产物：修正稿 + 原子承诺</div>
-      </div>
       <div class="stage s5 reveal">
-        <div class="role">ARBITER · BWM</div><div class="big">A</div><h4>综合裁定官</h4>
-        <p>运筹求解：把权衡转成权重与排序，一致性不达标退回重审。</p>
-        <div class="out">产物：Living ADR + 少数派异议</div>
+        <div class="role">SYNTHESIZER · BWM</div><div class="big">S</div><h4>综合</h4>
+        <p>AI 主席：编排 FSM、切 LMAD 争议片、跑 BWM 求权重、起草裁决并征询全员无异议。</p>
+        <div class="out">产物：权衡矩阵 + Living ADR 草案</div>
+      </div>
+      <div class="stage s4 reveal">
+        <div class="role">HUMAN · GAVEL</div><div class="big">H</div><h4>裁决</h4>
+        <p>人类持法槌：终审定案、死锁时介入、签署缺席豁免、指派落地执行。</p>
+        <div class="out">产物：终局裁决 + 落地指派</div>
       </div>
     </div>
 
-    <div class="callout mt-14 reveal"><span class="tag">依据</span><span>多角色与任务拆解的研究依据：Free-MAD / ColMAD / LMAD / ReConcile；G-Frame 用贝叶斯路由拆模块，详见附录 A7。</span></div>
+    <div class="callout mt-14 reveal"><span class="tag">阶段</span><span>6 阶段单向 FSM：<span class="mono">decomposition → proposal → challenge → verification → defense → arbitration</span>。<b>答辩属于 proposal 方</b>，不新增角色。</span></div>
 
     <div class="grid cols-4 gap-12 mt-12 reveal">
-      <div class="callout"><span class="tag">HUMAN</span><span>保留最终否决权</span></div>
-      <div class="callout"><span class="tag">QUORUM</span><span>法定人数门禁</span></div>
-      <div class="callout"><span class="tag">RETRY</span><span>有界重试 ≤ 2</span></div>
-      <div class="callout"><span class="tag">GUARD</span><span>LoopGuard 防死锁</span></div>
+      <div class="gate-mini"><div class="gm-k">RETRY</div><div class="gm-t">有界重试 ≤ 2</div><div class="gm-d">阶段契约校验不过，最多 2 次 Self-Refine；仍不过就 <span class="mono">stageFailed</span> 转人工。</div></div>
+      <div class="gate-mini"><div class="gm-k">SPRT</div><div class="gm-t">死锁熔断</div><div class="gm-d">似然比 Λ 跌破下界 → <span class="mono">deadlock_escalation</span>，停自动推演、交人类。</div></div>
+      <div class="gate-mini"><div class="gm-k">QUORUM</div><div class="gm-t">法定人数</div><div class="gm-d">红方必须响应，或具名旁路；否则裁决门禁不放行。</div></div>
+      <div class="gate-mini"><div class="gm-k">HUMAN</div><div class="gm-t">法槌保留</div><div class="gm-d">人类可随时中断、否决、改判；AI 只起草，不终审。</div></div>
     </div>
   </div>
 </section>

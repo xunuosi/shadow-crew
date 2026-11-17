@@ -109,7 +109,7 @@ Shadow Crew 在纯粹的 ACP 协议之上，构建了 5 大工业级控制面能
   - 屏幕展示 Token 水位线监控，展示 `<delta-events>` 机制仅发送 200 Token 未读增量，节省 75% 费用。
 - **步骤 4：升维 4+1 博弈推演（4 分钟）**
   - 遇到“Redlock 在 NTP 时钟跳变下的安全性”分歧，一键将 Topic 升级为 **CognoNexus 4+1 博弈模式**；
-  - 提案官发起方案 $\rightarrow$ Free-MAD 红队尖锐质询时钟漏洞 $\rightarrow$ 验证官拉起本地 Rust 执行真实实证 $\rightarrow$ 答辩官修正逻辑 $\rightarrow$ 综合裁定官启动 BWM 运筹求解，屏幕显示一致性指标 $\xi^* = 0.08 \le 0.12$，瞬间生成规范的 Living ADR 架构决策画布。
+  - 提案官发起方案 $\rightarrow$ Free-MAD 红队尖锐质询时钟漏洞 $\rightarrow$ 验证官拉起本地 Rust 执行真实实证 $\rightarrow$ 提案方补防御修正 $\rightarrow$ 综合裁定官启动 BWM 运筹求解，屏幕显示一致性指标 $\xi^* = 0.08 \le 0.12$，瞬间生成规范的 Living ADR 架构决策画布。
 - **步骤 5：Rust 权限仲裁与物理补丁合入（2 分钟）**
   - 定案后一键派发执行，Agent 发起文件修改，Rust 弹窗拦截 `fs.write` 请求，演示工作区内路径安全放行，代码自动合入 Git 工作区并一次性测试通过。
 
@@ -158,7 +158,7 @@ Shadow Crew 在纯粹的 ACP 协议之上，构建了 5 大工业级控制面能
 | **11** | **每个单元，一个会话，一个工作区**<br>隔离不是说出来的，是 key 和目录决定的 | 五行对照表：Channel / Topic / DM / DM Topic 各自的 session key 与工作目录，外加 Module 的沙箱与 allowedFiles；右侧四条规则（建立即锁定、运行期不可变、并发互不越界、模块级隔离） | “频道、议题、私聊、私聊议题、模块，每个单元都有独立的 session key 和工作目录。key 由宿主拼，cwd 由 binding 解析；模块层再叠上下文沙箱和 allowedFiles。所以并发时不会串上下文，也不会互相覆盖文件。” |
 | **12** | **私聊：按 Agent 连续，按议题切开**<br>不绑项目目录换连贯，用议题换聚焦 | 两条轨道：主私聊（`dm:` + `agents/<aid>`）与私聊议题（`dmtopic:` + `agents/<aid>/topics/<tid>`）；右侧三种目录来源 default / agent_snapshot / custom；底部取舍说明 | “私聊不绑项目目录，绑在 Agent 家目录，所以换项目继续聊还是同一条历史。代价是上下文会膨胀，于是私聊也有议题：独立 session key、独立目录，只谈一个特定问题，聊完不回流。产物永远落在 agents/<aid>/topics/<tid>/artifacts。” |
 | **13** | **普通讨论：靠 @ 接力，用沉默收敛**<br>默认模式的自然收敛与 Swarm 支线 | 上排三卡：@ 是接力棒 / 没有 @ 就结束（静默收敛）/ LoopGuard 兜底；中间 Swarm 条：触发→拆解→确认→并行→Reduce；底部设计初衷 | “默认模式没有总指挥也没有固定轮次：谁被 @ 谁发言，本轮没人发出有效 @ 就自然结束，不弹提示、不加系统消息——沉默本身就是已达成。兜底是 LoopGuard 12 跳或单 Agent 8 次，到顶静默收口。设计初衷是不让 Agent 为了表态而发言。” |
-| **14** | **深度博弈流：CognoNexus 4+1 引擎**<br>多角色、任务拆解与证据链 | DIANOIA 4+1 状态机流转图：立论 $\rightarrow$ 质询 $\rightarrow$ 接地 $\rightarrow$ 答辩 $\rightarrow$ 仲裁 | “面对复杂架构分歧，我们启动 4+1 流程：红队提出可证伪反例，验证官拿真实代码跑实证。多角色与任务拆解有论文依据（Free-MAD / ColMAD / LMAD / ReConcile），但结论有任务边界；详见附录 A7。” |
+| **14** | **4+1：四类 AI 角色，加一把人类法槌**<br>角色说准，门禁说清 | 五张角色卡：提案 P / 红方 C / 落地验证 V / 综合 S（AI 主席）/ 裁决 H（人类法槌）；一行阶段说明（6 阶段 FSM，答辩属提案方）；四张门禁卡：有界重试 ≤2、SPRT 死锁熔断、法定人数、人类法槌 | “4+1 是 4 类 AI 角色 + 1 类人类：提案、红方、落地验证、综合、裁决。答辩不是第 5 个角色，defense 阶段由提案方自己出补丁。下面四个门禁要说清归属：有界重试是阶段契约校验失败后的 Self-Refine 次数（≤2），超限 stageFailed 转人工；SPRT 死锁熔断是似然比跌破下界；LoopGuard 管的是普通协同的级联，不是这个 FSM。” |
 | **15** | **BWM 运筹学 0-Token 仲裁**<br>把架构权衡写成可检查的数学问题 | 单纯形法凸优化图与 $\xi^* \le 0.12$ 一致性门禁判定 | 讲解如何用线性规划求解权重，一致性不达标退回重审。BWM 不替代讨论，只把最后一步变成可检查的门禁；参考见附录 A7。 |
 | **16** | **认知防从众治理机制**<br>Sycophancy 偏见防御与《少数派异议报告》 | 偏见折减流程与少数派报告导出示意图 | 讲解谄媚传播、信任折减、红队反例与异议保留。研究依据（Sycophancy Propagation / Free-MAD / ColMAD / ReConcile）与适用边界见附录 A7。 |
 | **17** | **Shadow Crew 全景版图**<br>五大核心系统筑造桌面级协作枢纽 | 整体架构蓝图：双模连接、.scpack 记忆、Buzz 并发流、CognoNexus 博弈、Rust 权限 | 整体介绍 Shadow Crew 是如何在 ACP 之上长出丰富的团队协作、跨机组网与运筹决策能力的。 |
