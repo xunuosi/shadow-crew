@@ -2162,14 +2162,14 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 20 ------------------------------------------------------------ -->
 <section class="slide" data-no="20" data-section="ACP · 协议" data-title="原生记忆第一原则"
-  data-notes="这页有三处容易讲错，先说清。第一，宿主不拥有记忆：长期事实源在端点，宿主不自建向量库、不把检索片段硬塞 Prompt。第二，握手探测的不是布尔值，是一个对象：capabilities.nativeMemory 里有 supported 和 enabled，据此分四态——enabled、disabled、unsupported、unknown；没声明就是 unknown，不是 unsupported，也不复用上次进程的旧状态。第三，禁用不是宿主直接拼 --disable memories：宿主通过环境变量 SHADOW_CREW_ACP_NATIVE_MEMORY=0 和 prompt 的 _meta 把策略传过去，具体怎么关由适配器实现；挂载 .scpack 时强制 0，并阻断 CODEX_HOME 这类越权变量。">
+  data-notes="这页把四态讲具体。握手返回的不是 true/false，是一个对象，里面 supported 和 enabled 两个布尔，组合出四种情况。enabled：端点说我有记忆而且开着，宿主就尊重它，不做外部注入。disabled：端点说我有这个能力但现在关着，宿主写 env=0，让适配器的关闭落实。unsupported：端点明确说不支持，宿主就不再探测、UI 开关置灰。unknown：端点根本没返回这个字段，或者还没握手，宿主不猜、不写策略，UI 显示待握手。每次握手都重新探测覆盖，不复用上次进程的状态。另外 --disable memories 是适配器侧的实现，不是宿主拼的参数。">
   <div class="slide-head">
     <div class="eyebrow reveal">19 / 记忆</div>
     <h2 class="reveal">记忆归端点：宿主只传策略，不替它记住</h2>
-    <p class="lede reveal">ACP 不规定长期记忆；<b class="mono">nativeMemory</b> 是 Shadow Crew 扩展，按四态处理，不猜。</p>
+    <p class="lede reveal">握手返回的是一个对象；supported 与 enabled 两个布尔，组合出四种状态。</p>
   </div>
   <div class="slide-body">
-    <div class="grid" style="grid-template-columns:1.02fr .98fr;gap:26px">
+    <div class="grid" style="grid-template-columns:.92fr 1.08fr;gap:24px">
       <div class="reveal">
         <div class="small" style="margin-bottom:8px">宿主做三件事，不做一件</div>
         <ul class="lst tight">
@@ -2181,24 +2181,21 @@ table.method .req.b { color: var(--accent); }
       </div>
 
       <div class="reveal">
-        <div class="small" style="margin-bottom:8px">握手探测是对象，不是布尔值</div>
-        <table class="tbl compact">
-          <thead><tr><th style="width:22%">状态</th><th style="width:44%">怎么判</th><th style="width:34%">宿主动作</th></tr></thead>
+        <div class="small" style="margin-bottom:6px">端点返回的形状（对象，不是 true / false）</div>
+        <div class="mono" style="font-size:11px;color:var(--fg2);margin-bottom:8px">{ supported: bool, enabled: bool, persistent: bool, provider: string }</div>
+        <table class="tbl compact mem-tbl">
+          <thead><tr><th style="width:19%">状态</th><th style="width:27%">端点实际说了什么</th><th style="width:27%">宿主动作</th><th style="width:27%">用户看到</th></tr></thead>
           <tbody>
-            <tr><td class="mth">enabled</td><td>supported=true, enabled=true</td><td>尊重端点索引</td></tr>
-            <tr><td class="mth">disabled</td><td>supported=true, enabled=false</td><td>传 0，由适配器关闭</td></tr>
-            <tr><td class="mth">unsupported</td><td>supported=false</td><td>不启用，不再重试</td></tr>
-            <tr><td class="mth">unknown</td><td>端点未声明该字段</td><td>不猜，UI 显示待握手</td></tr>
+            <tr><td class="mth">enabled</td><td><span class="mono">supported: true</span><br><span class="mono">enabled: true</span></td><td>尊重索引，不做外部注入</td><td>记忆正常，随端点走</td></tr>
+            <tr><td class="mth">disabled</td><td><span class="mono">supported: true</span><br><span class="mono">enabled: false</span></td><td>写 <span class="mono">env=0</span>，由适配器关闭</td><td>“已关闭”，可手动开</td></tr>
+            <tr><td class="mth">unsupported</td><td><span class="mono">supported: false</span></td><td>不启用，不再探测</td><td>开关置灰</td></tr>
+            <tr><td class="mth">unknown</td><td>没返回这个字段<br>（或还没握手）</td><td>不猜，不写策略</td><td>“待握手”</td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <div class="code mt-16 reveal"><span class="c">// 实际载荷：nativeMemory 是对象，不是 true / false</span>
-<span class="k">capabilities</span>.nativeMemory = { supported: <span class="n">true</span>, enabled: <span class="n">false</span>, persistent: <span class="n">true</span> }
-<span class="c">→ 判定 status = disabled；宿主写 env=0，适配器据此关闭自己的记忆</span></div>
-
-    <p class="small mt-10 reveal"><b style="color:var(--fg)">探活只反映当前进程</b>：每次握手重新探测并覆盖，不复用上次进程的旧状态。<br><span class="mono">--disable memories</span> 是<b style="color:var(--fg)">适配器侧</b>的实现（如 Claude Code / Codex），不是宿主直接拼的启动参数。</p>
+    <p class="small mt-12 reveal"><b style="color:var(--fg)">探活只反映当前进程</b>：每次握手重新探测并覆盖，不复用上次进程的旧状态。<br><span class="mono">--disable memories</span> 是<b style="color:var(--fg)">适配器侧</b>的实现（如 Claude Code / Codex），不是宿主直接拼的启动参数。</p>
   </div>
 </section>
 
