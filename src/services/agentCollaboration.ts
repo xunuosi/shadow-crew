@@ -1187,6 +1187,218 @@ export interface BuildNormalModeTurnPromptOptions {
   isParallelFirstTurn?: boolean;
 }
 
+export const MAX_SINGLE_DELTA_EVENT_BYTES = 256 * 1024; // 256 KiB（对齐 Buzz Relay 单事件上限）
+export const MAX_DELTA_BATCH_BYTES = 768 * 1024;        // 768 KiB（为外层上下文与 JSON-RPC 包装预留余量）
+export const MAX_ACP_PROMPT_BYTES = 900 * 1024;         // 900 KiB（发送前绝对硬上限，严格低于 1 MiB）
+
+const utf8TextEncoder = new TextEncoder();
+
+/** 计算字符串的精确 UTF-8 字节长度 */
+export function getUtf8ByteLength(text: string): number {
+  if (!text) return 0;
+  return utf8TextEncoder.encode(text).byteLength;
+}
+
+/** 按 UTF-8 字节上限安全截断字符串（不劈裂多字节字符或 UTF-16 代理对） */
+export function truncateTextToUtf8Bytes(
+  text: string,
+  maxBytes: number,
+  suffix = ''
+): string {
+  if (!text || maxBytes <= 0) return '';
+  if (getUtf8ByteLength(text) <= maxBytes) return text;
+
+  const suffixBytes = suffix ? getUtf8ByteLength(suffix) : 0;
+  const targetBytes = Math.max(0, maxBytes - suffixBytes);
+  if (targetBytes === 0) {
+    return suffixBytes <= maxBytes ? suffix : '';
+  }
+
+  // 二分查找不超出 targetBytes 的最大 UTF-16 索引
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    const slice = text.slice(0, mid);
+    if (getUtf8ByteLength(slice) <= targetBytes) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  // 若切点落在 UTF-16 高低代理对中间，回退 1 个 code unit
+  if (low > 0) {
+    const prevCode = text.charCodeAt(low - 1);
+    if (prevCode >= 0xd800 && prevCode <= 0xdbff) {
+      low -= 1;
+    }
+  }
+
+  return `${text.slice(0, low)}${suffix}`;
+}
+
+/** 双端保留截断：保留首部背景与尾部最新结论，中间插入省略标记 */
+function truncateTextHeadTailBytes(
+  text: string,
+  maxBytes: number,
+  marker: string
+): string {
+  if (getUtf8ByteLength(text) <= maxBytes) return text;
+  const markerBytes = getUtf8ByteLength(marker);
+  const availBytes = Math.max(64, maxBytes - markerBytes);
+  const headBytes = Math.floor(availBytes * 0.45);
+  const tailBytes = availBytes - headBytes;
+
+  const head = truncateTextToUtf8Bytes(text, headBytes);
+  // 尾部截取：从末尾反向估算并精确收缩到 tailBytes
+  const approxTailChars = Math.min(text.length, tailBytes);
+  let tailStart = Math.max(0, text.length - approxTailChars);
+  if (tailStart > 0) {
+    const code = text.charCodeAt(tailStart);
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      tailStart += 1;
+    }
+  }
+  let tail = text.slice(tailStart);
+  while (tail.length > 0 && getUtf8ByteLength(tail) > tailBytes) {
+    const step = Math.max(1, Math.floor(tail.length * 0.1));
+    tailStart = Math.min(text.length, tailStart + step);
+    if (tailStart < text.length) {
+      const code = text.charCodeAt(tailStart);
+      if (code >= 0xdc00 && code <= 0xdfff) {
+        tailStart += 1;
+      }
+    }
+    tail = text.slice(tailStart);
+  }
+  return `${head}${marker}${tail}`;
+}
+
+export interface DeltaEventByteBudgetResult {
+  entries: RoomTranscriptEntry[];
+  totalBytes: number;
+  droppedCount: number;
+  truncatedEntryCount: number;
+}
+
+/**
+ * 对未读增量事件批次执行双层字节预算治理（对齐并补全 Buzz 分层限制）：
+ * 1. 单条事件不得超过 maxSingleEventBytes (默认 256 KiB)；
+ * 2. 整批事件总字节不得超过 maxTotalBytes (默认 768 KiB)，超限时优先保住最新触发消息，
+ *    从最旧事件开始先折叠为精简摘要，仍超限则从最旧端移除并注入省略提示。
+ */
+export function enforceDeltaEventByteBudget(
+  entries: RoomTranscriptEntry[],
+  maxTotalBytes = MAX_DELTA_BATCH_BYTES,
+  maxSingleEventBytes = MAX_SINGLE_DELTA_EVENT_BYTES
+): DeltaEventByteBudgetResult {
+  if (!entries || entries.length === 0) {
+    return { entries: [], totalBytes: 0, droppedCount: 0, truncatedEntryCount: 0 };
+  }
+
+  let truncatedEntryCount = 0;
+  const boundedEntries: RoomTranscriptEntry[] = entries.map((entry) => {
+    const content = entry.content || '';
+    const entryBytes = getUtf8ByteLength(content);
+    if (entryBytes <= maxSingleEventBytes) {
+      return entry;
+    }
+    truncatedEntryCount += 1;
+    const marker = `\n\n[... 单条事件超出 ${Math.round(maxSingleEventBytes / 1024)} KiB 上限，已截断 ${entryBytes - maxSingleEventBytes} 字节 ...]\n\n`;
+    return {
+      ...entry,
+      content: truncateTextHeadTailBytes(content, maxSingleEventBytes, marker),
+    };
+  });
+
+  const calcTotal = (list: RoomTranscriptEntry[]) =>
+    list.reduce((sum, item) => sum + getUtf8ByteLength(formatDeltaEntryLine(item)) + 2, 0);
+
+  let totalBytes = calcTotal(boundedEntries);
+  if (totalBytes <= maxTotalBytes) {
+    return { entries: boundedEntries, totalBytes, droppedCount: 0, truncatedEntryCount };
+  }
+
+  // 第一阶段降级：从最旧到倒数第二条，将过长旧事件折叠为 1024 字节预览（尽量保住事件数量与最新触发消息）
+  const working = boundedEntries.map((e) => ({ ...e }));
+  const OLD_ENTRY_PREVIEW_BYTES = 1024;
+  for (let i = 0; i < working.length - 1 && totalBytes > maxTotalBytes; i++) {
+    const itemBytes = getUtf8ByteLength(working[i].content);
+    if (itemBytes > OLD_ENTRY_PREVIEW_BYTES) {
+      working[i].content = truncateTextToUtf8Bytes(
+        working[i].content,
+        OLD_ENTRY_PREVIEW_BYTES,
+        '... [早期增量已折叠]'
+      );
+      truncatedEntryCount += 1;
+      totalBytes = calcTotal(working);
+    }
+  }
+
+  // 第二阶段降级：若仍超预算，从最旧端移除事件，始终保留最新一条触发消息
+  let droppedCount = 0;
+  while (working.length > 1 && totalBytes > maxTotalBytes) {
+    working.shift();
+    droppedCount += 1;
+    totalBytes = calcTotal(working);
+  }
+
+  // 若仅剩最后 1 条仍超预算，强行裁剪到 maxTotalBytes 以内
+  if (working.length === 1 && totalBytes > maxTotalBytes) {
+    const overhead = getUtf8ByteLength(formatDeltaEntryLine({ ...working[0], content: '' })) + 32;
+    const allowedContentBytes = Math.max(256, maxTotalBytes - overhead);
+    working[0].content = truncateTextHeadTailBytes(
+      working[0].content,
+      allowedContentBytes,
+      '\n\n[... 消息超出单轮字节上限，中间内容已省略 ...]\n\n'
+    );
+    truncatedEntryCount += 1;
+  }
+
+  if (droppedCount > 0) {
+    const noticeEntry: RoomTranscriptEntry = {
+      id: 'delta-budget-notice',
+      authorId: 'system-budget',
+      authorName: 'System',
+      content: `[提示：早期 ${droppedCount} 条增量消息因超出单轮 ${Math.round(maxTotalBytes / 1024)} KiB 字节预算已折叠]`,
+      isAgent: false,
+    };
+    const noticeBytes = getUtf8ByteLength(formatDeltaEntryLine(noticeEntry)) + 2;
+    if (calcTotal(working) + noticeBytes <= maxTotalBytes) {
+      working.unshift(noticeEntry);
+    }
+  }
+
+  return {
+    entries: working,
+    totalBytes: calcTotal(working),
+    droppedCount,
+    truncatedEntryCount,
+  };
+}
+
+/**
+ * 最终派发前硬字节护栏：确保发往 ACP 进程的完整 Prompt 绝不超过 maxBytes（默认 900 KiB）
+ */
+export function clampAcpPromptToByteBudget(
+  prompt: string,
+  maxBytes = MAX_ACP_PROMPT_BYTES
+): { prompt: string; originalBytes: number; finalBytes: number; truncated: boolean } {
+  const originalBytes = getUtf8ByteLength(prompt);
+  if (originalBytes <= maxBytes) {
+    return { prompt, originalBytes, finalBytes: originalBytes, truncated: false };
+  }
+  const marker = `\n\n[... Prompt 总字节 (${originalBytes} B) 超出 ${Math.round(maxBytes / 1024)} KiB 安全上限，中间冗余上下文已安全截断 ...]\n\n`;
+  const clamped = truncateTextHeadTailBytes(prompt, maxBytes, marker);
+  return {
+    prompt: clamped,
+    originalBytes,
+    finalBytes: getUtf8ByteLength(clamped),
+    truncated: true,
+  };
+}
+
 /**
  * 格式化单条增量消息为紧凑语义行
  */
@@ -1228,10 +1440,11 @@ export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOpti
   // 1. 私聊 (DM) 极简直通：若为热会话且存在多条未读增量则包裹 delta-events，否则直传最新消息
   if (isDm) {
     if (isWarmSession && deltaMessages.length > 1) {
-      const body = deltaMessages.map(formatDeltaEntryLine).join('\n\n');
+      const dmBudget = enforceDeltaEventByteBudget(deltaMessages);
+      const body = dmBudget.entries.map(formatDeltaEntryLine).join('\n\n');
       return wrapSemanticSection('delta-events', body, {
         scope: roomId,
-        count: deltaMessages.length,
+        count: dmBudget.entries.length,
       });
     }
     return triggerContent || deltaMessages[deltaMessages.length - 1]?.content || '';
@@ -1265,9 +1478,11 @@ export function buildNormalModeTurnPrompt(options: BuildNormalModeTurnPromptOpti
           }
       : null;
 
-  const effectiveEntries: RoomTranscriptEntry[] = fallbackTriggerEntry
+  const rawEntries: RoomTranscriptEntry[] = fallbackTriggerEntry
     ? [...deltaMessages, fallbackTriggerEntry]
     : deltaMessages;
+  const budgetedDelta = enforceDeltaEventByteBudget(rawEntries);
+  const effectiveEntries = budgetedDelta.entries;
 
   const deltaBody = effectiveEntries.map(formatDeltaEntryLine).join('\n\n');
   const deltaSection = wrapSemanticSection('delta-events', deltaBody, {

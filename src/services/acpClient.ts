@@ -22,7 +22,11 @@ import {
 } from '../types';
 export type { ChallengeCritiquePayload } from '../types';
 import { isAgentOffline } from '../utils/agentRuntime';
-import { buildAgentPersonaPrompt } from './agentCollaboration';
+import {
+  buildAgentPersonaPrompt,
+  clampAcpPromptToByteBudget,
+  getUtf8ByteLength,
+} from './agentCollaboration';
 import {
   ACP_NATIVE_MEMORY_AUTO_GENERATE_ENV,
   ACP_NATIVE_MEMORY_ENV,
@@ -1946,6 +1950,23 @@ export async function sendPromptToAcpAgent(
     }
   }
 
+  if (scpackRetrieval && !enhancedPrompt.includes('[SHADOW_CREW_EXPERTISE_DATA]')) {
+    enhancedPrompt = scpackRetrieval.augmented_prompt;
+  }
+
+  // 1.3 整轮 Prompt 字节预算预检与兜底截断（补齐 Buzz 发送前无总字节预检的短板）
+  const promptBudgetGuard = clampAcpPromptToByteBudget(enhancedPrompt);
+  if (promptBudgetGuard.truncated) {
+    console.warn(
+      `[ACP Client] Prompt clamped for ${agent.name} (${agent.id}): ${promptBudgetGuard.originalBytes} B -> ${promptBudgetGuard.finalBytes} B`
+    );
+    enhancedPrompt = promptBudgetGuard.prompt;
+  } else {
+    console.debug(
+      `[ACP Client] Prompt size check for ${agent.name} (${agent.id}): promptBytes=${promptBudgetGuard.finalBytes}, systemBytes=${getUtf8ByteLength(resolvedSystemPrompt)}`
+    );
+  }
+
   // 2. 判定是否为远程 Agent (WebSocket / Relay Hub)
   const isRemote =
     agent.isRemote ||
@@ -1962,9 +1983,6 @@ export async function sendPromptToAcpAgent(
         isRealProcess: false,
         isError: true,
       };
-    }
-    if (scpackRetrieval && !enhancedPrompt.includes('[SHADOW_CREW_EXPERTISE_DATA]')) {
-      enhancedPrompt = scpackRetrieval.augmented_prompt;
     }
     const targetUrl = agent.remoteUrl || agent.acpCommandOrUrl;
     console.log(`[ACP Client] Dispatching prompt to Remote ACP: ${targetUrl} (${agent.name})`);

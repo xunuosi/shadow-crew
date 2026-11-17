@@ -15,6 +15,10 @@ import {
   buildCascadePrompt,
   buildCompositeSystemPrompt,
   MAX_DELTA_BATCH_EVENTS,
+  getUtf8ByteLength,
+  truncateTextToUtf8Bytes,
+  enforceDeltaEventByteBudget,
+  clampAcpPromptToByteBudget,
   createTurnEpochTracker,
   captureTurnEpochSnapshot,
   isTurnEpochStale,
@@ -1636,6 +1640,47 @@ async function runEpochAndBarrierTests() {
       root?.unmount();
     });
     resetAcpSessionClearBarrierState();
+  }
+
+  // 14. 分层字节预算治理测试 (UTF-8 安全截断 + 单事件上限 + 整批优先保留最新触发消息)
+  {
+    const emojiStr = '🚀架构验证与并发安全测试🔥'.repeat(10);
+    const truncatedEmoji = truncateTextToUtf8Bytes(emojiStr, 40, '...');
+    assert(
+      getUtf8ByteLength(truncatedEmoji) <= 40 && !truncatedEmoji.includes('\uFFFD'),
+      'truncateTextToUtf8Bytes 严格遵守 UTF-8 字节上限且不劈裂多字节字符/Emoji'
+    );
+
+    const largeOldMsg = {
+      id: 'old-large-1',
+      authorId: 'u1',
+      authorName: 'Alice',
+      content: '旧事件长内容_'.repeat(500),
+      isAgent: false,
+    };
+    const latestTriggerMsg = {
+      id: 'latest-trigger-2',
+      authorId: 'u2',
+      authorName: 'Bob',
+      content: '最新关键触发指令：请基于上述讨论立即给出最终修复方案',
+      isAgent: false,
+    };
+    const budgetRes = enforceDeltaEventByteBudget([largeOldMsg, latestTriggerMsg], 2048, 1500);
+    assert(
+      budgetRes.totalBytes <= 2048 &&
+        budgetRes.entries.some((e) => e.content.includes('最新关键触发指令')),
+      'enforceDeltaEventByteBudget 在超预算时折叠旧事件并完整保留最新触发消息'
+    );
+
+    const hugePrompt = `头部背景\n${'A'.repeat(2000)}\n尾部核心指令`;
+    const clamped = clampAcpPromptToByteBudget(hugePrompt, 512);
+    assert(
+      clamped.truncated &&
+        clamped.finalBytes <= 512 &&
+        clamped.prompt.includes('头部背景') &&
+        clamped.prompt.includes('尾部核心指令'),
+      'clampAcpPromptToByteBudget 在超总字节硬上限时保留首尾关键语义并严格收敛至预算内'
+    );
   }
 }
 

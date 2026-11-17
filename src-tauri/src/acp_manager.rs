@@ -24,6 +24,81 @@ fn next_init_request_id() -> u64 {
     NEXT_INIT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// 单次 JSON-RPC stdin 写出超时上限（对齐 Buzz 30s 写出超时）
+const ACP_STDIN_WRITE_TIMEOUT_SECS: u64 = 30;
+/// 单条出站 NDJSON 行最大字节数（对齐 Buzz 4 MiB 单行 JSON-RPC 限制）
+const ACP_MAX_OUTBOUND_LINE_BYTES: usize = 4 * 1024 * 1024;
+/// 单条入站 stdout NDJSON 行最大字节数（对齐 Buzz 10 MiB 防 OOM 上限）
+const ACP_MAX_STDOUT_LINE_BYTES: usize = 10 * 1024 * 1024;
+
+#[derive(Debug, PartialEq, Eq)]
+enum BoundedLineRead {
+    Line(String),
+    Overflow { discarded_bytes: usize },
+    Eof,
+}
+
+/// 有界读取单行 stdout（按字节扫描 `\n`，超过 `max_bytes` 后立即停止内存追加并跳过该行剩余字节，防止异常 Agent 无限输出导致 OOM）
+async fn read_bounded_stdout_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<BoundedLineRead> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut overflowed = false;
+    let mut discarded_bytes: usize = 0;
+
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if overflowed {
+                return Ok(BoundedLineRead::Overflow { discarded_bytes });
+            }
+            if buf.is_empty() {
+                return Ok(BoundedLineRead::Eof);
+            }
+            let line = String::from_utf8_lossy(&buf).into_owned();
+            return Ok(BoundedLineRead::Line(line));
+        }
+
+        if let Some(newline_pos) = available.iter().position(|&b| b == b'\n') {
+            if !overflowed {
+                if buf.len() + newline_pos <= max_bytes {
+                    buf.extend_from_slice(&available[..newline_pos]);
+                    if buf.last() == Some(&b'\r') {
+                        buf.pop();
+                    }
+                    reader.consume(newline_pos + 1);
+                    let line = String::from_utf8_lossy(&buf).into_owned();
+                    return Ok(BoundedLineRead::Line(line));
+                } else {
+                    discarded_bytes = buf.len() + newline_pos;
+                    buf.clear();
+                    buf.shrink_to_fit();
+                }
+            } else {
+                discarded_bytes += newline_pos;
+            }
+            reader.consume(newline_pos + 1);
+            return Ok(BoundedLineRead::Overflow { discarded_bytes });
+        } else {
+            let chunk_len = available.len();
+            if !overflowed {
+                if buf.len() + chunk_len <= max_bytes {
+                    buf.extend_from_slice(available);
+                } else {
+                    overflowed = true;
+                    discarded_bytes = buf.len() + chunk_len;
+                    buf.clear();
+                    buf.shrink_to_fit();
+                }
+            } else {
+                discarded_bytes += chunk_len;
+            }
+            reader.consume(chunk_len);
+        }
+    }
+}
+
 /// 格式化并写入本地持久化日志文件 (~/.shadow-crew/logs/acp.log)
 pub fn log_acp_event(agent_id: &str, direction: &str, line: &str) {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
@@ -2318,23 +2393,55 @@ impl AcpProcessManager {
         let last_activity_stdin = last_activity.clone();
         tokio::spawn(async move {
             while let Some(msg) = stdin_rx.recv().await {
+                if msg.len() > ACP_MAX_OUTBOUND_LINE_BYTES {
+                    let err_msg = format!(
+                        "Outbound NDJSON line exceeded {} bytes limit (actual: {} bytes)",
+                        ACP_MAX_OUTBOUND_LINE_BYTES,
+                        msg.len()
+                    );
+                    log_acp_event(&agent_id_in, "STDIN_LINE_OVERFLOW", &err_msg);
+                    tracing::error!("[Agent {}] {}", agent_id_in, err_msg);
+                    continue;
+                }
                 let current_ts = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as u64;
                 last_activity_stdin.store(current_ts, Ordering::Relaxed);
                 log_acp_event(&agent_id_in, "STDIN >>>", &msg);
-                if let Err(e) = async_stdin.write_all(msg.as_bytes()).await {
-                    log_acp_event(
-                        &agent_id_in,
-                        "STDIN_ERR",
-                        &format!("Error writing to agent stdin: {}", e),
-                    );
-                    eprintln!("Error writing to agent stdin: {}", e);
-                    break;
+
+                let write_fut = async {
+                    async_stdin.write_all(msg.as_bytes()).await?;
+                    async_stdin.write_all(b"\n").await?;
+                    async_stdin.flush().await
+                };
+                match tokio::time::timeout(
+                    Duration::from_secs(ACP_STDIN_WRITE_TIMEOUT_SECS),
+                    write_fut,
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        log_acp_event(
+                            &agent_id_in,
+                            "STDIN_ERR",
+                            &format!("Error writing to agent stdin: {}", e),
+                        );
+                        eprintln!("Error writing to agent stdin: {}", e);
+                        break;
+                    }
+                    Err(_) => {
+                        let timeout_msg = format!(
+                            "Timed out writing to agent stdin after {}s ({} bytes)",
+                            ACP_STDIN_WRITE_TIMEOUT_SECS,
+                            msg.len()
+                        );
+                        log_acp_event(&agent_id_in, "STDIN_WRITE_TIMEOUT", &timeout_msg);
+                        tracing::error!("[Agent {}] {}", agent_id_in, timeout_msg);
+                        break;
+                    }
                 }
-                let _ = async_stdin.write_all(b"\n").await;
-                let _ = async_stdin.flush().await;
             }
         });
 
@@ -2359,8 +2466,29 @@ impl AcpProcessManager {
         let permission_db_manager = self.db_manager.clone();
 
         tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let line = match read_bounded_stdout_line(&mut reader, ACP_MAX_STDOUT_LINE_BYTES).await {
+                    Ok(BoundedLineRead::Line(l)) => l,
+                    Ok(BoundedLineRead::Overflow { discarded_bytes }) => {
+                        let msg = format!(
+                            "Agent stdout line exceeded {} bytes limit (discarded {} bytes to prevent OOM)",
+                            ACP_MAX_STDOUT_LINE_BYTES, discarded_bytes
+                        );
+                        log_acp_event(&agent_id_clone, "STDOUT_LINE_OVERFLOW", &msg);
+                        tracing::error!("[Agent {}] {}", agent_id_clone, msg);
+                        continue;
+                    }
+                    Ok(BoundedLineRead::Eof) => break,
+                    Err(e) => {
+                        log_acp_event(
+                            &agent_id_clone,
+                            "STDOUT_READ_ERR",
+                            &format!("Error reading agent stdout: {}", e),
+                        );
+                        break;
+                    }
+                };
                 let current_ts = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -4699,7 +4827,27 @@ impl RunningAgent {
             "params": prompt_params
         });
 
-        if let Err(e) = self.stdin_tx.send(request.to_string()).await {
+        let request_line = request.to_string();
+        let prompt_bytes = prompt.len();
+        let json_rpc_bytes = request_line.len();
+        tracing::info!(
+            "[Agent {}] Dispatching session/prompt: prompt_bytes={}, json_rpc_bytes={}, session_id={}",
+            agent_id,
+            prompt_bytes,
+            json_rpc_bytes,
+            current_session_id
+        );
+        if json_rpc_bytes > ACP_MAX_OUTBOUND_LINE_BYTES {
+            let mut pending = self.pending_requests.lock().await;
+            pending.remove(&req_id);
+            anyhow::bail!(
+                "Outbound session/prompt JSON-RPC payload ({} bytes) exceeded {} bytes limit",
+                json_rpc_bytes,
+                ACP_MAX_OUTBOUND_LINE_BYTES
+            );
+        }
+
+        if let Err(e) = self.stdin_tx.send(request_line).await {
             self.is_alive.store(false, Ordering::SeqCst);
             anyhow::bail!("Failed to write to agent stdin channel: {}", e);
         }
@@ -6974,5 +7122,32 @@ mod runtime_status_tests {
             }
         });
         assert!(!is_auto_approved_governance_tool(&write_tool));
+    }
+
+    #[tokio::test]
+    async fn test_read_bounded_stdout_line_prevents_oom_and_recovers() {
+        use super::{read_bounded_stdout_line, BoundedLineRead};
+        use tokio::io::BufReader;
+
+        let oversized = "x".repeat(120);
+        let payload = format!("first-line\n{}\nsecond-line\r\n", oversized);
+        let mut reader = BufReader::new(payload.as_bytes());
+
+        let first = read_bounded_stdout_line(&mut reader, 64).await.unwrap();
+        assert_eq!(first, BoundedLineRead::Line("first-line".to_string()));
+
+        let overflow = read_bounded_stdout_line(&mut reader, 64).await.unwrap();
+        assert_eq!(
+            overflow,
+            BoundedLineRead::Overflow {
+                discarded_bytes: 120
+            }
+        );
+
+        let second = read_bounded_stdout_line(&mut reader, 64).await.unwrap();
+        assert_eq!(second, BoundedLineRead::Line("second-line".to_string()));
+
+        let eof = read_bounded_stdout_line(&mut reader, 64).await.unwrap();
+        assert_eq!(eof, BoundedLineRead::Eof);
     }
 }
