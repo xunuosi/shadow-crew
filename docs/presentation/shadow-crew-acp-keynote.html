@@ -2162,42 +2162,43 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 20 ------------------------------------------------------------ -->
 <section class="slide" data-no="20" data-section="ACP · 协议" data-title="原生记忆第一原则"
-  data-notes="这页有一个容易讲反的点：宿主不是记忆的所有者。端点原生记忆是长期事实源；宿主在 Prompt 里拼贴向量记忆，短期可能可用，长期容易与端点索引冲突。原则是 Native Memory First；端点没开就显式关闭，不越权注入。nativeMemory 是 Shadow Crew 扩展，不是 ACP 核心。">
+  data-notes="这页有三处容易讲错，先说清。第一，宿主不拥有记忆：长期事实源在端点，宿主不自建向量库、不把检索片段硬塞 Prompt。第二，握手探测的不是布尔值，是一个对象：capabilities.nativeMemory 里有 supported 和 enabled，据此分四态——enabled、disabled、unsupported、unknown；没声明就是 unknown，不是 unsupported，也不复用上次进程的旧状态。第三，禁用不是宿主直接拼 --disable memories：宿主通过环境变量 SHADOW_CREW_ACP_NATIVE_MEMORY=0 和 prompt 的 _meta 把策略传过去，具体怎么关由适配器实现；挂载 .scpack 时强制 0，并阻断 CODEX_HOME 这类越权变量。">
   <div class="slide-head">
     <div class="eyebrow reveal">19 / 记忆</div>
-    <h2 class="reveal">记忆归端点：原生优先，避免外部拼贴</h2>
-    <p class="lede reveal">ACP 不规定长期记忆；<b class="mono">agentCapabilities.nativeMemory</b> 是 Shadow Crew 的扩展能力。</p>
+    <h2 class="reveal">记忆归端点：宿主只传策略，不替它记住</h2>
+    <p class="lede reveal">ACP 不规定长期记忆；<b class="mono">nativeMemory</b> 是 Shadow Crew 扩展，按四态处理，不猜。</p>
   </div>
   <div class="slide-body">
-    <div class="grid cols-2 gap-24">
-      <div class="cmp bad reveal">
-        <div class="cmp-h"><span class="mark">✕</span>宿主拼贴向量记忆</div>
-        <ul class="lst bad tight">
-          <li>把检索结果硬塞进每一次 Prompt</li>
-          <li>与端点自己的长期索引互相打架</li>
-          <li>上下文被污染，Token 白白消耗</li>
-          <li>换一个端点就全部重做</li>
+    <div class="grid" style="grid-template-columns:1.02fr .98fr;gap:26px">
+      <div class="reveal">
+        <div class="small" style="margin-bottom:8px">宿主做三件事，不做一件</div>
+        <ul class="lst tight">
+          <li><b>尊重端点索引</b><br>不把检索结果硬塞进每次 Prompt，避免和端点自己的长期索引打架</li>
+          <li><b>传策略</b><br>启动环境写 <span class="mono">SHADOW_CREW_ACP_NATIVE_MEMORY=1/0</span>，Prompt 里带 <span class="mono">_meta</span> 开关</li>
+          <li><b>强制隔离</b><br>挂载 <span class="mono">.scpack</span> 时一律置 0，并阻断 <span class="mono">CODEX_HOME</span> 等越权变量</li>
         </ul>
-        <div class="verdict">外部拼贴：短期可用，长期冲突</div>
+        <div class="callout mt-14"><span class="tag">不做</span><span>宿主<b>不自建向量库</b>，也不替端点决定记什么。</span></div>
       </div>
-      <div class="cmp ok reveal">
-        <div class="cmp-h"><span class="mark">✓</span>Native Memory First</div>
-        <ul class="lst ok tight">
-          <li>端点声明 <b class="mono">nativeMemory</b>，宿主尊重其索引</li>
-          <li>未开启则启动注入 <b class="mono">--disable memories</b></li>
-          <li>宿主只做状态探测与策略引导</li>
-          <li>记忆随端点走，不越权、不污染</li>
-        </ul>
-        <div class="verdict">NATIVE MEMORY FIRST / 端点原生优先</div>
+
+      <div class="reveal">
+        <div class="small" style="margin-bottom:8px">握手探测是对象，不是布尔值</div>
+        <table class="tbl compact">
+          <thead><tr><th style="width:22%">状态</th><th style="width:44%">怎么判</th><th style="width:34%">宿主动作</th></tr></thead>
+          <tbody>
+            <tr><td class="mth">enabled</td><td>supported=true, enabled=true</td><td>尊重端点索引</td></tr>
+            <tr><td class="mth">disabled</td><td>supported=true, enabled=false</td><td>传 0，由适配器关闭</td></tr>
+            <tr><td class="mth">unsupported</td><td>supported=false</td><td>不启用，不再重试</td></tr>
+            <tr><td class="mth">unknown</td><td>端点未声明该字段</td><td>不猜，UI 显示待握手</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
-    <div class="code mt-24 reveal"><span class="c">// Shadow Crew 扩展：握手时探测 nativeMemory（标准 ACP 无此字段）</span>
-<span class="k">agentCapabilities</span>.nativeMemory === <span class="n">true</span>  <span class="c">→ 尊重端点索引</span>
-<span class="k">agentCapabilities</span>.nativeMemory === <span class="n">false</span> <span class="c">→ spawn(--disable memories)，绝不越权</span></div>
+    <div class="code mt-16 reveal"><span class="c">// 实际载荷：nativeMemory 是对象，不是 true / false</span>
+<span class="k">capabilities</span>.nativeMemory = { supported: <span class="n">true</span>, enabled: <span class="n">false</span>, persistent: <span class="n">true</span> }
+<span class="c">→ 判定 status = disabled；宿主写 env=0，适配器据此关闭自己的记忆</span></div>
 
-    <div class="flex items-center between mt-16 reveal"><span class="small">未声明时按 <b class="mono">unsupported</b> 处理，不猜测、不缓存。</span><span class="badge purple">Shadow Crew 扩展</span></div>
-    <div class="quote mt-16 reveal" style="font-size:16px">记忆的所有权属于端点，调度权属于宿主。</div>
+    <p class="small mt-12 reveal"><span class="mono">--disable memories</span> 是<b style="color:var(--fg)">适配器侧</b>的实现（如 Claude Code / Codex），不是宿主直接拼的启动参数。</p>
   </div>
 </section>
 
