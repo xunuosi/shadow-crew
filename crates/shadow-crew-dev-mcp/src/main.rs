@@ -7,6 +7,7 @@ use std::io::{self, BufRead, Write};
 /// Shinobi 原生内置开发工具 MCP 服务 (支持 shell / read_file / write_file / str_replace / search_code / list_dir)
 #[tokio::main]
 async fn main() -> Result<()> {
+    let profile = tools::DevMcpProfile::from_env_and_args();
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let reader = stdin.lock();
@@ -64,7 +65,7 @@ async fn main() -> Result<()> {
                         "jsonrpc": "2.0",
                         "id": req_id,
                         "result": {
-                            "tools": tools::get_tools_list()
+                            "tools": tools::get_tools_list_for_profile(profile)
                         }
                     });
                     writeln!(stdout, "{}", resp)?;
@@ -108,7 +109,8 @@ async fn main() -> Result<()> {
                     let tool_name = params["name"].as_str().unwrap_or_default();
                     let arguments = &params["arguments"];
 
-                    let call_result = tools::dispatch_tool_call(tool_name, arguments).await;
+                    let call_result =
+                        tools::dispatch_tool_call_with_profile(tool_name, arguments, profile).await;
 
                     let resp = match call_result {
                         Ok(output_text) => json!({

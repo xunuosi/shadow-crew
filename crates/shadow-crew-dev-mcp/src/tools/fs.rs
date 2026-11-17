@@ -1,6 +1,73 @@
 use anyhow::{anyhow, Result};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use tokio::fs;
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(value) => normalized.push(value),
+        }
+    }
+    normalized
+}
+
+fn resolve_path_with_existing_ancestor(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    let mut missing_tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = path;
+    while let Some(parent) = cursor.parent() {
+        if let Some(name) = cursor.file_name() {
+            missing_tail.push(name.to_os_string());
+        }
+        if let Ok(canonical_parent) = std::fs::canonicalize(parent) {
+            let mut resolved = canonical_parent;
+            for seg in missing_tail.iter().rev() {
+                resolved.push(seg);
+            }
+            return normalize_lexical_path(&resolved);
+        }
+        cursor = parent;
+    }
+    normalize_lexical_path(path)
+}
+
+/// 当宿主设置 `SHADOW_CREW_WORKSPACE_ROOT` 时，校验路径是否严格位于工作区内部。
+/// 若越界则拒绝访问，引导走宿主 ACP 授权体系 (`session/request_permission`)。
+pub fn ensure_path_within_workspace(raw_path: &str) -> Result<PathBuf> {
+    let workspace_root_raw = match std::env::var("SHADOW_CREW_WORKSPACE_ROOT") {
+        Ok(val) if !val.trim().is_empty() => val,
+        _ => return Ok(PathBuf::from(raw_path)),
+    };
+
+    let workspace_root = std::fs::canonicalize(workspace_root_raw.trim())
+        .unwrap_or_else(|_| normalize_lexical_path(Path::new(workspace_root_raw.trim())));
+    let candidate = Path::new(raw_path);
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        workspace_root.join(candidate)
+    };
+    let resolved = resolve_path_with_existing_ancestor(&joined);
+
+    if !resolved.starts_with(&workspace_root) {
+        return Err(anyhow!(
+            "路径 [{}] 位于当前工作区 [{}] 之外，已受宿主权限边界拦截；如需访问工作区外路径，请使用原生工具触发宿主 ACP 授权审批。",
+            raw_path,
+            workspace_root.display()
+        ));
+    }
+
+    Ok(resolved)
+}
 
 /// 读取文件内容，支持行切片
 pub async fn read_file(
@@ -655,5 +722,19 @@ mod tests {
         assert!(drift_res.contains("上下文与删除行序列未对齐"));
 
         let _ = fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_ensure_path_within_workspace_blocks_escape() {
+        let ws_root = std::env::temp_dir().join("shadow_crew_ws_boundary_test");
+        let _ = fs::create_dir_all(&ws_root).await;
+        std::env::set_var("SHADOW_CREW_WORKSPACE_ROOT", &ws_root);
+
+        assert!(ensure_path_within_workspace("src/main.rs").is_ok());
+        assert!(ensure_path_within_workspace("../outside_secret.txt").is_err());
+        assert!(ensure_path_within_workspace("/etc/passwd").is_err());
+
+        std::env::remove_var("SHADOW_CREW_WORKSPACE_ROOT");
+        let _ = fs::remove_dir_all(&ws_root).await;
     }
 }

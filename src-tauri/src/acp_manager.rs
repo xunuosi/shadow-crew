@@ -992,6 +992,12 @@ fn permission_path_candidates(tool_call: &serde_json::Value) -> Vec<String> {
             "file_path",
             "filePath",
             "path",
+            "target_file",
+            "targetFile",
+            "target_path",
+            "targetPath",
+            "directory",
+            "dir",
             "notebook_path",
             "notebookPath",
             "cwd",
@@ -1014,20 +1020,8 @@ fn permission_path_candidates(tool_call: &serde_json::Value) -> Vec<String> {
 
 fn expand_permission_path(raw: &str, cwd: &Path) -> PathBuf {
     let trimmed = raw.trim();
-    let expanded = if trimmed == "~" || trimmed.starts_with("~/") {
-        std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .map(|home| {
-                if trimmed == "~" {
-                    PathBuf::from(home)
-                } else {
-                    PathBuf::from(home).join(&trimmed[2..])
-                }
-            })
-            .unwrap_or_else(|_| PathBuf::from(trimmed))
-    } else {
-        PathBuf::from(trimmed)
-    };
+    let expanded = crate::db_manager::expand_tilde_path(trimmed)
+        .unwrap_or_else(|_| PathBuf::from(trimmed));
 
     if expanded.is_absolute() {
         expanded
@@ -1053,11 +1047,11 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
 }
 
 fn resolve_permission_path(path: &Path) -> PathBuf {
-    if let Ok(canonical) = std::fs::canonicalize(path) {
+    if let Ok(canonical) = crate::db_manager::canonicalize_clean_path(path) {
         return canonical;
     }
     if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
-        if let Ok(canonical_parent) = std::fs::canonicalize(parent) {
+        if let Ok(canonical_parent) = crate::db_manager::canonicalize_clean_path(parent) {
             return canonical_parent.join(name);
         }
     }
@@ -1068,7 +1062,8 @@ fn partition_permission_paths(
     paths: &[String],
     cwd: &Path,
 ) -> (Vec<String>, Vec<String>) {
-    let canonical_cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let canonical_cwd = crate::db_manager::canonicalize_clean_path(cwd)
+        .unwrap_or_else(|_| cwd.to_path_buf());
     let mut inside = Vec::new();
     let mut outside = Vec::new();
     for raw in paths {
@@ -1716,6 +1711,10 @@ pub fn build_session_mcp_servers(
         ),
         ("SHADOW_CREW_AGENT_ID".to_string(), agent_id.to_string()),
         ("SHINOBI_AGENT_ID".to_string(), agent_id.to_string()),
+        (
+            "SHADOW_CREW_DEV_MCP_PROFILE".to_string(),
+            "governance_only".to_string(),
+        ),
     ];
 
     let resolved_channel_id = channel_id

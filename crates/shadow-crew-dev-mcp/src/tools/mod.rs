@@ -4,6 +4,48 @@ pub mod shell;
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevMcpProfile {
+    Full,
+    GovernanceOnly,
+}
+
+impl DevMcpProfile {
+    pub fn from_env_and_args() -> Self {
+        if std::env::args().any(|arg| arg == "--governance-only") {
+            return Self::GovernanceOnly;
+        }
+        match std::env::var("SHADOW_CREW_DEV_MCP_PROFILE") {
+            Ok(val) if val.trim().eq_ignore_ascii_case("governance_only") => {
+                Self::GovernanceOnly
+            }
+            _ => Self::Full,
+        }
+    }
+}
+
+const BASE_FS_SHELL_TOOL_NAMES: [&str; 6] = [
+    "shell",
+    "read_file",
+    "write_file",
+    "str_replace",
+    "list_dir",
+    "search_code",
+];
+
+pub fn get_tools_list_for_profile(profile: DevMcpProfile) -> Value {
+    let mut tools = get_tools_list();
+    if profile == DevMcpProfile::GovernanceOnly {
+        if let Some(arr) = tools.as_array_mut() {
+            arr.retain(|tool| {
+                let name = tool["name"].as_str().unwrap_or_default();
+                !BASE_FS_SHELL_TOOL_NAMES.contains(&name)
+            });
+        }
+    }
+    tools
+}
+
 /// 返回当前内置原生 MCP 工具集元数据 (符合 MCP JSON Schema 规范)
 pub fn get_tools_list() -> Value {
     let mut tools = json!([
@@ -768,14 +810,33 @@ pub fn get_tools_list() -> Value {
     tools
 }
 
-/// 执行指定的 MCP 工具调用并返回文本输出
+/// 执行指定的 MCP 工具调用并返回文本输出 (默认 Full 模式)
 pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<String> {
+    dispatch_tool_call_with_profile(tool_name, arguments, DevMcpProfile::Full).await
+}
+
+/// 按指定 Profile 执行 MCP 工具调用并返回文本输出
+pub async fn dispatch_tool_call_with_profile(
+    tool_name: &str,
+    arguments: &Value,
+    profile: DevMcpProfile,
+) -> Result<String> {
+    if profile == DevMcpProfile::GovernanceOnly && BASE_FS_SHELL_TOOL_NAMES.contains(&tool_name) {
+        return Err(anyhow!(
+            "当前宿主处于 governance_only 模式，已禁用基础文件/终端 MCP 工具 [{}]；本地 Agent 请使用自身原生工具执行（工作区外路径将自动进入宿主 ACP 授权审批）。",
+            tool_name
+        ));
+    }
+
     match tool_name {
         "shell" => {
             let command = arguments["command"]
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 command"))?;
             let workdir = arguments["workdir"].as_str();
+            if let Some(dir) = workdir {
+                fs::ensure_path_within_workspace(dir)?;
+            }
             let timeout_ms = arguments["timeout_ms"].as_u64();
             shell::execute_shell(command, workdir, timeout_ms).await
         }
@@ -783,6 +844,7 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
             let path = arguments["path"]
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 path"))?;
+            fs::ensure_path_within_workspace(path)?;
             let offset = arguments["offset"].as_u64().map(|v| v as usize);
             let limit = arguments["limit"].as_u64().map(|v| v as usize);
             fs::read_file(path, offset, limit).await
@@ -791,6 +853,7 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
             let path = arguments["path"]
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 path"))?;
+            fs::ensure_path_within_workspace(path)?;
             let content = arguments["content"]
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 content"))?;
@@ -800,6 +863,7 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
             let path = arguments["path"]
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 path"))?;
+            fs::ensure_path_within_workspace(path)?;
             let old_str = arguments["old_str"]
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 old_str"))?;
@@ -810,6 +874,9 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
         }
         "list_dir" => {
             let path = arguments["path"].as_str();
+            if let Some(p) = path {
+                fs::ensure_path_within_workspace(p)?;
+            }
             let max_depth = arguments["max_depth"].as_u64().map(|v| v as usize);
             fs::list_dir(path, max_depth).await
         }
@@ -818,6 +885,9 @@ pub async fn dispatch_tool_call(tool_name: &str, arguments: &Value) -> Result<St
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 pattern"))?;
             let path = arguments["path"].as_str();
+            if let Some(p) = path {
+                fs::ensure_path_within_workspace(p)?;
+            }
             let max_results = arguments["max_results"].as_u64().map(|v| v as usize);
             fs::search_code(pattern, path, max_results).await
         }
@@ -1831,6 +1901,41 @@ mod tests {
         let write_tool = arr.iter().find(|t| t["name"] == "write_file").unwrap();
         assert_eq!(write_tool["annotations"]["readOnlyHint"], json!(false));
         assert_eq!(write_tool["annotations"]["destructiveHint"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn test_governance_only_profile_hides_and_blocks_base_fs_shell_tools() {
+        let gov_tools = get_tools_list_for_profile(DevMcpProfile::GovernanceOnly);
+        let names: Vec<&str> = gov_tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+
+        for base_tool in ["shell", "read_file", "write_file", "str_replace", "list_dir", "search_code"] {
+            assert!(
+                !names.contains(&base_tool),
+                "governance_only profile must hide base tool {}",
+                base_tool
+            );
+            let err = dispatch_tool_call_with_profile(
+                base_tool,
+                &json!({ "path": "/etc/passwd", "command": "ls", "pattern": "x", "content": "y", "old_str": "a", "new_str": "b" }),
+                DevMcpProfile::GovernanceOnly,
+            )
+            .await
+            .expect_err("governance_only profile must reject base tool execution");
+            assert!(err.to_string().contains("governance_only"));
+        }
+
+        for expected in ["write_channel_artifact", "write_agent_artifact", "validate_workspace_diff", "submit_arbitration_ruling"] {
+            assert!(
+                names.contains(&expected),
+                "governance_only profile must retain {}",
+                expected
+            );
+        }
     }
 }
 
