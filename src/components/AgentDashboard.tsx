@@ -35,6 +35,7 @@ import {
   X,
 } from 'lucide-react';
 import { AgentAvatarArtwork, TeamArtwork } from './AgentAvatarArtwork';
+import { ScpackPathInput } from './ScpackPathInput';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { isAgentActivelyRunning } from '../services/remoteAgentLifecycle';
 import {
@@ -111,6 +112,8 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   const [installedScpacks, setInstalledScpacks] = useState<InstalledScpackSummary[]>([]);
   const [scpackError, setScpackError] = useState<string | null>(null);
   const [scpackNotice, setScpackNotice] = useState<string | null>(null);
+  const [isExportingScpack, setIsExportingScpack] = useState(false);
+  const [isImportingScpack, setIsImportingScpack] = useState(false);
 
   const refreshScpacksAndProbe = async (targetHarness: AcpHarnessType = selectedHarness) => {
     setIsProbingScpack(true);
@@ -917,18 +920,38 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
             </div>
 
             {/* Body */}
-            <div className="p-5 overflow-y-auto space-y-4 text-xs flex-1 select-text">
-              {scpackError && (
-                <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-500/15 border border-rose-300 dark:border-rose-500/30 text-rose-800 dark:text-rose-300 flex items-start gap-2">
-                  <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
-                  <div className="min-w-0 flex-1 break-words font-mono text-[11px]">{scpackError}</div>
-                </div>
-              )}
+            <div className="p-5 overflow-y-auto space-y-4 text-xs flex-1 select-text relative">
+              {(scpackError || scpackNotice) && (
+                <div className="sticky top-0 z-10 space-y-2">
+                  {scpackError && (
+                    <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/90 border border-rose-300 dark:border-rose-500/40 text-rose-800 dark:text-rose-200 flex items-start gap-2 shadow-sm">
+                      <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                      <div className="min-w-0 flex-1 break-words font-mono text-[11px]">{scpackError}</div>
+                      <button
+                        type="button"
+                        onClick={() => setScpackError(null)}
+                        className="shrink-0 text-rose-600 dark:text-rose-300 hover:opacity-75 cursor-pointer"
+                        title="关闭提示"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
 
-              {scpackNotice && (
-                <div className="p-3 rounded-2xl bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-300 flex items-start gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-                  <div className="min-w-0 flex-1 break-words">{scpackNotice}</div>
+                  {scpackNotice && (
+                    <div className="p-3 rounded-2xl bg-emerald-50 dark:bg-emerald-950/90 border border-emerald-300 dark:border-emerald-500/40 text-emerald-800 dark:text-emerald-200 flex items-start gap-2 shadow-sm">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                      <div className="min-w-0 flex-1 break-words">{scpackNotice}</div>
+                      <button
+                        type="button"
+                        onClick={() => setScpackNotice(null)}
+                        className="shrink-0 text-emerald-600 dark:text-emerald-300 hover:opacity-75 cursor-pointer"
+                        title="关闭提示"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1107,19 +1130,33 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                     </div>
                     <div>
                       <label className="block text-[11px] text-fg-secondary mb-1">导出路径 (.scpack)</label>
-                      <input
+                      <ScpackPathInput
+                        mode="save"
                         value={scpackOutputPath}
-                        onChange={(e) => setScpackOutputPath(e.target.value)}
-                        className="w-full px-3 py-1.5 rounded-xl bg-surface border border-border text-fg text-xs font-mono"
+                        onChange={setScpackOutputPath}
+                        onError={setScpackError}
+                        dialogTitle="选择 .scpack 能力包导出路径"
+                        placeholder="~/.shadow-crew/exports/codex-expert.scpack"
                       />
                     </div>
                   </div>
 
                   <div className="flex items-center justify-end gap-2 pt-2">
                     <button
+                      type="button"
+                      disabled={isExportingScpack}
                       onClick={async () => {
                         setScpackError(null);
                         setScpackNotice(null);
+                        if (!userConfirmedRedaction) {
+                          setScpackError('请先勾选上方「我已审阅脱敏审计结果，确认不包含未授权机密信息（必填门禁）」后再导出。');
+                          return;
+                        }
+                        if (!scpackOutputPath.trim()) {
+                          setScpackError('请先填写或选择有效的 .scpack 导出路径。');
+                          return;
+                        }
+                        setIsExportingScpack(true);
                         try {
                           const manifest = await exportAcpScpack({
                             harness: selectedHarness,
@@ -1138,11 +1175,13 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                           );
                         } catch (e: any) {
                           setScpackError(e?.message || String(e));
+                        } finally {
+                          setIsExportingScpack(false);
                         }
                       }}
-                      className="px-4 py-2 rounded-xl bg-accent text-accent-fg font-semibold text-xs cursor-pointer shadow-xs"
+                      className="px-4 py-2 rounded-xl bg-accent text-accent-fg font-semibold text-xs cursor-pointer shadow-xs disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                      签名并导出 .scpack 能力包
+                      {isExportingScpack ? '正在签名并导出...' : '签名并导出 .scpack 能力包'}
                     </button>
                   </div>
 
@@ -1163,16 +1202,22 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                       从本地路径导入 .scpack 能力包（Fail-Closed 验签与只读挂载至 ~/.shadow-crew/packs/）
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
-                      <input
+                      <ScpackPathInput
+                        mode="open"
                         value={scpackImportPath}
-                        onChange={(e) => setScpackImportPath(e.target.value)}
-                        placeholder="输入 .scpack 文件路径..."
-                        className="flex-1 min-w-[220px] px-3 py-1.5 rounded-xl bg-surface border border-border text-fg text-xs font-mono"
+                        onChange={setScpackImportPath}
+                        onError={setScpackError}
+                        dialogTitle="选择要导入的 .scpack 能力包"
+                        placeholder="输入或选择 .scpack 文件路径..."
+                        className="flex-1 min-w-[260px]"
                       />
                       <button
+                        type="button"
+                        disabled={isImportingScpack}
                         onClick={async () => {
                           setScpackError(null);
                           setScpackNotice(null);
+                          setIsImportingScpack(true);
                           try {
                             const summary = await importScpack(scpackImportPath);
                             const packs = await listInstalledScpacks();
@@ -1182,11 +1227,13 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                             );
                           } catch (e: any) {
                             setScpackError(e?.message || String(e));
+                          } finally {
+                            setIsImportingScpack(false);
                           }
                         }}
-                        className="px-3.5 py-1.5 rounded-xl bg-accent text-accent-fg font-semibold text-xs cursor-pointer shrink-0"
+                        className="px-3.5 py-1.5 rounded-xl bg-accent text-accent-fg font-semibold text-xs cursor-pointer shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
                       >
-                        验签并安装 .scpack
+                        {isImportingScpack ? '正在验签安装...' : '验签并安装 .scpack'}
                       </button>
                     </div>
                   </div>
