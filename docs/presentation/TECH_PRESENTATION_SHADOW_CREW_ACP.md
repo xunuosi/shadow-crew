@@ -77,7 +77,7 @@ Shadow Crew 在纯粹的 ACP 协议之上，构建了 5 大工业级控制面能
    - 独创 **企业网关 503 补偿算法**：即使企业模型抽取出错，仍可直接从原始 Rollout 轨迹提取专家经验；
    - **零污染只读卡带**：四级记忆漏斗过滤，前置 0 Token，按需工具检索，杜绝污染本地知识库。
 3. **普通敏捷协同流（对标 Buzz）**：
-   - `<delta-events>` 未读增量切片编译，单轮节省 51%~80% Token，实现 Prefix KV Cache 100% 命中；
+   - `<delta-events>` 未读增量切片编译：热会话 Prompt 相比旧版全量模板**字符数缩减 51.1%**（479 vs 980 chars，`test-normal-mode-buzz-orchestration.ts` 单场景实测）；前缀不变 → Prefix Cache 可命中，属设计前提，未做跨模型压测；
    - 派遣时刻并发水位线不变量与 Turn Barrier 同步屏障，优雅支持多人/多 Agent 并发交织研讨。
 4. **CognoNexus 4+1 博弈论决策治理**：
    - DIANOIA 4+1 角色解耦（提案官 $\rightarrow$ Free-MAD 红队反从众质询 $\rightarrow$ 物理接地实证 $\rightarrow$ 答辩修正 $\rightarrow$ BWM 运筹学仲裁）；
@@ -156,7 +156,7 @@ Shadow Crew 在纯粹的 ACP 协议之上，构建了 5 大工业级控制面能
 | **09** | **Shadow Crew 的双栈协商**<br>一个连接，只讲一个版本 | 协商状态机图：initialize 选版本 $\rightarrow$ 2 / 1 / `-32022` | 讲解官方协商规则：请求最新、Agent 选 ≤ 请求的最高版、无匹配返回 `-32022`；按连接选 handler，不做消息翻译；V2 是 Draft，用特性开关。 |
 | **10** | **读写谁来做：端点优先，宿主兜底**<br>端点有工具就自己执行，宿主 MCP 只补缺口 | 三卡：端点原生工具（默认，挂 governance_only）、宿主 MCP full（兜底）、治理类工具（两种 profile 都在）；下方两条边界说明 | “默认让端点用自己的 read/write/shell：session 注入 governance_only，6 个基础工具从 tools/list 移除、调用直接拒绝。端点没有对应能力时，dev MCP 用 full 补位。但不管工具在谁手里，越界路径都要进宿主 ACP 权限审批。” |
 | **11** | **每个单元，一个会话，一个工作区**<br>隔离不是说出来的，是 key 和目录决定的 | 五行对照表：Channel / Topic / DM / DM Topic 各自的 session key 与工作目录，外加 Module 的沙箱与 allowedFiles；右侧四条规则（建立即锁定、运行期不可变、并发互不越界、模块级隔离） | “频道、议题、私聊、私聊议题、模块，每个单元都有独立的 session key 和工作目录。key 由宿主拼，cwd 由 binding 解析；模块层再叠上下文沙箱和 allowedFiles。所以并发时不会串上下文，也不会互相覆盖文件。” |
-| **12** | **普通协同流：对标 Buzz 的敏捷增量**<br>`<delta-events>` 与并发水位线不变量 | 消息流水线图：增量切片提取、Turn Barrier 屏障、`@mention` 去重 | 讲解日常敏捷协作流，未读增量切片降低 70% Token 消耗并保持 100% KV Cache 命中率，Turn Barrier 保证多人并发不乱序。 |
+| **12** | **普通协同流：对标 Buzz 的敏捷增量**<br>`<delta-events>` 与并发水位线不变量 | 消息流水线图：增量切片提取、Turn Barrier 屏障、`@mention` 去重 | 讲解日常敏捷协作流：未读增量切片让热会话 Prompt 字符数从 980 降到 479（51.1%，单场景实测）；Turn Barrier 保证本轮全结束才判定下一跳。强调口径——字符数不等于 Token 账单，前缀命中是设计前提而非实测。 |
 | **13** | **反向权限代理（Permission Broker）**<br>把危险操作关进确定性笼子里 | 权限请求流程图：Agent 触发 $\rightarrow$ Rust 拦截 $\rightarrow$ 6 类 Capability 映射 $\rightarrow$ 弹窗审批 | “当 Agent 试图格式化磁盘或访问外部网络时，ACP 允许宿主建立 Rust 级的反向拦截。不放过任何未授权的越界行为。” |
 | **14** | **深度博弈流：CognoNexus 4+1 引擎**<br>多角色、任务拆解与证据链 | DIANOIA 4+1 状态机流转图：立论 $\rightarrow$ 质询 $\rightarrow$ 接地 $\rightarrow$ 答辩 $\rightarrow$ 仲裁 | “面对复杂架构分歧，我们启动 4+1 流程：红队提出可证伪反例，验证官拿真实代码跑实证。多角色与任务拆解有论文依据（Free-MAD / ColMAD / LMAD / ReConcile），但结论有任务边界；详见附录 A7。” |
 | **15** | **BWM 运筹学 0-Token 仲裁**<br>把架构权衡写成可检查的数学问题 | 单纯形法凸优化图与 $\xi^* \le 0.12$ 一致性门禁判定 | 讲解如何用线性规划求解权重，一致性不达标退回重审。BWM 不替代讨论，只把最后一步变成可检查的门禁；参考见附录 A7。 |

@@ -1656,7 +1656,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 12 ------------------------------------------------------------ -->
 <section class="slide" data-no="12" data-section="决策引擎" data-title="普通协同流与增量上下文"
-  data-notes="这是多数日常场景。核心是两条：只发未读增量，保证 Prefix KV Cache 命中；并发用 Turn Barrier 收口，避免消息乱序。数字记住 51–80% 的 Token 节省和 100% 缓存命中。">
+  data-notes="这是多数日常场景。核心是两条：只发未读增量、并发用 Turn Barrier 收口。数字要讲口径：51.1% 是单场景字符数对比（479 vs 980 chars），不是 Token 账单；前缀不变只是设计前提，仓库里没有跨模型压测，不要说成“100% 命中”。">
   <div class="slide-head">
     <div class="eyebrow reveal">11 / 上下文</div>
     <h2 class="reveal">日常协同：更少的 Token，更稳的并发</h2>
@@ -1672,12 +1672,12 @@ table.method .req.b { color: var(--accent); }
       <div class="pipe-card reveal"><div class="tagm">06</div><div class="pi">LOOP GUARD</div><h4>防复读与失控</h4><p>LoopGuard 熔断循环，保证长会话仍能收敛。</p></div>
     </div>
 
-    <div class="grid cols-4 gap-16 mt-24 reveal">
-      <div class="card"><div class="stat"><b>51–80<span class="u">%</span></b><span>增量上下文 Token 节省</span></div></div>
-      <div class="card"><div class="stat"><b>100<span class="u">%</span></b><span>Prefix KV Cache 命中</span></div></div>
-      <div class="card"><div class="stat"><b>≈200<span class="u">tok</span></b><span>单轮增量（Demo 实测）</span></div></div>
-      <div class="card"><div class="stat"><b>0<span class="u">乱序</span></b><span>Turn Barrier 轮次同步</span></div></div>
+    <div class="grid cols-3 gap-16 mt-24 reveal">
+      <div class="card"><div class="stat"><b>51.1<span class="u">%</span></b><span>热会话 Prompt 字符缩减 · 单场景实测</span></div></div>
+      <div class="card"><div class="stat"><b>479 <span class="u">/ 980</span></b><span>增量 Prompt vs 旧版全量 · 字符数</span></div></div>
+      <div class="card"><div class="stat"><b>全结束<span class="u">才下一跳</span></b><span>Turn Barrier 的机制保证，非测量值</span></div></div>
     </div>
+    <p class="small mt-12 reveal">口径：51.1% 来自 <span class="mono">test-normal-mode-buzz-orchestration.ts</span> 的单场景字符数对比（479 vs 980 chars），不等同于跨模型 Token 账单；前缀不变是设计前提，仓库内没有跨模型压测。</p>
   </div>
 </section>
 
@@ -2243,7 +2243,7 @@ table.method .req.b { color: var(--accent); }
       <div class="moat reveal" data-g="04">
         <div class="mn">CHOICE 04</div><h4>按任务选双模</h4>
         <p>日常走增量流，争议升维博弈；按任务选择，不做一刀切。</p>
-        <div class="proof">EVIDENCE · 增量省 51–80% Token</div>
+        <div class="proof">MEASURED · 热会话 51.1%（字符口径）</div>
         <div class="vs">常见取舍：要么轻，要么重</div>
       </div>
       <div class="moat reveal" data-g="05">
@@ -2335,9 +2335,9 @@ table.method .req.b { color: var(--accent); }
 
       <div class="reveal">
         <div class="grid gap-12">
-          <div class="card"><div class="stat"><b>51–80<span class="u">%</span></b><span>日常协同增量 Token 节省</span></div></div>
+          <div class="card"><div class="stat"><b>51.1<span class="u">%</span></b><span>热会话 Prompt 字符缩减（单场景实测）</span></div></div>
           <div class="card"><div class="stat"><b>周 → 秒</b><span>经验复用周期（2 周 → 秒级分发）</span></div></div>
-          <div class="card"><div class="stat"><b>100<span class="u">%</span></b><span>Prefix KV Cache 命中，前缀复用不重算</span></div></div>
+          <div class="card"><div class="stat"><b>前缀不变</b><span>设计前提，非实测命中率</span></div></div>
         </div>
       </div>
     </div>
