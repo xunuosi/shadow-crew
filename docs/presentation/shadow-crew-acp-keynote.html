@@ -205,7 +205,8 @@ html[data-theme="light"] .grad { background: none; color: var(--accent); }
 .justify-center { justify-content: center; } .between { justify-content: space-between; }
 .wrap { flex-wrap: wrap; }
 .min0 { min-width: 0; }
-.mt-8 { margin-top: 8px; } .mt-12 { margin-top: 12px; } .mt-16 { margin-top: 16px; }
+.mt-8 { margin-top: 8px; } .mt-12 { margin-top: 12px; }
+.mt-14 { margin-top: 14px; } .mt-16 { margin-top: 16px; }
 .mt-20 { margin-top: 20px; } .mt-24 { margin-top: 24px; } .mt-28 { margin-top: 28px; }
 .mt-32 { margin-top: 32px; } .mt-40 { margin-top: 40px; }
 .w100 { width: 100%; }
@@ -718,6 +719,20 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; }
 .sw-n { font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; color: var(--accent); }
 .sw-step h4 { margin-top: 7px; font-size: 14.5px; }
 .sw-step p { margin-top: 8px; font-size: 12.5px; line-height: 1.6; color: var(--fg2); }
+
+/* ---------- 13 discussion + swarm ---------- */
+.dcard { padding: 18px 20px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface2); min-height: 168px; }
+.dcard:first-child { border-color: var(--info-line); background: linear-gradient(180deg, var(--info-soft), var(--surface2) 62%); }
+.dcard:nth-child(2) { border-color: var(--ok-line); background: linear-gradient(180deg, var(--ok-soft), var(--surface2) 62%); }
+.dc-k { font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; color: var(--fg3); }
+.dcard h4 { margin-top: 8px; font-size: 16px; }
+.dcard p { margin-top: 8px; font-size: 12.5px; line-height: 1.6; color: var(--fg2); }
+.swarm-strip { padding: 16px 18px; border: 1px solid var(--purple-line); border-radius: 13px; background: linear-gradient(90deg, var(--purple-soft), transparent 78%); }
+.ss-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 650; color: var(--fg); }
+.ss-row { display: flex; align-items: center; gap: 8px; margin-top: 11px; flex-wrap: wrap; }
+.ss-i { padding: 6px 11px; border: 1px solid var(--line2); border-radius: 8px; background: var(--surface); font-size: 12px; color: var(--fg2); }
+.ss-i b { color: var(--fg); }
+.ss-ar { color: var(--fg3); font-size: 12px; }
 
 /* ---------- 11/22 tables ---------- */
 .tbl .mini { display: block; font-size: 11.5px; color: var(--fg3); margin-top: 3px; line-height: 1.4; }
@@ -1722,48 +1737,51 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 13 ------------------------------------------------------------ -->
-<section class="slide" data-no="13" data-section="产品 · 频道" data-title="普通讨论里的 Swarm 模式"
-  data-notes="频道普通讨论模式里还有一条支线：Swarm。一个 Lead Agent 把大任务拆成子任务，派给频道里的其他 Agent 并行做，最后自己 Reduce 汇总。触发有两条路：输入 /swarm 前缀，或在输入框打开 Swarm 开关。拆解结果先出卡片，人确认才派发；派发前会检测 allowedFiles 是否重叠，重叠会提示。Worker 只在自己的子任务里干，禁止横向 @；全部结束后 Lead 汇总，Diff 按任务顺序合并。">
+<section class="slide" data-no="13" data-section="产品 · 频道" data-title="普通讨论：@ 接力与静默收敛"
+  data-notes="这页讲频道普通讨论的两个面。默认面没有总指挥、没有固定轮次：谁被 @ 谁发言，本轮没人发出有效 @ 就自然结束——静默收敛，不弹提示、不加系统消息，因为沉默本身就是“已达成”。兜底是 LoopGuard：12 跳或单 Agent 8 次，到顶静默收口，不投熔断卡片。支线面是 Swarm：显式触发，Lead 拆解、人确认、子房间并行、Lead Reduce。设计初衷是省钱也省注意力：不让 Agent 为了表态而表态。">
   <div class="slide-head">
     <div class="eyebrow reveal">12 / 频道</div>
-    <h2 class="reveal">普通讨论里的 Swarm：一个拆，多个做，一个收</h2>
-    <p class="lede reveal">频道普通模式下，Lead Agent 把大任务拆给同伴并行执行；人确认后才派发，最后统一汇总。</p>
+    <h2 class="reveal">普通讨论：靠 @ 接力，用沉默收敛</h2>
+    <p class="lede reveal">默认模式下没有固定轮次，也没有总指挥；谁被 @ 谁发言，没人被 @ 就停。</p>
   </div>
   <div class="slide-body">
-    <div class="swarm-flow">
-      <div class="sw-step reveal">
-        <div class="sw-n">01</div>
-        <h4>触发</h4>
-        <p>输入 <span class="mono">/swarm</span> 前缀，或在输入框打开 Swarm 开关；也可由 Lead 在回复里附 <span class="mono">&lt;&lt;&lt;SWARM_PLAN&gt;&gt;&gt;</span> 提案块。</p>
+    <div class="grid cols-3 gap-14">
+      <div class="dcard reveal">
+        <div class="dc-k">① 接力</div>
+        <h4>@ 是唯一的接力棒</h4>
+        <p>用户或 Agent 在正文里 @ 谁，谁被唤醒；没被 @ 的人在听，不抢话。不同角色不会被“轮询”到。</p>
       </div>
-      <div class="sw-step reveal">
-        <div class="sw-n">02</div>
-        <h4>拆解</h4>
-        <p>Lead 输出子任务：<span class="mono">taskId</span> / 标题 / 说明 / 指定执行人 / <span class="mono">allowedFiles</span>。拆不出来时用列表兜底解析。</p>
+      <div class="dcard reveal">
+        <div class="dc-k">② 收敛</div>
+        <h4>没有 @，讨论就结束</h4>
+        <p>本轮无人发出有效 <span class="mono">@</span>，级联直接终止：不弹提示、不加系统消息。沉默本身就是“已达成”。</p>
       </div>
-      <div class="sw-step reveal">
-        <div class="sw-n">03</div>
-        <h4>人工确认</h4>
-        <p>生成 Swarm 卡片，状态「待确认派发」。派发前检测 <span class="mono">allowedFiles</span> 路径交集，重叠会提示冲突。</p>
-      </div>
-      <div class="sw-step reveal">
-        <div class="sw-n">04</div>
-        <h4>并行执行</h4>
-        <p>每个子任务一个子房间与子线程，Worker 只在白名单内改动，禁止横向 @，互不打听兄弟任务。</p>
-      </div>
-      <div class="sw-step reveal">
-        <div class="sw-n">05</div>
-        <h4>Reduce 汇总</h4>
-        <p>全部子任务结束（完成或跳过）后，Lead 收齐报告与 Diff，按任务顺序合并，生成交付结论。</p>
+      <div class="dcard reveal">
+        <div class="dc-k">③ 兜底</div>
+        <h4>到顶也不打断</h4>
+        <p><span class="mono">LoopGuard</span>：12 跳或单 Agent 8 次，到顶静默收口，不投熔断卡片、不打断阅读。</p>
       </div>
     </div>
 
-    <div class="grid cols-2 gap-16 mt-18">
-      <div class="callout reveal"><span class="tag">隔离怎么写死的</span><span>Worker 的 Prompt 是四段语义块：执行契约 / 原始任务 / 公共契约 / 本子任务。写死两条：<b>只聚焦自己的子任务</b>，<b>禁止横向 @</b>。</span></div>
-      <div class="callout reveal"><span class="tag">谁决定结束</span><span>不靠模型自觉：<span class="mono">areAllEnabledSwarmSubTasksFinished</span> 判全部终态；<span class="mono">canAutoTriggerSwarmReduce</span> 要求至少一个完成、其余非跳过即未完成。</span></div>
+    <div class="swarm-strip mt-16 reveal">
+      <div class="ss-head"><span class="badge plain">支线</span> Swarm：显式触发，一个拆、多个做、一个收</div>
+      <div class="ss-row">
+        <span class="ss-i"><b>/swarm</b> 或输入框开关</span>
+        <span class="ss-ar">→</span>
+        <span class="ss-i">Lead 拆解 + <span class="mono">allowedFiles</span></span>
+        <span class="ss-ar">→</span>
+        <span class="ss-i">人工确认 + 冲突检测</span>
+        <span class="ss-ar">→</span>
+        <span class="ss-i">子房间并行 · 禁横向 @</span>
+        <span class="ss-ar">→</span>
+        <span class="ss-i">Lead Reduce 汇总</span>
+      </div>
     </div>
 
-    <p class="small mt-12 reveal">与 4+1 的分工：Swarm 是<b style="color:var(--fg)">并行拆分</b>（Map-Reduce），4+1 是<b style="color:var(--fg)">串行对抗</b>（提案→挑战→验证→答辩→裁决）；前者快，后者稳。</p>
+    <div class="callout mt-16 reveal">
+      <span class="tag">设计初衷</span>
+      <span>不让 Agent 为了“表态”而发言：<b>没有增量就不开口，达成共识就散场</b>。省 Token 也省人的注意力——需要拆分时再显式开 Swarm，需要对抗时再升维 4+1。</span>
+    </div>
   </div>
 </section>
 
