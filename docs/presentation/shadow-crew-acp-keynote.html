@@ -739,9 +739,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; }
 .tbl .note { display: block; margin-top: 5px; font-size: 12.5px; line-height: 1.55; color: var(--fg3); }
 .tbl .note b { color: var(--fg2); font-weight: 600; }
 .tbl th.hcol { color: var(--accent); }
-table.matrix { font-size: 13px; }
+table.matrix { font-size: 13.5px; }
 .matrix th { padding: 9px 11px; font-size: 10.5px; letter-spacing: .06em; }
-.matrix td { padding: 10px 11px; line-height: 1.45; }
+.matrix td { padding: 15px 14px; line-height: 1.5; }
 .matrix td:first-child { white-space: nowrap; }
 .take { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface2); font-size: 13.5px; color: var(--fg2); line-height: 1.4; }
 .take b { color: var(--fg); font-weight: 620; }
@@ -2371,76 +2371,63 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 25 ------------------------------------------------------------ -->
-<section class="slide" data-no="25" data-section="生态对标" data-title="核心四维横向对比矩阵"
-  data-notes="不要逐格念表，也不做排名。讲三句：Shadow Crew 选择纯 ACP 执行面、双模协同、可分发经验、Rust 反向代理；其他产品各有取舍，不是敌人，也不是落后的代际。">
+<section class="slide" data-no="25" data-section="生态对标" data-title="四个维度的取舍"
+  data-notes="这页只讲我们自己，不评判别人。四行：协议选 ACP 双栈，因为要能连任何端点，代价是依赖端点实现、V2 还是 Draft；协同按任务选增量流或 4+1，代价是角色配置与治理成本；记忆用 .scpack 可分发、同时尊重端点原生记忆，代价是需要端点配合关闭自己的记忆，卡带只读不能写回；安全用 Rust 反向代理加 CWD 绑定与 Fail-Closed，代价是只管本地宿主，远端端点自身行为不在管辖内。竞品怎么做不在这一页下判断，需要对比时看内部文档。">
   <div class="slide-head">
     <div class="eyebrow reveal">24 / 对标</div>
-    <h2 class="reveal">四维矩阵：不同选择，不同取舍</h2>
-    <p class="lede reveal">四个维度，六种解法；看取舍，不排名。</p>
+    <h2 class="reveal">四个维度：我们怎么选，代价是什么</h2>
+    <p class="lede reveal">只讲自己的取舍，不替同行下判断；每一行都写明代价与边界。</p>
   </div>
   <div class="slide-body">
     <div class="tbl-wrap reveal">
       <table class="tbl matrix">
         <thead>
           <tr>
-            <th style="width:9%">维度</th>
-            <th class="hcol hero" style="width:20%">Shadow Crew</th>
-            <th style="width:14%">Buzz</th>
-            <th style="width:14%">T3 Code</th>
-            <th style="width:14%">OpenHands</th>
-            <th style="width:14%">Goose / Cline</th>
-            <th style="width:15%">CrewAI / AutoGen</th>
+            <th style="width:11%">维度</th>
+            <th class="hcol hero" style="width:31%">Shadow Crew 的选择</th>
+            <th style="width:26%">为什么这样选</th>
+            <th style="width:32%">代价 / 适用边界</th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td class="row-h">协议标准</td>
-            <td class="hero"><strong>ACP 双栈</strong><span class="mini">stdio 核心 + WS 扩展</span></td>
-            <td>标准 ACP<span class="mini">Nostr 中继桥接</span></td>
-            <td>私有 CLI + WS<span class="mini">PTY 进程驱动</span></td>
-            <td>私有 EventStream<span class="mini">+ MCP 工具</span></td>
-            <td class="dim">纯 MCP Client<span class="mini">被驱动的 Agent 端</span></td>
-            <td class="dim">私有 Python SDK<span class="mini">内存对象传递</span></td>
+            <td class="row-h">协议</td>
+            <td class="hero"><strong>ACP 双栈</strong><span class="mini">stdio 核心 + WS 扩展；V1 稳定 / V2 Draft</span></td>
+            <td>要能连上任何实现了 ACP 的端点，而不是只连自家 Agent</td>
+            <td>依赖端点是否实现 ACP；V2 还在 Draft，需要双栈与特性开关</td>
           </tr>
           <tr>
-            <td class="row-h">协同模型</td>
-            <td class="hero"><strong>双模驱动</strong><span class="mini">增量流 + 4+1 博弈</span></td>
-            <td>频道广播<span class="mini">异步 @mention</span></td>
-            <td class="dim">单人多线程<span class="mini">多 Worktree 并行</span></td>
-            <td>层级树状派发<span class="mini">主 Agent 调度</span></td>
-            <td class="dim">纯单 Agent<span class="mini">人工切换</span></td>
-            <td class="dim">中心化轮询<span class="mini">顺序 SOP 链</span></td>
+            <td class="row-h">协同</td>
+            <td class="hero"><strong>按任务选模式</strong><span class="mini">增量流（默认）+ 4+1 博弈（升维）</span></td>
+            <td>日常不该为简单问题付对抗成本，争议才值得上重流程</td>
+            <td>需要角色与策略配置；升维有治理成本，不是所有任务都划算</td>
           </tr>
           <tr>
-            <td class="row-h">记忆共享</td>
-            <td class="hero"><strong>.scpack 跨机包</strong><span class="mini">BLAKE3 + 只读卡带</span></td>
-            <td>会话 / 渠道滚动<span class="mini">无跨机打包标准</span></td>
-            <td class="dim">Git 工作区<span class="mini">无记忆导出</span></td>
-            <td>向量数据库<span class="mini">集中式持久化</span></td>
-            <td>本地规约文件<span class="mini">.clinerules</span></td>
-            <td class="dim">本地内存抽象<span class="mini">不可移植</span></td>
+            <td class="row-h">记忆</td>
+            <td class="hero"><strong>端点原生优先 + <span class="mono">.scpack</span> 可分发</strong><span class="mini">BLAKE3 + 只读卡带；宿主不自建向量库</span></td>
+            <td>经验要能跟着人走，又不能和端点自己的长期索引打架</td>
+            <td>需要端点配合关闭原生记忆；卡带只读，不能反向写回本地记忆</td>
           </tr>
           <tr>
-            <td class="row-h">安全沙箱</td>
-            <td class="hero"><strong>Rust 反向权限代理</strong><span class="mini">请求拦截 + CWD 隔离</span></td>
-            <td>OS / 进程权限<span class="mini">依赖子进程默认值</span></td>
-            <td>Worktree 隔离<span class="mini">命令白名单审批</span></td>
-            <td>Docker 容器<span class="mini">完全容器化</span></td>
-            <td>编辑器弹窗<span class="mini">Tool Call 确认</span></td>
-            <td class="dim">Python 运行沙箱<span class="mini">缺 OS 级拦截</span></td>
+            <td class="row-h">安全</td>
+            <td class="hero"><strong>Rust 反向权限代理</strong><span class="mini">请求拦截 + CWD 绑定 + Fail-Closed</span></td>
+            <td>拦截点必须在宿主进程里，提示词不是安全边界</td>
+            <td>只覆盖本地宿主；远端端点自身的行为不在管辖范围内</td>
           </tr>
         </tbody>
       </table>
     </div>
+
     <div class="grid cols-4 gap-12 mt-16 reveal">
-      <div class="take"><span class="tk">PROTOCOL</span><span><b>纯 ACP 双栈</b></span></div>
-      <div class="take"><span class="tk">COLLAB</span><span><b>增量流 + 4+1</b></span></div>
-      <div class="take"><span class="tk">MEMORY</span><span><b>可分发 .scpack</b></span></div>
-      <div class="take"><span class="tk">SAFETY</span><span><b>Rust 反向代理</b></span></div>
+      <div class="take"><span class="tk">PROTOCOL</span><span><b>连任何端点</b></span></div>
+      <div class="take"><span class="tk">COLLAB</span><span><b>按任务选模式</b></span></div>
+      <div class="take"><span class="tk">MEMORY</span><span><b>经验可带走</b></span></div>
+      <div class="take"><span class="tk">SAFETY</span><span><b>宿主侧拦截</b></span></div>
     </div>
+
     <div class="flex items-center between mt-16 reveal">
-      <span class="small">对标不是贬低同行：每一代都在解决它那一代的核心矛盾。</span>
-      <span class="badge ok">控制面解耦</span>
+      <span class="small">这四行只描述我们自己；同行怎么做，不在这一页下判断。</span>
+      <span class="badge ok">不做排名</span>
     </div>
   </div>
 </section>
