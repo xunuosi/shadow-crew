@@ -891,8 +891,9 @@ table.matrix { font-size: 13px; }
 .rank:nth-child(odd) { background: var(--surface2); }
 .rank .rk { width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; font-family: var(--mono); font-size: 10px; color: var(--fg3); border: 1px solid var(--line); flex: none; }
 .rank .rk.first { color: var(--ok); border-color: var(--ok-line); background: var(--ok-soft); }
-.rank b { flex: 1; font-weight: 650; color: var(--fg); }
-.rank .rv { font-family: var(--mono); font-size: 10.5px; color: var(--fg3); }
+.rank b, .rank .rn { flex: 1; min-width: 0; }
+.rank b { font-weight: 650; color: var(--fg); }
+.rank .rv { flex: none; margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--fg3); }
 .formula { padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface2); }
 .fm-k { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; color: var(--accent); margin-bottom: 5px; }
 .fm-l { font-size: 11px; line-height: 1.7; color: var(--fg3); }
@@ -2015,8 +2016,8 @@ table.method .req.b { color: var(--accent); }
 
         <div class="small" style="margin:12px 0 6px">加权效用排序</div>
         <div class="rank"><span class="rk first">1</span><b>C Redis Lua + 降级补丁</b><span class="rv">0.861</span></div>
-        <div class="rank"><span class="rk">2</span><span>B 全量分布式强一致重构</span><span class="rv">0.735</span></div>
-        <div class="rank"><span class="rk">3</span><span>A 本地令牌桶 + 异步批写</span><span class="rv">0.585</span></div>
+        <div class="rank"><span class="rk">2</span><span class="rn">B 全量分布式强一致重构</span><span class="rv">0.735</span></div>
+        <div class="rank"><span class="rk">3</span><span class="rn">A 本地令牌桶 + 异步批写</span><span class="rv">0.585</span></div>
       </div>
     </div>
 
