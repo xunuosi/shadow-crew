@@ -876,9 +876,9 @@ table.matrix { font-size: 13px; }
 .bs-item b { font-size: 13px; color: var(--fg); }
 .bs-d { font-size: 11.5px; color: var(--fg3); line-height: 1.45; }
 .bs-ar { display: grid; place-items: center; color: var(--fg3); font-size: 12px; }
-.ex-tbl td { font-size: 12.5px; padding-top: 7px; padding-bottom: 7px; }
+.ex-tbl td { font-size: 12.5px; padding-top: 6px; padding-bottom: 6px; }
 .ex-tbl td.hl { color: var(--ok); font-weight: 650; }
-.ratio-line { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface2); font-size: 12px; }
+.ratio-line { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface2); font-size: 12px; }
 .ratio-line .rl-k { font-size: 11px; color: var(--fg3); }
 .ratio-line .mono { color: var(--fg); }
 .wbars { display: flex; flex-direction: column; gap: 7px; }
@@ -894,9 +894,10 @@ table.matrix { font-size: 13px; }
 .rank b, .rank .rn { flex: 1; min-width: 0; }
 .rank b { font-weight: 650; color: var(--fg); }
 .rank .rv { flex: none; margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--fg3); }
-.formula { padding: 10px 14px; border: 1px solid var(--line2); border-radius: 10px; background: var(--surface2); }
-.fm-k { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; color: var(--accent); margin-bottom: 5px; }
-.fm-l { font-size: 12.5px; line-height: 1.52; color: var(--fg3); }
+.formula { padding: 9px 14px; border: 1px solid var(--line2); border-radius: 10px; background: var(--surface2); }
+.fm-k { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; color: var(--accent); margin-bottom: 4px; }
+.fm-lead { font-size: 12.5px; line-height: 1.45; color: var(--fg2); margin-bottom: 6px; }
+.fm-l { font-size: 12.5px; line-height: 1.46; color: var(--fg3); }
 .fm-l .fm-ind { margin-left: 2.2em; }
 .fm-l .mono { color: var(--fg2); font-size: 11.5px; }
 
@@ -1977,7 +1978,7 @@ table.method .req.b { color: var(--accent); }
       <div class="bs-item gate"><span class="bs-n">3 · GATE</span><b>ξ* ≤ 0.12 才放行</b><span class="bs-d">通过出 ADR；不过退回重审</span></div>
     </div>
 
-    <div class="grid" style="grid-template-columns:1.12fr .88fr;gap:26px;margin-top:18px">
+    <div class="grid" style="grid-template-columns:1.12fr .88fr;gap:26px;margin-top:14px">
       <div class="reveal">
         <div class="small" style="margin-bottom:8px">例：高并发网关的限流与状态存储选型</div>
         <table class="tbl compact ex-tbl">
@@ -1994,6 +1995,7 @@ table.method .req.b { color: var(--accent); }
         </div>
         <div class="formula mt-10">
           <div class="fm-k">计算方式</div>
+          <div class="fm-lead">让每条比较的两边尽量接近；最大偏差就是 ξ，越小越自洽。</div>
           <div class="fm-l"><span class="mono">min ξ</span> &nbsp;s.t.&nbsp; <span class="mono">|w_B − a_Bj·w_j| ≤ ξ</span></div>
           <div class="fm-l"><span class="mono fm-ind">|w_j − a_jW·w_W| ≤ ξ</span>，<span class="mono">Σw = 1</span></div>
           <div class="fm-l">权重代入：<span class="mono">w = [0.563, 0.311, 0.125]</span>，<span class="mono">ξ* = 0.065</span></div>
