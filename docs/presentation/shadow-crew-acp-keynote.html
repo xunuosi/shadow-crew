@@ -690,6 +690,15 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; }
 .tf-mid { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: var(--fg3); font-size: 9.5px; }
 .tf-mid svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 
+/* ---------- 11 unit map ---------- */
+.unitmap { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--surface2); }
+.um-row { display: grid; grid-template-columns: 88px 1.02fr 1fr; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line); align-items: center; font-size: 12px; color: var(--fg2); }
+.um-row:first-child { border-top: none; }
+.um-row.head { background: var(--surface3); font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; color: var(--fg3); padding: 9px 16px; }
+.um-row .u { font-weight: 650; color: var(--fg); font-size: 12.5px; }
+.um-row .mono { font-size: 11px; color: var(--fg2); }
+.um-row.mod { background: linear-gradient(90deg, var(--purple-soft), transparent 72%); }
+
 /* ---------- 11/22 tables ---------- */
 .tbl .mini { display: block; font-size: 11.5px; color: var(--fg3); margin-top: 3px; line-height: 1.4; }
 .tbl .note { display: block; margin-top: 5px; font-size: 12.5px; line-height: 1.55; color: var(--fg3); }
@@ -1611,46 +1620,35 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 11 ------------------------------------------------------------ -->
-<section class="slide" data-no="11" data-section="ACP · 协议" data-title="CWD 不可变约束"
-  data-notes="这页是很多多 Agent 系统的隐雷。并发任务共享工作区，路径一旦漂移，就是跨项目误写。ACP 把 session 与 CWD 物理绑定，宿主再叠加路径校验与符号链接防护，才谈得上并发安全。">
+<section class="slide" data-no="11" data-section="ACP · 会话" data-title="每个单元独立 session 与工作区"
+  data-notes="这页讲隔离：频道、议题、私聊、私聊议题、模块分治，每个单元都有独立的 session key 和工作目录，互不共享上下文，也不共享文件。channel/topic/dm/dm_topic 四种 key 由宿主拼，cwd 由 binding 解析；模块级再叠一层上下文沙箱与 allowedFiles 白名单。">
   <div class="slide-head">
     <div class="eyebrow reveal">10 / 会话</div>
-    <h2 class="reveal">路径不是参数，是契约</h2>
-    <p class="lede reveal">会话建立即锁定 CWD。多任务并发时，任何一次路径漂移都是生产事故的第一张多米诺。</p>
+    <h2 class="reveal">每个单元，一个会话，一个工作区</h2>
+    <p class="lede reveal">频道、议题、私聊、模块分治各自独立：不同 session key，不同工作目录，互不串上下文。</p>
   </div>
   <div class="slide-body">
-    <div class="grid" style="grid-template-columns:1.25fr .75fr;gap:32px">
-      <div class="cwd-diagram reveal">
-        <div class="topic-node">
-          <span class="id">TOPIC-01</span>
-          <span class="path">/repo/payments</span>
-          <span class="lock">CWD LOCKED</span>
+    <div class="grid" style="grid-template-columns:1.18fr .82fr;gap:26px">
+      <div class="reveal">
+        <div class="unitmap">
+          <div class="um-row head"><span>单元</span><span>session 维度</span><span>工作目录</span></div>
+          <div class="um-row"><span class="u">Channel</span><span class="mono">channel:&lt;cid&gt;:&lt;room&gt;</span><span class="mono">~/.shadow-crew/channels/&lt;cid&gt;</span></div>
+          <div class="um-row"><span class="u">Topic</span><span class="mono">topic:&lt;cid&gt;:&lt;room&gt;:&lt;mode&gt;</span><span class="mono">…/channels/&lt;cid&gt;/topics/&lt;tid&gt;</span></div>
+          <div class="um-row"><span class="u">DM</span><span class="mono">dm:&lt;agent&gt;:&lt;room&gt;</span><span class="mono">~/.shadow-crew/agents/&lt;aid&gt;</span></div>
+          <div class="um-row"><span class="u">DM Topic</span><span class="mono">dmtopic:&lt;agent&gt;:&lt;room&gt;:&lt;mode&gt;</span><span class="mono">…/agents/&lt;aid&gt;/topics/&lt;tid&gt;</span></div>
+          <div class="um-row mod"><span class="u">Module</span><span class="mono">模块沙箱 + allowedFiles</span><span>同一 binding 内的白名单子集</span></div>
         </div>
-        <div class="x-zone">
-          <span class="x-line"></span>
-          <span class="x">✕ 路径串扰 / 跨项目误写</span>
-          <span class="x-line"></span>
-        </div>
-        <div class="topic-node">
-          <span class="id">TOPIC-02</span>
-          <span class="path">/repo/risk-engine</span>
-          <span class="lock">CWD LOCKED</span>
-        </div>
-        <div class="divider" style="margin:22px 0"></div>
-        <div class="flex items-center between">
-          <span class="small">一个议题 · 一个物理目录 · 一个不可变会话</span>
-          <span class="badge ok"><span class="d"></span>Fail-Closed</span>
-        </div>
+        <p class="small mt-12">四种协作单元的 key 由宿主拼接，工作目录由 workspace binding 解析；模块层再叠一层上下文沙箱与文件白名单。</p>
       </div>
 
       <div class="reveal">
         <ul class="lst">
-          <li><b>建立即锁定</b><br><span class="mono" style="font-size:11.5px">session/new</span> 将任务上下文与操作系统路径绝对绑定</li>
+          <li><b>建立即锁定</b><br><span class="mono" style="font-size:11.5px">session/new</span> 的 cwd 由宿主解析并绑定，不由对端自由指定</li>
           <li><b>运行期不可变</b><br>中途切换目录的请求被拒绝，而不是“尽量兼容”</li>
-          <li><b>并发互不越界</b><br>多议题并行执行时，文件写入各归其位</li>
-          <li><b>宿主二次校验</b><br>路径白名单、符号链接与 TOCTOU 防护叠加在协议之上</li>
+          <li><b>并发互不越界</b><br>多议题并行时，各自的写入落在各自目录</li>
+          <li><b>模块级隔离</b><br>每个模块只注入「公共契约 + 本模块规范 + 本模块历史」，只改 allowedFiles 内的文件</li>
         </ul>
-        <div class="quote mt-24">Agent 可以很自由，但它的世界必须有边界。</div>
+        <div class="quote mt-20">Agent 可以很自由，但它的世界必须有边界。</div>
       </div>
     </div>
   </div>
