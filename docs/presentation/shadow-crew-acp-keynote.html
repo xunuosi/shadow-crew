@@ -1941,8 +1941,8 @@ table.method .req.b { color: var(--accent); }
       <div class="reveal">
         <div class="card" style="padding:20px 22px">
           <div class="card-k">1 · INPUT</div>
-          <div class="card-t">准则与方案的两两比较</div>
-          <div class="card-d">最佳准则、最差准则，以及各方案相对二者的偏好向量。</div>
+          <div class="card-t">准则的两组比较 + 方案打分</div>
+          <div class="card-d">选最优 / 最差准则，给「最优比其余、其余比最差」两组 1–9 比值，再给各方案在准则上的 0–10 分。</div>
         </div>
         <div class="hs-arrow" style="width:100%;height:22px;margin:4px 0"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M6 14l6 6 6-6"/></svg></div>
         <div class="card" style="padding:20px 22px">
@@ -1977,7 +1977,7 @@ table.method .req.b { color: var(--accent); }
         <div class="flex col gap-8">
           <div class="flex items-center gap-10" style="font-size:12.5px;color:var(--fg2)"><span class="badge purple">ADR</span>Living ADR 活体架构画布</div>
           <div class="flex items-center gap-10" style="font-size:12.5px;color:var(--fg2)"><span class="badge warn">MINORITY</span>《少数派异议报告》</div>
-          <div class="flex items-center gap-10" style="font-size:12.5px;color:var(--fg2)"><span class="badge info">TRIGGER</span>3 条量化黑天鹅重启触发器</div>
+          <div class="flex items-center gap-10" style="font-size:12.5px;color:var(--fg2)"><span class="badge info">TRIGGER</span>量化黑天鹅重开触发器（默认 3 条）</div>
         </div>
 
         <div class="callout mt-20" style="font-size:12.5px"><span class="tag">0 TOKEN</span><span>求解阶段不消耗 LLM；BWM 参考见附录 A7</span></div>
