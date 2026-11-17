@@ -1823,7 +1823,7 @@ table.method .req.b { color: var(--accent); }
         <div class="out">产物：质询清单 + 可复现反例</div>
       </div>
       <div class="stage s3 reveal">
-        <div class="role">VERIFIER · T1/T2</div><div class="big">V</div><h4>落地验证</h4>
+        <div class="role">VERIFIER · 分级取证</div><div class="big">V</div><h4>落地验证</h4>
         <p>不参与辩论：拉起真实代码与测试，输出布尔真值与可复现的运行证据。</p>
         <div class="out">产物：证据链 / 未实证标记</div>
       </div>
@@ -1852,7 +1852,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 15 ------------------------------------------------------------ -->
 <section class="slide" data-no="15" data-section="决策引擎" data-title="凭什么更准（上）：角色、从众、假一致、谄媚"
-  data-notes="这页讲前四类错误，都出在人与角色上。角色同质化：用 4 类正交角色，答辩复用提案方，准入规则直接阻断缺角色；从众：红方必须给可证伪反例，裸确认会被阶段契约拦掉；假一致：T1 只读工具权重不超过 0.3，T2 执行器默认冻结，未实证的争议点硬锁早停；谄媚：BSS/DSS 打分加投降检测，再按 γ 折减。每张卡都写清不达标会怎样，因为论文只给方向，门禁才给下限。">
+  data-notes="这页讲前四类错误，都出在人与角色上。角色同质化：用 4 类正交角色，答辩复用提案方，准入规则直接阻断缺角色；从众：红方必须给可证伪反例，裸确认会被阶段契约拦掉；假一致：证据分两级——一级只读工具（读文件/AST/静态分析）权重封顶 30%，二级执行工具（跑代码/写文件）默认冻结、须人类签署安全宪章；未实证的争议点硬锁早停；谄媚：BSS/DSS 打分加投降检测，再按 γ 折减。每张卡都写清不达标会怎样，因为论文只给方向，门禁才给下限。">
   <div class="slide-head">
     <div class="eyebrow reveal">14 / 依据</div>
     <h2 class="reveal">凭什么更准：先挡住四种“看起来对”</h2>
@@ -1874,7 +1874,7 @@ table.method .req.b { color: var(--accent); }
       </div>
       <div class="acc-card reveal">
         <div class="ac-h"><span class="ac-n">03</span><h4>假一致：结论同、推理裂</h4><span class="ac-paper">Consistency Illusion · GDP</span></div>
-        <p>T1 只读工具权重 ≤ 0.3；T2 执行器默认冻结，须人类签署；证据与论点原子绑定。</p>
+        <p>证据分两级：<b>一级只读</b>（读文件/AST/静态分析）最多占 30% 权重；<b>二级执行</b>（跑代码/写文件）默认冻结，人类签署才可调用。证据逐条绑到论点上。</p>
         <div class="ac-code">tieredGroundingGovernor</div>
         <div class="ac-fail">护栏：存在未实证核心争议 → 硬拦早停，强制接地</div>
       </div>
