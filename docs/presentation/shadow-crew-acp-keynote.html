@@ -2325,7 +2325,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 24 ------------------------------------------------------------ -->
 <section class="slide" data-no="24" data-section="生态对标" data-title="四种协作形态"
-  data-notes="不做代际排名。四种形态各解决不同问题：硬编码框架、IDE 单 Agent 扩展、沙盒执行平台、解耦型控制面。选择取决于任务、团队与治理成本，不是谁替代谁。">
+  data-notes="不做代际排名。四种形态各解决不同问题：框架式编排、单 Agent 扩展、沙盒执行平台、解耦型控制面。注意两个容易说错的点：Goose 是桌面与 CLI，不是 IDE 插件；AutoGen 已在 2025 年底并入 Microsoft Agent Framework，不再作为独立库演进。选择取决于任务、团队与治理成本，不是谁替代谁。">
   <div class="slide-head">
     <div class="eyebrow reveal">23 / 对标</div>
     <h2 class="reveal">四种协作形态，不同取舍</h2>
@@ -2338,14 +2338,14 @@ table.method .req.b { color: var(--accent); }
         <h4 style="margin-top:8px">硬编码 SOP 框架</h4>
         <p class="card-d">角色、流程、通信写死在框架里；上手快，灵活度有限。</p>
         <div class="small" style="margin-top:10px">适合：流程固定、角色清晰的团队 · 代价：改流程要改代码</div>
-        <div class="mini">CrewAI · AutoGen</div>
+        <div class="mini">CrewAI · AutoGen（现 Microsoft Agent Framework）</div>
       </div>
       <div class="card reveal" style="padding:22px 24px">
         <div class="card-k">形态 B</div>
-        <h4 style="margin-top:8px">IDE 单 Agent 扩展</h4>
-        <p class="card-d">编辑器里的单 Agent，靠 MCP 接工具；轻，但协作仍留在本地。</p>
-        <div class="small" style="margin-top:10px">适合：个人在 IDE 内提效 · 代价：跨 Agent 协作弱</div>
-        <div class="mini">Cline · Goose</div>
+        <h4 style="margin-top:8px">编辑器 / 终端里的单 Agent</h4>
+        <p class="card-d">在编辑器或终端里跑的单 Agent，靠 MCP 接工具；轻，但协作仍靠人工或本机子代理。</p>
+        <div class="small" style="margin-top:10px">适合：个人提效 · 代价：跨运行时协作弱</div>
+        <div class="mini">Cline（编辑器）· Goose（桌面 / CLI）</div>
       </div>
       <div class="card reveal" style="padding:22px 24px">
         <div class="card-k">形态 C</div>
