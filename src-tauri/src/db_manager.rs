@@ -47,19 +47,93 @@ pub struct DatabaseManager {
     db_path: String,
 }
 
+/// 获取当前操作系统语义下的用户主目录
+pub fn get_user_home_dir() -> Option<std::path::PathBuf> {
+    let primary = if cfg!(target_os = "windows") {
+        std::env::var("USERPROFILE").ok()
+    } else {
+        std::env::var("HOME").ok()
+    };
+    primary
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            let fallback = if cfg!(target_os = "windows") {
+                std::env::var("HOME").ok()
+            } else {
+                std::env::var("USERPROFILE").ok()
+            };
+            fallback.filter(|value| !value.trim().is_empty())
+        })
+        .map(std::path::PathBuf::from)
+}
+
+/// 剥离 Windows `std::fs::canonicalize` 产生的 `\\?\` / `\\?\UNC\` verbatim 前缀
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn strip_windows_verbatim_prefix_str(raw: &str) -> String {
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{}", rest);
+    }
+    if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        return rest.to_string();
+    }
+    raw.to_string()
+}
+
+/// 规范化为实际绝对路径，并在 Windows 上剥离 `\\?\` verbatim 前缀
+pub fn canonicalize_clean_path(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    let canonical = std::fs::canonicalize(path)?;
+    #[cfg(windows)]
+    {
+        let raw = canonical.to_string_lossy();
+        return Ok(std::path::PathBuf::from(strip_windows_verbatim_prefix_str(&raw)));
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(canonical)
+    }
+}
+
+/// 跨平台展开 `~` / `~/` / `~\` 路径，并统一使用当前平台原生路径分隔符
+pub fn expand_tilde_path(raw: &str) -> Result<std::path::PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed == "~" || trimmed.starts_with("~/") || trimmed.starts_with("~\\") {
+        let user_home = get_user_home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Cannot resolve user home directory"))?;
+        if trimmed == "~" {
+            return Ok(user_home);
+        }
+        let mut resolved = user_home;
+        for segment in trimmed[2..]
+            .split(['/', '\\'])
+            .filter(|segment| !segment.is_empty() && *segment != ".")
+        {
+            resolved.push(segment);
+        }
+        return Ok(resolved);
+    }
+    Ok(std::path::PathBuf::from(trimmed))
+}
+
+fn rebuild_native_path(path: &Path) -> std::path::PathBuf {
+    let mut normalized = std::path::PathBuf::new();
+    for component in path.components() {
+        normalized.push(component.as_os_str());
+    }
+    normalized
+}
+
+fn is_default_workspace_path(raw: &str) -> bool {
+    let normalized = raw.trim().replace('\\', "/");
+    normalized.starts_with("~/.shadow-crew") || normalized.starts_with("~/.shinobi")
+}
+
 /// 获取用户级全局 Shadow Crew 根目录 (~/.shadow-crew)
 pub fn get_shadow_crew_home_dir() -> std::path::PathBuf {
     let base = std::env::var("SHADOW_CREW_HOME")
         .or_else(|_| std::env::var("SHINOBI_HOME"))
         .ok()
         .map(std::path::PathBuf::from)
-        .or_else(|| {
-            if cfg!(target_os = "windows") {
-                std::env::var("USERPROFILE").ok().map(std::path::PathBuf::from)
-            } else {
-                std::env::var("HOME").ok().map(std::path::PathBuf::from)
-            }
-        })
+        .or_else(get_user_home_dir)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
     if base.ends_with(".shadow-crew") {
@@ -121,20 +195,9 @@ pub fn resolve_workspace_cwd_input(raw_cwd: &str, create_missing: bool) -> Resul
         return Err(anyhow::anyhow!("Workspace cwd cannot be empty"));
     }
 
-    let expanded = if trimmed == "~" || trimmed.starts_with("~/") {
-        let user_home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .map_err(|_| anyhow::anyhow!("Cannot resolve user home directory"))?;
-        if trimmed == "~" {
-            user_home
-        } else {
-            format!("{}{}", user_home, &trimmed[1..])
-        }
-    } else {
-        trimmed.to_string()
-    };
-
-    let path = Path::new(&expanded);
+    let expanded = expand_tilde_path(trimmed)?;
+    let path_buf = rebuild_native_path(&expanded);
+    let path = path_buf.as_path();
     if !path.is_absolute() {
         return Err(anyhow::anyhow!("Workspace cwd must be an absolute path: {}", raw_cwd));
     }
@@ -164,13 +227,12 @@ pub fn resolve_workspace_cwd_input(raw_cwd: &str, create_missing: bool) -> Resul
         return Err(anyhow::anyhow!("Workspace cwd is not a directory: {}", path.display()));
     }
 
-    let canonical = std::fs::canonicalize(path)
+    let canonical = canonicalize_clean_path(path)
         .map_err(|e| anyhow::anyhow!("Failed to canonicalize workspace cwd {}: {}", path.display(), e))?;
-    let shadow_home = get_shadow_crew_home_dir();
-    let user_home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()
-        .map(std::path::PathBuf::from);
+    let shadow_home_raw = get_shadow_crew_home_dir();
+    let shadow_home = canonicalize_clean_path(&shadow_home_raw).unwrap_or(shadow_home_raw);
+    let user_home = get_user_home_dir()
+        .map(|home| canonicalize_clean_path(&home).unwrap_or(home));
 
     if canonical.parent().is_none() {
         return Err(anyhow::anyhow!("Filesystem root cannot be used as a workspace"));
@@ -779,9 +841,7 @@ impl DatabaseManager {
                 let origin = binding.get("origin").and_then(|v| v.as_str()).unwrap_or("");
                 let cwd_raw = binding.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
                 let artifact_root_raw = binding.get("artifactRoot").and_then(|v| v.as_str()).unwrap_or("");
-                let create_missing = mode == "default"
-                    || cwd_raw.starts_with("~/.shadow-crew")
-                    || cwd_raw.starts_with("~/.shinobi");
+                let create_missing = mode == "default" || is_default_workspace_path(cwd_raw);
                 let cwd = resolve_workspace_cwd_input(cwd_raw, create_missing)?;
                 let artifact_root = resolve_workspace_cwd_input(artifact_root_raw, true)?;
                 let created_at = binding.get("createdAt").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1418,9 +1478,7 @@ fn migrate_workspace_binding_storage_paths(conn: &mut Connection) -> Result<()> 
 
     let tx = conn.transaction()?;
     for (id, mode, cwd_raw, artifact_raw) in rows {
-        let create_missing = mode == "default"
-            || cwd_raw.starts_with("~/.shadow-crew")
-            || cwd_raw.starts_with("~/.shinobi");
+        let create_missing = mode == "default" || is_default_workspace_path(&cwd_raw);
         let Ok(cwd) = resolve_workspace_cwd_input(&cwd_raw, create_missing) else {
             continue;
         };
@@ -1649,6 +1707,42 @@ mod tests {
         assert!(resolve_workspace_cwd_input("~/", false).is_err());
 
         let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn cross_platform_tilde_expansion_and_windows_verbatim_stripping() {
+        assert_eq!(
+            strip_windows_verbatim_prefix_str(r"\\?\D:\goProject\src"),
+            r"D:\goProject\src"
+        );
+        assert_eq!(
+            strip_windows_verbatim_prefix_str(r"\\?\UNC\server\share\dir"),
+            r"\\server\share\dir"
+        );
+        assert_eq!(
+            strip_windows_verbatim_prefix_str("/Users/alice/project"),
+            "/Users/alice/project"
+        );
+
+        let home = get_user_home_dir().expect("user home dir should resolve in test env");
+        let expected = home
+            .join(".shadow-crew")
+            .join("channels")
+            .join("chan-1")
+            .join("topics")
+            .join("topic-1");
+
+        assert_eq!(
+            expand_tilde_path("~/.shadow-crew/channels/chan-1/topics/topic-1").unwrap(),
+            expected
+        );
+        assert_eq!(
+            expand_tilde_path(r"~\.shadow-crew\channels\chan-1\topics\topic-1").unwrap(),
+            expected
+        );
+        assert!(is_default_workspace_path("~/.shadow-crew/channels/c1"));
+        assert!(is_default_workspace_path(r"~\.shadow-crew\channels\c1"));
+        assert!(!is_default_workspace_path(r"D:\goProject\src"));
     }
 
     #[test]

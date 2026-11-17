@@ -7,6 +7,7 @@ import {
   createDmTopicBinding,
   getDefaultDmTopicCwd,
   migrateWorkspaceGraph,
+  normalizeWorkspaceCwd,
 } from './workspaceBindings';
 
 const channelBinding = createChannelBinding({
@@ -140,4 +141,40 @@ assert.equal(parsedDmTopic.workspaceBindingId, dmTopicBinding.id);
 const bindings: WorkspaceBinding[] = [channelBinding, topicBinding, snapshotBinding];
 assert.equal(new Set(bindings.map((binding) => binding.cwd)).size >= 2, true);
 
-console.log('Workspace Binding regression suite passed (8 assertions groups).');
+// Windows 路径规范化与跨平台分隔符拼接回归测试
+assert.equal(normalizeWorkspaceCwd('\\\\?\\D:\\goProject\\src\\'), 'D:\\goProject\\src');
+assert.equal(normalizeWorkspaceCwd('C:\\'), 'C:\\');
+const winChannelBinding = createChannelBinding({
+  channelId: 'c-win',
+  mode: 'custom',
+  cwd: '\\\\?\\D:\\goProject\\src\\',
+});
+assert.equal(winChannelBinding.cwd, 'D:\\goProject\\src');
+assert.equal(
+  winChannelBinding.artifactRoot,
+  'D:\\goProject\\src\\.shadow-crew\\channels\\c-win\\artifacts'
+);
+const winTopicSnapshotBinding = createTopicBinding({
+  topicId: 't-win',
+  channelId: 'c-win',
+  mode: 'channel_snapshot',
+  channelBinding: winChannelBinding,
+});
+assert.equal(winTopicSnapshotBinding.cwd, 'D:\\goProject\\src');
+assert.equal(
+  winTopicSnapshotBinding.artifactRoot,
+  'D:\\goProject\\src\\.shadow-crew\\channels\\c-win\\topics\\t-win\\artifacts'
+);
+const winDmBinding = createDmTopicBinding({
+  topicId: 'dm-win',
+  agentId: 'a-win',
+  mode: 'custom',
+  cwd: 'C:\\Users\\alice\\work\\',
+});
+assert.equal(winDmBinding.cwd, 'C:\\Users\\alice\\work');
+assert.equal(
+  winDmBinding.artifactRoot,
+  'C:\\Users\\alice\\work\\.shadow-crew\\agents\\a-win\\topics\\dm-win\\artifacts'
+);
+
+console.log('Workspace Binding regression suite passed (9 assertions groups).');

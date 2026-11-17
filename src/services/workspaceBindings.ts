@@ -15,16 +15,74 @@ export function getDefaultDmTopicCwd(agentId: string, topicId: string): string {
   return `${WORKSPACE_HOME}/agents/${agentId}/topics/${topicId}`;
 }
 
-export function getDefaultArtifactRoot(cwd: string): string {
-  return `${cwd.replace(/\/+$/, '')}/artifacts`;
+export function stripWindowsVerbatimPrefix(raw: string): string {
+  if (raw.startsWith('\\\\?\\UNC\\')) {
+    return `\\\\${raw.slice(8)}`;
+  }
+  if (raw.startsWith('\\\\?\\')) {
+    return raw.slice(4);
+  }
+  return raw;
+}
+
+function isWindowsDrivePrefix(value: string): boolean {
+  if (value.length < 2 || value[1] !== ':') {
+    return false;
+  }
+  const drive = value.charCodeAt(0);
+  return (drive >= 65 && drive <= 90) || (drive >= 97 && drive <= 122);
+}
+
+export function isWindowsStylePath(raw: string): boolean {
+  return raw.includes('\\') || isWindowsDrivePrefix(raw);
 }
 
 export function normalizeWorkspaceCwd(raw: string): string {
-  const trimmed = raw.trim();
+  const trimmed = stripWindowsVerbatimPrefix(raw.trim());
   if (!trimmed) {
     throw new Error('工作目录不能为空');
   }
-  return trimmed.replace(/\/+$/, '') || '/';
+
+  let end = trimmed.length;
+  while (end > 0 && (trimmed[end - 1] === '/' || trimmed[end - 1] === '\\')) {
+    // 保留 "/"、"\" 以及盘符根目录 "C:\" / "C:/"
+    if (end === 1) {
+      break;
+    }
+    if (end === 3 && isWindowsDrivePrefix(trimmed)) {
+      break;
+    }
+    end -= 1;
+  }
+  return trimmed.slice(0, end);
+}
+
+export function joinWorkspacePath(base: string, ...segments: string[]): string {
+  const normalizedBase = normalizeWorkspaceCwd(base);
+  const sep = isWindowsStylePath(normalizedBase) ? '\\' : '/';
+  const cleanedSegments: string[] = [];
+
+  for (const segment of segments) {
+    for (const part of segment.split(/[\\/]+/)) {
+      if (part) {
+        cleanedSegments.push(part);
+      }
+    }
+  }
+
+  if (cleanedSegments.length === 0) {
+    return normalizedBase;
+  }
+
+  const baseHasTrailingSep =
+    normalizedBase.endsWith('/') || normalizedBase.endsWith('\\');
+  return baseHasTrailingSep
+    ? `${normalizedBase}${cleanedSegments.join(sep)}`
+    : `${normalizedBase}${sep}${cleanedSegments.join(sep)}`;
+}
+
+export function getDefaultArtifactRoot(cwd: string): string {
+  return joinWorkspacePath(cwd, 'artifacts');
 }
 
 export function normalizeDuelRoles(roles: DuelRolesConfig): DuelRolesConfig {
@@ -55,7 +113,7 @@ export function createChannelBinding(options: {
     cwd,
     artifactRoot: options.mode === 'default'
       ? getDefaultArtifactRoot(cwd)
-      : `${cwd}/.shadow-crew/channels/${options.channelId}/artifacts`,
+      : joinWorkspacePath(cwd, '.shadow-crew', 'channels', options.channelId, 'artifacts'),
     createdAt: options.createdAt ?? Date.now(),
   };
 }
@@ -85,14 +143,23 @@ export function createTopicBinding(options: {
   }
 
   if (options.mode === 'channel_snapshot') {
+    const snapshotCwd = normalizeWorkspaceCwd(options.channelBinding.cwd);
     return {
       id: `ws-topic-${options.topicId}`,
       ownerType: 'topic',
       ownerId: options.topicId,
       mode: 'custom',
       origin: 'channel_cwd_snapshot',
-      cwd: options.channelBinding.cwd,
-      artifactRoot: `${options.channelBinding.cwd}/.shadow-crew/channels/${options.channelId}/topics/${options.topicId}/artifacts`,
+      cwd: snapshotCwd,
+      artifactRoot: joinWorkspacePath(
+        snapshotCwd,
+        '.shadow-crew',
+        'channels',
+        options.channelId,
+        'topics',
+        options.topicId,
+        'artifacts'
+      ),
       createdAt: options.createdAt ?? Date.now(),
     };
   }
@@ -105,7 +172,15 @@ export function createTopicBinding(options: {
     mode: 'custom',
     origin: 'created_custom',
     cwd,
-    artifactRoot: `${cwd}/.shadow-crew/channels/${options.channelId}/topics/${options.topicId}/artifacts`,
+    artifactRoot: joinWorkspacePath(
+      cwd,
+      '.shadow-crew',
+      'channels',
+      options.channelId,
+      'topics',
+      options.topicId,
+      'artifacts'
+    ),
     createdAt: options.createdAt ?? Date.now(),
   };
 }
@@ -135,10 +210,11 @@ export function createDmTopicBinding(options: {
   }
 
   if (options.mode === 'agent_snapshot') {
-    const agentCwd =
+    const agentCwd = normalizeWorkspaceCwd(
       options.cwd ||
-      options.agentBinding?.cwd ||
-      `${WORKSPACE_HOME}/agents/${options.agentId}`;
+        options.agentBinding?.cwd ||
+        `${WORKSPACE_HOME}/agents/${options.agentId}`
+    );
     return {
       id: `ws-topic-${options.topicId}`,
       ownerType: 'topic',
@@ -146,7 +222,15 @@ export function createDmTopicBinding(options: {
       mode: 'custom',
       origin: 'channel_cwd_snapshot',
       cwd: agentCwd,
-      artifactRoot: `${agentCwd}/.shadow-crew/agents/${options.agentId}/topics/${options.topicId}/artifacts`,
+      artifactRoot: joinWorkspacePath(
+        agentCwd,
+        '.shadow-crew',
+        'agents',
+        options.agentId,
+        'topics',
+        options.topicId,
+        'artifacts'
+      ),
       createdAt: options.createdAt ?? Date.now(),
     };
   }
@@ -159,7 +243,15 @@ export function createDmTopicBinding(options: {
     mode: 'custom',
     origin: 'created_custom',
     cwd,
-    artifactRoot: `${cwd}/.shadow-crew/agents/${options.agentId}/topics/${options.topicId}/artifacts`,
+    artifactRoot: joinWorkspacePath(
+      cwd,
+      '.shadow-crew',
+      'agents',
+      options.agentId,
+      'topics',
+      options.topicId,
+      'artifacts'
+    ),
     createdAt: options.createdAt ?? Date.now(),
   };
 }

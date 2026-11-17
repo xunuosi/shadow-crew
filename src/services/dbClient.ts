@@ -1,4 +1,5 @@
 import { Message, Channel, Thread, Agent, AgentTeam, WorkspaceBinding } from '../types';
+import { normalizeWorkspaceCwd } from './workspaceBindings';
 
 export interface StorageStats {
   databasePath: string;
@@ -777,9 +778,7 @@ export async function resolveWorkspaceCwd(rawCwd: string, createMissing: boolean
       createMissing,
     });
   }
-  const trimmed = rawCwd.trim().replace(/\/+$/, '');
-  if (!trimmed) throw new Error('工作目录不能为空');
-  return trimmed;
+  return normalizeWorkspaceCwd(rawCwd);
 }
 
 /**

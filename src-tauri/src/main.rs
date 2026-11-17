@@ -1169,10 +1169,12 @@ fn normalize_file_target_path(raw: &str, workspace_root: Option<&str>) -> std::p
         cleaned_str = &cleaned_str[1..];
     }
 
-    let mut path = std::path::PathBuf::from(cleaned_str);
+    let mut path = db_manager::expand_tilde_path(cleaned_str)
+        .unwrap_or_else(|_| std::path::PathBuf::from(cleaned_str));
     if path.is_relative() {
         if let Some(root) = workspace_root {
-            let root_buf = std::path::PathBuf::from(root.trim());
+            let root_buf = db_manager::expand_tilde_path(root.trim())
+                .unwrap_or_else(|_| std::path::PathBuf::from(root.trim()));
             let candidate = root_buf.join(&path);
             if candidate.exists() {
                 path = candidate;
