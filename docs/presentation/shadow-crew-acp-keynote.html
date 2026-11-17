@@ -655,6 +655,27 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; }
 .vs-mid { display: grid; place-items: center; color: var(--fg3); }
 .vs-mid svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 
+/* ---------- 07 prompt lifecycle ---------- */
+.pc { display: flex; flex-direction: column; gap: 5px; }
+.pc-row { display: grid; grid-template-columns: 128px 1fr; gap: 14px; align-items: center; }
+.pc-lbl { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--fg2); }
+.pc-lbl b { font-weight: 650; color: var(--fg); }
+.tag-v1, .tag-v2 { font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; padding: 2px 6px; border-radius: 5px; border: 1px solid; }
+.tag-v1 { color: var(--bad); border-color: var(--bad-line); background: var(--bad-soft); }
+.tag-v2 { color: var(--ok); border-color: var(--ok-line); background: var(--ok-soft); }
+.pc-bar { display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 14px; border-radius: 11px; border: 1px solid var(--line); background: var(--surface2); font-size: 12.5px; }
+.pc-bar.block { border-color: var(--bad-line); background: linear-gradient(90deg, var(--bad-soft), transparent 70%); }
+.pc-bar.ack { border-color: var(--ok-line); background: linear-gradient(90deg, var(--ok-soft), transparent 70%); }
+.pc-dots { flex: 1; height: 2px; background: repeating-linear-gradient(90deg, var(--fg3) 0 6px, transparent 6px 12px); opacity: .4; }
+.pc-wait { font-size: 11.5px; color: var(--fg3); white-space: nowrap; }
+.pc-end { font-family: var(--mono); font-size: 11px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); white-space: nowrap; }
+.pc-end.bad { color: var(--bad); border-color: var(--bad-line); background: var(--bad-soft); }
+.pc-end.ok { color: var(--ok); border-color: var(--ok-line); background: var(--ok-soft); }
+.pc-sep { color: var(--fg3); }
+.pc-chan { font-size: 11.5px; color: var(--fg2); white-space: nowrap; }
+.pc-chan b { color: var(--fg); font-weight: 650; }
+.pc-cap { margin: 1px 0 11px 142px; font-size: 11.5px; line-height: 1.5; color: var(--fg3); }
+
 /* ---------- 11/22 tables ---------- */
 .tbl .mini { display: block; font-size: 11.5px; color: var(--fg3); margin-top: 3px; line-height: 1.4; }
 .tbl .note { display: block; margin-top: 5px; font-size: 12.5px; line-height: 1.55; color: var(--fg3); }
@@ -1348,25 +1369,48 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 07 ------------------------------------------------------------ -->
 <section class="slide" data-no="07" data-section="ACP · 协议" data-title="从 V1 到 V2 的演进跃迁"
-  data-notes="V1 不是不能用，而是每个宿主都要自己兜底；V2 把 prompt 生命周期、能力模型、会话方法重写。重点不是字段，而是“谁在什么时候算完成”。V2 目前仍是 Draft，生产落地要双栈和特性开关。">
+  data-notes="先讲最大的一处：调用模型。V1 的 session/prompt 是同步挂起，请求一直等到整轮结束才回 stopReason；V2 只要消息插入会话就立刻回 messageId，执行是异步的，进度和终态通过 state_update 变体上报，运行中还能继续投递新消息。其余差异都围绕这一点：能力从布尔变成对象、客户端工具移到 MCP、load 换成 resume+replayFrom、auth 拆成 login/logout。V2 仍是 Draft。">
   <div class="slide-head">
     <div class="eyebrow reveal">06 / 协议</div>
-    <h2 class="reveal">从 V1 到 V2：一次生命周期重构</h2>
-    <p class="lede reveal">V2 不是版本号加一，而是把“回合”与“能力模型”重新定义了。注意：V2 目前仍是 Draft。</p>
+    <h2 class="reveal">从 V1 到 V2：调用模型变了</h2>
+    <p class="lede reveal">最大的变化不是字段，是 prompt 的生命周期：V1 同步挂起到结束，V2 插入即返回、异步报状态。</p>
   </div>
   <div class="slide-body">
-    <div class="versus">
+    <div class="pc reveal">
+      <div class="pc-row">
+        <div class="pc-lbl"><span class="tag-v1">V1</span><b>同步挂起</b></div>
+        <div class="pc-bar block">
+          <span class="mono">session/prompt</span>
+          <span class="pc-dots"></span>
+          <span class="pc-wait">推理 + 工具 + 多轮模型交互，全挂在这一个请求里</span>
+          <span class="pc-end bad">↩ stopReason</span>
+        </div>
+      </div>
+      <div class="pc-cap">中途想补一句话，只能先 <span class="mono">session/cancel</span> 再来；客户端也不知道“进行到哪一步”。</div>
+
+      <div class="pc-row">
+        <div class="pc-lbl"><span class="tag-v2">V2</span><b>立即确认 + 异步</b></div>
+        <div class="pc-bar ack">
+          <span class="mono">session/prompt</span>
+          <span class="pc-end ok">↩ { messageId }</span>
+          <span class="pc-sep">›</span>
+          <span class="pc-chan">session/update：running → tool_call → … → <b>idle(stopReason)</b></span>
+        </div>
+      </div>
+      <div class="pc-cap">消息插入会话就返回；执行在后台继续，进度与终态都靠 <span class="mono">state_update</span> 变体上报，运行中还能继续投递新消息。</div>
+    </div>
+
+    <div class="versus mt-16">
       <div class="vs-col v1 reveal">
         <div class="vs-head"><span class="t">V1</span><span class="s">Stable · 整数 1</span></div>
         <div class="tag-list">
-          <div class="row">版本：整数 1，Agent 返回自己支持的最新版</div>
-          <div class="row">能力：agentCapabilities / clientCapabilities，布尔标记</div>
-          <div class="row">Prompt：请求挂起到回合结束，响应即 stopReason</div>
-          <div class="row">客户端工具：fs / terminal 方法，由客户端执行</div>
-          <div class="row">恢复：session/load 全量重放；resume 可选</div>
-          <div class="row">认证：authenticate / logout（logout 需能力）</div>
+          <div class="row"><b>版本</b>：客户端报 1；Agent 回自己支持的最高版</div>
+          <div class="row"><b>能力</b>：布尔清单，<span class="mono">fs.readTextFile: true</span> 表示“我能读文件”</div>
+          <div class="row"><b>客户端工具</b>：<span class="mono">fs/*</span>、<span class="mono">terminal/*</span> 写在协议里，由客户端执行</div>
+          <div class="row"><b>会话恢复</b>：<span class="mono">load</span> 重放全部历史；<span class="mono">resume</span> 是可选能力</div>
+          <div class="row"><b>认证与配置</b>：<span class="mono">authenticate</span> / <span class="mono">logout</span>；<span class="mono">set_mode</span> 与 <span class="mono">set_config_option</span> 并存</div>
         </div>
-        <div class="mt-20"><span class="badge plain">STABLE</span></div>
+        <div class="mt-16"><span class="badge plain">STABLE</span></div>
       </div>
 
       <div class="vs-mid reveal">
@@ -1376,20 +1420,19 @@ table.method .req.b { color: var(--accent); }
       <div class="vs-col v2 reveal">
         <div class="vs-head"><span class="t">V2</span><span class="s">Draft · 整数 2</span></div>
         <div class="tag-list">
-          <div class="row">版本：整数 2，取 ≤ 请求的最高版；无匹配 -32022</div>
-          <div class="row">能力：capabilities + 必填 info，对象标记，session 基线</div>
-          <div class="row">Prompt：插入即 ack { messageId }；state_update 报 running/idle</div>
-          <div class="row">客户端工具：fs/terminal 移除；客户端工具改走 MCP</div>
-          <div class="row">恢复：load 移除；resume 必选 + replayFrom</div>
-          <div class="row">认证：auth/login + auth/logout；set_mode → set_config_option</div>
+          <div class="row"><b>版本</b>：Agent 回 ≤ 请求的最高版；没有匹配就 <span class="mono">-32022</span>，客户端断开</div>
+          <div class="row"><b>能力</b>：对象“存在即支持”，<span class="mono">session: {}</span> = 会话基线，<span class="mono">session.mcp.stdio: {}</span> = 支持 stdio MCP；<b>不写 = 不支持</b></div>
+          <div class="row"><b>客户端工具</b>：<span class="mono">fs/*</span>、<span class="mono">terminal/*</span> 全部移除，改由 MCP 提供</div>
+          <div class="row"><b>会话恢复</b>：<span class="mono">load</span> 移除；<span class="mono">resume</span> 必选，可带 <span class="mono">replayFrom</span> 从指定位置重放</div>
+          <div class="row"><b>认证与配置</b>：<span class="mono">auth/login</span> + <span class="mono">auth/logout</span> 成对；<span class="mono">set_mode</span> 并入 <span class="mono">set_config_option</span></div>
         </div>
-        <div class="mt-20"><span class="badge warn">DRAFT</span></div>
+        <div class="mt-16"><span class="badge warn">DRAFT</span></div>
       </div>
     </div>
 
-    <div class="callout mt-24 reveal">
+    <div class="callout mt-14 reveal">
       <span class="tag">结论</span>
-      <span>V2 的价值不是多几个字段，而是 <b>完成可以被追踪、能力可以被协商、版本可以被拒绝</b>；但它是 Draft，落地要双栈。</span>
+      <span>其余差异都围绕调用模型收敛：<b>状态可追踪（state_update）、能力可协商（对象标记）、版本可拒绝（-32022）</b>；但 V2 仍是 Draft，落地要双栈。</span>
     </div>
   </div>
 </section>
@@ -1422,14 +1465,14 @@ table.method .req.b { color: var(--accent); }
           </tr>
           <tr>
             <td class="row-h">能力模型</td>
-            <td>agentCapabilities / clientCapabilities<span class="mini">布尔标记 + 分散的 session 能力</span></td>
-            <td><strong>capabilities + 必填 info</strong><span class="mini">对象存在即支持；session 为基线</span></td>
+            <td>agentCapabilities / clientCapabilities<span class="mini">布尔：true / false</span></td>
+            <td><strong>capabilities 对象 + 必填 info</strong><span class="mini">存在即支持（{}）；省略 = 不支持；session 为基线</span></td>
             <td>存在性判断，不做布尔等值；按连接选版本</td>
           </tr>
           <tr>
             <td class="row-h">Prompt 生命周期</td>
-            <td>session/prompt 挂起到回合结束<span class="mini">响应 { stopReason }</span></td>
-            <td><strong>插入即 ack { messageId }</strong><span class="mini">running / idle 走 state_update</span></td>
+            <td><strong>同步阻塞</strong>：挂起到回合结束<span class="mini">响应 { stopReason }；中途补话要先 cancel</span></td>
+            <td><strong>异步</strong>：插入即 ack { messageId }<span class="mini">执行在后台；running / idle 走 state_update</span></td>
             <td>UI 不能把 prompt 响应当完成；终态看 idle</td>
           </tr>
           <tr>
