@@ -876,7 +876,7 @@ table.matrix { font-size: 13px; }
 .bs-item b { font-size: 13px; color: var(--fg); }
 .bs-d { font-size: 11.5px; color: var(--fg3); line-height: 1.45; }
 .bs-ar { display: grid; place-items: center; color: var(--fg3); font-size: 12px; }
-.ex-tbl td { font-size: 12.5px; }
+.ex-tbl td { font-size: 12.5px; padding-top: 7px; padding-bottom: 7px; }
 .ex-tbl td.hl { color: var(--ok); font-weight: 650; }
 .ratio-line { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface2); font-size: 12px; }
 .ratio-line .rl-k { font-size: 11px; color: var(--fg3); }
@@ -894,10 +894,11 @@ table.matrix { font-size: 13px; }
 .rank b, .rank .rn { flex: 1; min-width: 0; }
 .rank b { font-weight: 650; color: var(--fg); }
 .rank .rv { flex: none; margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--fg3); }
-.formula { padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface2); }
+.formula { padding: 10px 14px; border: 1px solid var(--line2); border-radius: 10px; background: var(--surface2); }
 .fm-k { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; color: var(--accent); margin-bottom: 5px; }
-.fm-l { font-size: 11px; line-height: 1.7; color: var(--fg3); }
-.fm-l .mono { color: var(--fg2); font-size: 10.5px; }
+.fm-l { font-size: 12.5px; line-height: 1.52; color: var(--fg3); }
+.fm-l .fm-ind { margin-left: 2.2em; }
+.fm-l .mono { color: var(--fg2); font-size: 11.5px; }
 
 /* ---------- 20 gate ---------- */
 .meter { position: relative; height: 12px; border-radius: 999px; background: var(--surface3); border: 1px solid var(--line); }
@@ -1992,10 +1993,12 @@ table.method .req.b { color: var(--accent); }
           <span class="rl-k">其余比最差</span><span class="mono">[4, 3, 1]</span>
         </div>
         <div class="formula mt-10">
-          <div class="fm-k">怎么算</div>
+          <div class="fm-k">计算方式</div>
           <div class="fm-l"><span class="mono">min ξ</span> &nbsp;s.t.&nbsp; <span class="mono">|w_B − a_Bj·w_j| ≤ ξ</span></div>
-          <div class="fm-l"><span class="mono">　　　　　|w_j − a_jW·w_W| ≤ ξ</span>，<span class="mono">Σw = 1</span></div>
-          <div class="fm-l">效用 <span class="mono">U = Σ w_i · s_i</span>（越大越好 <span class="mono">s/10</span>，越小越好 <span class="mono">(10−s)/10</span>）</div>
+          <div class="fm-l"><span class="mono fm-ind">|w_j − a_jW·w_W| ≤ ξ</span>，<span class="mono">Σw = 1</span></div>
+          <div class="fm-l">权重代入：<span class="mono">w = [0.563, 0.311, 0.125]</span>，<span class="mono">ξ* = 0.065</span></div>
+          <div class="fm-l">效用：<span class="mono">U = Σ w_i·s_i</span>（越大 <span class="mono">s/10</span>，越小 <span class="mono">(10−s)/10</span>）</div>
+          <div class="fm-l">复算 C：<span class="mono">0.563×0.93 + 0.311×0.90 + 0.125×0.45 = 0.861</span></div>
         </div>
       </div>
 
