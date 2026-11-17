@@ -868,6 +868,32 @@ table.matrix { font-size: 13px; }
 .ac-code { margin-top: auto; padding-top: 10px; font-family: var(--mono); font-size: 10.5px; color: var(--fg3); border-top: 1px dashed var(--line); }
 .ac-fail { margin-top: 7px; font-size: 11.5px; line-height: 1.5; color: var(--warn); }
 
+/* ---------- 17 bwm example ---------- */
+.bwm-steps { display: grid; grid-template-columns: 1fr 26px 1fr 26px 1fr; gap: 0; align-items: stretch; }
+.bs-item { padding: 11px 14px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface2); display: flex; flex-direction: column; gap: 3px; }
+.bs-item.gate { border-color: var(--ok-line); background: linear-gradient(180deg, var(--ok-soft), var(--surface2) 70%); }
+.bs-n { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; color: var(--accent); }
+.bs-item b { font-size: 13px; color: var(--fg); }
+.bs-d { font-size: 11.5px; color: var(--fg3); line-height: 1.45; }
+.bs-ar { display: grid; place-items: center; color: var(--fg3); font-size: 12px; }
+.ex-tbl td { font-size: 12.5px; }
+.ex-tbl td.hl { color: var(--ok); font-weight: 650; }
+.ratio-line { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface2); font-size: 12px; }
+.ratio-line .rl-k { font-size: 11px; color: var(--fg3); }
+.ratio-line .mono { color: var(--fg); }
+.wbars { display: flex; flex-direction: column; gap: 7px; }
+.wb { display: grid; grid-template-columns: 48px 1fr 44px; align-items: center; gap: 9px; font-size: 11.5px; }
+.wb-k { color: var(--fg2); }
+.wb-track { height: 8px; border-radius: 999px; background: var(--surface3); overflow: hidden; }
+.wb-track i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+.wb-v { font-family: var(--mono); font-size: 10.5px; color: var(--fg3); text-align: right; }
+.rank { display: flex; align-items: center; gap: 9px; padding: 6px 10px; border-radius: 8px; font-size: 12px; color: var(--fg2); }
+.rank:nth-child(odd) { background: var(--surface2); }
+.rank .rk { width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; font-family: var(--mono); font-size: 10px; color: var(--fg3); border: 1px solid var(--line); flex: none; }
+.rank .rk.first { color: var(--ok); border-color: var(--ok-line); background: var(--ok-soft); }
+.rank b { flex: 1; font-weight: 650; color: var(--fg); }
+.rank .rv { font-family: var(--mono); font-size: 10.5px; color: var(--fg3); }
+
 /* ---------- 20 gate ---------- */
 .meter { position: relative; height: 12px; border-radius: 999px; background: var(--surface3); border: 1px solid var(--line); }
 .meter .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent2)); }
@@ -1930,59 +1956,62 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 17 ------------------------------------------------------------ -->
 <section class="slide" data-no="17" data-section="决策引擎" data-title="BWM 最佳-最差法：0-Token 仲裁"
-  data-notes="这一页讲一个可检查的收敛办法：BWM（Best-Worst Method，最佳-最差法）把架构权衡变成权重求解，求解过程不调用 LLM，所以是 0-Token。一致性 ξ* 是门禁：不达标退回重审，而不是继续凭感觉讨论。BWM 不替代讨论，只把最后一步变成可检查的数学问题；参考见附录 A7。">
+  data-notes="这页用一个具体例子讲 BWM 怎么落地。场景是高并发网关的限流与状态存储选型。先看三步：输入只要求最优/最差准则加两组 1–9 比值和方案打分；求解是线性规划，不调模型；门禁看 ξ*，不过就退回。再看右边的数：一致性权重 0.563、性能 0.311、复杂度 0.125，ξ*=0.065 过门禁，最后 C 方案（Redis Lua + 降级补丁）效用最高。注意口径：这里的打分和比值是规则或模型给的，BWM 只保证给定这些数之后推导自洽。">
   <div class="slide-head">
     <div class="eyebrow reveal">16 / 决策</div>
     <h2 class="reveal">把架构权衡，写成可检查的数学问题</h2>
-    <p class="lede reveal">BWM（Best-Worst Method，最佳-最差法）运筹求解，0 次 LLM 调用；一致性不达标，退回重审。</p>
+    <p class="lede reveal">BWM（Best-Worst Method，最佳-最差法）：给比值、解权重、查一致性，全程不调模型。</p>
   </div>
   <div class="slide-body">
-    <div class="grid" style="grid-template-columns:1.05fr .95fr;gap:36px">
+    <div class="bwm-steps reveal">
+      <div class="bs-item"><span class="bs-n">1 · INPUT</span><b>两组比较 + 打分</b><span class="bs-d">最优/最差准则，两组 1–9 比值，方案 0–10 分</span></div>
+      <div class="bs-ar">→</div>
+      <div class="bs-item"><span class="bs-n">2 · SOLVE</span><b>线性规划求权重</b><span class="bs-d">解出 w 与一致性 ξ*，不调用 LLM</span></div>
+      <div class="bs-ar">→</div>
+      <div class="bs-item gate"><span class="bs-n">3 · GATE</span><b>ξ* ≤ 0.12 才放行</b><span class="bs-d">通过出 ADR；不过退回重审</span></div>
+    </div>
+
+    <div class="grid" style="grid-template-columns:1.12fr .88fr;gap:26px;margin-top:18px">
       <div class="reveal">
-        <div class="card" style="padding:20px 22px">
-          <div class="card-k">1 · INPUT</div>
-          <div class="card-t">准则的两组比较 + 方案打分</div>
-          <div class="card-d">选最优 / 最差准则，给「最优比其余、其余比最差」两组 1–9 比值，再给各方案在准则上的 0–10 分。</div>
+        <div class="small" style="margin-bottom:8px">例：高并发网关的限流与状态存储选型</div>
+        <table class="tbl compact ex-tbl">
+          <thead><tr><th style="width:30%">准则</th><th>A 本地令牌桶</th><th>B 全量重构</th><th>C Redis 补丁</th><th style="width:16%">方向</th></tr></thead>
+          <tbody>
+            <tr><td><b>一致性</b> cons</td><td>5.3</td><td>8.8</td><td class="hl">9.3</td><td class="dim">越大越好</td></tr>
+            <tr><td><b>性能</b> perf</td><td>7.0</td><td>7.2</td><td class="hl">9.0</td><td class="dim">越大越好</td></tr>
+            <tr><td><b>复杂度</b> comp</td><td>4.5</td><td class="hl">8.8</td><td>5.5</td><td class="dim">越小越好</td></tr>
+          </tbody>
+        </table>
+        <div class="ratio-line mt-12">
+          <span class="rl-k">最优比其余</span><span class="mono">[1, 2, 4]</span>
+          <span class="rl-k">其余比最差</span><span class="mono">[4, 3, 1]</span>
         </div>
-        <div class="hs-arrow" style="width:100%;height:22px;margin:4px 0"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M6 14l6 6 6-6"/></svg></div>
-        <div class="card" style="padding:20px 22px">
-          <div class="card-k">2 · SOLVE</div>
-          <div class="card-t">线性规划求权重向量</div>
-          <div class="card-d">解出各准则权重 w 与方案排序，同时得到一致性比率 <span class="mono">ξ*</span>。</div>
-        </div>
-        <div class="hs-arrow" style="width:100%;height:22px;margin:4px 0"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M6 14l6 6 6-6"/></svg></div>
-        <div class="card" style="padding:20px 22px;border-color:var(--ok-line);background:var(--ok-soft)">
-          <div class="card-k" style="color:var(--ok)">3 · GATE</div>
-          <div class="card-t" style="color:var(--ok)">一致性门禁 + 裁决输出</div>
-          <div class="card-d">通过则生成 Living ADR；不通过则打回重审，而不是“少数服从多数”。</div>
-        </div>
+        <p class="small mt-10">打分怎么来的：词频选出准则，实证反例给 A 扣分，答辩补丁给 C 加分；比值由仲裁陈词的关键词定最优/最差后按规则填充。</p>
       </div>
 
       <div class="reveal">
         <div class="flex items-end between">
-          <div>
-            <div class="small mono">CONSISTENCY RATIO</div>
-            <div class="kpi-big" style="color:var(--ok);margin-top:6px">ξ* = 0.08</div>
-          </div>
-          <span class="badge ok" style="margin-bottom:8px">PASS</span>
+          <div><div class="small mono">CONSISTENCY</div><div class="kpi-big" style="color:var(--ok);margin-top:4px">ξ* = 0.065</div></div>
+          <span class="badge ok" style="margin-bottom:6px">PASS</span>
         </div>
-        <div class="meter mt-20">
-          <div class="fill" style="width:40%"></div>
-          <div class="thr" style="left:60%"></div>
-        </div>
-        <div class="flex between mt-12 small"><span>0</span><span>0.20</span></div>
+        <div class="meter mt-8"><div class="fill" style="width:32.5%"></div><div class="thr" style="left:60%"></div></div>
+        <div class="flex between mt-8 small"><span>0</span><span>阈值 0.12</span><span>0.20</span></div>
 
-        <div class="divider" style="margin:22px 0"></div>
-        <div class="small" style="margin-bottom:10px">裁决产物</div>
-        <div class="flex col gap-8">
-          <div class="flex items-center gap-10" style="font-size:12.5px;color:var(--fg2)"><span class="badge purple">ADR</span>Living ADR 活体架构画布</div>
-          <div class="flex items-center gap-10" style="font-size:12.5px;color:var(--fg2)"><span class="badge warn">MINORITY</span>《少数派异议报告》</div>
-          <div class="flex items-center gap-10" style="font-size:12.5px;color:var(--fg2)"><span class="badge info">TRIGGER</span>量化黑天鹅重开触发器（默认 3 条）</div>
+        <div class="small" style="margin:14px 0 6px">解出的准则权重</div>
+        <div class="wbars">
+          <div class="wb"><span class="wb-k">一致性</span><span class="wb-track"><i style="width:56.3%"></i></span><span class="wb-v">0.563</span></div>
+          <div class="wb"><span class="wb-k">性能</span><span class="wb-track"><i style="width:31.1%"></i></span><span class="wb-v">0.311</span></div>
+          <div class="wb"><span class="wb-k">复杂度</span><span class="wb-track"><i style="width:12.5%"></i></span><span class="wb-v">0.125</span></div>
         </div>
 
-        <div class="callout mt-20" style="font-size:12.5px"><span class="tag">0 TOKEN</span><span>求解阶段不消耗 LLM；BWM 参考见附录 A7</span></div>
+        <div class="small" style="margin:12px 0 6px">加权效用排序</div>
+        <div class="rank"><span class="rk first">1</span><b>C Redis Lua + 降级补丁</b><span class="rv">0.861</span></div>
+        <div class="rank"><span class="rk">2</span><span>B 全量分布式强一致重构</span><span class="rv">0.735</span></div>
+        <div class="rank"><span class="rk">3</span><span>A 本地令牌桶 + 异步批写</span><span class="rv">0.585</span></div>
       </div>
     </div>
+
+    <p class="small mt-12 reveal">产物：Living ADR ·《少数派异议报告》· 量化重开触发器。求解阶段 <b style="color:var(--fg)">0 Token</b>；BWM 参考 Rezaei 2015/2016，见附录 A7。</p>
   </div>
 </section>
 
