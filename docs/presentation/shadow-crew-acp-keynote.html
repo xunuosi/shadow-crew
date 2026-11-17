@@ -1907,7 +1907,7 @@ table.method .req.b { color: var(--accent); }
       </div>
       <div class="acc-card reveal">
         <div class="ac-h"><span class="ac-n">06</span><h4>拍脑袋：权重靠感觉</h4><span class="ac-paper">BWM · Rezaei 2015/2016</span></div>
-        <p>把权衡变成线性规划：只做“最优比其余、其余比最差”两组比较，解出权重与一致性 ξ*。</p>
+        <p><b>BWM（Best-Worst Method，最佳-最差法）</b>：只做「最优比其余、其余比最差」两组比较，把权衡解成权重与一致性 ξ*。</p>
         <div class="ac-code">solveExactBwmOptionB()</div>
         <div class="ac-fail">护栏：ξ* &gt; 0.12 → consistencyPassed=false，锁死定案</div>
       </div>
@@ -1929,12 +1929,12 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 17 ------------------------------------------------------------ -->
-<section class="slide" data-no="17" data-section="决策引擎" data-title="BWM 运筹学 0-Token 仲裁"
-  data-notes="这一页讲一个可检查的收敛办法：BWM 把架构权衡变成权重求解，求解过程不调用 LLM，所以是 0-Token。一致性 ξ* 是门禁：不达标退回重审，而不是继续凭感觉讨论。BWM 不替代讨论，只把最后一步变成可检查的数学问题；参考见附录 A7。">
+<section class="slide" data-no="17" data-section="决策引擎" data-title="BWM 最佳-最差法：0-Token 仲裁"
+  data-notes="这一页讲一个可检查的收敛办法：BWM（Best-Worst Method，最佳-最差法）把架构权衡变成权重求解，求解过程不调用 LLM，所以是 0-Token。一致性 ξ* 是门禁：不达标退回重审，而不是继续凭感觉讨论。BWM 不替代讨论，只把最后一步变成可检查的数学问题；参考见附录 A7。">
   <div class="slide-head">
     <div class="eyebrow reveal">16 / 决策</div>
     <h2 class="reveal">把架构权衡，写成可检查的数学问题</h2>
-    <p class="lede reveal">BWM 运筹求解，0 次 LLM 调用；一致性不达标，退回重审。</p>
+    <p class="lede reveal">BWM（Best-Worst Method，最佳-最差法）运筹求解，0 次 LLM 调用；一致性不达标，退回重审。</p>
   </div>
   <div class="slide-body">
     <div class="grid" style="grid-template-columns:1.05fr .95fr;gap:36px">
