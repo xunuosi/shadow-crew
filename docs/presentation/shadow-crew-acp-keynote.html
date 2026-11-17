@@ -205,7 +205,7 @@ html[data-theme="light"] .grad { background: none; color: var(--accent); }
 .justify-center { justify-content: center; } .between { justify-content: space-between; }
 .wrap { flex-wrap: wrap; }
 .min0 { min-width: 0; }
-.mt-8 { margin-top: 8px; } .mt-12 { margin-top: 12px; }
+.mt-8 { margin-top: 8px; } .mt-10 { margin-top: 10px; } .mt-12 { margin-top: 12px; }
 .mt-14 { margin-top: 14px; } .mt-16 { margin-top: 16px; }
 .mt-20 { margin-top: 20px; } .mt-24 { margin-top: 24px; } .mt-28 { margin-top: 28px; }
 .mt-32 { margin-top: 32px; } .mt-40 { margin-top: 40px; }
@@ -954,10 +954,27 @@ table.matrix { font-size: 13px; }
 .chain b { color: var(--fg); }
 .chain .ar { color: var(--fg3); margin-left: auto; font-family: var(--mono); font-size: 9.5px; }
 .chain .cs { display: inline-block; margin-top: 3px; font-size: 11.5px; line-height: 1.5; color: var(--fg3); }
-.calc { padding: 14px 16px; border: 1px solid var(--line2); border-radius: 11px; background: var(--surface2); }
-.calc-l { font-size: 12.5px; line-height: 1.85; color: var(--fg2); }
+.calc { padding: 12px 14px; border: 1px solid var(--line2); border-radius: 11px; background: var(--surface2); }
+.calc-l { font-size: 12.5px; line-height: 1.68; color: var(--fg2); }
 .calc-l .mono { font-size: 11.5px; color: var(--fg); }
 .calc-l.hl { margin-top: 4px; padding-top: 6px; border-top: 1px dashed var(--line); }
+.layers { display: flex; flex-direction: column; gap: 8px; }
+.layer { padding: 11px 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface2); }
+.layer.l1 { border-color: var(--ok-line); background: linear-gradient(180deg, var(--ok-soft), var(--surface2) 70%); }
+.layer.l2 { border-color: var(--info-line); background: linear-gradient(180deg, var(--info-soft), var(--surface2) 70%); }
+.layer.l3 { border-color: var(--purple-line); background: linear-gradient(180deg, var(--purple-soft), var(--surface2) 70%); }
+.ly-h { display: flex; align-items: center; gap: 8px; }
+.ly-n { font-family: var(--mono); font-size: 11px; color: var(--accent); }
+.ly-h b { font-size: 14px; color: var(--fg); }
+.ly-tag { margin-left: auto; font-family: var(--mono); font-size: 9px; letter-spacing: .08em; color: var(--fg3); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+.ly-ul { margin-top: 6px; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.ly-ul li { position: relative; padding-left: 12px; font-size: 11.8px; line-height: 1.55; color: var(--fg2); }
+.ly-ul li::before { content: ""; position: absolute; left: 0; top: .62em; width: 4px; height: 4px; border-radius: 1px; background: currentColor; opacity: .5; }
+.ly-ul li b { color: var(--fg); }
+.hook { display: flex; align-items: flex-start; gap: 10px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface2); margin-bottom: 6px; }
+.hook .hk { flex: none; font-family: var(--mono); font-size: 9px; letter-spacing: .06em; color: var(--accent); border: 1px solid var(--accent-line); border-radius: 4px; padding: 2px 5px; margin-top: 1px; }
+.hook b { display: block; font-size: 12.5px; color: var(--fg); }
+.hook .hd { display: block; margin-top: 2px; font-size: 11px; line-height: 1.45; color: var(--fg3); }
 
 /* ---------- 26 bars ---------- */
 .bars { display: flex; align-items: flex-end; gap: 46px; height: 250px; padding-left: 6px; }
@@ -2036,50 +2053,61 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 18 ------------------------------------------------------------ -->
-<section class="slide" data-no="18" data-section="决策引擎" data-title="防谄媚：让服软拿不到分"
-  data-notes="这页只讲一件事：怎么让谄媚在机制上不划算。四步。第一步量化：BSS 是模型基线分，按模型标识查表，默认 0.35；DSS 是这一轮的分，投降词每个 0.34 或 0.14，工程补丁 0.20、分析论证 0.16、结构化证据 0.45 抵扣。第二步判投降：结构化契约里写 full_surrender_without_patch 且没有补丁，直接判；或者两个以上谄媚词又没有代码和论证。第三步折减：γ 等于 1 减去惩罚，惩罚取 0.4×DSS 加 0.2×BSS 与 0.6 的较小值；把对齐分往中性 0.5 拉。第四步兜底：红队三类反例、BWM 门禁、少数派报告。右边的算例可以现场算：DSS 0.68、BSS 0.35，惩罚 0.342，γ 0.658，原始分 0.90 被拉回 0.763。口径：这是启发式词表加结构信号，不是心理学测量。">
+<section class="slide" data-no="18" data-section="决策引擎" data-title="防谄媚：契约优先，词表兜底"
+  data-notes="新版分三层。第一层结构化优先：答辩如果走了 submit_defense_patch 或 DEFENSE_PATCH 块，就不看词表，直接读 stance。全盘投降且没补丁，DSS 直接 0.92（受质询）或 0.82；reject/uphold 基准 0.08，partial 0.22；让步项多于坚守项又没补丁加 0.35；每个补丁减 0.05，最多减 0.12，有量化指标再减 0.04，封底 0.05。第二层文本兜底：用零正则 AST 提结构证据，量化指标最多 0.35、分点最多 0.30、代码引用最多 0.25、篇幅 0.15；再拿工程词 0.20、逻辑词 0.16、结构分 0.45 去抵扣。第三层是 BSS 先验加 γ 折减：推理模型 0.18、旗舰 0.32、小模型 0.55，默认 0.35；γ 等于 1 减去 min(0.6, 0.4DSS+0.2BSS)。折减之后进三个地方：SPRT 防伪早停、BWM 置信度矩阵降权、G-Frame 模块健康分（DSS 超 0.45 按差值乘 0.4 扣）。口径：这是启发式加结构信号，不是心理学测量。">
   <div class="slide-head">
     <div class="eyebrow reveal">17 / 决策</div>
-    <h2 class="reveal">防谄媚：让“服软”拿不到分</h2>
-    <p class="lede reveal">LLM 被质疑时容易改口。与其求它自觉，不如让妥协在计分上吃亏。</p>
+    <h2 class="reveal">防谄媚：契约优先，词表兜底</h2>
+    <p class="lede reveal">有结构化答辩就读契约，没有才降级到 AST 证据；最后用 BSS 与 γ 折减。</p>
   </div>
   <div class="slide-body">
-    <div class="grid" style="grid-template-columns:1.1fr .9fr;gap:26px">
-      <div class="chains reveal">
-        <div class="chain"><span class="cno">01</span><span><b>量化 · BSS / DSS</b><br><span class="cs">BSS 按模型查基线（默认 0.35）；DSS 按本轮文本算：投降词加分，补丁与证据减分</span></span><span class="ar">SCORE</span></div>
-        <div class="chain"><span class="cno">02</span><span><b>判投降 · 先看结构化契约</b><br><span class="cs">声明“全盘投降且无补丁”直接判；否则 ≥2 个谄媚词且无代码/论证也判</span></span><span class="ar">DETECT</span></div>
-        <div class="chain"><span class="cno">03</span><span><b>折减 · γ 把分数拉回中性</b><br><span class="cs">惩罚 = min(0.6, 0.4·DSS + 0.2·BSS)，γ = 1 − 惩罚；对齐分向 0.5 收缩</span></span><span class="ar">DAMP</span></div>
-        <div class="chain"><span class="cno">04</span><span><b>兜底 · 反例与门禁</b><br><span class="cs">红队三类反例、BWM 的 ξ* 门禁、少数派异议与重开触发器</span></span><span class="ar">BACKSTOP</span></div>
-      </div>
-
-      <div class="reveal">
-        <div class="calc">
-          <div class="fm-k">算一遍</div>
-          <div class="calc-l">设 <span class="mono">DSS = 0.68</span>、<span class="mono">BSS = 0.35</span></div>
-          <div class="calc-l">惩罚 <span class="mono">= 0.40×0.68 + 0.20×0.35 = 0.342</span></div>
-          <div class="calc-l">折减 <span class="mono">γ = 1 − 0.342 = 0.658</span></div>
-          <div class="calc-l">原始对齐分 <span class="mono">0.90</span> → 折减后</div>
-          <div class="calc-l hl"><span class="mono">0.5 + (0.90−0.5)×0.658 = 0.763</span></div>
+    <div class="grid" style="grid-template-columns:1.16fr .84fr;gap:24px">
+      <div class="layers reveal">
+        <div class="layer l1">
+          <div class="ly-h"><span class="ly-n">①</span><b>结构化优先</b><span class="ly-tag">不看词表</span></div>
+          <ul class="ly-ul">
+            <li><span class="mono">full_surrender_without_patch</span> 且无补丁 → DSS <b>0.92</b>（受质询）/ <b>0.82</b>，直接判投降</li>
+            <li>基准：reject / uphold <b>0.08</b>，partial <b>0.22</b>；让步多于坚守且无补丁 <b>+0.35</b></li>
+            <li>每个补丁 <b>−0.05</b>（上限 −0.12），有量化指标再 <b>−0.04</b>，封底 0.05</li>
+          </ul>
         </div>
-        <p class="small mt-10">0.90 看着像“已经谈拢了”，折减后只有 0.763；靠服软刷出来的共识，推不动收敛。</p>
-
-        <div class="card mt-14" style="padding:16px 18px">
-          <div class="card-k">REVIEW CHECK</div>
-          <div class="card-t">裁决前的三问</div>
-          <ul class="lst tight mt-10">
-            <li>结论有没有可复现的实据？</li>
-            <li>红队的三类反例是否逐条回应？</li>
-            <li>少数派异议是否被完整保留？</li>
+        <div class="layer l2">
+          <div class="ly-h"><span class="ly-n">②</span><b>文本兜底</b><span class="ly-tag">零正则 AST</span></div>
+          <ul class="ly-ul">
+            <li>结构证据：量化指标 ≤0.35、分点 ≤0.30、代码引用 ≤0.25、长度 ≥150 加 0.15</li>
+            <li>抵扣：工程词 0.20 + 逻辑词 0.16 + 结构分 0.45</li>
+            <li>判投降：≥2 个谄媚词且无代码 / 分点 / 缓解词</li>
+          </ul>
+        </div>
+        <div class="layer l3">
+          <div class="ly-h"><span class="ly-n">③</span><b>先验与折减</b><span class="ly-tag">BSS + γ</span></div>
+          <ul class="ly-ul">
+            <li>BSS 查表：推理模型 0.18 / 旗舰 0.32 / 小模型 0.55 / 默认 0.35</li>
+            <li><span class="mono">γ = 1 − min(0.60, 0.40·DSS + 0.20·BSS)</span></li>
           </ul>
         </div>
       </div>
+
+      <div class="reveal">
+        <div class="small" style="margin-bottom:8px">折减之后，用到三个地方</div>
+        <div class="hook"><span class="hk">SPRT</span><div><b>防伪早停</b><span class="hd">0.90 的高一致分被拉回 0.763，推不动提前收敛</span></div></div>
+        <div class="hook"><span class="hk">BWM</span><div><b>置信度降权</b><span class="hd">谄媚度进校准置信度矩阵，压低该发言权重</span></div></div>
+        <div class="hook"><span class="hk">G-FRAME</span><div><b>模块健康分</b><span class="hd">DSS &gt; 0.45 时扣 (DSS−0.45)×0.4</span></div></div>
+
+        <div class="calc mt-12">
+          <div class="fm-k">算一遍</div>
+          <div class="calc-l">设 <span class="mono">DSS = 0.68</span>、<span class="mono">BSS = 0.35</span></div>
+          <div class="calc-l">惩罚 <span class="mono">= 0.40×0.68 + 0.20×0.35 = 0.342</span></div>
+          <div class="calc-l">折减 <span class="mono">γ = 0.658</span>，原始分 <span class="mono">0.90</span> →</div>
+          <div class="calc-l hl"><span class="mono">0.5 + (0.90−0.5)×0.658 = 0.763</span></div>
+        </div>
+        <p class="small mt-10">收缩是<b style="color:var(--fg)">不对称</b>的：正面分往 0.5 强拉，负面质疑只轻微收缩，避免误伤合理挑战。</p>
+      </div>
     </div>
 
-    <div class="flex items-center between mt-12 reveal">
-      <span class="small">不是要求模型“别谄媚”，而是让<b style="color:var(--fg)">服软不加分、反例才加分</b>。</span>
-      <span class="flex wrap gap-8">
-        <span class="chip">Sycophancy Propagation</span><span class="chip">Free-MAD</span><span class="chip">BWM</span>
-      </span>
+    <div class="flex items-center between mt-10 reveal">
+      <span class="small">不是要求模型“别谄媚”，而是让<b style="color:var(--fg)">服软不加分、带证据的反驳才加分</b>。</span>
+      <span class="chip">Sycophancy Propagation · Free-MAD</span>
     </div>
   </div>
 </section>
