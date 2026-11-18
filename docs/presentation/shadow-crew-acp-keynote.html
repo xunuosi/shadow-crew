@@ -1004,6 +1004,7 @@ table.matrix { font-size: 13.5px; }
 .scope { padding: 13px 16px; border: 1px solid var(--line2); border-radius: 12px; background: linear-gradient(90deg, var(--purple-soft), transparent 72%); }
 .sc-k { display: flex; align-items: center; font-size: 12.5px; font-weight: 650; color: var(--fg); }
 .sc-body { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 9px; }
+.sc-d { margin-top: 8px; font-size: 12.5px; line-height: 1.6; color: var(--fg2); max-width: 1180px; }
 .sc-step { padding: 6px 11px; border: 1px solid var(--line2); border-radius: 8px; background: var(--surface); font-size: 12px; color: var(--fg2); }
 .sc-step b { color: var(--fg); }
 .sc-ar { color: var(--fg3); font-size: 12px; }
@@ -2547,7 +2548,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 28 ------------------------------------------------------------ -->
 <section class="slide" data-no="28" data-section="落地" data-title="接下来的三个方向"
-  data-notes="三个方向，都不做时间承诺，状态统一标规划中。第一，内网同事之间的 Agent 互联：现在远程 Agent 已经有直连与 Relay 两种拓扑，下一步是把发现和授权做得更顺，让同网段的人打开应用就能看到彼此的 Agent。第二，同事 Agent 的记忆持久化与分享：现在是 .scpack 打包分发加端点原生记忆，下一步是让记忆能持续积累、可控共享，而不是每次重新打包。第三，协同的准确率与体验：机制已经有一批（4+1、BWM、防谄媚、证据分级），下一步是让这些门禁不打断正常对话，以及在更多模型和任务上验证。三条都不给时间点。最后补一个结合公司产品的场景，同样是规划中的设想，用来说明这三条线合起来能解决什么。场景是安全运营值班：一线用 Agent 查告警、写处置建议；二线同事的 Agent 通过内网互联被拉进来一起看同一个事件；处置过的攻击手法沉淀到 Agent 记忆里，下次同类事件直接复用。注意强调这是规划，不是现状。">
+  data-notes="三个方向，都不做时间承诺，状态统一标规划中。第一，内网同事之间的 Agent 互联：现在远程 Agent 已经有直连与 Relay 两种拓扑，下一步是把发现和授权做得更顺，让同网段的人打开应用就能看到彼此的 Agent。第二，同事 Agent 的记忆持久化与分享：现在是 .scpack 打包分发加端点原生记忆，下一步是让记忆能持续积累、可控共享，而不是每次重新打包。第三，协同的准确率与体验：机制已经有一批（4+1、BWM、防谄媚、证据分级），下一步是让这些门禁不打断正常对话，以及在更多模型和任务上验证。三条都不给时间点。最后补一句与公司产品的结合：也是规划中的事，只点方向不展开场景——让同事 Agent 能互相调起来、让经验沉淀成资产、让过程可追溯。具体形态待定，不要在这一页编细节。">
   <div class="slide-head">
     <div class="eyebrow reveal">27 / 落地</div>
     <h2 class="reveal">接下来的三个方向</h2>
@@ -2579,14 +2580,8 @@ table.method .req.b { color: var(--accent); }
     </div>
 
     <div class="scope mt-14 reveal">
-      <div class="sc-k">结合公司产品的一个场景 <span class="badge plain" style="margin-left:6px">规划中</span></div>
-      <div class="sc-body">
-        <span class="sc-step"><b>安全运营值班</b>：一线用 Agent 查告警、写处置建议</span>
-        <span class="sc-ar">→</span>
-        <span class="sc-step"><b>内网互联</b>：直接叫上二线同事的 Agent 一起看同一个事件</span>
-        <span class="sc-ar">→</span>
-        <span class="sc-step"><b>记忆沉淀</b>：处置过的攻击手法留在 Agent 里，下次同类事件直接复用</span>
-      </div>
+      <div class="sc-k">结合公司产品 <span class="badge plain" style="margin-left:6px">规划中</span></div>
+      <p class="sc-d">把这三条接到公司现有产品里：让同一内网的同事 Agent 能互相调起来，让处置经验沉淀成可复用的资产，让协作过程可追溯、可复盘。具体形态还在规划中，不在这一页展开。</p>
     </div>
 
     <div class="flex items-center between mt-12 reveal">
