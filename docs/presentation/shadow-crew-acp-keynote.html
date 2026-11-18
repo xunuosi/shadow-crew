@@ -930,6 +930,12 @@ table.matrix { font-size: 13.5px; }
 
 /* ---------- 23 moats ---------- */
 .moats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+.moats.six { grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.moats.six .moat { min-height: 208px; padding: 18px 20px; }
+.moats.six .moat h4 { font-size: 17.5px; }
+.moats.six .moat p { font-size: 13.5px; line-height: 1.58; }
+.moats.six .moat .proof { font-size: 11px; padding-top: 11px; }
+.moats.six .moat .vs { font-size: 12px; margin-top: 8px; padding-top: 8px; }
 .moat { position: relative; overflow: hidden; padding: 18px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface2); min-height: 240px; display: flex; flex-direction: column; }
 .moat > * { position: relative; z-index: 1; }
 .moat .mn { font-family: var(--mono); font-size: 10px; color: var(--accent); }
@@ -2433,48 +2439,54 @@ table.method .req.b { color: var(--accent); }
 </section>
 
 <!-- 26 ------------------------------------------------------------ -->
-<section class="slide" data-no="26" data-section="生态对标" data-title="五个设计选择"
-  data-notes="这一页讲五个设计选择，不做竞争优势的断言：执行面解耦、经验可携带、收敛有门禁、按任务选双模、边界在本地。每一条都有代价，也都有适用边界。">
+<section class="slide" data-no="26" data-section="生态对标" data-title="六个设计选择"
+  data-notes="这一页讲六个设计选择，不做竞争优势的断言，每条都写代价。执行面解耦：ACP 纯执行面，不内嵌 Agent，代价是依赖端点；经验可携带：.scpack 可分发可只读挂载，代价是要端点配合；收敛有门禁：4+1 加 BWM，代价是有治理成本；按任务选流程：日常增量、争议升维，代价是要判断；私聊不绑项目：目录固定在 Agent 家目录，跨项目历史连续，长对话用议题切开，代价是上下文会变大；边界在本地：Rust 反向代理加 CWD 加 Fail-Closed，代价是只管本地宿主。注意两个数字口径：回归套件是 15 套加 1 套边界，不是 13 套；51.1% 是字符口径的单场景对比。">
   <div class="slide-head">
     <div class="eyebrow reveal">25 / 落地</div>
-    <h2 class="reveal">五个设计选择：我们如何取舍</h2>
-    <p class="lede reveal">不是五个功能，而是五个取舍；每一条都有代价。</p>
+    <h2 class="reveal">六个设计选择：我们如何取舍</h2>
+    <p class="lede reveal">不是六个功能，而是六个取舍；每一条都写明代价。</p>
   </div>
   <div class="slide-body">
-    <div class="moats">
+    <div class="moats six">
       <div class="moat reveal" data-g="01">
         <div class="mn">CHOICE 01</div><h4>执行面解耦</h4>
-        <p>ACP 纯执行面。不内嵌 Agent，不绑定模型；执行体可替换，但要依赖协议与端点。</p>
-        <div class="proof">EVIDENCE · ACP 双栈 + 13 套回归</div>
-        <div class="vs">常见做法：把 Agent 焊死在宿主里</div>
+        <p>ACP 纯执行面：不内嵌 Agent、不绑定模型，执行体可替换。</p>
+        <div class="proof">ACP 双栈 · 15 套回归 + 1 套边界</div>
+        <div class="vs">代价：依赖协议与端点实现</div>
       </div>
       <div class="moat reveal" data-g="02">
         <div class="mn">CHOICE 02</div><h4>经验可携带</h4>
-        <p>.scpack 把同事调优好的经验变成可验签、可分发、可只读挂载的资产。</p>
-        <div class="proof">EVIDENCE · BLAKE3 + RFC 8785</div>
-        <div class="vs">常见做法：记忆留在本地文件里</div>
+        <p><span class="mono">.scpack</span> 把同事调优好的经验变成可验签、可分发、只读挂载的资产。</p>
+        <div class="proof">BLAKE3 清单 · RFC 8785 JCS · Ed25519</div>
+        <div class="vs">代价：需要端点配合关闭自己的记忆</div>
       </div>
       <div class="moat reveal" data-g="03">
         <div class="mn">CHOICE 03</div><h4>收敛有门禁</h4>
-        <p>4+1 角色正交 + 红队质询 + BWM 门禁，尽量把结论落在证据上。</p>
-        <div class="proof">EVIDENCE · ξ* ≤ 0.12 + 异议报告</div>
-        <div class="vs">常见做法：把多 Agent 聊天当协同</div>
+        <p>4+1 角色正交 + 红队质询 + BWM 求解：结论要落在证据上，不靠“聊到没人说话”。</p>
+        <div class="proof">ξ* ≤ 0.12 + 少数派异议归档</div>
+        <div class="vs">代价：角色与策略要配，不是零成本</div>
       </div>
       <div class="moat reveal" data-g="04">
-        <div class="mn">CHOICE 04</div><h4>按任务选双模</h4>
-        <p>日常走增量流，争议升维博弈；按任务选择，不做一刀切。</p>
-        <div class="proof">MEASURED · 热会话 51.1%（字符口径）</div>
-        <div class="vs">常见取舍：要么轻，要么重</div>
+        <div class="mn">CHOICE 04</div><h4>按任务选流程</h4>
+        <p>日常走增量流，争议才升维到 4+1；不做一刀切。</p>
+        <div class="proof">热会话 prompt 980 → 479 字符（单场景）</div>
+        <div class="vs">代价：要人判断何时升维</div>
       </div>
       <div class="moat reveal" data-g="05">
-        <div class="mn">CHOICE 05</div><h4>边界在本地</h4>
-        <p>Rust 反向权限代理 + 不可变 CWD + Fail-Closed，默认不信任。</p>
-        <div class="proof">EVIDENCE · Once/Session/作用域 + Fail-Closed</div>
-        <div class="vs">常见做法：用提示词约束</div>
+        <div class="mn">CHOICE 05</div><h4>私聊不绑项目</h4>
+        <p>私聊目录固定在 Agent 家目录：换项目继续聊还是同一条历史；长对话用议题切开，不撑爆主线。</p>
+        <div class="proof">dm / dmtopic 两套 session key + 独立目录</div>
+        <div class="vs">代价：主线上下文会变大，要靠议题聚焦</div>
+      </div>
+      <div class="moat reveal" data-g="06">
+        <div class="mn">CHOICE 06</div><h4>边界在本地</h4>
+        <p>Rust 反向权限代理 + 不可变 CWD + Fail-Closed：默认不信任，越界就拒。</p>
+        <div class="proof">Once / Session / 四种作用域 + Fail-Closed</div>
+        <div class="vs">代价：只覆盖本地宿主，远端靠端点自身</div>
       </div>
     </div>
 
-    <div class="quote mt-24 reveal">把成熟的 Agent 放进清晰的边界，才敢让它参与你的工作。</div>
+    <div class="quote mt-16 reveal">把成熟的 Agent 放进清晰的边界，才敢让它参与你的工作。</div>
   </div>
 </section>
 
