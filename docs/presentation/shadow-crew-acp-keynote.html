@@ -2440,7 +2440,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 26 ------------------------------------------------------------ -->
 <section class="slide" data-no="26" data-section="生态对标" data-title="六个设计选择"
-  data-notes="这一页讲六个设计选择，不做竞争优势的断言，每条都写代价。执行面解耦：ACP 纯执行面，不内嵌 Agent，代价是依赖端点；经验可携带：.scpack 可分发可只读挂载，代价是要端点配合；收敛有门禁：4+1 加 BWM，代价是有治理成本；按任务选流程：日常增量、争议升维，代价是要判断；私聊不绑项目：目录固定在 Agent 家目录，跨项目历史连续，长对话用议题切开，代价是上下文会变大；边界在本地：Rust 反向代理加 CWD 加 Fail-Closed，代价是只管本地宿主。注意两个数字口径：回归套件是 15 套加 1 套边界，不是 13 套；51.1% 是字符口径的单场景对比。">
+  data-notes="这一页讲六个设计选择，不做竞争优势的断言，每条都写代价。执行面解耦：ACP 纯执行面，不内嵌 Agent，代价是依赖端点；经验可携带：.scpack 可分发可只读挂载，代价是要端点配合；收敛有门禁：4+1 加 BWM，代价是有治理成本；按任务选流程：日常增量、争议升维，代价是要判断；对话不绑项目：协作单元各自独立，换项目不打断同一段历史，具体问题再开议题，代价是历史越长越要主动收敛；边界在本地：Rust 反向代理加 CWD 加 Fail-Closed，代价是只管本地宿主。注意两个数字口径：回归套件是 15 套加 1 套边界，不是 13 套；51.1% 是字符口径的单场景对比。">
   <div class="slide-head">
     <div class="eyebrow reveal">25 / 落地</div>
     <h2 class="reveal">六个设计选择：我们如何取舍</h2>
@@ -2473,10 +2473,10 @@ table.method .req.b { color: var(--accent); }
         <div class="vs">代价：要人判断何时升维</div>
       </div>
       <div class="moat reveal" data-g="05">
-        <div class="mn">CHOICE 05</div><h4>私聊不绑项目</h4>
-        <p>私聊目录固定在 Agent 家目录：换项目继续聊还是同一条历史；长对话用议题切开，不撑爆主线。</p>
-        <div class="proof">dm / dmtopic 两套 session key + 独立目录</div>
-        <div class="vs">代价：主线上下文会变大，要靠议题聚焦</div>
+        <div class="mn">CHOICE 05</div><h4>对话不绑项目</h4>
+        <p>协作单元各自独立：换项目不打断同一段历史，具体问题再开议题单独推。</p>
+        <div class="proof">频道的会话 / 议题的会话 / 私聊的会话相互隔离</div>
+        <div class="vs">代价：历史越长越要主动收敛</div>
       </div>
       <div class="moat reveal" data-g="06">
         <div class="mn">CHOICE 06</div><h4>边界在本地</h4>
