@@ -278,6 +278,8 @@ export default function App() {
     captureTurnEpoch,
     isTurnStale,
     getChannelWorkspaceBinding,
+    getTopicData,
+    getTopicWorkspaceBinding,
     logRpc,
   });
 
@@ -330,7 +332,12 @@ export default function App() {
   const activeTopicExecutions = useMemo(
     () =>
       activeTopicId
-        ? activeExecutionsList.filter((e) => e.threadId === activeTopicId || e.topicId === activeTopicId)
+        ? activeExecutionsList.filter(
+            (e) =>
+              e.threadId === activeTopicId ||
+              e.topicId === activeTopicId ||
+              isSwarmChildRoomId(activeTopicId, e.threadId)
+          )
         : [],
     [activeTopicId, activeExecutionsList]
   );
@@ -580,10 +587,21 @@ export default function App() {
                   agents={activeTopicDrawerAgents}
                   activeExecutions={activeTopicExecutions}
                   allActiveExecutions={activeExecutionsList}
-                  onAbortAgent={(agentId) => activeTopicId && handleAbortAgent(agentId, activeTopicId)}
-                  onAbortAll={() => activeTopicId && handleAbortAll(activeTopicId)}
+                  onAbortAgent={(agentId, execThreadId) => {
+                    if (execThreadId && swarmActions.abortSwarmByExecution(agentId, execThreadId)) {
+                      return;
+                    }
+                    if (activeTopicId) handleAbortAgent(agentId, activeTopicId);
+                  }}
+                  onAbortAll={() => {
+                    if (!activeTopicId) return;
+                    handleAbortAll(activeTopicId);
+                    swarmActions.abortSwarmMissionsInThread(activeTopicId);
+                  }}
                   onClose={() => setActiveTopicId(null)}
                   onSendMessage={handleSendTopicMessage}
+                  swarmActions={swarmActions}
+                  onOpenSubThread={(subId) => setActiveSubThreadId(subId)}
                   onResolveTopic={handleResolveTopic}
                   onReopenTopic={handleReopenTopic}
                   onExecuteTopicPatch={handleExecuteTopicPatch}

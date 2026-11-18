@@ -77,6 +77,12 @@ import {
 } from '../services/chatAttachmentService';
 import { MessageAttachmentList } from './MessageAttachmentList';
 import { TopicStatusOverviewPopover } from './TopicStatusOverviewPopover';
+import { SwarmMissionCard } from './SwarmMissionCard';
+import type { SwarmMissionActions } from '../hooks/useSwarmOrchestrator';
+import {
+  detectSwarmTriggerIntent,
+  isSwarmChildRoomId,
+} from '../services/swarmOrchestration';
 
 interface TopicThreadDrawerProps {
   isOpen: boolean;
@@ -85,14 +91,17 @@ interface TopicThreadDrawerProps {
   agents: Agent[];
   activeExecutions?: ActiveAgentExecution[];
   allActiveExecutions?: ActiveAgentExecution[];
-  onAbortAgent?: (agentId: string) => void;
+  onAbortAgent?: (agentId: string, execThreadId?: string) => void;
   onAbortAll?: () => void;
   onClose: () => void;
   onSendMessage: (
     topicId: string,
     content: string,
-    attachments?: MessageAttachmentInput[]
+    attachments?: MessageAttachmentInput[],
+    sendOptions?: { swarmMode?: boolean }
   ) => Promise<void> | void;
+  swarmActions?: SwarmMissionActions;
+  onOpenSubThread?: (subThreadId: string) => void;
   onResolveTopic: (topicId: string, decision: {
     solution: string;
     impactedFiles: string[];
@@ -131,6 +140,8 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   onAbortAll,
   onClose,
   onSendMessage,
+  swarmActions,
+  onOpenSubThread,
   onResolveTopic,
   onReopenTopic,
   onExecuteTopicPatch,
@@ -158,6 +169,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   draftAttachmentsRef.current = draftAttachments;
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [isPreparingAttachments, setIsPreparingAttachments] = useState(false);
+  const [isSwarmModeEnabled, setIsSwarmModeEnabled] = useState(false);
   const isSendingRef = useRef(false);
 
   // 落地执行 Agent 指派状态
@@ -705,10 +717,20 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
 
   // Live execution tracking for topic drawer
   const topicExecutions = activeExecutions.filter(
-    (e) => (topic && e.topicId === topic.id) || (topic && e.threadId === topic.id)
+    (e) =>
+      Boolean(topic) &&
+      (e.topicId === topic!.id ||
+        e.threadId === topic!.id ||
+        isSwarmChildRoomId(topic!.id, e.threadId))
   );
   const isExecuting = topicExecutions.length > 0;
   const activeTopicExecution = topicExecutions[0];
+
+  const isStandardChannelTopic =
+    topic?.discussionMode !== 'game_theoretic' && topic?.scopeType !== 'dm';
+  const hasSlashSwarmPrefix = detectSwarmTriggerIntent(replyContent).hasSlashPrefix;
+  const isSwarmActive =
+    isStandardChannelTopic && (isSwarmModeEnabled || hasSlashSwarmPrefix);
 
   const hasPendingMessage = messages.some((m) => m.isPending);
   const shouldTick = isExecuting || hasPendingMessage;
@@ -1003,8 +1025,17 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
               draftAttachments.map((attachment) => attachment.file)
             )
           : [];
-      await onSendMessage(topic.id, replyContent, preparedAttachments);
+      const shouldUseSwarm = isSwarmActive;
+      await onSendMessage(
+        topic.id,
+        replyContent,
+        preparedAttachments,
+        shouldUseSwarm ? { swarmMode: true } : undefined
+      );
       setReplyContent('');
+      if (isSwarmModeEnabled) {
+        setIsSwarmModeEnabled(false);
+      }
       clearDraft('topic', topic.id);
       clearDraftAttachments();
       setIsMentionOpen(false);
@@ -1083,7 +1114,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
       if (onAbortAll) {
         onAbortAll();
       } else if (onAbortAgent) {
-        topicExecutions.forEach((exec) => onAbortAgent(exec.agentId));
+        topicExecutions.forEach((exec) => onAbortAgent(exec.agentId, exec.threadId));
       }
       return;
     }
@@ -2388,6 +2419,18 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 ) : (
                   <>
                     <MarkdownRenderer content={msg.content} />
+                    {msg.swarmMission && (
+                      <SwarmMissionCard
+                        roomId={topic.id}
+                        messageId={msg.id}
+                        mission={msg.swarmMission}
+                        agents={agents}
+                        channelAgents={candidateAgents}
+                        swarmActions={swarmActions}
+                        onOpenSubThread={onOpenSubThread}
+                        onOpenCodexDiff={onOpenCodexDiff}
+                      />
+                    )}
                     <MessageAttachmentList attachments={msg.attachments} />
                     {/* Unified Diff View */}
                     {msg.diffView && (
@@ -2500,7 +2543,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                         {onAbortAgent && (
                           <button
                             type="button"
-                            onClick={() => onAbortAgent(exec.agentId)}
+                            onClick={() => onAbortAgent(exec.agentId, exec.threadId)}
                             className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/10 hover:bg-red-500/20 text-red-500 transition-colors cursor-pointer"
                             title={`终止 ${exec.agentName} 的推演`}
                           >
@@ -3349,18 +3392,54 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             </div>
           )}
 
+          {isSwarmActive && (
+            <div
+              data-testid="topic-composer-swarm-active-banner"
+              className="mb-1.5 flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-medium bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-500/25"
+            >
+              <span>🐝</span>
+              <span>Swarm 协同模式已激活：Lead 拆解 → 人工确认 → 并行隔离执行</span>
+            </div>
+          )}
+
           <textarea
             ref={textareaRef}
             value={replyContent}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
-            placeholder={isExecuting ? "议题正在推演中... 可补充信息，按 Esc 终止推演" : "在当前议题中回复或输入 @ 召唤 Agent 继续推演... (⌘ + Enter 发送)"}
+            placeholder={
+              isExecuting
+                ? '议题正在推演中... 可补充信息，按 Esc 终止推演'
+                : isSwarmActive
+                ? '描述需要 Swarm 并行拆解的任务目标（可 @ 指定 Lead）... (⌘ + Enter 发送)'
+                : '在当前议题中回复或输入 @ 召唤 Agent 继续推演... (⌘ + Enter 发送)'
+            }
             rows={2}
             style={{ minHeight: '44px', maxHeight: '200px' }}
             className="w-full bg-transparent text-fg placeholder-fg-muted text-xs focus:outline-none resize-none leading-relaxed"
           />
-          <div className="flex items-center justify-between pt-1 border-t border-border mt-1">
-            <div className="flex items-center gap-1">
+          <div className="flex items-center justify-between pt-1 border-t border-border mt-1 gap-1.5 flex-wrap">
+            <div className="flex items-center gap-1 flex-wrap">
+              {isStandardChannelTopic && (
+                <button
+                  type="button"
+                  data-testid="topic-composer-swarm-toggle"
+                  aria-pressed={isSwarmActive}
+                  onClick={() => {
+                    if (hasSlashSwarmPrefix) return;
+                    setIsSwarmModeEnabled((prev) => !prev);
+                  }}
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium border transition-colors cursor-pointer shrink-0 ${
+                    isSwarmActive
+                      ? 'bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-500/35'
+                      : 'border-transparent hover:border-border hover:bg-surface-hover text-fg-secondary hover:text-fg'
+                  }`}
+                  title="开启 Swarm 协同模式：由单个 Lead Agent 拆解任务并暂停等待您确认后并发派发（也支持 /swarm 前缀）"
+                >
+                  <span>🐝</span>
+                  <span>Swarm</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {
@@ -3423,7 +3502,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                     if (onAbortAll) {
                       onAbortAll();
                     } else if (onAbortAgent) {
-                      topicExecutions.forEach((e) => onAbortAgent(e.agentId));
+                      topicExecutions.forEach((e) => onAbortAgent(e.agentId, e.threadId));
                     }
                   }}
                   className="px-2 py-1 rounded-lg bg-red-500 hover:bg-red-600 text-white transition-all cursor-pointer shadow-xs flex items-center gap-1 text-[11px] font-medium animate-in fade-in"

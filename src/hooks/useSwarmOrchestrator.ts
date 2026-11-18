@@ -7,6 +7,7 @@ import type {
   SubThread,
   SwarmMissionData,
   SwarmSubTask,
+  TopicMessageData,
   TopicPatchDiffItem,
   WorkspaceBinding,
 } from '../types';
@@ -69,6 +70,10 @@ export interface UseSwarmOrchestratorParams {
   isTurnStale: (snapshot: TurnEpochSnapshot) => boolean;
   getChannelWorkspaceBinding: (
     channelId?: string
+  ) => WorkspaceBinding | undefined;
+  getTopicData?: (topicId: string) => TopicMessageData | null | undefined;
+  getTopicWorkspaceBinding?: (
+    topicId?: string
   ) => WorkspaceBinding | undefined;
   logRpc: (
     agentName: string,
@@ -145,10 +150,35 @@ export function useSwarmOrchestrator({
   captureTurnEpoch,
   isTurnStale,
   getChannelWorkspaceBinding,
+  getTopicData,
+  getTopicWorkspaceBinding,
   logRpc,
 }: UseSwarmOrchestratorParams): SwarmMissionActions {
   const inFlightReduceRef = useRef<Set<string>>(new Set());
   const inFlightDecomposeRef = useRef<Set<string>>(new Set());
+
+  const resolveRoomScopeType = useCallback(
+    (roomId: string): 'topic' | 'channel' => {
+      if (getTopicData?.(roomId) || roomId.startsWith('topic-')) {
+        return 'topic';
+      }
+      return 'channel';
+    },
+    [getTopicData]
+  );
+
+  const resolveRoomWorkspaceBinding = useCallback(
+    (roomId: string, channelId?: string): WorkspaceBinding | undefined => {
+      if (resolveRoomScopeType(roomId) === 'topic') {
+        return (
+          getTopicWorkspaceBinding?.(roomId) ||
+          getChannelWorkspaceBinding(channelId)
+        );
+      }
+      return getChannelWorkspaceBinding(channelId);
+    },
+    [getChannelWorkspaceBinding, getTopicWorkspaceBinding, resolveRoomScopeType]
+  );
 
   const getSwarmMessage = useCallback(
     (
@@ -339,7 +369,8 @@ export function useSwarmOrchestrator({
       }));
 
       try {
-        const channelBinding = getChannelWorkspaceBinding(mission.channelId);
+        const roomScopeType = resolveRoomScopeType(roomId);
+        const roomBinding = resolveRoomWorkspaceBinding(roomId, mission.channelId);
         const reducePrompt = buildSwarmLeadReducePrompt({
           mission,
           leadAgent,
@@ -352,9 +383,9 @@ export function useSwarmOrchestrator({
           channelId: mission.channelId,
           systemPrompt: buildAgentPersonaPrompt(leadAgent),
           discussionMode: 'standard',
-          workspaceBindingId: channelBinding?.id,
-          workspaceCwd: channelBinding?.cwd,
-          scopeType: 'channel',
+          workspaceBindingId: roomBinding?.id,
+          workspaceCwd: roomBinding?.cwd,
+          scopeType: roomScopeType,
           localHistoryIntact: false,
         });
 
@@ -369,9 +400,9 @@ export function useSwarmOrchestrator({
           roomId: reduceRoomId,
           prompt: reducePrompt,
           channelId: mission.channelId,
-          workspaceBindingId: channelBinding?.id,
-          workspaceCwd: channelBinding?.cwd,
-          scopeType: 'channel',
+          workspaceBindingId: roomBinding?.id,
+          workspaceCwd: roomBinding?.cwd,
+          scopeType: roomScopeType,
           discussionMode: 'standard',
           systemPrompt: buildAgentPersonaPrompt(leadAgent),
         });
@@ -456,10 +487,11 @@ export function useSwarmOrchestrator({
     [
       agentsRef,
       captureTurnEpoch,
-      getChannelWorkspaceBinding,
       getSwarmMessage,
       isTurnStale,
       logRpc,
+      resolveRoomScopeType,
+      resolveRoomWorkspaceBinding,
       setActiveExecutions,
       setAgents,
       setIsGenerating,
@@ -577,7 +609,9 @@ export function useSwarmOrchestrator({
       }));
 
       try {
-        const channelBinding = getChannelWorkspaceBinding(
+        const roomScopeType = resolveRoomScopeType(roomId);
+        const roomBinding = resolveRoomWorkspaceBinding(
+          roomId,
           missionSnapshot.channelId
         );
         const workerPrompt = buildSwarmWorkerPrompt({
@@ -593,9 +627,9 @@ export function useSwarmOrchestrator({
           channelId: missionSnapshot.channelId,
           systemPrompt: buildAgentPersonaPrompt(workerAgent),
           discussionMode: 'standard',
-          workspaceBindingId: channelBinding?.id,
-          workspaceCwd: channelBinding?.cwd,
-          scopeType: 'channel',
+          workspaceBindingId: roomBinding?.id,
+          workspaceCwd: roomBinding?.cwd,
+          scopeType: roomScopeType,
           localHistoryIntact: false,
         });
 
@@ -611,9 +645,9 @@ export function useSwarmOrchestrator({
           roomId: workerRoomId,
           prompt: workerPrompt,
           channelId: missionSnapshot.channelId,
-          workspaceBindingId: channelBinding?.id,
-          workspaceCwd: channelBinding?.cwd,
-          scopeType: 'channel',
+          workspaceBindingId: roomBinding?.id,
+          workspaceCwd: roomBinding?.cwd,
+          scopeType: roomScopeType,
           discussionMode: 'standard',
           systemPrompt: buildAgentPersonaPrompt(workerAgent),
         });
@@ -809,11 +843,12 @@ export function useSwarmOrchestrator({
     [
       agentsRef,
       captureTurnEpoch,
-      getChannelWorkspaceBinding,
       getSwarmMessage,
       handleTriggerSwarmLeadReduce,
       isTurnStale,
       logRpc,
+      resolveRoomScopeType,
+      resolveRoomWorkspaceBinding,
       setActiveExecutions,
       setAgents,
       setIsGenerating,
@@ -1178,8 +1213,16 @@ export function useSwarmOrchestrator({
         return;
       }
 
-      const channel = channels.find((c) => c.id === mission.channelId);
-      const channelMemberSet = new Set(channel?.memberIds || []);
+      const topicData = getTopicData?.(roomId);
+      const channel = channels.find(
+        (c) => c.id === (mission.channelId || topicData?.channelId)
+      );
+      const mergedMemberIds = [
+        ...(topicData?.participatingAgentIds || []),
+        ...(channel?.assignedAgentIds || []),
+        ...(channel?.memberIds || []),
+      ];
+      const channelMemberSet = new Set(mergedMemberIds);
       const candidateAgents =
         channelMemberSet.size > 0
           ? agentsRef.current.filter(
@@ -1223,7 +1266,8 @@ export function useSwarmOrchestrator({
       }));
 
       try {
-        const channelBinding = getChannelWorkspaceBinding(mission.channelId);
+        const roomScopeType = resolveRoomScopeType(roomId);
+        const roomBinding = resolveRoomWorkspaceBinding(roomId, mission.channelId);
         const prompt = buildSwarmDecompositionPrompt({
           leadAgent: finalLead,
           availableAgents: availableForPlan,
@@ -1236,9 +1280,9 @@ export function useSwarmOrchestrator({
           channelId: mission.channelId,
           systemPrompt: buildAgentPersonaPrompt(finalLead),
           discussionMode: 'standard',
-          workspaceBindingId: channelBinding?.id,
-          workspaceCwd: channelBinding?.cwd,
-          scopeType: 'channel',
+          workspaceBindingId: roomBinding?.id,
+          workspaceCwd: roomBinding?.cwd,
+          scopeType: roomScopeType,
           localHistoryIntact: true,
         });
 
@@ -1247,9 +1291,9 @@ export function useSwarmOrchestrator({
           roomId,
           prompt,
           channelId: mission.channelId,
-          workspaceBindingId: channelBinding?.id,
-          workspaceCwd: channelBinding?.cwd,
-          scopeType: 'channel',
+          workspaceBindingId: roomBinding?.id,
+          workspaceCwd: roomBinding?.cwd,
+          scopeType: roomScopeType,
           discussionMode: 'standard',
           systemPrompt: buildAgentPersonaPrompt(finalLead),
         });
@@ -1313,9 +1357,11 @@ export function useSwarmOrchestrator({
       agentsRef,
       captureTurnEpoch,
       channels,
-      getChannelWorkspaceBinding,
       getSwarmMessage,
+      getTopicData,
       isTurnStale,
+      resolveRoomScopeType,
+      resolveRoomWorkspaceBinding,
       setActiveExecutions,
       setIsGenerating,
       updateSwarmMission,
@@ -1356,7 +1402,8 @@ export function useSwarmOrchestrator({
         return;
       }
 
-      const binding = getChannelWorkspaceBinding(
+      const binding = resolveRoomWorkspaceBinding(
+        targetRoomId,
         mission.channelId || activeChannel?.id
       );
       if (!binding?.cwd) {
@@ -1413,8 +1460,8 @@ export function useSwarmOrchestrator({
     },
     [
       activeChannel?.id,
-      getChannelWorkspaceBinding,
       messagesRef,
+      resolveRoomWorkspaceBinding,
       updateSwarmMission,
     ]
   );

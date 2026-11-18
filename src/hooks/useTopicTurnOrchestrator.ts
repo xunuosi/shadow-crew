@@ -45,6 +45,13 @@ import {
   stepModularStageTransition,
 } from '../services/agentCollaboration';
 import { isAgentOffline, isAgentOnline } from '../utils/agentRuntime';
+import {
+  buildFallbackSwarmPlan,
+  buildSwarmDecompositionPrompt,
+  detectSwarmTriggerIntent,
+  extractSwarmPlanFromText,
+  resolveSwarmLeadAndWorkers,
+} from '../services/swarmOrchestration';
 import { evaluateArbitrationConcurrenceSkip } from '../services/cogno';
 import type { ProcessArbitrationConcurrenceOptions } from './useArbitrationConcurrence';
 import type { GameTheoreticStageHandoverOptions } from './useGameTheoreticFsm';
@@ -105,7 +112,8 @@ export interface UseTopicTurnOrchestratorReturn {
   handleSendTopicMessage: (
     topicId: string,
     content: string,
-    pendingAttachments?: MessageAttachmentInput[]
+    pendingAttachments?: MessageAttachmentInput[],
+    sendOptions?: { swarmMode?: boolean }
   ) => Promise<void>;
 }
 
@@ -144,8 +152,27 @@ export function useTopicTurnOrchestrator({
     async (
       topicId: string,
       content: string,
-      pendingAttachments: MessageAttachmentInput[] = []
+      pendingAttachments: MessageAttachmentInput[] = [],
+      sendOptions?: { swarmMode?: boolean }
     ): Promise<void> => {
+      const preCheckTopicObj = getTopicData(topicId) || activeTopicData;
+      const isPreCheckStandardChannelTopic =
+        preCheckTopicObj?.discussionMode !== 'game_theoretic' &&
+        preCheckTopicObj?.scopeType !== 'dm';
+      const swarmIntent = detectSwarmTriggerIntent(
+        content,
+        isPreCheckStandardChannelTopic ? sendOptions?.swarmMode : false
+      );
+      const isExplicitSwarmDispatch =
+        isPreCheckStandardChannelTopic && swarmIntent.isSwarmTrigger;
+      if (
+        isExplicitSwarmDispatch &&
+        !swarmIntent.taskText &&
+        pendingAttachments.length === 0
+      ) {
+        return;
+      }
+
       const userMessageId = `topic-msg-${Date.now()}`;
       const topicScopeType = activeTopicData?.scopeType === 'dm' ? 'dm_topic' : 'topic';
       const savedAttachments: MessageAttachment[] = await persistMessageAttachments({
@@ -670,7 +697,19 @@ export function useTopicTurnOrchestrator({
           }
         }
       } else {
-        if (userMentionedAgents.length > 0) {
+        if (isExplicitSwarmDispatch) {
+          const onlineFirstPool = candidateAgents.some((a) => !isAgentOffline(a))
+            ? candidateAgents.filter((a) => !isAgentOffline(a))
+            : candidateAgents;
+          const { leadAgent } = resolveSwarmLeadAndWorkers({
+            candidateAgents:
+              userMentionedAgents.length > 0 ? candidateAgents : onlineFirstPool,
+            mentionedAgents: userMentionedAgents,
+          });
+          if (leadAgent) {
+            respondingAgents = [leadAgent];
+          }
+        } else if (userMentionedAgents.length > 0) {
           respondingAgents = userMentionedAgents;
         } else if (candidateAgents.length > 0) {
           // 标准讨论模式（对标 Buzz）：当用户未显式点名特定 Agent 时，唤醒当前议题内所有已指派的在线 Agent 在 Hop 1 并发发言
@@ -747,6 +786,8 @@ export function useTopicTurnOrchestrator({
               : executionStage === 'defense'
               ? '正在针对反例质询构建防御答辩与架构补丁 (Stage: 🛡️ 答辩修正)...'
               : '正在进行立论、反例与接地证据审查并起草仲裁建议 (Stage: ⚖️ 仲裁定案)...'
+            : isExplicitSwarmDispatch
+            ? '🐝 正在作为 Swarm Lead 拆解并行子任务...'
             : onlineAgents.length > 1
             ? '正在并发独立推演方案与系统共识 (并行 Hop 1)...'
             : '正在深度推演议题方案与系统共识 (Hop 1)...',
@@ -998,6 +1039,14 @@ export function useTopicTurnOrchestrator({
           includeRoster: !isStandingContextDelivered,
         });
 
+        const swarmOriginalTaskText =
+          `${swarmIntent.taskText}${attachmentManifest}`.trim() || agentTurnContent;
+        const topicHeaderForSwarm =
+          topicContext.title || topicContext.description
+            ? `【所属议题】：${topicContext.title}${topicContext.description ? `\n【议题背景】：${topicContext.description}` : ''}\n\n`
+            : '';
+        const swarmDecompositionTaskText = `${topicHeaderForSwarm}${swarmOriginalTaskText}`;
+
         let finalPrompt: string;
         if (isGameTheoretic) {
           finalPrompt = buildTopicPrompt({
@@ -1020,19 +1069,25 @@ export function useTopicTurnOrchestrator({
             sessionWatermarksRef.current.set(sessionKey, deltaBatch.latestWatermarkMessageId);
             persistSessionWarmState();
           }
-          finalPrompt = buildNormalModeTurnPrompt({
-            targetAgent: agent,
-            availableAgents: candidateAgents,
-            roomId: topicId,
-            isWarmSession: deltaBatch.isWarmSession,
-            deltaMessages: deltaBatch.deltaMessages,
-            triggerContent: agentTurnContent,
-            hop: 1,
-            maxHops: 12,
-            topic: topicContext,
-            isDm: false,
-            isParallelFirstTurn: onlineAgents.length > 1,
-          });
+          finalPrompt = isExplicitSwarmDispatch
+            ? buildSwarmDecompositionPrompt({
+                leadAgent: agent,
+                availableAgents: candidateAgents,
+                taskText: swarmDecompositionTaskText,
+              })
+            : buildNormalModeTurnPrompt({
+                targetAgent: agent,
+                availableAgents: candidateAgents,
+                roomId: topicId,
+                isWarmSession: deltaBatch.isWarmSession,
+                deltaMessages: deltaBatch.deltaMessages,
+                triggerContent: agentTurnContent,
+                hop: 1,
+                maxHops: 12,
+                topic: topicContext,
+                isDm: false,
+                isParallelFirstTurn: onlineAgents.length > 1,
+              });
         }
 
         deliveredStandingContextRef.current.add(sessionKey);
@@ -1086,6 +1141,8 @@ export function useTopicTurnOrchestrator({
               : targetRoleType === 'verifier'
               ? '正在调取外部工具、代码解释器沙箱与事实基准进行真实性接地校验 (Stage: 🔍 接地验证)...'
               : '正在权衡方案、反例与接地证据并起草仲裁建议 (Stage: ⚖️ 仲裁定案)...'
+            : isExplicitSwarmDispatch
+            ? '🐝 正在作为 Swarm Lead 拆解并行子任务...'
             : '正在思考并组织回复...',
           agentBadge: isGameTheoretic
             ? `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${
@@ -1099,6 +1156,8 @@ export function useTopicTurnOrchestrator({
                   ? '🔍 接地验证 (执行中...)'
                   : '⚖️ 仲裁建言 (思考中...)'
               }`
+            : isExplicitSwarmDispatch
+            ? `${agent.modelBadge?.split(' ')[0] || 'Local'} · 🐝 拆解中...`
             : `${agent.modelBadge?.split(' ')[0] || 'Local'} · 思考中...`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           content: '',
@@ -1164,6 +1223,51 @@ export function useTopicTurnOrchestrator({
             );
             syncRunningAgentsWithBackend();
 
+            let resolvedReplyContent = acpResp.textResponse;
+            let resolvedAgentBadge = isGameTheoretic
+              ? `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${
+                  targetRoleType === 'proposer'
+                    ? executionStage === 'defense'
+                      ? '🛡️ 答辩修正'
+                      : '🏛️ 方案立论'
+                    : targetRoleType === 'challenger'
+                    ? '⚔️ 反例压测'
+                    : targetRoleType === 'verifier'
+                    ? '🔍 接地验证'
+                    : '⚖️ 仲裁建言'
+                }`
+              : `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : agent.isRemote ? 'ACP Remote' : '协作'}`;
+            let resolvedSwarmMission: Message['swarmMission'] | undefined;
+
+            if (!isGameTheoretic) {
+              const swarmExtractCtx = {
+                roomId: topicId,
+                channelId: topicChannel?.id || activeTopicData?.channelId,
+                originalTask: isExplicitSwarmDispatch
+                  ? swarmDecompositionTaskText
+                  : agentTurnContent,
+                triggerMode: isExplicitSwarmDispatch
+                  ? ('explicit' as const)
+                  : ('autonomous' as const),
+                leadAgent: agent,
+                allChannelAgents: candidateAgents,
+              };
+              const extractedSwarm = extractSwarmPlanFromText(
+                acpResp.textResponse,
+                swarmExtractCtx
+              );
+              const resolvedSwarm =
+                extractedSwarm ||
+                (isExplicitSwarmDispatch
+                  ? buildFallbackSwarmPlan(acpResp.textResponse, swarmExtractCtx)
+                  : null);
+              if (resolvedSwarm) {
+                resolvedReplyContent = resolvedSwarm.cleanedText;
+                resolvedAgentBadge = '🐝 Swarm Lead';
+                resolvedSwarmMission = resolvedSwarm.plan;
+              }
+            }
+
             const agentReply: Message = {
               id: `topic-reply-${Date.now()}-${agent.id}`,
               threadId: topicId,
@@ -1176,24 +1280,13 @@ export function useTopicTurnOrchestrator({
               isPending: false,
               gameStage: isGameTheoretic ? executionStage : undefined,
               gameRole: isGameTheoretic ? targetRoleType : undefined,
-              agentBadge: isGameTheoretic
-                ? `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${
-                    targetRoleType === 'proposer'
-                      ? executionStage === 'defense'
-                        ? '🛡️ 答辩修正'
-                        : '🏛️ 方案立论'
-                      : targetRoleType === 'challenger'
-                      ? '⚔️ 反例压测'
-                      : targetRoleType === 'verifier'
-                      ? '🔍 接地验证'
-                      : '⚖️ 仲裁建言'
-                  }`
-                : `${agent.modelBadge?.split(' ')[0] || 'Local'} · ${acpResp.isRealProcess ? 'ACP Stdio (Real)' : agent.isRemote ? 'ACP Remote' : '协作'}`,
+              agentBadge: resolvedAgentBadge,
               timestamp: new Date().toLocaleTimeString([], {
                 hour: '2-digit',
                 minute: '2-digit',
               }),
-              content: acpResp.textResponse,
+              content: resolvedReplyContent,
+              swarmMission: resolvedSwarmMission,
               thinkingProcess: buildThinkingProcessFromAcp(
                 acpResp,
                 isGameTheoretic
@@ -1545,7 +1638,7 @@ export function useTopicTurnOrchestrator({
                   }
                 }
               }
-            } else {
+            } else if (!resolvedSwarmMission) {
               // 标准讨论模式：收集本轮并发输出，待 Turn Barrier 全部汇合后统一去重触发下一跳
               standardTurnOutputs.push({
                 agent,

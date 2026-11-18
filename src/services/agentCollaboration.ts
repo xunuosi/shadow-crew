@@ -364,7 +364,7 @@ export function buildCrewRosterGuidance(
   return (
     `\n\n[🛡️ Shadow Crew 平台智能体协同公约 (Agent Collaboration Directive)]:\n` +
     `1. 【多智能体中枢调度】：本工作区具备多智能体级联调度能力。团队成员属于独立的 Agent 进程或远程端点，由平台（Shadow Crew）统一接管消息分发与级联路由。\n` +
-    `2. 【严禁本地工具搜查】：你**无需且绝对不要**在自身本地环境中使用 tools（如 sessions_list, conversations_list, openclaw agents list, bash grep/find 等）去排查、寻找或建立与其他 Agent 的私有连接。这会导致严重超时与资源浪费。\n` +
+    `2. 【严禁本地工具搜查与私自派生内部子代理】：你**无需且绝对不要**在自身本地环境中使用 tools（如 sessions_list, conversations_list, openclaw agents list, bash grep/find 等）去排查、寻找或建立与其他 Agent 的私有连接；也**严禁调用进程内置的子代理/多智能体工具**（如 \`spawn_agent\`、\`wait_agent\`、\`wait\`、\`send_input\`、\`close_agent\`、\`subagent\`、\`Task\` 等）在本地进程内私自派生子会话。跨 Agent 协同与 Swarm 并行分工必须统一交由 Shadow Crew 平台调度。\n` +
     collaborationDirective +
     `[👥 可用协同团队成员列表]:\n` +
     peerList

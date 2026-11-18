@@ -334,7 +334,8 @@ export function buildSwarmDecompositionPrompt(options: {
     `1. 【只拆解、不动手】：在当前规划阶段，你**严禁**直接修改工作区代码或执行落地变更！请专注把大任务拆分为 2～5 个可纯并行执行的正交子任务。\n` +
     `2. 【互不重叠的文件边界】：尽量为每个子任务划定互不重叠的 allowedFiles 文件/目录白名单，避免后续 Worker 并行改动发生文件冲突。\n` +
     `3. 【等待人类确认门禁】：本轮回复之后，系统将在任务拆解卡片处暂停，交由人类用户勾选、重指派或修改后手动点击派发。**严禁**在回复末尾使用 @mention 尝试私自唤醒任何成员！\n` +
-    `4. 【纯并行上下文约定】：每位 Worker 彼此隔离，仅能看到原始任务、你编写的 sharedContractSummary 以及它自己的子任务描述；因此你必须在 sharedContractSummary 中交代清楚跨模块的公共接口契约、类型定义与技术约束。`;
+    `4. 【纯并行上下文约定】：每位 Worker 彼此隔离，仅能看到原始任务、你编写的 sharedContractSummary 以及它自己的子任务描述；因此你必须在 sharedContractSummary 中交代清楚跨模块的公共接口契约、类型定义与技术约束。\n` +
+    `5. 【严禁调用内部 Subagent 工具】：你只需在本次回复中直接输出文字拆解说明与 <<<SWARM_PLAN>>> JSON 契约块并结束本轮回复，**严禁**调用你自身环境中的 \`spawn_agent\`、\`wait_agent\`、\`wait\`、\`subagent\`、\`Task\` 等工具在进程内私自派生子代理！真实多 Agent 并发派发将由 Shadow Crew 平台在人类确认卡片后统一接管。`;
 
   const outputContract =
     `请先用 2～3 句简洁中文说明你的总体拆分思路，然后**必须在末尾附带以下结构化 JSON 块**：\n\n` +
@@ -692,7 +693,8 @@ export function buildSwarmWorkerPrompt(options: {
     `严格规则：\n` +
     `1. 【隔离聚焦】：只聚焦于你被指派的子任务，不要推测或臆测兄弟子任务的内部状态。\n` +
     `2. 【禁止横向 @ 级联】：严禁在回复中 @ 其他成员，最终成果由总控协调官统一 Reduce 汇总验收。\n` +
-    `3. 【范围约束】：若需修改工作区文件，请严格限制在允许边界（allowedFiles）内，并优先产出清晰的技术方案或标准 Diff 变更摘要。`;
+    `3. 【严禁内部二次派生】：**严禁**调用进程内置的 \`spawn_agent\`、\`wait_agent\`、\`wait\`、\`subagent\`、\`Task\` 等工具再次派生子代理，请直接由当前 Worker 单线程完成本子任务交付。\n` +
+    `4. 【范围约束】：若需修改工作区文件，请严格限制在允许边界（allowedFiles）内，并优先产出清晰的技术方案或标准 Diff 变更摘要。`;
 
   const allowedFilesSection =
     subTask.allowedFiles && subTask.allowedFiles.length > 0

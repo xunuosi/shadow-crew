@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { Agent, Message, SwarmMissionData, TopicPatchDiffItem } from '../types';
+import type {
+  Agent,
+  Message,
+  SwarmMissionData,
+  TopicMessageData,
+  TopicPatchDiffItem,
+} from '../types';
 import {
   aggregateSwarmWorkerDiffs,
   areAllEnabledSwarmSubTasksFinished,
@@ -27,6 +35,7 @@ import { buildCrewRosterGuidance, buildCompositeSystemPrompt } from './agentColl
 import { reconcileAndSanitizeMessages } from './dbClient';
 import { SwarmMissionCard } from '../components/SwarmMissionCard';
 import { MessageInput } from '../components/MessageInput';
+import { TopicThreadDrawer } from '../components/TopicThreadDrawer';
 
 function makeAgent(
   id: string,
@@ -660,6 +669,225 @@ testCase('G7.1 SwarmMissionCard renders all 5 states cleanly without runtime err
     dmComposerHtml.includes('data-testid="composer-swarm-toggle"'),
     false,
     'DM composer must NOT expose Swarm toggle pill'
+  );
+});
+
+testCase('G6.1 Anti-subagent guardrails in prompts, roster guidance, and bin/codex-acp', () => {
+  const rosterPrompt = buildCrewRosterGuidance(channelAgents, archAgent.id);
+  assert.ok(rosterPrompt.includes('spawn_agent'), 'Roster guidance must explicitly forbid spawn_agent');
+  assert.ok(rosterPrompt.includes('subagent'), 'Roster guidance must explicitly forbid internal subagent');
+
+  const decompPrompt = buildSwarmDecompositionPrompt({
+    leadAgent: archAgent,
+    availableAgents: channelAgents,
+    taskText: '编写一个笑话并验证质量',
+  });
+  assert.ok(decompPrompt.includes('spawn_agent'), 'Swarm decomposition prompt must forbid spawn_agent');
+  assert.ok(decompPrompt.includes('wait_agent'), 'Swarm decomposition prompt must forbid wait_agent');
+  assert.ok(decompPrompt.includes('严禁调用内部 Subagent 工具'));
+
+  const dummyMission: SwarmMissionData = {
+    missionId: 'swarm-guard-1',
+    roomId: 'topic-standard-1',
+    channelId: 'ch-ui',
+    originalTask: '测试任务',
+    triggerMode: 'explicit',
+    leadAgentId: archAgent.id,
+    sharedContractSummary: '保持单线程交付',
+    status: 'running_workers',
+    subTasks: [],
+    createdAt: Date.now(),
+  };
+  const workerPrompt = buildSwarmWorkerPrompt({
+    mission: dummyMission,
+    subTask: {
+      taskId: 'sub-1',
+      title: '原创笑话',
+      description: '编写一则程序员笑话',
+      assignedAgentId: apiAgent.id,
+      enabled: true,
+      status: 'running',
+    },
+    workerAgent: apiAgent,
+    leadAgent: archAgent,
+  });
+  assert.ok(workerPrompt.includes('spawn_agent'), 'Swarm worker prompt must forbid spawn_agent');
+  assert.ok(workerPrompt.includes('严禁内部二次派生'));
+
+  const codexAcpSource = fs.readFileSync(path.resolve(process.cwd(), 'bin/codex-acp'), 'utf8');
+  assert.ok(
+    codexAcpSource.includes('multi_agent: false') && codexAcpSource.includes('multi_agent_v2: false'),
+    'bin/codex-acp official bridge must disable multi_agent and multi_agent_v2 in CODEX_CONFIG'
+  );
+  assert.ok(
+    codexAcpSource.includes("'--disable', 'multi_agent'") &&
+      codexAcpSource.includes("'features.multi_agent=false'") &&
+      codexAcpSource.includes("'features.multi_agent_v2=false'"),
+    'bin/codex-acp builtin adapter must disable multi_agent and multi_agent_v2 CLI flags'
+  );
+});
+
+testCase('G6.2 Standard Topic Swarm plan extraction, session key scoping & TopicThreadDrawer UI parity', () => {
+  const topicId = 'topic-standard-1';
+  const rawLeadOutput = `按“原创—审核”并行分工。
+<<<SWARM_PLAN>>>
+{
+  "sharedContractSummary": "输出简洁技术幽默，无敏感内容。",
+  "subTasks": [
+    {
+      "taskId": "write-joke",
+      "title": "编写核心笑话",
+      "description": "产出一则关于并发锁的笑话",
+      "suggestedAgentHandle": "@backend"
+    },
+    {
+      "taskId": "review-joke",
+      "title": "幽默与合规校验",
+      "description": "核对笑点与边界合规性",
+      "suggestedAgentHandle": "@frontend"
+    }
+  ]
+}
+<<<SWARM_PLAN_END>>>`;
+
+  const extracted = extractSwarmPlanFromText(rawLeadOutput, {
+    missionId: 'swarm-topic-1',
+    roomId: topicId,
+    channelId: 'ch-ui',
+    originalTask: '编写一个笑话',
+    triggerMode: 'explicit',
+    leadAgent: archAgent,
+    allChannelAgents: channelAgents,
+  });
+  assert.ok(extracted, 'extractSwarmPlanFromText must succeed for standard Topic roomId');
+  assert.equal(extracted.plan.roomId, topicId);
+  assert.equal(extracted.plan.status, 'awaiting_approval');
+  assert.equal(extracted.plan.subTasks.length, 2);
+
+  const fallback = buildFallbackSwarmPlan('1. **草拟笑话**：写一段并发 bug 笑话', {
+    missionId: 'swarm-topic-fallback',
+    roomId: topicId,
+    channelId: 'ch-ui',
+    originalTask: '编写一个笑话',
+    triggerMode: 'explicit',
+    leadAgent: archAgent,
+    allChannelAgents: channelAgents,
+  });
+  assert.equal(fallback.isFallback, true);
+  assert.equal(fallback.plan.roomId, topicId);
+  assert.equal(fallback.plan.status, 'awaiting_approval');
+
+  const workerRoomId = buildSwarmWorkerRoomId(topicId, extracted.plan.subTasks[0].taskId);
+  const workerSessKey = buildAgentSessionKey({
+    agentId: apiAgent.id,
+    roomId: workerRoomId,
+    channelId: 'ch-ui',
+    scopeType: 'topic',
+    discussionMode: 'standard',
+  });
+  assert.ok(
+    workerSessKey.startsWith(`topic:ch-ui:${workerRoomId}:standard:`),
+    `Expected topic-scoped worker session key, got: ${workerSessKey}`
+  );
+
+  const standardTopic: TopicMessageData = {
+    id: topicId,
+    scopeType: 'channel',
+    channelId: 'ch-ui',
+    workspaceBindingId: 'ws-default',
+    title: '测试蜂群模式',
+    description: '验证普通模式议题支持 Swarm',
+    status: 'investigating',
+    discussionMode: 'standard',
+    authorId: 'user-norris',
+    authorName: 'Norris_M5Pro',
+    authorAvatar: '👨‍💻',
+    timestamp: '15:00',
+    repliesCount: 1,
+    participatingAgentIds: [archAgent.id, apiAgent.id, uiAgent.id],
+  };
+
+  const swarmTopicMessage: Message = {
+    id: 'topic-msg-swarm-1',
+    threadId: topicId,
+    channelId: 'ch-ui',
+    authorId: archAgent.id,
+    authorName: archAgent.name,
+    authorHandle: archAgent.handle,
+    authorAvatar: archAgent.avatar,
+    isAgent: true,
+    agentBadge: '🐝 Swarm Lead',
+    timestamp: '15:01',
+    content: extracted.cleanedText,
+    swarmMission: extracted.plan,
+  };
+
+  const standardTopicHtml = renderToStaticMarkup(
+    React.createElement(TopicThreadDrawer, {
+      isOpen: true,
+      topic: standardTopic,
+      messages: [swarmTopicMessage],
+      agents: channelAgents,
+      onClose: () => {},
+      onSendMessage: () => {},
+      onResolveTopic: () => {},
+      onOpenCodexDiff: () => {},
+    })
+  );
+  assert.ok(
+    standardTopicHtml.includes('data-testid="topic-composer-swarm-toggle"'),
+    'Standard channel topic drawer must expose topic-composer-swarm-toggle'
+  );
+  assert.ok(
+    standardTopicHtml.includes('data-testid="swarm-mission-card"'),
+    'Standard channel topic drawer must render SwarmMissionCard for swarmMission messages'
+  );
+
+  const gameTopic: TopicMessageData = {
+    ...standardTopic,
+    id: 'topic-game-1',
+    discussionMode: 'game_theoretic',
+  };
+  const gameTopicHtml = renderToStaticMarkup(
+    React.createElement(TopicThreadDrawer, {
+      isOpen: true,
+      topic: gameTopic,
+      messages: [],
+      agents: channelAgents,
+      onClose: () => {},
+      onSendMessage: () => {},
+      onResolveTopic: () => {},
+      onOpenCodexDiff: () => {},
+    })
+  );
+  assert.equal(
+    gameTopicHtml.includes('data-testid="topic-composer-swarm-toggle"'),
+    false,
+    'Game-theoretic topic drawer must NOT expose topic-composer-swarm-toggle'
+  );
+
+  const dmStandardTopic: TopicMessageData = {
+    ...standardTopic,
+    id: 'topic-dm-1',
+    scopeType: 'dm',
+    dmAgentId: archAgent.id,
+  };
+  const dmTopicHtml = renderToStaticMarkup(
+    React.createElement(TopicThreadDrawer, {
+      isOpen: true,
+      topic: dmStandardTopic,
+      messages: [],
+      agents: [archAgent],
+      onClose: () => {},
+      onSendMessage: () => {},
+      onResolveTopic: () => {},
+      onOpenCodexDiff: () => {},
+    })
+  );
+  assert.equal(
+    dmTopicHtml.includes('data-testid="topic-composer-swarm-toggle"'),
+    false,
+    'DM topic drawer must NOT expose topic-composer-swarm-toggle'
   );
 });
 

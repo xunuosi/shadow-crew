@@ -765,12 +765,37 @@ function startOfficialAdapterBridge(codexBin) {
     childEnv.PATH = [binDir, childEnv.PATH || ''].filter(Boolean).join(path.delimiter);
   }
   childEnv.INITIAL_AGENT_MODE = 'workspace-write';
-  if (process.env.SHADOW_CREW_EXPERT_PACK_ID) {
-    childEnv.CODEX_CONFIG = JSON.stringify({
-      features: { memories: false },
-      memories: { use_memories: false, generate_memories: false },
-    });
+  let codexConfigObj = {};
+  if (childEnv.CODEX_CONFIG) {
+    try {
+      const parsed = JSON.parse(childEnv.CODEX_CONFIG);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        codexConfigObj = parsed;
+      }
+    } catch {
+      codexConfigObj = {};
+    }
   }
+  const existingFeatures =
+    codexConfigObj.features &&
+    typeof codexConfigObj.features === 'object' &&
+    !Array.isArray(codexConfigObj.features)
+      ? codexConfigObj.features
+      : {};
+  codexConfigObj = {
+    ...codexConfigObj,
+    features: {
+      ...existingFeatures,
+      // 禁用 Codex CLI 内置多智能体子代理派生，避免与 Shadow Crew 平台级 Swarm 调度冲突
+      multi_agent: false,
+      multi_agent_v2: false,
+      ...(process.env.SHADOW_CREW_EXPERT_PACK_ID ? { memories: false } : {}),
+    },
+    ...(process.env.SHADOW_CREW_EXPERT_PACK_ID
+      ? { memories: { use_memories: false, generate_memories: false } }
+      : {}),
+  };
+  childEnv.CODEX_CONFIG = JSON.stringify(codexConfigObj);
 
   const officialChild = spawn(process.execPath, [OFFICIAL_ACP_ENTRY], {
     env: childEnv,
@@ -1224,6 +1249,13 @@ function startBuiltinAdapter() {
     if (hasThread) {
       args.push('resume', session.codexThreadId);
     }
+
+    // 禁用 Codex 进程内部 multi_agent 子代理工具，统一由 Shadow Crew 平台编排多 Agent 协同
+    args.push(
+      '--disable', 'multi_agent',
+      '-c', 'features.multi_agent=false',
+      '-c', 'features.multi_agent_v2=false'
+    );
 
     if (nativeMemoryActive) {
       args.push(
