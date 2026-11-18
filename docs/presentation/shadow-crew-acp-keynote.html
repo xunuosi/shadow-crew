@@ -2372,7 +2372,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 25 ------------------------------------------------------------ -->
 <section class="slide" data-no="25" data-section="生态对标" data-title="四个维度的取舍"
-  data-notes="这页只讲我们自己，不评判别人。四行：协议选 ACP 双栈，因为要能连任何端点，代价是依赖端点实现、V2 还是 Draft；协同按任务选增量流或 4+1，代价是角色配置与治理成本；记忆用 .scpack 可分发、同时尊重端点原生记忆，代价是需要端点配合关闭自己的记忆，卡带只读不能写回；安全用 Rust 反向代理加 CWD 绑定与 Fail-Closed，代价是只管本地宿主，远端端点自身行为不在管辖内。竞品怎么做不在这一页下判断，需要对比时看内部文档。">
+  data-notes="这页只讲我们自己，不评判别人。四行：协议选 ACP 双栈，因为要能连任何端点，代价是依赖端点实现、V2 还是 Draft；协同是论坛式结构：频道像版块，是常驻讨论流，里面可以再开 topic 专题，议题有独立的会话、目录和流程，代价是要人判断什么时候该开议题、议题模式还有角色配置成本；记忆用 .scpack 可分发、同时尊重端点原生记忆，代价是需要端点配合关闭自己的记忆，卡带只读不能写回；安全用 Rust 反向代理加 CWD 绑定与 Fail-Closed，代价是只管本地宿主，远端端点自身行为不在管辖内。竞品怎么做不在这一页下判断，需要对比时看内部文档。">
   <div class="slide-head">
     <div class="eyebrow reveal">24 / 对标</div>
     <h2 class="reveal">四个维度：我们怎么选，代价是什么</h2>
@@ -2398,9 +2398,9 @@ table.method .req.b { color: var(--accent); }
           </tr>
           <tr>
             <td class="row-h">协同</td>
-            <td class="hero"><strong>按任务选模式</strong><span class="mini">增量流（默认）+ 4+1 博弈（升维）</span></td>
-            <td>日常不该为简单问题付对抗成本，争议才值得上重流程</td>
-            <td>需要角色与策略配置；升维有治理成本，不是所有任务都划算</td>
+            <td class="hero"><strong>频道 + 议题</strong><span class="mini">频道是常驻讨论流；议题从频道里开出专题</span></td>
+            <td>像论坛版块：日常在频道里持续聊，具体问题再开一个议题单独推</td>
+            <td>需要人为决定“什么时候该开议题”；议题模式还有角色与策略配置成本</td>
           </tr>
           <tr>
             <td class="row-h">记忆</td>
@@ -2420,7 +2420,7 @@ table.method .req.b { color: var(--accent); }
 
     <div class="grid cols-4 gap-12 mt-16 reveal">
       <div class="take"><span class="tk">PROTOCOL</span><span><b>连任何端点</b></span></div>
-      <div class="take"><span class="tk">COLLAB</span><span><b>按任务选模式</b></span></div>
+      <div class="take"><span class="tk">COLLAB</span><span><b>频道 + 议题</b></span></div>
       <div class="take"><span class="tk">MEMORY</span><span><b>经验可带走</b></span></div>
       <div class="take"><span class="tk">SAFETY</span><span><b>宿主侧拦截</b></span></div>
     </div>
