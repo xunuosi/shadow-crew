@@ -63,7 +63,7 @@ open docs/presentation/shadow-crew-acp-keynote.html
 ## 编辑指南
 
 - 每页是一个 `<section class="slide" data-no="01" data-section="开场" data-title="..." data-notes="...">`。
-- 增删页面时，需要同步三处总数：CSS 中 `.slide::after` 的 `/ 36`、总览标题「全部 36 页」、封面 chip「36 页 · 约 36 分钟」。
+- 增删页面时，需要同步两处总数：CSS 中 `.slide::after` 的 `/ 36`、总览标题「全部 36 页」。
 - 主题令牌集中在文件顶部：`:root`（暗夜）与 `html[data-theme="light"]`（白昼），打印样式在 `@media print` 中强制浅色。
 - 品牌标记目前是内联四角星 SVG，可替换为 `public/ninja_icon.svg` 或产品正式 Logo。
 - 页面按 1600×900 设计，由 JS 等比缩放适配窗口，新增内容请保持 16:9 画布内不溢出。
