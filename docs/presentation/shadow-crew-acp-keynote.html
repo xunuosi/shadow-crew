@@ -993,13 +993,13 @@ table.matrix { font-size: 13.5px; }
 
 /* ---------- 27 roadmap ---------- */
 .road { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; position: relative; padding-top: 8px; }
-.road-card { padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface2); min-height: 240px; display: flex; flex-direction: column; }
+.road-card { padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface2); min-height: 252px; display: flex; flex-direction: column; }
 .road-card.now { border-color: var(--accent-line); background: linear-gradient(180deg, var(--accent-soft), var(--surface2) 50%); }
 .road-card .w { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; color: var(--fg3); }
 .road-card.now .w { color: var(--accent); }
 .road-card h4 { margin-top: 8px; font-size: 17px; }
 .road-card p { margin-top: 8px; font-size: 13.5px; line-height: 1.6; color: var(--fg2); }
-.road-card .crit { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); font-size: 11.5px; line-height: 1.5; color: var(--fg3); }
+.road-card .crit { margin-top: 14px; padding-top: 11px; border-top: 1px dashed var(--line); font-size: 12px; line-height: 1.55; color: var(--fg3); }
 .road-card .st { margin-top: auto; padding-top: 12px; }
 
 /* ---------- 28 closing ---------- */
@@ -2541,40 +2541,40 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 28 ------------------------------------------------------------ -->
 <section class="slide" data-no="28" data-section="落地" data-title="接下来的三个方向"
-  data-notes="收束到方向，不做时间预测。现在的桌面协同、下一步的 P2P 组网、探索中的组织级经验网络；不承诺时间点，也不把探索说成必然。">
+  data-notes="三个方向，不做时间承诺。第一，内网同事之间的 Agent 互联：现在远程 Agent 已经有直连与 Relay 两种拓扑，下一步是把发现和授权做得更顺，让同网段的人打开应用就能看到彼此的 Agent。第二，同事 Agent 的记忆持久化与分享：现在是 .scpack 打包分发加端点原生记忆，下一步是让记忆能持续积累、可控共享，而不是每次重新打包。第三，协同的准确率与体验：机制已经有一批（4+1、BWM、防谄媚、证据分级），下一步是让这些门禁不打断正常对话，以及在更多模型和任务上验证。三条都不给时间点。">
   <div class="slide-head">
     <div class="eyebrow reveal">27 / 落地</div>
     <h2 class="reveal">接下来的三个方向</h2>
-    <p class="lede reveal">先连起来，再让经验流动，最后尝试组织级推理。</p>
+    <p class="lede reveal">连起来、留下来、准起来；不给时间承诺，只讲在做的事。</p>
   </div>
   <div class="slide-body">
     <div class="road">
-      <div class="road-card now reveal">
-        <div class="w">现在 · NOW</div>
-        <h4>桌面协同</h4>
-        <p>本地 / 远程 ACP、.scpack 资产、普通增量流、4+1 博弈与 Rust 权限中心，已形成闭环。</p>
-        <div class="crit">完成标志 · 桌面端端到端闭环</div>
-        <div class="st"><span class="badge ok"><span class="d"></span>已落地</span></div>
+      <div class="road-card reveal">
+        <div class="w">方向 01 · 连接</div>
+        <h4>同事之间的 Agent 互联</h4>
+        <p>内网里能直接发现、连上同事的 Agent：同网段直连，跨网段走 Relay，不用手工填地址。</p>
+        <div class="crit">核心问题：发现与授权 · 现状：直连 / Relay 两条拓扑已有</div>
+        <div class="st"><span class="badge info"><span class="d"></span>在做</span></div>
       </div>
       <div class="road-card reveal">
-        <div class="w">下一步 · NEXT</div>
-        <h4>P2P 自组网</h4>
-        <p>mDNS 发现与点对点直连，团队内无需中心 Relay，打开应用即可发现彼此的 Agent。</p>
-        <div class="crit">完成标志 · 零 Relay 跨机协同</div>
-        <div class="st"><span class="badge info"><span class="d"></span>演进中</span></div>
+        <div class="w">方向 02 · 记忆</div>
+        <h4>Agent 记忆的持久化与分享</h4>
+        <p>让同事调优好的经验能长期留存、按需分享，而不是每次重新打包、重新讲一遍。</p>
+        <div class="crit">核心问题：持久化与权限 · 现状：<span class="mono">.scpack</span> 打包 + 端点原生记忆</div>
+        <div class="st"><span class="badge info"><span class="d"></span>在做</span></div>
       </div>
       <div class="road-card reveal">
-        <div class="w">探索 · EXPLORE</div>
-        <h4>因果推断边缘盒子</h4>
-        <p>尝试把团队决策沉淀为可检索、可推理的经验网络。</p>
-        <div class="crit">完成标志 · 决策可追溯、可推理</div>
-        <div class="st"><span class="badge plain"><span class="d"></span>探索</span></div>
+        <div class="w">方向 03 · 质量</div>
+        <h4>协同的准确率与体验</h4>
+        <p>门禁要更准、也更少打扰：让机制在后台兜底，而不是每一步都让人确认。</p>
+        <div class="crit">核心问题：误报与打断 · 现状：4+1 / BWM / 防谄媚 / 证据分级已落地</div>
+        <div class="st"><span class="badge info"><span class="d"></span>在做</span></div>
       </div>
     </div>
 
-    <div class="flex items-center between mt-28 reveal">
-      <span class="small">三个方向的顺序：先连接，再让经验流动，最后尝试组织级推理。</span>
-      <span class="chip accent">Local-first → Team-first → Org-first</span>
+    <div class="flex items-center between mt-24 reveal">
+      <span class="small">三条线互相支撑：<b style="color:var(--fg)">连得上</b>才有经验可分享，<b style="color:var(--fg)">留得住</b>才谈得上准确率。</span>
+      <span class="chip accent">连接 · 记忆 · 质量</span>
     </div>
   </div>
 </section>
