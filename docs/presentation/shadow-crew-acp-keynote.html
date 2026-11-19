@@ -1472,7 +1472,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 06 ------------------------------------------------------------ -->
 <section class="slide" data-no="06" data-section="ACP · 控制" data-title="ACP 之上：宿主补的控制层"
-  data-notes="这页回答：ACP 都有了，宿主还补什么。三块基础设施：协议双轨（v2 探针、v1 兜底）、本地会话账本（创建/恢复/隔离/销毁）、水位线增量上下文；再用四层保障协作质量：并发调度、博弈趋真、模块化分治、安全隔离。注意口径：ACP 核心只有 stdio + JSON-RPC；远程 WS、心跳、nativeMemory 是 Shadow Crew 扩展。">
+  data-notes="这页回答：ACP 都有了，宿主还补什么。三块基础设施：协议双轨（v2 探针、v1 兜底）、本地会话账本（创建/恢复/隔离/销毁）、水位线增量上下文；再用四层保障协作质量：并发调度（首轮同时派发，用 Promise.allSettled 做回合屏障，本轮全结束才判下一跳；同轮 @ 去重，避免同一 Agent 被重复唤醒引发级联风暴）、博弈趋真、模块化分治、安全隔离。注意口径：ACP 核心只有 stdio + JSON-RPC；远程 WS、心跳、nativeMemory 是 Shadow Crew 扩展。">
   <div class="slide-head">
     <div class="eyebrow reveal">05 / 控制面</div>
     <h2 class="reveal">ACP 之上，宿主补了什么</h2>
@@ -1501,7 +1501,7 @@ table.method .req.b { color: var(--accent); }
     </div>
 
     <div class="ctrl4 mt-14">
-      <div class="ctrl-mini reveal"><div class="t"><span class="n">04</span>并发调度</div><div class="d">首轮 Fan-out 并发，<span class="mono">Promise.allSettled</span> Turn Barrier 收口；同轮 @ 去重合并，避免级联风暴。</div></div>
+      <div class="ctrl-mini reveal"><div class="t"><span class="n">04</span>并发调度</div><div class="d">同时叫醒多个 Agent；这一轮所有人都说完，才进下一轮；同轮里多人 @ 同一个，只叫一次。</div></div>
       <div class="ctrl-mini reveal"><div class="t"><span class="n">05</span>博弈趋真</div><div class="d">4+1 状态机推进，BWM 一致性门禁兜底；不自洽就退回重审，不按“看起来一致”放行。</div></div>
       <div class="ctrl-mini reveal"><div class="t"><span class="n">06</span>模块化分治</div><div class="d">G-Frame 拆 2–4 个原子模块；模块级上下文隔离，再用贝叶斯先验/后验路由。</div></div>
       <div class="ctrl-mini reveal"><div class="t"><span class="n">07</span>安全隔离</div><div class="d">CWD 绑定 + 反向权限代理 + Fail-Closed；越界、超时、选项不全一律拒绝。</div></div>
