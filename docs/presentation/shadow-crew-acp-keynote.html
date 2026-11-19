@@ -1417,7 +1417,7 @@ table.method .req.b { color: var(--accent); }
 
 <!-- 05 ------------------------------------------------------------ -->
 <section class="slide" data-no="05" data-section="ACP · 协议" data-title="职责解耦与对等双向通信"
-  data-notes="这一页讲 ACP 的架构气质：它不是单向 RPC，而是对等双向。宿主正向派发任务，Agent 反向申请权限、推送流式更新。注意 v2 的 prompt 响应只是插入确认 { messageId }，终态走 state_update；v1 的 prompt 响应才结束回合。这条反向通道是 ACP 的对等性所在：权限申请、流式更新都由 Agent 发起，宿主只是应答方。">
+  data-notes="这一页讲 ACP 的架构气质：它不是单向 RPC，而是对等双向。左栏是宿主职责，拆成五条讲清楚：工作区隔离（会话绑目录）、权限审批（敏感操作必须回头问）、协同结构（频道是常驻讨论流，议题是从频道开出的专题，各自独立会话与目录）、记忆调度（决定哪些卡带经验在什么时候进上下文，不是把记忆全量塞进 Prompt）、薄 UI（只渲染流式输出和审批界面，推理与工具循环都不在宿主里）。右栏是 Agent 职责：自主推理、Tool Loop、流式输出、端侧工具。注意 v2 的 prompt 响应只是插入确认 { messageId }，终态走 state_update。">
   <div class="slide-head">
     <div class="eyebrow reveal">04 / 协议</div>
     <h2 class="reveal">职责彻底解耦，通信真正对等</h2>
@@ -1431,8 +1431,9 @@ table.method .req.b { color: var(--accent); }
         <ul class="lst mt-16">
           <li><b>工作区隔离</b><br>会话与物理目录一对一绑定</li>
           <li><b>权限审批</b><br>拦截每一次敏感操作</li>
-          <li><b>协同与记忆</b><br>频道、议题、卡带调度</li>
-          <li><b>轻量 UI</b><br>不做推理，不做 Tool Loop</li>
+          <li><b>协同结构</b><br>频道常驻讨论；议题从频道开专题，各自独立会话与目录</li>
+          <li><b>记忆调度</b><br>决定哪些卡带经验、在什么时候进上下文</li>
+          <li><b>薄 UI</b><br>只渲染流式输出与审批界面，不做推理、不做 Tool Loop</li>
         </ul>
         <div class="mt-24"><span class="badge ok">控制面</span></div>
       </div>
