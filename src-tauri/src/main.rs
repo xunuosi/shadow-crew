@@ -950,6 +950,8 @@ async fn main() {
             workspace_commands::open_file_in_system,
             workspace_commands::reveal_file_in_folder,
             workspace_commands::open_file_in_editor,
+            workspace_commands::list_scope_artifacts,
+            workspace_commands::open_directory_in_file_manager,
         ])
         .run(tauri::generate_context!())
         .expect("error while running shadow-crew tauri desktop application");

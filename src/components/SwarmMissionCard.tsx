@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   FileCode2,
+  FolderArchive,
   GitMerge,
   Loader2,
   Play,
@@ -11,6 +12,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
+import { useArtifactsWindow } from '../context/ArtifactsWindowContext';
 import type {
   Agent,
   SwarmMissionData,
@@ -75,6 +77,7 @@ export const SwarmMissionCard: React.FC<SwarmMissionCardProps> = ({
   onOpenSubThread,
   onOpenCodexDiff,
 }) => {
+  const { openArtifactsWindow } = useArtifactsWindow();
   const [showContract, setShowContract] = useState(
     mission.status === 'awaiting_approval'
   );
@@ -176,6 +179,25 @@ export const SwarmMissionCard: React.FC<SwarmMissionCardProps> = ({
               进度 {finishedCount}/{enabledTasks.length}
             </span>
           )}
+          <button
+            type="button"
+            onClick={() =>
+              openArtifactsWindow({
+                scopeType: 'swarm',
+                scopeId: roomId,
+                channelId: mission.channelId,
+                title: `Swarm · ${mission.originalTask.slice(0, 36)}`,
+                subtitle: mission.sharedContractSummary || '群智协作合流结论、子任务产出与补丁 Diff',
+                swarmMissions: [mission],
+                focusedSwarmId: mission.missionId,
+              })
+            }
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-border bg-surface hover:bg-surface-hover text-fg-secondary hover:text-fg transition-colors cursor-pointer"
+            title="打开本次 Swarm 任务的最终合流产物与各 Worker 中间产物"
+          >
+            <FolderArchive className="w-3 h-3 text-amber-500" />
+            <span>产物窗口</span>
+          </button>
         </div>
       </div>
 
@@ -306,6 +328,24 @@ export const SwarmMissionCard: React.FC<SwarmMissionCardProps> = ({
                 {mission.patchApplySummary}
               </span>
             )}
+            <button
+              type="button"
+              onClick={() =>
+                openArtifactsWindow({
+                  scopeType: 'swarm',
+                  scopeId: roomId,
+                  channelId: mission.channelId,
+                  title: `Swarm · ${mission.originalTask.slice(0, 36)}`,
+                  subtitle: mission.sharedContractSummary || '群智协作合流结论、子任务产出与补丁 Diff',
+                  swarmMissions: [mission],
+                  focusedSwarmId: mission.missionId,
+                })
+              }
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11.5px] font-medium border border-border bg-surface text-fg-secondary hover:text-fg hover:bg-surface-hover transition-colors cursor-pointer"
+            >
+              <FolderArchive className="w-3.5 h-3.5 text-amber-500" />
+              <span>产物窗口</span>
+            </button>
             <button
               type="button"
               onClick={() => openDiffViewer()}

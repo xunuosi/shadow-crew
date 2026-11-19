@@ -11,6 +11,8 @@ import {
   MinorityReport,
   TopicPatchDiffItem,
   MessageAttachmentInput,
+  SwarmMissionData,
+  WorkspaceBinding,
 } from '../types';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { 
@@ -48,8 +50,12 @@ import {
   Image as ImageIcon,
   Paperclip,
   Clock,
-  Loader2
+  Loader2,
+  FolderArchive,
+  FolderOpen,
 } from 'lucide-react';
+import { useArtifactsWindow } from '../context/ArtifactsWindowContext';
+import { buildScopeArtifactEntries, openDirectoryInFileManager } from '../services/artifactsService';
 import { MentionSuggestions } from './MentionSuggestions';
 import { renderFormattedContent } from '../utils/formatMentions';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
@@ -114,6 +120,8 @@ interface TopicThreadDrawerProps {
   onOpenCodexDiff: (diff: any) => void;
   onEditTopic?: () => void;
   workspaceCwd?: string;
+  topicArtifactRoot?: string;
+  topicWorkspaceBinding?: WorkspaceBinding | null;
   overlappingFiles?: string[];
 }
 
@@ -146,8 +154,60 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   onOpenCodexDiff,
   onEditTopic,
   workspaceCwd,
+  topicArtifactRoot,
+  topicWorkspaceBinding = null,
   overlappingFiles = [],
 }) => {
+  const { openArtifactsWindow } = useArtifactsWindow();
+
+  const topicArtifactCount = React.useMemo(() => {
+    if (!topic) return 0;
+    const topicMissions = messages
+      .map((m) => m.swarmMission)
+      .filter((m): m is SwarmMissionData => Boolean(m));
+    return buildScopeArtifactEntries(
+      {
+        scopeType: 'topic',
+        scopeId: topic.id,
+        channelId: topic.channelId,
+        agentId: topic.dmAgentId,
+        title: topic.title,
+        workspaceBinding: topicWorkspaceBinding,
+        workspaceCwd,
+        artifactRoot: topicArtifactRoot,
+        topicData: topic,
+        messages,
+        swarmMissions: topicMissions,
+      },
+      null
+    ).length;
+  }, [messages, topic, topicArtifactRoot, topicWorkspaceBinding, workspaceCwd]);
+
+  const openTopicArtifactsWindow = React.useCallback(
+    (focusedModuleId?: string) => {
+      if (!topic) return;
+      const topicMissions = messages
+        .map((m) => m.swarmMission)
+        .filter((m): m is SwarmMissionData => Boolean(m));
+      openArtifactsWindow({
+        scopeType: 'topic',
+        scopeId: topic.id,
+        channelId: topic.channelId,
+        agentId: topic.dmAgentId,
+        title: topic.title,
+        subtitle: topic.description || '议题终局定案 ADR、G-Frame 契约与博弈各阶段中间产物',
+        workspaceBinding: topicWorkspaceBinding,
+        workspaceCwd,
+        artifactRoot: topicArtifactRoot,
+        topicData: topic,
+        messages,
+        swarmMissions: topicMissions,
+        focusedModuleId,
+      });
+    },
+    [messages, openArtifactsWindow, topic, topicArtifactRoot, topicWorkspaceBinding, workspaceCwd]
+  );
+
   const [replyContent, setReplyContent] = useState('');
   const [showResolveModal, setShowResolveModal] = useState(false);
   const [solutionDraft, setSolutionDraft] = useState('');
@@ -1043,6 +1103,20 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           />
           <button
             type="button"
+            onClick={() => openTopicArtifactsWindow()}
+            className="px-2 py-1 rounded-lg text-fg-secondary hover:text-amber-700 dark:hover:text-amber-300 hover:bg-surface-hover border border-border bg-surface transition-colors cursor-pointer shrink-0 flex items-center gap-1 text-[11px] font-medium"
+            title="打开当前议题的产物窗口 (最终产物 / 中间产物 / 文件管理器)"
+          >
+            <FolderArchive className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+            <span className="hidden sm:inline">产物</span>
+            {topicArtifactCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded-full text-[9px] font-mono bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30">
+                {topicArtifactCount}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
             onClick={toggleHeaderCollapsed}
             className={`px-2 py-1 rounded-lg transition-colors cursor-pointer shrink-0 flex items-center gap-1 text-xs border ${
               isHeaderCollapsed
@@ -1118,7 +1192,36 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                 <HardDrive className="w-3 h-3 text-accent shrink-0" />
                 <span className="shrink-0 font-semibold text-fg-secondary">议题工作目录</span>
                 <span className="truncate font-mono" title={workspaceCwd}>{workspaceCwd}</span>
-                <span className="ml-auto shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 border border-border">工作空间</span>
+                <div className="ml-auto flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => openTopicArtifactsWindow()}
+                    className="rounded bg-surface-subtle hover:bg-surface-hover px-1.5 py-0.5 border border-border text-fg-secondary hover:text-fg flex items-center gap-1 cursor-pointer transition-colors"
+                    title="打开当前议题的产物中心窗口"
+                  >
+                    <FolderArchive className="w-3 h-3 text-amber-500" />
+                    <span>产物窗口</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const targetDir = topicArtifactRoot || `${workspaceCwd}/artifacts`;
+                      openDirectoryInFileManager(targetDir, {
+                        workspaceRoot: workspaceCwd,
+                        createIfMissing: true,
+                      }).then((res) => {
+                        if (!res.ok) {
+                          openTopicArtifactsWindow();
+                        }
+                      });
+                    }}
+                    className="rounded bg-surface-subtle hover:bg-surface-hover px-1.5 py-0.5 border border-border text-fg-secondary hover:text-fg flex items-center gap-1 cursor-pointer transition-colors"
+                    title="在系统文件管理器中打开议题产物目录"
+                  >
+                    <FolderOpen className="w-3 h-3 text-accent" />
+                    <span>打开目录</span>
+                  </button>
+                </div>
               </div>
             )}
             <div className="flex items-center justify-between">
@@ -1427,14 +1530,29 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                       信息熵压降 {entropyReductionPct}% · {frozenCount}/{modularState.modules.length} 已冻结
                     </span>
                   </div>
-                  {modularState.sharedContract && (
-                    <span
-                      className="text-[9px] font-mono text-fg-muted truncate max-w-[220px]"
-                      title={modularState.sharedContract.summary}
+                  <div className="flex items-center gap-2 shrink-0">
+                    {modularState.sharedContract && (
+                      <span
+                        className="text-[9px] font-mono text-fg-muted truncate max-w-[220px]"
+                        title={modularState.sharedContract.summary}
+                      >
+                        📜 公共契约已锁定
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openTopicArtifactsWindow(
+                          activeModuleFilterId !== 'ALL' ? activeModuleFilterId : undefined
+                        )
+                      }
+                      className="px-2 py-0.5 rounded bg-surface-subtle hover:bg-surface-hover border border-border text-[9.5px] font-medium text-fg-secondary hover:text-fg flex items-center gap-1 cursor-pointer transition-colors"
+                      title="在产物窗口中按 G-Frame 模块筛选查看交付物"
                     >
-                      📜 公共契约已锁定
-                    </span>
-                  )}
+                      <FolderArchive className="w-3 h-3 text-amber-500" />
+                      <span>模块产物</span>
+                    </button>
+                  </div>
                 </div>
                 <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
                   <button

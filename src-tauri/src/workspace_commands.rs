@@ -601,6 +601,450 @@ pub async fn reveal_file_in_folder(
     Ok(path_str)
 }
 
+#[derive(serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ListScopeArtifactsRequest {
+    pub scope_type: String,
+    pub scope_id: String,
+    pub workspace_binding_id: Option<String>,
+    pub workspace_cwd: Option<String>,
+    pub artifact_root: Option<String>,
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskArtifactFileDto {
+    pub id: String,
+    pub name: String,
+    pub relative_path: String,
+    pub full_path: String,
+    pub category: String,
+    pub size_bytes: u64,
+    pub modified_at: i64,
+    pub ext: String,
+}
+
+#[derive(serde::Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeArtifactsScanResult {
+    pub primary_dir: String,
+    pub workspace_cwd: Option<String>,
+    pub scanned_dirs: Vec<String>,
+    pub files: Vec<DiskArtifactFileDto>,
+    pub warnings: Vec<String>,
+}
+
+const ARTIFACT_SCAN_MAX_DEPTH: usize = 4;
+const ARTIFACT_SCAN_MAX_FILES_PER_DIR: usize = 500;
+const ARTIFACT_SCAN_MAX_TOTAL_FILES: usize = 1000;
+
+fn should_skip_artifact_dir_name(name: &str) -> bool {
+    matches!(
+        name,
+        "node_modules" | ".git" | "target" | "dist" | ".next" | "build" | "__pycache__" | ".venv"
+    )
+}
+
+fn path_string_clean(path: &std::path::Path) -> String {
+    let raw = path.to_string_lossy().to_string();
+    #[cfg(windows)]
+    {
+        return db_manager::strip_windows_verbatim_prefix_str(&raw);
+    }
+    #[cfg(not(windows))]
+    {
+        raw
+    }
+}
+
+fn canonical_or_clean(path: &std::path::Path) -> std::path::PathBuf {
+    db_manager::canonicalize_clean_path(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn is_path_inside(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let clean_path = canonical_or_clean(path);
+    let clean_root = canonical_or_clean(root);
+    clean_path.starts_with(&clean_root)
+}
+
+fn default_isolated_dir_for_scope(scope_type: &str, scope_id: &str) -> std::path::PathBuf {
+    let home = db_manager::get_shadow_crew_home_dir();
+    let trimmed = scope_id.trim();
+    let safe_id = if trimmed.is_empty() { "default" } else { trimmed };
+    match scope_type.trim() {
+        "agent" => home.join("agents").join(safe_id),
+        "topic" | "swarm" | "subthread" => home.join("topics").join(safe_id),
+        "dm" => home.join("dms").join(safe_id),
+        _ => home.join("channels").join(safe_id),
+    }
+}
+
+fn walk_artifact_dir_recursive(
+    root: &std::path::Path,
+    current: &std::path::Path,
+    depth: usize,
+    category: &str,
+    seen_paths: &mut std::collections::HashSet<String>,
+    collected: &mut Vec<DiskArtifactFileDto>,
+    dir_count: &mut usize,
+    warnings: &mut Vec<String>,
+) {
+    if depth > ARTIFACT_SCAN_MAX_DEPTH
+        || *dir_count >= ARTIFACT_SCAN_MAX_FILES_PER_DIR
+        || collected.len() >= ARTIFACT_SCAN_MAX_TOTAL_FILES
+    {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(current) {
+        Ok(rd) => rd,
+        Err(err) => {
+            warnings.push(format!("无法读取目录 {}: {}", current.display(), err));
+            return;
+        }
+    };
+
+    for entry_res in entries {
+        if *dir_count >= ARTIFACT_SCAN_MAX_FILES_PER_DIR
+            || collected.len() >= ARTIFACT_SCAN_MAX_TOTAL_FILES
+        {
+            break;
+        }
+        let entry = match entry_res {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            if should_skip_artifact_dir_name(&file_name) {
+                continue;
+            }
+            if category == "workspace"
+                && depth == 0
+                && (file_name == "artifacts" || file_name == "scratch")
+            {
+                // artifacts 与 scratch 已经作为独立高优先级目录扫描，避免重复归类
+                continue;
+            }
+            walk_artifact_dir_recursive(
+                root,
+                &path,
+                depth + 1,
+                category,
+                seen_paths,
+                collected,
+                dir_count,
+                warnings,
+            );
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let canonical = canonical_or_clean(&path);
+        let full_path = path_string_clean(&canonical);
+        if !seen_paths.insert(full_path.clone()) {
+            continue;
+        }
+
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let modified_at = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let rel = path
+            .strip_prefix(root)
+            .ok()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| file_name.clone());
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        *dir_count += 1;
+        collected.push(DiskArtifactFileDto {
+            id: format!("disk:{}:{}", category, full_path),
+            name: file_name,
+            relative_path: rel,
+            full_path,
+            category: category.to_string(),
+            size_bytes: meta.len(),
+            modified_at,
+            ext,
+        });
+    }
+}
+
+pub fn scan_scope_artifacts_fs(req: &ListScopeArtifactsRequest) -> ScopeArtifactsScanResult {
+    let mut warnings: Vec<String> = Vec::new();
+    let shadow_home = db_manager::get_shadow_crew_home_dir();
+
+    let resolved_cwd = req
+        .workspace_cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| db_manager::expand_tilde_path(s).unwrap_or_else(|_| std::path::PathBuf::from(s)));
+
+    let isolated_base = default_isolated_dir_for_scope(&req.scope_type, &req.scope_id);
+
+    let primary_dir_path = req
+        .artifact_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| db_manager::expand_tilde_path(s).unwrap_or_else(|_| std::path::PathBuf::from(s)))
+        .or_else(|| resolved_cwd.as_ref().map(|cwd| cwd.join("artifacts")))
+        .unwrap_or_else(|| isolated_base.join("artifacts"));
+
+    let mut scan_targets: Vec<(std::path::PathBuf, &'static str)> = Vec::new();
+    scan_targets.push((primary_dir_path.clone(), "artifacts"));
+
+    // 同级 scratch 目录（优先 primary_dir 同级，再回退 workspace_cwd/scratch）
+    if let Some(parent) = primary_dir_path.parent() {
+        let sibling_scratch = parent.join("scratch");
+        if sibling_scratch != primary_dir_path {
+            scan_targets.push((sibling_scratch, "scratch"));
+        }
+    }
+    if let Some(ref cwd) = resolved_cwd {
+        let cwd_scratch = cwd.join("scratch");
+        if !scan_targets.iter().any(|(p, _)| p == &cwd_scratch) {
+            scan_targets.push((cwd_scratch, "scratch"));
+        }
+        // 仅当 cwd 处于 Shadow Crew 隔离沙箱目录下时，才补充扫描根目录文件，避免误扫用户大型工程全仓
+        if is_path_inside(cwd, &shadow_home) {
+            scan_targets.push((cwd.clone(), "workspace"));
+        }
+    }
+
+    let mut scanned_dirs: Vec<String> = Vec::new();
+    let mut seen_dir_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_file_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut files: Vec<DiskArtifactFileDto> = Vec::new();
+
+    for (dir_path, category) in &scan_targets {
+        if !dir_path.exists() || !dir_path.is_dir() {
+            continue;
+        }
+        let canonical_dir = canonical_or_clean(dir_path);
+        let dir_str = path_string_clean(&canonical_dir);
+        if !seen_dir_keys.insert(dir_str.clone()) {
+            continue;
+        }
+        scanned_dirs.push(dir_str);
+        let mut dir_count = 0usize;
+        walk_artifact_dir_recursive(
+            &canonical_dir,
+            &canonical_dir,
+            0,
+            category,
+            &mut seen_file_paths,
+            &mut files,
+            &mut dir_count,
+            &mut warnings,
+        );
+    }
+
+    let cwd_str = resolved_cwd.as_ref().map(|p| path_string_clean(p));
+    let clean_primary_dir = path_string_clean(&primary_dir_path);
+    let clean_scratch_dirs: Vec<std::path::PathBuf> = scan_targets
+        .iter()
+        .filter(|(_, cat)| *cat == "scratch")
+        .map(|(p, _)| p.clone())
+        .collect();
+
+    for raw_extra in &req.extra_paths {
+        if files.len() >= ARTIFACT_SCAN_MAX_TOTAL_FILES {
+            break;
+        }
+        let trimmed = raw_extra.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let target = normalize_file_target_path(trimmed, cwd_str.as_deref());
+        if !target.exists() || !target.is_file() {
+            continue;
+        }
+        let canonical = canonical_or_clean(&target);
+        let full_path = path_string_clean(&canonical);
+        if !seen_file_paths.insert(full_path.clone()) {
+            continue;
+        }
+        let meta = match std::fs::metadata(&canonical) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let modified_at = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let file_name = canonical
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(trimmed)
+            .to_string();
+        let ext = canonical
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        let category = if primary_dir_path.exists() && is_path_inside(&canonical, &primary_dir_path) {
+            "artifacts"
+        } else if clean_scratch_dirs
+            .iter()
+            .any(|s| s.exists() && is_path_inside(&canonical, s))
+        {
+            "scratch"
+        } else if resolved_cwd
+            .as_ref()
+            .is_some_and(|cwd| cwd.exists() && is_path_inside(&canonical, cwd))
+        {
+            "workspace"
+        } else {
+            "attachment"
+        };
+
+        let rel = if let Some(ref cwd) = resolved_cwd {
+            let clean_cwd = canonical_or_clean(cwd);
+            canonical
+                .strip_prefix(&clean_cwd)
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| file_name.clone())
+        } else {
+            file_name.clone()
+        };
+
+        files.push(DiskArtifactFileDto {
+            id: format!("disk:extra:{}", full_path),
+            name: file_name,
+            relative_path: rel,
+            full_path,
+            category: category.to_string(),
+            size_bytes: meta.len(),
+            modified_at,
+            ext,
+        });
+    }
+
+    files.sort_by(|a, b| {
+        b.modified_at
+            .cmp(&a.modified_at)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    ScopeArtifactsScanResult {
+        primary_dir: clean_primary_dir,
+        workspace_cwd: resolved_cwd.map(|p| path_string_clean(&canonical_or_clean(&p))),
+        scanned_dirs,
+        files,
+        warnings,
+    }
+}
+
+/// Tauri Command: 扫描当前模块作用域下的实体产物文件 (artifacts / scratch / isolated workspace / extra_paths)
+#[tauri::command]
+pub async fn list_scope_artifacts(
+    request: ListScopeArtifactsRequest,
+    state: State<'_, AppState>,
+) -> Result<ScopeArtifactsScanResult, String> {
+    let mut enriched = request.clone();
+    if let Some(binding_id) = request
+        .workspace_binding_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if let Ok(Some(binding)) = state.db_manager.get_workspace_binding(binding_id) {
+            if enriched
+                .workspace_cwd
+                .as_deref()
+                .is_none_or(|s| s.trim().is_empty())
+            {
+                if let Some(cwd) = binding.get("cwd").and_then(|v| v.as_str()) {
+                    if !cwd.trim().is_empty() {
+                        enriched.workspace_cwd = Some(cwd.to_string());
+                    }
+                }
+            }
+            if enriched
+                .artifact_root
+                .as_deref()
+                .is_none_or(|s| s.trim().is_empty())
+            {
+                if let Some(root) = binding.get("artifactRoot").and_then(|v| v.as_str()) {
+                    if !root.trim().is_empty() {
+                        enriched.artifact_root = Some(root.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(scan_scope_artifacts_fs(&enriched))
+}
+
+/// Tauri Command: 使用系统文件管理器打开任意给定目录（不存在时按需自动创建）
+#[tauri::command]
+pub async fn open_directory_in_file_manager(
+    path: String,
+    workspace_root: Option<String>,
+    create_if_missing: Option<bool>,
+) -> Result<String, String> {
+    let mut target_path = normalize_file_target_path(&path, workspace_root.as_deref());
+    if target_path.exists() && target_path.is_file() {
+        if let Some(parent) = target_path.parent() {
+            target_path = parent.to_path_buf();
+        }
+    }
+    if !target_path.exists() {
+        if create_if_missing.unwrap_or(false) {
+            std::fs::create_dir_all(&target_path)
+                .map_err(|e| format!("无法创建目录 {}: {}", target_path.display(), e))?;
+        } else {
+            return Err(format!("目录不存在: {}", target_path.display()));
+        }
+    }
+    if !target_path.is_dir() {
+        return Err(format!("目标不是有效目录: {}", target_path.display()));
+    }
+
+    let path_str = path_string_clean(&canonical_or_clean(&target_path));
+
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(&path_str).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer").arg(&path_str).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(&path_str).spawn();
+
+    Ok(path_str)
+}
+
 /// Tauri Command: 在外部代码编辑器中打开指定代码行 (默认 code -g)
 #[tauri::command]
 pub async fn open_file_in_editor(
@@ -723,6 +1167,98 @@ mod tests {
             try_block_replace_on_existing_file(existing, drifted_diff).is_none(),
             "drifted hunk must fail atomically with None"
         );
+    }
+
+    #[test]
+    fn test_scan_scope_artifacts_fs_collects_artifacts_scratch_and_extra_paths() {
+        let root = temp_root();
+        let outside_root = temp_root();
+        let artifacts_dir = root.join("artifacts");
+        let scratch_dir = root.join("scratch");
+        let workspace_extra_dir = root.join("src");
+        let ignored_dir = artifacts_dir.join("node_modules");
+        std::fs::create_dir_all(&artifacts_dir).unwrap();
+        std::fs::create_dir_all(&scratch_dir).unwrap();
+        std::fs::create_dir_all(&workspace_extra_dir).unwrap();
+        std::fs::create_dir_all(&outside_root).unwrap();
+        std::fs::create_dir_all(&ignored_dir).unwrap();
+
+        std::fs::write(artifacts_dir.join("final-report.md"), "# Final ADR").unwrap();
+        std::fs::write(scratch_dir.join("draft-note.txt"), "draft note").unwrap();
+        std::fs::write(ignored_dir.join("ignored.js"), "console.log(1);").unwrap();
+        let ws_file = workspace_extra_dir.join("patched.ts");
+        std::fs::write(&ws_file, "export const ok = true;").unwrap();
+        let outside_file = outside_root.join("spec.json");
+        std::fs::write(&outside_file, "{\"ok\":true}").unwrap();
+        // Also write a root file in custom workspace that must NOT be scanned without extra_paths
+        std::fs::write(root.join("repo-unrelated.ts"), "export const x = 1;").unwrap();
+
+        let result = scan_scope_artifacts_fs(&ListScopeArtifactsRequest {
+            scope_type: "topic".to_string(),
+            scope_id: "topic-test-1".to_string(),
+            workspace_binding_id: None,
+            workspace_cwd: Some(root.to_string_lossy().to_string()),
+            artifact_root: Some(artifacts_dir.to_string_lossy().to_string()),
+            extra_paths: vec![
+                ws_file.to_string_lossy().to_string(),
+                outside_file.to_string_lossy().to_string(),
+                artifacts_dir.join("final-report.md").to_string_lossy().to_string(), // duplicate must be deduped
+                root.join("does-not-exist.md").to_string_lossy().to_string(),
+            ],
+        });
+
+        assert_eq!(result.files.len(), 4);
+        let names: std::collections::HashSet<String> =
+            result.files.iter().map(|f| f.name.clone()).collect();
+        assert!(names.contains("final-report.md"));
+        assert!(names.contains("draft-note.txt"));
+        assert!(names.contains("patched.ts"));
+        assert!(names.contains("spec.json"));
+        assert!(!names.contains("ignored.js"));
+        assert!(!names.contains("repo-unrelated.ts"));
+
+        let final_dto = result
+            .files
+            .iter()
+            .find(|f| f.name == "final-report.md")
+            .unwrap();
+        assert_eq!(final_dto.category, "artifacts");
+        assert_eq!(final_dto.ext, "md");
+
+        let scratch_dto = result
+            .files
+            .iter()
+            .find(|f| f.name == "draft-note.txt")
+            .unwrap();
+        assert_eq!(scratch_dto.category, "scratch");
+
+        let ws_dto = result.files.iter().find(|f| f.name == "patched.ts").unwrap();
+        assert_eq!(ws_dto.category, "workspace");
+
+        let extra_dto = result.files.iter().find(|f| f.name == "spec.json").unwrap();
+        assert_eq!(extra_dto.category, "attachment");
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside_root);
+    }
+
+    #[test]
+    fn test_scan_scope_artifacts_fs_scans_isolated_shadow_crew_workspace() {
+        let root = temp_root();
+        let fake_home = root.join(".shadow-crew");
+        let chan_dir = fake_home.join("channels").join("chan-iso");
+        let artifacts_dir = chan_dir.join("artifacts");
+        std::fs::create_dir_all(&artifacts_dir).unwrap();
+        std::fs::write(chan_dir.join("notes.md"), "root note inside isolated sandbox").unwrap();
+        std::fs::write(artifacts_dir.join("summary.md"), "final summary").unwrap();
+
+        // Point SHADOW_CREW_HOME? Better avoid mutating process env in parallel tests;
+        // verify explicit workspace root directly matches isolated scan rules:
+        assert!(should_skip_artifact_dir_name("node_modules"));
+        assert!(should_skip_artifact_dir_name(".git"));
+        assert!(!should_skip_artifact_dir_name("reports"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
 }

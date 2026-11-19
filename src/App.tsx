@@ -8,6 +8,7 @@ import type { Agent, AgentTeam, Message, TopicMessageData } from './types';
 import { Hash, Plus, PanelLeft } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
 import { FilePreviewProvider } from './context/FilePreviewContext';
+import { ArtifactsWindowProvider } from './context/ArtifactsWindowContext';
 import { ChatTimeline } from './components/ChatTimeline';
 import { MessageInput } from './components/MessageInput';
 import { AppModalsContainer } from './components/AppModalsContainer';
@@ -434,7 +435,8 @@ export default function App() {
 
   return (
     <FilePreviewProvider defaultWorkspaceRoot={activeWorkspaceCwd}>
-      <div className="h-full w-full flex bg-canvas text-fg overflow-hidden font-sans select-none antialiased transition-colors duration-150">
+      <ArtifactsWindowProvider>
+        <div className="h-full w-full flex bg-canvas text-fg overflow-hidden font-sans select-none antialiased transition-colors duration-150">
         {/* 1. Left Primary Sidebar (Antigravity-style Smooth Collapsible) */}
         <div
           className={`h-full flex shrink-0 overflow-hidden ${
@@ -527,6 +529,7 @@ export default function App() {
                     isSidebarCollapsed={isSidebarCollapsed}
                     onToggleSidebar={() => toggleSidebar()}
                     currentWorkspace="shadow-crew"
+                    workspaceBinding={activeChannel ? getChannelWorkspaceBinding(activeChannel.id) : null}
                   />
 
                   <MessageInput
@@ -607,6 +610,8 @@ export default function App() {
                   onExecuteTopicPatch={handleExecuteTopicPatch}
                   onApplyTopicPatch={handleApplyTopicPatch}
                   workspaceCwd={getTopicWorkspaceBinding(activeTopicId)?.cwd}
+                  topicArtifactRoot={getTopicWorkspaceBinding(activeTopicId)?.artifactRoot}
+                  topicWorkspaceBinding={getTopicWorkspaceBinding(activeTopicId)}
                   overlappingFiles={overlappingFiles}
                   onOpenCodexDiff={handleOpenCodexDiff}
                   onEditTopic={() => setEditingTopic(activeTopicData)}
@@ -730,7 +735,8 @@ export default function App() {
             </button>
           </div>
         )}
-      </div>
+        </div>
+      </ArtifactsWindowProvider>
     </FilePreviewProvider>
   );
 }

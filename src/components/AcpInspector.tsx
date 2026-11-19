@@ -21,10 +21,12 @@ import {
   Download,
   Trash2,
   ChevronDown, 
-  ChevronUp, 
+  ChevronUp,
+  FolderArchive,
 } from 'lucide-react';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ResizeHandle } from './ResizeHandle';
+import { useArtifactsWindow } from '../context/ArtifactsWindowContext';
 
 interface AcpInspectorProps {
   selectedAgent: Agent;
@@ -57,6 +59,7 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
   onOpenImportModal,
   onClose,
 }) => {
+  const { openArtifactsWindow } = useArtifactsWindow();
   const [activeTab, setActiveTab] = useState<'architecture' | 'rust_tauri' | 'memory' | 'workspace' | 'skills' | 'rpc_logs'>(initialTab);
   const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
   const [diskLogText, setDiskLogText] = useState<string | null>(null);
@@ -142,6 +145,25 @@ export const AcpInspector: React.FC<AcpInspectorProps> = ({
           <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
             {selectedAgent.name}
           </span>
+          <button
+            type="button"
+            onClick={() =>
+              openArtifactsWindow({
+                scopeType: 'agent',
+                scopeId: selectedAgent.id,
+                agentId: selectedAgent.id,
+                title: `${selectedAgent.name} 工作区产物`,
+                subtitle: `${selectedAgent.role} · ~/.shadow-crew/agents/${selectedAgent.id}`,
+                workspaceCwd: selectedAgent.workspace?.rootPath || undefined,
+                artifactRoot: `~/.shadow-crew/agents/${selectedAgent.id}/artifacts`,
+              })
+            }
+            className="px-2 py-0.5 rounded border border-border bg-surface hover:bg-surface-hover text-fg-secondary hover:text-fg text-[10px] font-medium flex items-center gap-1 cursor-pointer transition-colors"
+            title="打开该 Agent 的工作区产物窗口"
+          >
+            <FolderArchive className="w-3 h-3 text-amber-500" />
+            <span>产物</span>
+          </button>
           {onEditAgent && (
             <button
               onClick={() => onEditAgent(selectedAgent)}

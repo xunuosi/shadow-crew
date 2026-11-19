@@ -183,3 +183,47 @@ dialog.arbiter-ruling-dialog::backdrop {
   height: auto;
   field-sizing: content;
 }
+
+/* Native top-layer modal styling for Artifacts Window */
+dialog.artifacts-window-dialog {
+  margin: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  max-width: calc(100vw - 1.5rem);
+  max-height: calc(100dvh - 1.5rem);
+  overflow: visible;
+}
+
+dialog.artifacts-window-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+dialog.artifacts-window-dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog.artifacts-window-dialog::backdrop {
+  background: var(--modal-overlay);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+/* Accessible single-row tab underline indicator (shape + border, WCAG 1.4.1) */
+.artifacts-tab {
+  position: relative;
+}
+
+.artifacts-tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0.5rem;
+  inset-block-end: 0;
+  height: 2px;
+  border-radius: 9999px;
+  background-color: var(--color-accent);
+}

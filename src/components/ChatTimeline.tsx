@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Message, Thread, Agent, Channel, ActiveAgentExecution, TopicMessageData, TopicPatchDiffItem } from '../types';
+import { Message, Thread, Agent, Channel, ActiveAgentExecution, TopicMessageData, TopicPatchDiffItem, WorkspaceBinding } from '../types';
 import { TopicMessageCard } from './TopicMessageCard';
 import { ChannelComposerActivityBar } from './ChannelComposerActivityBar';
 import { 
@@ -41,7 +41,7 @@ import { SwarmMissionCard } from './SwarmMissionCard';
 import type { SwarmMissionActions } from '../hooks/useSwarmOrchestrator';
 import { isSwarmChildRoomId } from '../services/swarmOrchestration';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
-import { openChannelArtifactsFolder, openAgentArtifactsFolder } from '../services/dbClient';
+import { useArtifactsWindow } from '../context/ArtifactsWindowContext';
 import { MessageAttachmentList } from './MessageAttachmentList';
 
 interface ChatTimelineProps {
@@ -67,6 +67,7 @@ interface ChatTimelineProps {
   isSidebarCollapsed?: boolean;
   onToggleSidebar?: () => void;
   currentWorkspace?: string;
+  workspaceBinding?: WorkspaceBinding | null;
 }
 
 export const ChatTimeline: React.FC<ChatTimelineProps> = ({
@@ -92,7 +93,9 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   isSidebarCollapsed = false,
   onToggleSidebar,
   currentWorkspace,
+  workspaceBinding = null,
 }) => {
+  const { openArtifactsWindow } = useArtifactsWindow();
   const [filter, setFilter] = useState<'all' | 'topics' | 'resolved'>('all');
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   const [expandedTraces, setExpandedTraces] = useState<Record<string, boolean>>({});
@@ -523,30 +526,42 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
             <span className="hidden @xl:inline font-mono">ACP</span>
           </button>
 
-          {/* Channel / DM Artifacts Folder Toggle */}
+          {/* Channel / DM Artifacts Window Toggle */}
           {(channel || activeThread?.type === 'dm' || activeThread?.channelId) && (
             <button
-              onClick={async () => {
-                try {
-                  if (activeThread?.type === 'dm') {
-                    const agentId = activeThread.authorId || (activeThread.activeAgentIds && activeThread.activeAgentIds[0]) || activeThread.id.replace('thread-dm-', '');
-                    await openAgentArtifactsFolder(agentId);
-                  } else {
-                    const targetChannelId = channel?.id || activeThread?.channelId;
-                    if (targetChannelId) {
-                      await openChannelArtifactsFolder(targetChannelId, channel?.workspaceBindingId);
-                    }
-                  }
-                } catch (e) {
-                  console.error('Failed to open artifacts directory:', e);
+              type="button"
+              onClick={() => {
+                if (activeThread?.type === 'dm') {
+                  const agentId =
+                    activeThread.authorId ||
+                    (activeThread.activeAgentIds && activeThread.activeAgentIds[0]) ||
+                    activeThread.id.replace('thread-dm-', '');
+                  openArtifactsWindow({
+                    scopeType: 'dm',
+                    scopeId: activeThread.id,
+                    channelId: activeThread.channelId,
+                    agentId,
+                    title: activeThread.title || agentId,
+                    subtitle: '私聊 (DM) 最终产物与过程输出目录',
+                    workspaceBinding,
+                    messages,
+                  });
+                } else {
+                  const targetChannelId =
+                    channel?.id || activeThread?.channelId || activeThread?.id || 'chan-default';
+                  openArtifactsWindow({
+                    scopeType: 'channel',
+                    scopeId: targetChannelId,
+                    channelId: targetChannelId,
+                    title: channel?.name ? `#${channel.name}` : (activeThread?.channelName || '频道产物'),
+                    subtitle: channel?.description || '频道综合交付物、议题定案 ADR 与本地归档目录',
+                    workspaceBinding,
+                    messages,
+                  });
                 }
               }}
-              className="hidden @lg:flex px-2 py-1 rounded-lg hover:text-amber-500 hover:bg-surface-hover border border-transparent hover:border-amber-500/30 transition-all items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
-              title={
-                activeThread?.type === 'dm'
-                  ? `打开此 Agent 专属隔离产物目录 (~/.shadow-crew/agents/${activeThread.authorId || activeThread.id.replace('thread-dm-', '')}/artifacts/)`
-                  : '打开当前频道 Workspace Binding 的产物归档目录'
-              }
+              className="hidden @lg:flex px-2 py-1 rounded-lg hover:text-amber-600 dark:hover:text-amber-400 hover:bg-surface-hover border border-transparent hover:border-amber-500/30 transition-all items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap shrink-0"
+              title="打开当前频道/私聊的产物窗口 (最终产物 / 中间产物 / 文件管理器)"
             >
               <FolderArchive className="w-3.5 h-3.5 text-amber-500 shrink-0" />
               <span className="hidden @xl:inline font-mono">产物 (Artifacts)</span>
@@ -652,26 +667,41 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
 
                 {(channel || activeThread?.type === 'dm' || activeThread?.channelId) && (
                   <button
-                    onClick={async () => {
-                      try {
-                        if (activeThread?.type === 'dm') {
-                          const agentId = activeThread.authorId || (activeThread.activeAgentIds && activeThread.activeAgentIds[0]) || activeThread.id.replace('thread-dm-', '');
-                          await openAgentArtifactsFolder(agentId);
-                        } else {
-                          const targetChannelId = channel?.id || activeThread?.channelId;
-                          if (targetChannelId) {
-                            await openChannelArtifactsFolder(targetChannelId, channel?.workspaceBindingId);
-                          }
-                        }
-                      } catch (e) {
-                        console.error('Failed to open artifacts directory:', e);
+                    type="button"
+                    onClick={() => {
+                      if (activeThread?.type === 'dm') {
+                        const agentId =
+                          activeThread.authorId ||
+                          (activeThread.activeAgentIds && activeThread.activeAgentIds[0]) ||
+                          activeThread.id.replace('thread-dm-', '');
+                        openArtifactsWindow({
+                          scopeType: 'dm',
+                          scopeId: activeThread.id,
+                          channelId: activeThread.channelId,
+                          agentId,
+                          title: activeThread.title || agentId,
+                          subtitle: '私聊 (DM) 最终产物与过程输出目录',
+                          workspaceBinding,
+                          messages,
+                        });
+                      } else {
+                        const targetChannelId = channel?.id || activeThread?.channelId || activeThread?.id || 'chan-default';
+                        openArtifactsWindow({
+                          scopeType: 'channel',
+                          scopeId: targetChannelId,
+                          channelId: targetChannelId,
+                          title: channel?.name ? `#${channel.name}` : (activeThread?.channelName || '频道产物'),
+                          subtitle: channel?.description || '频道综合交付物、议题定案 ADR 与本地归档目录',
+                          workspaceBinding,
+                          messages,
+                        });
                       }
                       setShowMoreMenu(false);
                     }}
                     className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-hover text-fg transition-colors cursor-pointer"
                   >
                     <FolderArchive className="w-4 h-4 text-amber-500 shrink-0" />
-                    <span>{activeThread?.type === 'dm' ? '打开 Agent 专属产物目录 (Artifacts)' : '打开频道落地产物目录 (Artifacts)'}</span>
+                    <span>{activeThread?.type === 'dm' ? '打开私聊产物窗口 (Artifacts)' : '打开频道产物窗口 (Artifacts)'}</span>
                   </button>
                 )}
 

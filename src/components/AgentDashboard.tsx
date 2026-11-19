@@ -33,11 +33,13 @@ import {
   CheckCircle2,
   AlertTriangle,
   X,
+  FolderArchive,
 } from 'lucide-react';
 import { AgentAvatarArtwork, TeamArtwork } from './AgentAvatarArtwork';
 import { ScpackPathInput } from './ScpackPathInput';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { isAgentActivelyRunning } from '../services/remoteAgentLifecycle';
+import { useArtifactsWindow } from '../context/ArtifactsWindowContext';
 import {
   probeAcpMemorySources,
   probeCodexMemorySources,
@@ -90,6 +92,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
   isSidebarCollapsed = false,
   onToggleSidebar,
 }) => {
+  const { openArtifactsWindow } = useArtifactsWindow();
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [activeTeamMenuId, setActiveTeamMenuId] = useState<string | null>(null);
   const [allStopped, setAllStopped] = useState(false);
@@ -443,6 +446,27 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                   </div>
 
                   <div className="flex items-center gap-0.5 shrink-0 ml-auto">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openArtifactsWindow({
+                          scopeType: 'agent',
+                          scopeId: agent.id,
+                          agentId: agent.id,
+                          title: `${agent.name} 工作区产物`,
+                          subtitle: `${agent.role} · ~/.shadow-crew/agents/${agent.id}`,
+                          workspaceCwd: agent.workspace?.rootPath || undefined,
+                          artifactRoot: `~/.shadow-crew/agents/${agent.id}/artifacts`,
+                        });
+                      }}
+                      className="p-1 text-fg-muted hover:text-amber-600 dark:hover:text-amber-400 rounded-lg hover:bg-surface-hover transition-colors cursor-pointer"
+                      title="打开 Agent 产物窗口 (Artifacts)"
+                      aria-label={`打开 ${agent.name} 的产物窗口`}
+                    >
+                      <FolderArchive className="w-3.5 h-3.5" />
+                    </button>
+
                     {/* Top-right Quick Edit Entry */}
                     {onEditAgent && (
                       <button
@@ -524,6 +548,26 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({
                           >
                             <Info className="w-3.5 h-3.5 text-purple-500" />
                             <span>查看能力与记忆 (ACP)</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              openArtifactsWindow({
+                                scopeType: 'agent',
+                                scopeId: agent.id,
+                                agentId: agent.id,
+                                title: `${agent.name} 工作区产物`,
+                                subtitle: `${agent.role} · ~/.shadow-crew/agents/${agent.id}`,
+                                workspaceCwd: agent.workspace?.rootPath || undefined,
+                                artifactRoot: `~/.shadow-crew/agents/${agent.id}/artifacts`,
+                              });
+                              setActiveMenuId(null);
+                            }}
+                            className="w-full text-left px-3.5 py-1.5 hover:bg-surface-hover text-fg flex items-center gap-2 cursor-pointer"
+                          >
+                            <FolderArchive className="w-3.5 h-3.5 text-amber-500" />
+                            <span>查看产物窗口 (Artifacts)</span>
                           </button>
 
                           <button

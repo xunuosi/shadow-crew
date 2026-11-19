@@ -9,13 +9,15 @@ import {
   Sparkles,
   ArrowUpRight,
   Bot,
-  Edit3
+  Edit3,
+  FolderArchive,
 } from 'lucide-react';
 import { useResizablePanel } from '../hooks/useResizablePanel';
 import { ResizeHandle } from './ResizeHandle';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { getDraft, saveDraft, clearDraft } from '../services/draftService';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
+import { useArtifactsWindow } from '../context/ArtifactsWindowContext';
 
 interface SubThreadDrawerProps {
   isOpen: boolean;
@@ -34,6 +36,7 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
   onSendSubMessage,
   onSyncBackToMainThread,
 }) => {
+  const { openArtifactsWindow } = useArtifactsWindow();
   const [replyContent, setReplyContent] = useState('');
 
   // 切换子话题时，自动同步该子话题的独立草稿
@@ -174,6 +177,25 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() =>
+              openArtifactsWindow({
+                scopeType: 'subthread',
+                scopeId: subThread.threadId || subThread.id,
+                title: subThread.title,
+                subtitle: '子线程分支讨论记录与阶段性产物',
+                subThread,
+                subThreadMessages: subThread.messages,
+              })
+            }
+            className="px-2 py-0.5 rounded bg-surface hover:bg-surface-hover border border-border text-fg-secondary hover:text-fg text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+            title="打开当前子线程的产物窗口"
+          >
+            <FolderArchive className="w-3 h-3 text-amber-500" />
+            <span>产物</span>
+          </button>
+
           <button
             onClick={() => onSyncBackToMainThread(`✅ 子话题决议：${subThread.title}已完成深度推演并达成共识。`)}
             className="px-2 py-0.5 rounded bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/40 text-purple-600 dark:text-purple-300 text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
