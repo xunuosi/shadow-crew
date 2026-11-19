@@ -7,12 +7,17 @@ import { InlineCode } from './InlineCode';
 import { GitHubAlert, AlertType } from './GitHubAlert';
 import { renderFormattedContent } from '../../utils/formatMentions';
 import { useFilePreview } from '../../context/FilePreviewContext';
-import { parseFileLink } from '../../services/fileViewerService';
+import {
+  parseFileLink,
+  parseInlineCodeFileReference,
+  transformMarkdownFileUrl,
+} from '../../services/fileViewerService';
 
 interface MarkdownRendererProps {
   content: string;
   className?: string;
   workspaceRoot?: string;
+  onFileLinkClick?: (rawHref: string, workspaceRoot?: string) => void;
 }
 
 /**
@@ -101,8 +106,16 @@ function extractAlert(children: React.ReactNode): { isAlert: boolean; type?: Ale
 }
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
-  ({ content, className = '', workspaceRoot }) => {
+  ({ content, className = '', workspaceRoot, onFileLinkClick }) => {
     const { openFilePreview } = useFilePreview();
+
+    const triggerFilePreview = (rawHref: string) => {
+      if (onFileLinkClick) {
+        onFileLinkClick(rawHref, workspaceRoot);
+        return;
+      }
+      openFilePreview(rawHref, workspaceRoot);
+    };
 
     // 流式自愈保护：如果输出流中存在未闭合的 ``` 代码栅栏，自动在渲染时补齐
     const healedContent = useMemo(() => {
@@ -118,6 +131,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
       <div className={`markdown-body text-xs text-fg leading-relaxed break-words select-text min-w-0 max-w-full ${className}`}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
+          urlTransform={transformMarkdownFileUrl}
           components={{
             // 1. 代码块与单行代码
             pre: ({ children }) => <>{children}</>,
@@ -134,6 +148,27 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
                     language={className}
                     showLineNumbers={true}
                   />
+                );
+              }
+
+              const parsedInline = parseInlineCodeFileReference(strContent);
+              if (parsedInline.isLocalFile) {
+                return (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      triggerFilePreview(strContent.trim());
+                    }}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded-md font-mono text-[11px] bg-surface-subtle border border-border text-accent hover:bg-surface-hover hover:border-accent/40 cursor-pointer transition-colors select-text group align-baseline"
+                    title={`点击预览文件: ${parsedInline.cleanPath}${parsedInline.startLine ? ` (行 ${parsedInline.startLine})` : ''}`}
+                  >
+                    <FileCode2 className="w-3 h-3 text-accent shrink-0 group-hover:scale-110 transition-transform" />
+                    <span className="underline decoration-accent/40 underline-offset-2 break-all">
+                      {strContent.trim()}
+                    </span>
+                  </button>
                 );
               }
 
@@ -230,19 +265,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
 
               if (parsed.isLocalFile) {
                 return (
-                  <span
-                    role="button"
-                    tabIndex={0}
+                  <button
+                    type="button"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      openFilePreview(rawHref, workspaceRoot);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        openFilePreview(rawHref, workspaceRoot);
-                      }
+                      triggerFilePreview(rawHref);
                     }}
                     className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded-md font-mono text-[11px] bg-surface-subtle border border-border text-accent hover:bg-surface-hover hover:border-accent/40 cursor-pointer transition-colors select-text group"
                     title={`点击在本地预览: ${parsed.cleanPath}${parsed.startLine ? ` (行 ${parsed.startLine})` : ''}`}
@@ -250,11 +278,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
                     <FileCode2 className="w-3 h-3 text-accent shrink-0 group-hover:scale-110 transition-transform" />
                     <span className="underline decoration-accent/40 underline-offset-2">{children || parsed.displayName}</span>
                     {parsed.startLine && (
-                      <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/15 text-amber-800 dark:text-amber-300 font-sans">
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-800 dark:text-amber-300 font-sans">
                         :{parsed.startLine}
                       </span>
                     )}
-                  </span>
+                  </button>
                 );
               }
 
@@ -283,5 +311,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
   (prev, next) =>
     prev.content === next.content &&
     prev.className === next.className &&
-    prev.workspaceRoot === next.workspaceRoot
+    prev.workspaceRoot === next.workspaceRoot &&
+    prev.onFileLinkClick === next.onFileLinkClick
 );

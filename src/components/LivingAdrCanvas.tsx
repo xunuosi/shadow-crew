@@ -28,6 +28,7 @@ import {
   ActiveAgentExecution,
   TopicPatchDiffItem,
 } from '../types';
+import { useFilePreview } from '../context/FilePreviewContext';
 
 interface LivingAdrCanvasProps {
   topic: TopicMessageData;
@@ -39,6 +40,7 @@ interface LivingAdrCanvasProps {
   onOpenCodexDiff?: (diff: any) => void;
   onApplyTopicPatch?: (topicId: string) => Promise<void> | void;
   overlappingFiles?: string[];
+  workspaceRoot?: string;
 }
 
 /**
@@ -289,7 +291,9 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
   onOpenCodexDiff,
   onApplyTopicPatch,
   overlappingFiles = [],
+  workspaceRoot,
 }) => {
+  const { openFilePreview } = useFilePreview();
   const [copied, setCopied] = useState(false);
   const [isApplyingPatch, setIsApplyingPatch] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -992,13 +996,16 @@ export const LivingAdrCanvas: React.FC<LivingAdrCanvasProps> = ({
               </p>
               <div className="grid grid-cols-1 gap-1.5">
                 {impactedFiles.map((file, idx) => (
-                  <div
+                  <button
                     key={`${file}-${idx}`}
-                    className="p-2 rounded-lg bg-surface border border-border flex items-start gap-1.5 text-[10px] font-mono text-fg min-w-0"
+                    type="button"
+                    onClick={() => openFilePreview(file, workspaceRoot)}
+                    className="p-2 rounded-lg bg-surface border border-border hover:border-blue-400 dark:hover:border-blue-500/50 hover:bg-surface-hover flex items-start gap-1.5 text-[10px] font-mono text-fg hover:text-accent min-w-0 text-left transition-colors cursor-pointer"
+                    title={`点击预览文件: ${file}`}
                   >
                     <FileCode2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
-                    <code className="break-all whitespace-normal min-w-0">{file}</code>
-                  </div>
+                    <code className="break-all whitespace-normal min-w-0 underline decoration-accent/40 underline-offset-2">{file}</code>
+                  </button>
                 ))}
               </div>
             </div>

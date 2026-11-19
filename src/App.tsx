@@ -628,6 +628,11 @@ export default function App() {
               isOpen={Boolean(activeSubThreadId && activeSubThread)}
               subThread={activeSubThread}
               agents={agents}
+              workspaceRoot={
+                activeTopicId
+                  ? getTopicWorkspaceBinding(activeTopicId)?.cwd
+                  : activeWorkspaceCwd
+              }
               onClose={() => setActiveSubThreadId(null)}
               onSendSubMessage={handleSendSubMessage}
               onSyncBackToMainThread={handleSyncBackToMainThread}

@@ -42,6 +42,7 @@ import type { SwarmMissionActions } from '../hooks/useSwarmOrchestrator';
 import { isSwarmChildRoomId } from '../services/swarmOrchestration';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { useArtifactsWindow } from '../context/ArtifactsWindowContext';
+import { useFilePreview } from '../context/FilePreviewContext';
 import { MessageAttachmentList } from './MessageAttachmentList';
 
 interface ChatTimelineProps {
@@ -96,6 +97,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   workspaceBinding = null,
 }) => {
   const { openArtifactsWindow } = useArtifactsWindow();
+  const { openFilePreview } = useFilePreview();
   const [filter, setFilter] = useState<'all' | 'topics' | 'resolved'>('all');
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   const [expandedTraces, setExpandedTraces] = useState<Record<string, boolean>>({});
@@ -1114,7 +1116,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                 )}
 
                 {/* Main Markdown Text with Code Formatting */}
-                <MarkdownRenderer content={message.content} />
+                <MarkdownRenderer content={message.content} workspaceRoot={workspaceBinding?.cwd} />
 
                 {message.swarmMission && (
                   <SwarmMissionCard
@@ -1127,13 +1129,17 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                         ? agents.filter((a) => channel.memberIds.includes(a.id))
                         : agents
                     }
+                    workspaceRoot={workspaceBinding?.cwd}
                     swarmActions={swarmActions}
                     onOpenSubThread={onOpenSubThread}
                     onOpenCodexDiff={onOpenCodexDiff}
                   />
                 )}
 
-                <MessageAttachmentList attachments={message.attachments} />
+                <MessageAttachmentList
+                  attachments={message.attachments}
+                  workspaceRoot={workspaceBinding?.cwd}
+                />
 
                 {/* Codex Style Unified Diff Card */}
                 {message.diffView && (
@@ -1141,7 +1147,19 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                     <div className="flex items-center justify-between mb-2 select-none flex-wrap gap-2">
                       <div className="flex items-center gap-2">
                         <FileCode2 className="w-3.5 h-3.5 text-emerald-500" />
-                        <span className="text-fg font-semibold select-text">{message.diffView.filename}</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openFilePreview(
+                              message.diffView!.targetPath || message.diffView!.filename,
+                              workspaceBinding?.cwd
+                            )
+                          }
+                          className="text-fg font-semibold select-text hover:text-accent hover:underline cursor-pointer text-left"
+                          title={`点击在本地预览: ${message.diffView.targetPath || message.diffView.filename}`}
+                        >
+                          {message.diffView.filename}
+                        </button>
                         {message.diffViews && message.diffViews.length > 1 && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent font-sans">
                             共 {message.diffViews.length} 个文件变更

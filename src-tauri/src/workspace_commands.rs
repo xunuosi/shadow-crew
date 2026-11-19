@@ -412,7 +412,85 @@ pub struct FilePreviewDto {
     pub content: String,
     pub total_lines: usize,
     pub is_truncated: bool,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub is_windowed: bool,
+    pub has_more_before: bool,
+    pub has_more_after: bool,
+    pub image_data_url: Option<String>,
     pub error: Option<String>,
+}
+
+const PREVIEW_SMALL_TEXT_MAX_BYTES: u64 = 512 * 1024;
+const PREVIEW_DEFAULT_WINDOW_LINES: usize = 500;
+const PREVIEW_MAX_WINDOW_LINES: usize = 2000;
+const PREVIEW_MAX_WINDOW_BYTES: usize = 512 * 1024;
+const PREVIEW_MAX_SINGLE_LINE_BYTES: usize = 16 * 1024;
+const PREVIEW_MAX_IMAGE_DATA_URL_BYTES: u64 = 10 * 1024 * 1024;
+
+fn image_mime_for_extension(ext: &str) -> Option<&'static str> {
+    match ext {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "ico" => Some("image/x-icon"),
+        "svg" => Some("image/svg+xml"),
+        _ => None,
+    }
+}
+
+fn sanitize_single_preview_line(raw: &[u8]) -> String {
+    let mut trimmed = raw;
+    if trimmed.ends_with(b"\n") {
+        trimmed = &trimmed[..trimmed.len() - 1];
+    }
+    if trimmed.ends_with(b"\r") {
+        trimmed = &trimmed[..trimmed.len() - 1];
+    }
+    let decoded = String::from_utf8_lossy(trimmed);
+    if decoded.len() <= PREVIEW_MAX_SINGLE_LINE_BYTES {
+        return decoded.into_owned();
+    }
+    let mut boundary = PREVIEW_MAX_SINGLE_LINE_BYTES;
+    while boundary > 0 && !decoded.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    format!("{} … [单行过长已截断]", &decoded[..boundary])
+}
+
+fn count_remaining_lines_buffered<R: std::io::BufRead>(
+    reader: &mut R,
+    last_line_had_newline: bool,
+) -> Result<usize, String> {
+    let mut extra_lines = 0usize;
+    let mut pending_partial = !last_line_had_newline;
+    let mut seen_any_byte = false;
+
+    loop {
+        let chunk = reader
+            .fill_buf()
+            .map_err(|e| format!("读取文件流失败: {}", e))?;
+        let chunk_len = chunk.len();
+        if chunk_len == 0 {
+            if seen_any_byte && pending_partial {
+                extra_lines += 1;
+            }
+            break;
+        }
+        seen_any_byte = true;
+        for &b in chunk {
+            if b == b'\n' {
+                extra_lines += 1;
+                pending_partial = false;
+            } else {
+                pending_partial = true;
+            }
+        }
+        reader.consume(chunk_len);
+    }
+
+    Ok(extra_lines)
 }
 
 fn percent_decode_str(input: &str) -> String {
@@ -454,27 +532,37 @@ fn normalize_file_target_path(raw: &str, workspace_root: Option<&str>) -> std::p
     let mut path = db_manager::expand_tilde_path(cleaned_str)
         .unwrap_or_else(|_| std::path::PathBuf::from(cleaned_str));
     if path.is_relative() {
-        if let Some(root) = workspace_root {
-            let root_buf = db_manager::expand_tilde_path(root.trim())
-                .unwrap_or_else(|_| std::path::PathBuf::from(root.trim()));
+        if let Some(root) = workspace_root.map(str::trim).filter(|s| !s.is_empty()) {
+            let root_buf = db_manager::expand_tilde_path(root)
+                .unwrap_or_else(|_| std::path::PathBuf::from(root));
             let candidate = root_buf.join(&path);
             if candidate.exists() {
                 path = candidate;
+            } else {
+                let artifacts_candidate = root_buf.join("artifacts").join(&path);
+                if artifacts_candidate.exists() {
+                    path = artifacts_candidate;
+                } else {
+                    path = candidate;
+                }
             }
         }
     }
     path
 }
 
-/// Tauri Command: 读取本地文件用于应用内轻量抽屉预览
-#[tauri::command]
-pub async fn read_file_for_preview(
-    path: String,
-    workspace_root: Option<String>,
+pub fn read_file_for_preview_fs(
+    path: &str,
+    workspace_root: Option<&str>,
+    start_line: Option<usize>,
+    max_lines: Option<usize>,
+    tail: Option<bool>,
 ) -> Result<FilePreviewDto, String> {
-    use std::io::Read;
+    use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+    use std::collections::VecDeque;
+    use std::io::{BufRead, BufReader, Read};
 
-    let target_path = normalize_file_target_path(&path, workspace_root.as_deref());
+    let target_path = normalize_file_target_path(path, workspace_root);
     let canonical = match std::fs::canonicalize(&target_path) {
         Ok(p) => p,
         Err(_) => target_path.clone(),
@@ -498,7 +586,10 @@ pub async fn read_file_for_preview(
         .map(|s| s.to_string_lossy().to_string().to_lowercase())
         .unwrap_or_default();
 
-    // 常见二进制扩展名
+    let image_mime = image_mime_for_extension(extension.as_str());
+    let is_svg = extension == "svg";
+
+    // 常见二进制扩展名（注意 SVG 为文本矢量格式，可内嵌预览 + 源码）
     let known_binary_exts = [
         "png", "jpg", "jpeg", "gif", "webp", "ico", "pdf", "zip", "tar", "gz", "wasm", "exe",
         "dylib", "so", "bin", "scpack", "mp4", "mp3", "mov", "avi", "woff", "woff2", "ttf",
@@ -506,10 +597,21 @@ pub async fn read_file_for_preview(
     let is_binary_by_ext = known_binary_exts.contains(&extension.as_str());
 
     // 探针读取前 8KB 检查是否有 0x00 空字符
-    let mut file = std::fs::File::open(&canonical).map_err(|e| format!("打开文件失败: {}", e))?;
+    let mut probe_file = std::fs::File::open(&canonical).map_err(|e| format!("打开文件失败: {}", e))?;
     let mut probe_buf = vec![0u8; 8192.min(size_bytes as usize)];
-    let bytes_read = file.read(&mut probe_buf).map_err(|e| format!("读取文件头失败: {}", e))?;
+    let bytes_read = probe_file.read(&mut probe_buf).map_err(|e| format!("读取文件头失败: {}", e))?;
     let is_binary = is_binary_by_ext || probe_buf[..bytes_read].contains(&0);
+
+    let image_data_url = if let Some(mime) = image_mime {
+        if size_bytes <= PREVIEW_MAX_IMAGE_DATA_URL_BYTES {
+            let bytes = std::fs::read(&canonical).map_err(|e| format!("读取图像失败: {}", e))?;
+            Some(format!("data:{};base64,{}", mime, BASE64_STANDARD.encode(&bytes)))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     if is_binary {
         return Ok(FilePreviewDto {
@@ -521,24 +623,188 @@ pub async fn read_file_for_preview(
             content: String::new(),
             total_lines: 0,
             is_truncated: false,
+            start_line: 0,
+            end_line: 0,
+            is_windowed: false,
+            has_more_before: false,
+            has_more_after: false,
+            image_data_url,
             error: None,
         });
     }
 
-    // 文本文件保护：限制最大预览 3MB
-    const MAX_PREVIEW_BYTES: u64 = 3 * 1024 * 1024;
-    let (content, is_truncated) = if size_bytes > MAX_PREVIEW_BYTES {
-        let mut text_buf = vec![0u8; MAX_PREVIEW_BYTES as usize];
-        let mut f = std::fs::File::open(&canonical).map_err(|e| format!("打开文件失败: {}", e))?;
-        let _ = f.read_exact(&mut text_buf);
-        let safe_text = String::from_utf8_lossy(&text_buf).to_string();
-        (safe_text, true)
-    } else {
-        let full_text = std::fs::read_to_string(&canonical).map_err(|e| format!("读取文本失败: {}", e))?;
-        (full_text, false)
-    };
+    if size_bytes == 0 {
+        return Ok(FilePreviewDto {
+            path: canonical.to_string_lossy().to_string(),
+            display_name,
+            extension,
+            size_bytes: 0,
+            is_binary: false,
+            content: String::new(),
+            total_lines: 0,
+            is_truncated: false,
+            start_line: 0,
+            end_line: 0,
+            is_windowed: false,
+            has_more_before: false,
+            has_more_after: false,
+            image_data_url: if is_svg { image_data_url } else { None },
+            error: None,
+        });
+    }
 
-    let total_lines = content.lines().count();
+    let wants_tail = tail == Some(true);
+    let has_explicit_window = start_line.is_some() || wants_tail;
+
+    // 常规中小文件直接全量返回
+    if size_bytes <= PREVIEW_SMALL_TEXT_MAX_BYTES && !has_explicit_window {
+        let bytes = std::fs::read(&canonical).map_err(|e| format!("读取文本失败: {}", e))?;
+        let content = String::from_utf8_lossy(&bytes).into_owned();
+        let total_lines = content.lines().count().max(1);
+        return Ok(FilePreviewDto {
+            path: canonical.to_string_lossy().to_string(),
+            display_name,
+            extension,
+            size_bytes,
+            is_binary: false,
+            content,
+            total_lines,
+            is_truncated: false,
+            start_line: 1,
+            end_line: total_lines,
+            is_windowed: false,
+            has_more_before: false,
+            has_more_after: false,
+            image_data_url: if is_svg { image_data_url } else { None },
+            error: None,
+        });
+    }
+
+    // 大文件 / 显式窗口定位模式：使用 BufReader 流式扫描与按窗分页，无 3MB 硬拒绝壁垒
+    let window_lines = max_lines
+        .unwrap_or(PREVIEW_DEFAULT_WINDOW_LINES)
+        .clamp(50, PREVIEW_MAX_WINDOW_LINES);
+    let file = std::fs::File::open(&canonical).map_err(|e| format!("打开文件失败: {}", e))?;
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    let mut line_buf: Vec<u8> = Vec::with_capacity(512);
+
+    if wants_tail {
+        let mut ring: VecDeque<String> = VecDeque::with_capacity(window_lines);
+        let mut total_lines = 0usize;
+
+        loop {
+            line_buf.clear();
+            let n = reader
+                .read_until(b'\n', &mut line_buf)
+                .map_err(|e| format!("流式读取文件失败: {}", e))?;
+            if n == 0 {
+                break;
+            }
+            total_lines += 1;
+            let sanitized = sanitize_single_preview_line(&line_buf);
+            if ring.len() == window_lines {
+                ring.pop_front();
+            }
+            ring.push_back(sanitized);
+        }
+
+        // 从尾部向上裁剪以同时严控窗口字节预算
+        let mut kept_rev: Vec<String> = Vec::with_capacity(ring.len());
+        let mut used_bytes = 0usize;
+        while let Some(line) = ring.pop_back() {
+            let line_cost = line.len() + 1;
+            if used_bytes + line_cost > PREVIEW_MAX_WINDOW_BYTES && !kept_rev.is_empty() {
+                break;
+            }
+            used_bytes += line_cost;
+            kept_rev.push(line);
+        }
+        kept_rev.reverse();
+
+        let kept_count = kept_rev.len();
+        let actual_start = if kept_count == 0 {
+            0
+        } else {
+            total_lines.saturating_sub(kept_count) + 1
+        };
+        let actual_end = if kept_count == 0 { 0 } else { total_lines };
+        let has_more_before = actual_start > 1;
+        let is_windowed = has_more_before || size_bytes > PREVIEW_SMALL_TEXT_MAX_BYTES;
+
+        return Ok(FilePreviewDto {
+            path: canonical.to_string_lossy().to_string(),
+            display_name,
+            extension,
+            size_bytes,
+            is_binary: false,
+            content: kept_rev.join("\n"),
+            total_lines,
+            is_truncated: has_more_before,
+            start_line: actual_start,
+            end_line: actual_end,
+            is_windowed,
+            has_more_before,
+            has_more_after: false,
+            image_data_url: if is_svg { image_data_url } else { None },
+            error: None,
+        });
+    }
+
+    let req_start = start_line.unwrap_or(1).max(1);
+    let mut collected: Vec<String> = Vec::with_capacity(window_lines.min(512));
+    let mut collected_bytes = 0usize;
+    let mut total_lines = 0usize;
+    let mut last_line_had_newline = true;
+    let mut stopped_early = false;
+
+    loop {
+        line_buf.clear();
+        let n = reader
+            .read_until(b'\n', &mut line_buf)
+            .map_err(|e| format!("流式读取文件失败: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        total_lines += 1;
+        last_line_had_newline = line_buf.ends_with(b"\n");
+
+        if total_lines >= req_start {
+            let sanitized = sanitize_single_preview_line(&line_buf);
+            let next_bytes = collected_bytes + sanitized.len() + 1;
+            if (next_bytes > PREVIEW_MAX_WINDOW_BYTES && !collected.is_empty())
+                || collected.len() >= window_lines
+            {
+                stopped_early = true;
+                break;
+            }
+            collected_bytes = next_bytes;
+            collected.push(sanitized);
+            if collected.len() >= window_lines {
+                stopped_early = true;
+                break;
+            }
+        }
+    }
+
+    if stopped_early {
+        let extra = count_remaining_lines_buffered(&mut reader, last_line_had_newline)?;
+        total_lines += extra;
+    }
+
+    let actual_start = if collected.is_empty() { 0 } else { req_start };
+    let actual_end = if collected.is_empty() {
+        0
+    } else {
+        req_start + collected.len() - 1
+    };
+    let has_more_before = req_start > 1 && total_lines > 0;
+    let has_more_after = if collected.is_empty() {
+        false
+    } else {
+        actual_end < total_lines
+    };
+    let is_truncated = has_more_before || has_more_after;
+    let is_windowed = is_truncated || size_bytes > PREVIEW_SMALL_TEXT_MAX_BYTES;
 
     Ok(FilePreviewDto {
         path: canonical.to_string_lossy().to_string(),
@@ -546,11 +812,29 @@ pub async fn read_file_for_preview(
         extension,
         size_bytes,
         is_binary: false,
-        content,
+        content: collected.join("\n"),
         total_lines,
         is_truncated,
+        start_line: actual_start,
+        end_line: actual_end,
+        is_windowed,
+        has_more_before,
+        has_more_after,
+        image_data_url: if is_svg { image_data_url } else { None },
         error: None,
     })
+}
+
+/// Tauri Command: 读取本地文件用于应用内轻量抽屉预览（支持超大文件流式分段窗口与行跳转）
+#[tauri::command]
+pub async fn read_file_for_preview(
+    path: String,
+    workspace_root: Option<String>,
+    start_line: Option<usize>,
+    max_lines: Option<usize>,
+    tail: Option<bool>,
+) -> Result<FilePreviewDto, String> {
+    read_file_for_preview_fs(&path, workspace_root.as_deref(), start_line, max_lines, tail)
 }
 
 /// Tauri Command: 使用系统默认程序打开文件 (macOS open / Windows start / Linux xdg-open)
@@ -1101,30 +1385,135 @@ mod tests {
         std::fs::write(&test_txt, "Line 1: Hello World\nLine 2: Shadow Crew\nLine 3: Preview\n").unwrap();
 
         let path_uri = format!("file://{}", test_txt.to_string_lossy());
-        let preview = read_file_for_preview(path_uri, None).await.expect("read_file_for_preview should succeed");
+        let preview = read_file_for_preview(path_uri, None, None, None, None)
+            .await
+            .expect("read_file_for_preview should succeed");
         assert_eq!(preview.display_name, "hello_preview.txt");
         assert_eq!(preview.extension, "txt");
         assert_eq!(preview.is_binary, false);
         assert_eq!(preview.total_lines, 3);
+        assert_eq!(preview.start_line, 1);
+        assert_eq!(preview.end_line, 3);
+        assert_eq!(preview.is_windowed, false);
         assert!(preview.content.contains("Line 2: Shadow Crew"));
 
-        // 2. 测试相对路径结合 workspace_root
+        // 2. 测试相对路径结合 workspace_root 及 artifacts/ 子目录解析
         let rel_preview = read_file_for_preview(
             "hello_preview.txt".to_string(),
             Some(root.to_string_lossy().to_string()),
-        ).await.expect("relative path with workspace_root should succeed");
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("relative path with workspace_root should succeed");
         assert_eq!(rel_preview.display_name, "hello_preview.txt");
         assert_eq!(rel_preview.total_lines, 3);
 
-        // 3. 测试二进制文件检测
+        let artifacts_dir = root.join("artifacts");
+        std::fs::create_dir_all(&artifacts_dir).unwrap();
+        std::fs::write(artifacts_dir.join("adr-output.md"), "# ADR\nOK").unwrap();
+        let art_preview = read_file_for_preview(
+            "adr-output.md".to_string(),
+            Some(root.to_string_lossy().to_string()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("relative path inside workspace_root/artifacts should resolve cleanly");
+        assert_eq!(art_preview.display_name, "adr-output.md");
+
+        // 3. 测试二进制图像文件检测与 Data URL 输出
         let bin_file = root.join("test_image.png");
         std::fs::write(&bin_file, [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01, 0x02, 0x03]).unwrap();
         let bin_preview = read_file_for_preview(
             bin_file.to_string_lossy().to_string(),
             None,
-        ).await.expect("binary read should succeed");
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("binary read should succeed");
         assert_eq!(bin_preview.is_binary, true);
         assert!(bin_preview.content.is_empty());
+        assert!(
+            bin_preview
+                .image_data_url
+                .as_deref()
+                .is_some_and(|u| u.starts_with("data:image/png;base64,")),
+            "image preview must include base64 data URL for local image rendering"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn test_read_file_for_preview_large_file_window_jump_and_tail() {
+        use std::io::Write;
+
+        let root = temp_root();
+        let _ = std::fs::create_dir_all(&root);
+        let big_log = root.join("huge-trace.log");
+
+        // 生成超过 4MB 的 65,000 行大文件（跨越原先 3MB 硬截断阈值）
+        {
+            let f = std::fs::File::create(&big_log).unwrap();
+            let mut writer = std::io::BufWriter::new(f);
+            for i in 1..=65_000usize {
+                writeln!(
+                    writer,
+                    "LINE_{:05}: 2026-11-19T12:00:00Z INFO shadow_crew::worker payload=large_file_streaming_check_abcdef012345",
+                    i
+                )
+                .unwrap();
+            }
+            writer.flush().unwrap();
+        }
+
+        let size = std::fs::metadata(&big_log).unwrap().len();
+        assert!(size > 4 * 1024 * 1024, "test file must exceed old 3MB cap");
+        let path_str = big_log.to_string_lossy().to_string();
+
+        // 1. 默认首窗预览
+        let head = read_file_for_preview(path_str.clone(), None, None, None, None)
+            .await
+            .expect("default large file window must succeed");
+        assert!(head.is_windowed);
+        assert!(head.is_truncated);
+        assert_eq!(head.start_line, 1);
+        assert_eq!(head.end_line, 500);
+        assert_eq!(head.total_lines, 65_000);
+        assert!(!head.has_more_before);
+        assert!(head.has_more_after);
+        assert!(head.content.contains("LINE_00001:"));
+        assert!(head.content.contains("LINE_00500:"));
+
+        // 2. 跳转超过 3MB 位置的第 60,000 行
+        let jumped = read_file_for_preview(path_str.clone(), None, Some(60_000), Some(200), None)
+            .await
+            .expect("jump beyond 3MB must succeed");
+        assert!(jumped.is_windowed);
+        assert_eq!(jumped.start_line, 60_000);
+        assert_eq!(jumped.end_line, 60_199);
+        assert_eq!(jumped.total_lines, 65_000);
+        assert!(jumped.has_more_before);
+        assert!(jumped.has_more_after);
+        assert!(jumped.content.contains("LINE_60000:"));
+        assert!(jumped.content.contains("LINE_60199:"));
+
+        // 3. Tail 末尾模式
+        let tail_view = read_file_for_preview(path_str, None, None, Some(300), Some(true))
+            .await
+            .expect("tail large file view must succeed");
+        assert!(tail_view.is_windowed);
+        assert_eq!(tail_view.total_lines, 65_000);
+        assert_eq!(tail_view.start_line, 64_701);
+        assert_eq!(tail_view.end_line, 65_000);
+        assert!(tail_view.has_more_before);
+        assert!(!tail_view.has_more_after);
+        assert!(tail_view.content.contains("LINE_65000:"));
 
         let _ = std::fs::remove_dir_all(root);
     }

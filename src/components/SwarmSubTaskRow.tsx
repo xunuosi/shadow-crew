@@ -19,6 +19,7 @@ import type {
 } from '../types';
 import type { SwarmMissionActions } from '../hooks/useSwarmOrchestrator';
 import { isAgentOffline } from '../utils/agentRuntime';
+import { useFilePreview } from '../context/FilePreviewContext';
 
 interface SwarmSubTaskRowProps {
   roomId: string;
@@ -27,6 +28,7 @@ interface SwarmSubTaskRowProps {
   task: SwarmSubTask;
   worker?: Agent;
   selectableAgents: Agent[];
+  workspaceRoot?: string;
   swarmActions?: SwarmMissionActions;
   onOpenSubThread?: (subThreadId: string) => void;
 }
@@ -103,9 +105,11 @@ export const SwarmSubTaskRow: React.FC<SwarmSubTaskRowProps> = ({
   task,
   worker,
   selectableAgents,
+  workspaceRoot,
   swarmActions,
   onOpenSubThread,
 }) => {
+  const { openFilePreview } = useFilePreview();
   const [reassignAgentId, setReassignAgentId] = useState(task.assignedAgentId);
   useEffect(() => {
     setReassignAgentId(task.assignedAgentId);
@@ -175,9 +179,12 @@ export const SwarmSubTaskRow: React.FC<SwarmSubTaskRowProps> = ({
                 {task.allowedFiles.map((filePath) => {
                   const isOverlap = task.overlappingFiles?.includes(filePath);
                   return (
-                    <span
+                    <button
                       key={filePath}
-                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono break-all border ${
+                      type="button"
+                      onClick={() => openFilePreview(filePath, workspaceRoot)}
+                      title={`点击预览文件: ${filePath}`}
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono break-all border hover:border-accent/50 hover:text-accent transition-colors cursor-pointer ${
                         isOverlap
                           ? 'bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-500/35'
                           : 'bg-surface-secondary text-fg-muted border-border'
@@ -186,8 +193,10 @@ export const SwarmSubTaskRow: React.FC<SwarmSubTaskRowProps> = ({
                       {isOverlap && (
                         <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
                       )}
-                      {filePath}
-                    </span>
+                      <span className="underline decoration-current/35 underline-offset-2">
+                        {filePath}
+                      </span>
+                    </button>
                   );
                 })}
               </div>

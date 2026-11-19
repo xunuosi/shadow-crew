@@ -23,6 +23,7 @@ import {
   type TopicOverviewAgentItem,
   type TopicStageStepStatus,
 } from '../services/topicStatusOverview';
+import { useFilePreview } from '../context/FilePreviewContext';
 
 interface TopicStatusOverviewPopoverProps {
   topic: TopicMessageData;
@@ -31,6 +32,7 @@ interface TopicStatusOverviewPopoverProps {
   activeExecutions?: ActiveAgentExecution[];
   allActiveExecutions?: ActiveAgentExecution[];
   topicExecutionDiffs?: TopicPatchDiffItem[];
+  workspaceRoot?: string;
   now?: number;
   isHeaderCollapsed: boolean;
   onToggleHeaderCollapsed: () => void;
@@ -104,6 +106,7 @@ export const TopicStatusOverviewPopover: React.FC<TopicStatusOverviewPopoverProp
   activeExecutions = [],
   allActiveExecutions = [],
   topicExecutionDiffs,
+  workspaceRoot,
   now,
   isHeaderCollapsed,
   onToggleHeaderCollapsed,
@@ -114,6 +117,7 @@ export const TopicStatusOverviewPopover: React.FC<TopicStatusOverviewPopoverProp
   onScrollToMessage,
   onScrollToRulingOrBottom,
 }) => {
+  const { openFilePreview } = useFilePreview();
   const [isOpen, setIsOpen] = useState(false);
   const [showAllAgents, setShowAllAgents] = useState(false);
   const [showFilesPreview, setShowFilesPreview] = useState(false);
@@ -350,13 +354,18 @@ export const TopicStatusOverviewPopover: React.FC<TopicStatusOverviewPopoverProp
               {showFilesPreview && overview.filesStats.impactedFilesCount > 0 && (
                 <div className="mx-2 mt-1 mb-1.5 p-2 rounded-xl bg-surface-subtle border border-border space-y-1">
                   {overview.filesStats.impactedFiles.slice(0, 5).map((file) => (
-                    <div
+                    <button
                       key={file}
-                      className="text-[10px] font-mono text-fg-secondary truncate"
-                      title={file}
+                      type="button"
+                      onClick={() => {
+                        openFilePreview(file, workspaceRoot);
+                        setIsOpen(false);
+                      }}
+                      className="w-full text-left text-[10px] font-mono text-fg-secondary hover:text-accent hover:underline truncate block cursor-pointer"
+                      title={`点击预览文件: ${file}`}
                     >
                       {file}
-                    </div>
+                    </button>
                   ))}
                   {overview.filesStats.impactedFilesCount > 5 && (
                     <div className="text-[10px] text-fg-muted">

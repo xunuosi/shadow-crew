@@ -18,11 +18,13 @@ import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 import { getDraft, saveDraft, clearDraft } from '../services/draftService';
 import { UnifiedAvatar } from './AgentAvatarArtwork';
 import { useArtifactsWindow } from '../context/ArtifactsWindowContext';
+import { MessageAttachmentList } from './MessageAttachmentList';
 
 interface SubThreadDrawerProps {
   isOpen: boolean;
   subThread: SubThread | null;
   agents: Agent[];
+  workspaceRoot?: string;
   onClose: () => void;
   onSendSubMessage: (content: string) => void;
   onSyncBackToMainThread: (summary: string) => void;
@@ -32,6 +34,7 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
   isOpen,
   subThread,
   agents,
+  workspaceRoot,
   onClose,
   onSendSubMessage,
   onSyncBackToMainThread,
@@ -266,8 +269,9 @@ export const SubThreadDrawer: React.FC<SubThreadDrawerProps> = ({
                 </div>
                 <span className="text-[10px] text-fg-muted font-mono">{msg.timestamp}</span>
               </div>
-              <div className="mt-1">
-                <MarkdownRenderer content={msg.content} />
+              <div className="mt-1 space-y-2">
+                <MarkdownRenderer content={msg.content} workspaceRoot={workspaceRoot} />
+                <MessageAttachmentList attachments={msg.attachments} workspaceRoot={workspaceRoot} />
               </div>
             </div>
           );

@@ -27,6 +27,7 @@ interface ArtifactPreviewPaneProps {
   workspaceCwd?: string;
   onOpenPrimaryDir: () => void;
   onRevealFile: (item: UnifiedArtifactItem) => void;
+  onCloseAndPreview?: (rawHref: string, workspaceRoot?: string) => void;
 }
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp']);
@@ -67,6 +68,7 @@ export const ArtifactPreviewPane: React.FC<ArtifactPreviewPaneProps> = ({
   workspaceCwd,
   onOpenPrimaryDir,
   onRevealFile,
+  onCloseAndPreview,
 }) => {
   const [viewMode, setViewMode] = useState<'preview' | 'source'>('preview');
   const [copiedPath, setCopiedPath] = useState(false);
@@ -109,6 +111,11 @@ export const ArtifactPreviewPane: React.FC<ArtifactPreviewPaneProps> = ({
             extension: ext,
             isBinary: false,
             isTruncated: false,
+            startLine: 0,
+            endLine: 0,
+            isWindowed: false,
+            hasMoreBefore: false,
+            hasMoreAfter: false,
             sizeBytes: item.sizeBytes ?? 0,
             totalLines: 0,
             content: '',
@@ -306,7 +313,11 @@ export const ArtifactPreviewPane: React.FC<ArtifactPreviewPaneProps> = ({
               renderUnifiedDiffContent(item.inlineContent)
             ) : isMarkdown && viewMode === 'preview' ? (
               <div className="p-5">
-                <MarkdownRenderer content={item.inlineContent} />
+                <MarkdownRenderer
+                  content={item.inlineContent}
+                  workspaceRoot={workspaceCwd}
+                  onFileLinkClick={onCloseAndPreview}
+                />
               </div>
             ) : (
               <div className="p-4">
@@ -387,23 +398,47 @@ export const ArtifactPreviewPane: React.FC<ArtifactPreviewPaneProps> = ({
               </div>
             )}
 
-            {!diskData.isBinary && isImage && (
+            {isImage && (diskData.imageDataUrl || !diskData.isBinary) && (
               <div className="p-5 flex justify-center bg-canvas/40">
                 <img
-                  src={diskData.path.startsWith('/') ? `file://${diskData.path}` : diskData.path}
+                  src={
+                    diskData.imageDataUrl ||
+                    (diskData.path.startsWith('/') ? `file://${diskData.path}` : diskData.path)
+                  }
                   alt={diskData.displayName}
                   className="max-w-full max-h-[460px] object-contain rounded-lg border border-border"
                 />
               </div>
             )}
 
-            {!diskData.isBinary && !isImage && isMarkdown && viewMode === 'preview' && (
-              <div className="p-5">
-                <MarkdownRenderer content={diskData.content} />
+            {diskData.isWindowed && item.filePath && (
+              <div className="mx-4 mt-3 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-500/15 border border-amber-200 dark:border-amber-500/30 flex items-center justify-between gap-2 text-[11px] text-amber-900 dark:text-amber-200 flex-wrap">
+                <span>
+                  大文件当前显示第 {diskData.startLine}–{diskData.endLine} 行（共 {diskData.totalLines} 行）
+                </span>
+                {onCloseAndPreview && (
+                  <button
+                    type="button"
+                    onClick={() => onCloseAndPreview(item.filePath!, workspaceCwd)}
+                    className="px-2 py-0.5 rounded bg-surface border border-amber-300 dark:border-amber-500/40 text-fg font-medium hover:bg-surface-hover cursor-pointer"
+                  >
+                    在预览抽屉中分窗翻阅大文件
+                  </button>
+                )}
               </div>
             )}
 
-            {!diskData.isBinary && !isImage && (!isMarkdown || viewMode === 'source') && (
+            {!diskData.isBinary && !isImage && isMarkdown && !diskData.isWindowed && viewMode === 'preview' && (
+              <div className="p-5">
+                <MarkdownRenderer
+                  content={diskData.content}
+                  workspaceRoot={workspaceCwd}
+                  onFileLinkClick={onCloseAndPreview}
+                />
+              </div>
+            )}
+
+            {!diskData.isBinary && !isImage && (!isMarkdown || diskData.isWindowed || viewMode === 'source') && (
               <div className="p-4">
                 <CodeBlock code={diskData.content} language={ext || 'text'} />
               </div>

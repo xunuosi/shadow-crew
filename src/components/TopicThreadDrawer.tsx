@@ -81,6 +81,7 @@ import {
 import { MessageAttachmentList } from './MessageAttachmentList';
 import { TopicStatusOverviewPopover } from './TopicStatusOverviewPopover';
 import { SwarmMissionCard } from './SwarmMissionCard';
+import { useFilePreview } from '../context/FilePreviewContext';
 import type { SwarmMissionActions } from '../hooks/useSwarmOrchestrator';
 import {
   detectSwarmTriggerIntent,
@@ -159,6 +160,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
   overlappingFiles = [],
 }) => {
   const { openArtifactsWindow } = useArtifactsWindow();
+  const { openFilePreview } = useFilePreview();
 
   const topicArtifactCount = React.useMemo(() => {
     if (!topic) return 0;
@@ -1074,6 +1076,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
             activeExecutions={topicExecutions}
             allActiveExecutions={allActiveExecutions}
             topicExecutionDiffs={topicExecutionDiffs}
+            workspaceRoot={workspaceCwd}
             now={now}
             isHeaderCollapsed={isHeaderCollapsed}
             onToggleHeaderCollapsed={toggleHeaderCollapsed}
@@ -1916,6 +1919,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
           onOpenCodexDiff={onOpenCodexDiff}
           onApplyTopicPatch={onApplyTopicPatch}
           overlappingFiles={overlappingFiles}
+          workspaceRoot={workspaceCwd}
         />
       ) : (
         <>
@@ -2225,7 +2229,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   <div className="space-y-2">
                     {msg.content && msg.content.trim().length > 0 ? (
                       <div className="relative">
-                        <MarkdownRenderer content={msg.content} />
+                        <MarkdownRenderer content={msg.content} workspaceRoot={workspaceCwd} />
                         <span className="inline-block w-2 h-4 ml-0.5 align-middle bg-purple-500 animate-pulse rounded-xs" />
                         <div className="flex items-center gap-1.5 text-[10px] text-purple-500/80 font-mono mt-2 pt-2 border-t border-purple-500/15">
                           <BrainCircuit className="w-3 h-3 animate-pulse" />
@@ -2246,7 +2250,7 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   </div>
                 ) : (
                   <>
-                    <MarkdownRenderer content={msg.content} />
+                    <MarkdownRenderer content={msg.content} workspaceRoot={workspaceCwd} />
                     {msg.swarmMission && (
                       <SwarmMissionCard
                         roomId={topic.id}
@@ -2254,19 +2258,32 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                         mission={msg.swarmMission}
                         agents={agents}
                         channelAgents={candidateAgents}
+                        workspaceRoot={workspaceCwd}
                         swarmActions={swarmActions}
                         onOpenSubThread={onOpenSubThread}
                         onOpenCodexDiff={onOpenCodexDiff}
                       />
                     )}
-                    <MessageAttachmentList attachments={msg.attachments} />
+                    <MessageAttachmentList attachments={msg.attachments} workspaceRoot={workspaceCwd} />
                     {/* Unified Diff View */}
                     {msg.diffView && (
                       <div className="p-2.5 rounded-lg bg-surface border border-border font-mono text-[10px]">
                         <div className="flex items-center justify-between mb-1.5 gap-2 flex-wrap">
                           <div className="flex items-center gap-1.5 min-w-0">
                             <FileCode2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                            <span className="text-fg font-semibold truncate">{msg.diffView.filename}</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openFilePreview(
+                                  msg.diffView!.targetPath || msg.diffView!.filename,
+                                  workspaceCwd
+                                )
+                              }
+                              className="text-fg font-semibold truncate hover:text-accent hover:underline cursor-pointer text-left"
+                              title={`点击在本地预览: ${msg.diffView.targetPath || msg.diffView.filename}`}
+                            >
+                              {msg.diffView.filename}
+                            </button>
                             {msg.diffViews && msg.diffViews.length > 1 && (
                               <span className="px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 font-sans text-[9px]">
                                 共 {msg.diffViews.length} 个文件
@@ -2634,12 +2651,23 @@ export const TopicThreadDrawer: React.FC<TopicThreadDrawerProps> = ({
                   </div>
                 )}
 
-                <div className="text-[9px] text-fg-secondary font-mono flex items-center justify-between pt-1 border-t border-border/60">
-                  <span>裁决官: {topic.rulingRecord.arbiterName}</span>
+                <div className="text-[9px] text-fg-secondary font-mono flex items-center justify-between gap-2 flex-wrap pt-1 border-t border-border/60">
+                  <span className="shrink-0">裁决官: {topic.rulingRecord.arbiterName}</span>
                   {topic.rulingRecord.impactedFiles && topic.rulingRecord.impactedFiles.length > 0 && (
-                    <span className="truncate max-w-[200px]" title={topic.rulingRecord.impactedFiles.join(', ')}>
-                      涉及: {topic.rulingRecord.impactedFiles.join(', ')}
-                    </span>
+                    <div className="flex items-center gap-1 flex-wrap min-w-0">
+                      <span className="text-fg-muted shrink-0">涉及:</span>
+                      {topic.rulingRecord.impactedFiles.map((file) => (
+                        <button
+                          key={file}
+                          type="button"
+                          onClick={() => openFilePreview(file, workspaceCwd)}
+                          className="px-1.5 py-0.5 rounded bg-surface-subtle border border-border text-accent hover:bg-surface-hover hover:border-accent/40 underline decoration-accent/40 underline-offset-2 cursor-pointer truncate max-w-[180px]"
+                          title={`点击预览文件: ${file}`}
+                        >
+                          {file}
+                        </button>
+                      ))}
+                    </div>
                   )}
                 </div>
 

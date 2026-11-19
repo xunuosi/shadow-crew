@@ -32,6 +32,7 @@ interface SwarmMissionCardProps {
   mission: SwarmMissionData;
   agents: Agent[];
   channelAgents: Agent[];
+  workspaceRoot?: string;
   swarmActions?: SwarmMissionActions;
   onOpenSubThread?: (subThreadId: string) => void;
   onOpenCodexDiff?: (payload: ActiveCodexDiffPayload) => void;
@@ -73,6 +74,7 @@ export const SwarmMissionCard: React.FC<SwarmMissionCardProps> = ({
   mission,
   agents,
   channelAgents,
+  workspaceRoot,
   swarmActions,
   onOpenSubThread,
   onOpenCodexDiff,
@@ -268,6 +270,7 @@ export const SwarmMissionCard: React.FC<SwarmMissionCardProps> = ({
             task={task}
             worker={agentMap.get(task.assignedAgentId)}
             selectableAgents={selectableAgents}
+            workspaceRoot={workspaceRoot}
             swarmActions={swarmActions}
             onOpenSubThread={onOpenSubThread}
           />
@@ -292,7 +295,7 @@ export const SwarmMissionCard: React.FC<SwarmMissionCardProps> = ({
             <span>Lead 终局验收综述</span>
           </div>
           <div className="text-[13px] text-fg min-w-0">
-            <MarkdownRenderer content={mission.finalSynthesis} />
+            <MarkdownRenderer content={mission.finalSynthesis} workspaceRoot={workspaceRoot} />
           </div>
         </div>
       )}

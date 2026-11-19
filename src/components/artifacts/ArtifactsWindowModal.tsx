@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { ResizeHandle } from '../ResizeHandle';
 import { useResizableModalWidth } from '../../hooks/useResizableModalWidth';
+import { useFilePreview } from '../../context/FilePreviewContext';
 import {
   buildScopeArtifactEntries,
   extractScopeModuleOptions,
@@ -61,6 +62,7 @@ export const ArtifactsWindowModal: React.FC<ArtifactsWindowModalProps> = ({
   const headingId = useId();
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const { openFilePreview } = useFilePreview();
 
   const {
     modalWidth,
@@ -539,6 +541,10 @@ export const ArtifactsWindowModal: React.FC<ArtifactsWindowModalProps> = ({
             workspaceCwd={effectiveWorkspaceCwd}
             onOpenPrimaryDir={handleOpenPrimaryDir}
             onRevealFile={handleRevealItem}
+            onCloseAndPreview={(rawHref, workspaceRoot) => {
+              onClose();
+              openFilePreview(rawHref, workspaceRoot);
+            }}
           />
           </div>
         </div>
