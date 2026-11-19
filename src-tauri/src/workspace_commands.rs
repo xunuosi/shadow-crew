@@ -418,6 +418,7 @@ pub struct FilePreviewDto {
     pub has_more_before: bool,
     pub has_more_after: bool,
     pub image_data_url: Option<String>,
+    pub candidate_paths: Option<Vec<String>>,
     pub error: Option<String>,
 }
 
@@ -514,7 +515,31 @@ fn percent_decode_str(input: &str) -> String {
     String::from_utf8_lossy(&result).to_string()
 }
 
-fn normalize_file_target_path(raw: &str, workspace_root: Option<&str>) -> std::path::PathBuf {
+fn should_skip_lookup_dir_name(name: &str) -> bool {
+    matches!(
+        name,
+        "node_modules"
+            | ".git"
+            | "target"
+            | "dist"
+            | ".next"
+            | "build"
+            | "__pycache__"
+            | ".venv"
+            | "vendor"
+            | ".idea"
+            | ".vscode"
+            | ".gradle"
+            | "coverage"
+    )
+}
+
+fn resolve_file_target_with_candidates(
+    raw: &str,
+    workspace_root: Option<&str>,
+) -> (std::path::PathBuf, Vec<String>) {
+    use std::collections::VecDeque;
+
     let mut cleaned = raw.trim();
     if let Some(stripped) = cleaned.strip_prefix("file://") {
         cleaned = stripped;
@@ -529,26 +554,189 @@ fn normalize_file_target_path(raw: &str, workspace_root: Option<&str>) -> std::p
         cleaned_str = &cleaned_str[1..];
     }
 
-    let mut path = db_manager::expand_tilde_path(cleaned_str)
+    let path = db_manager::expand_tilde_path(cleaned_str)
         .unwrap_or_else(|_| std::path::PathBuf::from(cleaned_str));
-    if path.is_relative() {
-        if let Some(root) = workspace_root.map(str::trim).filter(|s| !s.is_empty()) {
-            let root_buf = db_manager::expand_tilde_path(root)
-                .unwrap_or_else(|_| std::path::PathBuf::from(root));
-            let candidate = root_buf.join(&path);
-            if candidate.exists() {
-                path = candidate;
-            } else {
-                let artifacts_candidate = root_buf.join("artifacts").join(&path);
-                if artifacts_candidate.exists() {
-                    path = artifacts_candidate;
-                } else {
-                    path = candidate;
+
+    if !path.is_relative() {
+        return (path, Vec::new());
+    }
+
+    let Some(root) = workspace_root.map(str::trim).filter(|s| !s.is_empty()) else {
+        return (path, Vec::new());
+    };
+
+    let root_buf = db_manager::expand_tilde_path(root)
+        .unwrap_or_else(|_| std::path::PathBuf::from(root));
+
+    let literal_candidate = root_buf.join(&path);
+
+    // 含 `..` 的路径不做递归后缀检索，直接走字面拼接
+    let has_parent_dir = path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir));
+    if has_parent_dir {
+        return (literal_candidate, Vec::new());
+    }
+
+    // 1. 直接匹配 workspace_root/<rel>
+    if literal_candidate.is_file() {
+        return (literal_candidate, Vec::new());
+    }
+
+    // 抽出正规化正斜杠相对路径片段
+    let rel_segments: Vec<String> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+
+    if rel_segments.is_empty() {
+        return (literal_candidate, Vec::new());
+    }
+
+    // 2. 若路径首段重复了 workspace 根目录名（如 renbao-lxcore/internal/store/cacheStore.go）
+    if rel_segments.len() >= 2 {
+        if let Some(root_name) = root_buf.file_name().and_then(|n| n.to_str()) {
+            if rel_segments[0] == root_name {
+                let mut stripped_rel = std::path::PathBuf::new();
+                for seg in &rel_segments[1..] {
+                    stripped_rel.push(seg);
+                }
+                let stripped_candidate = root_buf.join(&stripped_rel);
+                if stripped_candidate.is_file() {
+                    return (stripped_candidate, Vec::new());
                 }
             }
         }
     }
-    path
+
+    // 3. 回退检查 workspace_root/artifacts/<rel>
+    let artifacts_candidate = root_buf.join("artifacts").join(&path);
+    if artifacts_candidate.is_file() {
+        return (artifacts_candidate, Vec::new());
+    }
+
+    // 4. 在 workspace_root 下执行有界 BFS 后缀检索（解决孤立文件名/部分子路径如 cacheStore.go）
+    if !root_buf.exists() || !root_buf.is_dir() {
+        return (literal_candidate, Vec::new());
+    }
+
+    let canonical_root = canonical_or_clean(&root_buf);
+    let target_rel = rel_segments.join("/");
+    let target_rel_lower = target_rel.to_ascii_lowercase();
+    let target_suffix = format!("/{}", target_rel);
+    let target_suffix_lower = format!("/{}", target_rel_lower);
+
+    const LOOKUP_MAX_DEPTH: usize = 10;
+    const LOOKUP_MAX_VISITED: usize = 15_000;
+    const LOOKUP_MAX_CANDIDATES: usize = 8;
+
+    let mut queue: VecDeque<(std::path::PathBuf, usize, String)> = VecDeque::new();
+    queue.push_back((canonical_root.clone(), 0, String::new()));
+
+    let mut visited_entries: usize = 0;
+    let mut exact_matches: Vec<(usize, usize, String, std::path::PathBuf)> = Vec::new();
+    let mut ci_matches: Vec<(usize, usize, String, std::path::PathBuf)> = Vec::new();
+
+    while let Some((dir_path, depth, rel_prefix)) = queue.pop_front() {
+        if depth > LOOKUP_MAX_DEPTH || visited_entries >= LOOKUP_MAX_VISITED {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir_path) else {
+            continue;
+        };
+        for entry_res in entries {
+            visited_entries += 1;
+            if visited_entries >= LOOKUP_MAX_VISITED {
+                break;
+            }
+            let Ok(entry) = entry_res else {
+                continue;
+            };
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            let rel_path = if rel_prefix.is_empty() {
+                file_name.clone()
+            } else {
+                format!("{}/{}", rel_prefix, file_name)
+            };
+
+            if ft.is_dir() {
+                if depth < LOOKUP_MAX_DEPTH && !should_skip_lookup_dir_name(&file_name) {
+                    queue.push_back((entry.path(), depth + 1, rel_path));
+                }
+                continue;
+            }
+
+            if !ft.is_file() {
+                continue;
+            }
+
+            let is_exact = rel_path == target_rel || rel_path.ends_with(&target_suffix);
+            let rel_lower = rel_path.to_ascii_lowercase();
+            let is_ci = !is_exact
+                && (rel_lower == target_rel_lower || rel_lower.ends_with(&target_suffix_lower));
+
+            if !is_exact && !is_ci {
+                continue;
+            }
+
+            let cand_path = canonical_or_clean(&entry.path());
+            if !cand_path.starts_with(&canonical_root) {
+                continue;
+            }
+
+            let record = (depth, rel_path.len(), rel_path, cand_path);
+            if is_exact {
+                if exact_matches.len() < LOOKUP_MAX_CANDIDATES {
+                    exact_matches.push(record);
+                }
+            } else if exact_matches.is_empty() && ci_matches.len() < LOOKUP_MAX_CANDIDATES {
+                ci_matches.push(record);
+            }
+        }
+    }
+
+    let mut chosen = if !exact_matches.is_empty() {
+        exact_matches
+    } else {
+        ci_matches
+    };
+
+    if chosen.is_empty() {
+        return (literal_candidate, Vec::new());
+    }
+
+    chosen.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)));
+
+    let mut seen_paths = std::collections::HashSet::new();
+    let mut candidate_strings = Vec::new();
+    for (_, _, _, p) in &chosen {
+        let cleaned_str = path_string_clean(p);
+        if seen_paths.insert(cleaned_str.clone()) {
+            candidate_strings.push(cleaned_str);
+        }
+    }
+
+    let primary = chosen.into_iter().next().map(|(_, _, _, p)| p).unwrap_or(literal_candidate);
+    let extra_candidates = if candidate_strings.len() > 1 {
+        candidate_strings
+    } else {
+        Vec::new()
+    };
+
+    (primary, extra_candidates)
+}
+
+fn normalize_file_target_path(raw: &str, workspace_root: Option<&str>) -> std::path::PathBuf {
+    resolve_file_target_with_candidates(raw, workspace_root).0
 }
 
 pub fn read_file_for_preview_fs(
@@ -562,7 +750,12 @@ pub fn read_file_for_preview_fs(
     use std::collections::VecDeque;
     use std::io::{BufRead, BufReader, Read};
 
-    let target_path = normalize_file_target_path(path, workspace_root);
+    let (target_path, resolved_candidates) = resolve_file_target_with_candidates(path, workspace_root);
+    let candidate_paths = if resolved_candidates.len() > 1 {
+        Some(resolved_candidates)
+    } else {
+        None
+    };
     let canonical = match std::fs::canonicalize(&target_path) {
         Ok(p) => p,
         Err(_) => target_path.clone(),
@@ -629,6 +822,7 @@ pub fn read_file_for_preview_fs(
             has_more_before: false,
             has_more_after: false,
             image_data_url,
+            candidate_paths,
             error: None,
         });
     }
@@ -649,6 +843,7 @@ pub fn read_file_for_preview_fs(
             has_more_before: false,
             has_more_after: false,
             image_data_url: if is_svg { image_data_url } else { None },
+            candidate_paths,
             error: None,
         });
     }
@@ -676,6 +871,7 @@ pub fn read_file_for_preview_fs(
             has_more_before: false,
             has_more_after: false,
             image_data_url: if is_svg { image_data_url } else { None },
+            candidate_paths,
             error: None,
         });
     }
@@ -746,6 +942,7 @@ pub fn read_file_for_preview_fs(
             has_more_before,
             has_more_after: false,
             image_data_url: if is_svg { image_data_url } else { None },
+            candidate_paths,
             error: None,
         });
     }
@@ -821,6 +1018,7 @@ pub fn read_file_for_preview_fs(
         has_more_before,
         has_more_after,
         image_data_url: if is_svg { image_data_url } else { None },
+        candidate_paths,
         error: None,
     })
 }
@@ -1646,6 +1844,84 @@ mod tests {
         assert!(should_skip_artifact_dir_name("node_modules"));
         assert!(should_skip_artifact_dir_name(".git"));
         assert!(!should_skip_artifact_dir_name("reports"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn test_read_file_for_preview_resolves_bare_filename_subpath_and_duplicated_root() {
+        let root_parent = temp_root();
+        let workspace_root = root_parent.join("renbao-lxcore");
+        let internal_store = workspace_root.join("internal").join("store");
+        let vendor_store = workspace_root.join("vendor").join("legacy");
+        let outside_dir = root_parent.join("outside-repo");
+        std::fs::create_dir_all(&internal_store).unwrap();
+        std::fs::create_dir_all(&vendor_store).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+
+        let real_go = internal_store.join("cacheStore.go");
+        std::fs::write(&real_go, "package store\n\ntype CacheStore struct{}\n").unwrap();
+        // vendor 中的同名文件应被跳过
+        std::fs::write(vendor_store.join("cacheStore.go"), "package vendor\n").unwrap();
+        // 沙箱外的文件不能被相对 BFS 找到
+        std::fs::write(outside_dir.join("outsideOnly.go"), "package outside\n").unwrap();
+
+        let ws_str = workspace_root.to_string_lossy().to_string();
+
+        // 1. 孤立文件名匹配到 internal/store/cacheStore.go
+        let bare = read_file_for_preview("cacheStore.go".to_string(), Some(ws_str.clone()), None, None, None)
+            .await
+            .expect("bare filename must resolve via bounded BFS");
+        assert!(bare.path.ends_with("internal/store/cacheStore.go") || bare.path.ends_with("internal\\store\\cacheStore.go"));
+        assert!(bare.content.contains("package store"));
+        assert!(bare.candidate_paths.is_none());
+
+        // 2. 部分子路径匹配
+        let subpath = read_file_for_preview("store/cacheStore.go".to_string(), Some(ws_str.clone()), None, None, None)
+            .await
+            .expect("partial subpath must resolve cleanly");
+        assert!(subpath.content.contains("package store"));
+
+        // 3. 重复带入仓库根目录前缀 (renbao-lxcore/internal/store/cacheStore.go)
+        let dup_prefix = read_file_for_preview(
+            "renbao-lxcore/internal/store/cacheStore.go".to_string(),
+            Some(ws_str.clone()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("duplicated root folder name must strip and resolve");
+        assert!(dup_prefix.content.contains("package store"));
+
+        // 4. 含 .. 的路径不能逃逸或误触 BFS
+        let err = read_file_for_preview("../missingFile.go".to_string(), Some(ws_str), None, None, None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("文件不存在"));
+
+        let _ = std::fs::remove_dir_all(&root_parent);
+    }
+
+    #[tokio::test]
+    async fn test_read_file_for_preview_returns_candidates_when_multiple_files_match() {
+        let root = temp_root();
+        let pkg_a = root.join("pkg").join("a");
+        let pkg_b = root.join("pkg").join("b");
+        std::fs::create_dir_all(&pkg_a).unwrap();
+        std::fs::create_dir_all(&pkg_b).unwrap();
+
+        std::fs::write(pkg_a.join("cacheStore.go"), "package a\n").unwrap();
+        std::fs::write(pkg_b.join("cacheStore.go"), "package b\n").unwrap();
+
+        let ws_str = root.to_string_lossy().to_string();
+        let res = read_file_for_preview("cacheStore.go".to_string(), Some(ws_str), None, None, None)
+            .await
+            .expect("multiple matches should open primary and expose candidate_paths");
+        let candidates = res.candidate_paths.expect("candidate_paths should be populated");
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().any(|p| p.contains("/pkg/a/cacheStore.go") || p.contains("\\pkg\\a\\cacheStore.go")));
+        assert!(candidates.iter().any(|p| p.contains("/pkg/b/cacheStore.go") || p.contains("\\pkg\\b\\cacheStore.go")));
 
         let _ = std::fs::remove_dir_all(&root);
     }

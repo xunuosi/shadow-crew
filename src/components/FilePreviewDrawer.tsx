@@ -25,7 +25,9 @@ import {
   revealFileInFolder,
   openFileInEditor,
   parseFileLink,
+  formatCandidateDisplayPath,
 } from '../services/fileViewerService';
+import { openDirectoryInFileManager } from '../services/artifactsService';
 import { formatBytes } from '../services/dbClient';
 import { MarkdownRenderer } from './markdown/MarkdownRenderer';
 
@@ -63,6 +65,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
   const [viewMode, setViewMode] = useState<'preview' | 'source'>('preview');
   const [jumpLineInput, setJumpLineInput] = useState('');
   const [highlightLine, setHighlightLine] = useState<number | undefined>(undefined);
+  const [selectedPathOverride, setSelectedPathOverride] = useState<string | null>(null);
   const targetLineRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -86,6 +89,13 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
 
   const targetPathKey = parsed?.cleanPath || '';
   const initialStartLine = parsed?.startLine;
+
+  // 新目标路径到达时重置候选路径覆盖
+  useEffect(() => {
+    setSelectedPathOverride(null);
+  }, [targetPathKey, target?.workspaceRoot]);
+
+  const effectiveRequestPath = selectedPathOverride || targetPathKey;
 
   // 加载文件首窗或指定锚点窗口
   useEffect(() => {
@@ -139,10 +149,13 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
       ? { startLine: Math.max(1, initialStartLine - 40), maxLines: PREVIEW_WINDOW_LINES }
       : undefined;
 
-    readFileForPreview(parsed.cleanPath, target?.workspaceRoot, requestOpts)
+    readFileForPreview(effectiveRequestPath, target?.workspaceRoot, requestOpts)
       .then((res) => {
         if (!isMounted) return;
-        setData(res);
+        setData((prev) => ({
+          ...res,
+          candidatePaths: res.candidatePaths || (selectedPathOverride ? prev?.candidatePaths : undefined),
+        }));
         if (!res.isWindowed && MARKDOWN_EXTENSIONS.has(res.extension)) {
           setViewMode('preview');
         } else {
@@ -152,7 +165,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
       .catch((err) => {
         if (!isMounted) return;
         setData({
-          path: parsed.cleanPath,
+          path: effectiveRequestPath,
           displayName: parsed.displayName,
           extension: parsed.cleanPath.split('.').pop()?.toLowerCase() || '',
           sizeBytes: 0,
@@ -175,7 +188,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [initialPreviewData, isOpen, targetPathKey, initialStartLine, target?.workspaceRoot, target?.previewDataUrl]);
+  }, [initialPreviewData, isOpen, targetPathKey, effectiveRequestPath, selectedPathOverride, initialStartLine, target?.workspaceRoot, target?.previewDataUrl]);
 
   // 行号自动滚动定位
   useEffect(() => {
@@ -192,8 +205,15 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
       if (!parsed) return;
       setWindowLoading(true);
       try {
-        const res = await readFileForPreview(parsed.cleanPath, target?.workspaceRoot, options);
-        setData(res);
+        const res = await readFileForPreview(
+          data?.path || effectiveRequestPath,
+          target?.workspaceRoot,
+          options
+        );
+        setData((prev) => ({
+          ...res,
+          candidatePaths: res.candidatePaths || prev?.candidatePaths,
+        }));
         setViewMode('source');
         setHighlightLine(nextHighlightLine);
         if (!nextHighlightLine && scrollContainerRef.current) {
@@ -203,7 +223,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
         setWindowLoading(false);
       }
     },
-    [parsed, target?.workspaceRoot]
+    [data?.path, effectiveRequestPath, parsed, target?.workspaceRoot]
   );
 
   const handleJumpLineSubmit = (e: React.FormEvent) => {
@@ -232,7 +252,17 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
   };
 
   const handleReveal = () => {
-    revealFileInFolder(data?.path || parsed.cleanPath, target?.workspaceRoot);
+    revealFileInFolder(data?.path || effectiveRequestPath, target?.workspaceRoot);
+  };
+
+  const handleRevealParentDir = () => {
+    const raw = data?.path || effectiveRequestPath;
+    const slashIdx = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'));
+    const parentCandidate = slashIdx > 0 ? raw.slice(0, slashIdx) : '';
+    const dirToOpen = parentCandidate || target?.workspaceRoot || '';
+    if (dirToOpen) {
+      openDirectoryInFileManager(dirToOpen, { workspaceRoot: target?.workspaceRoot, createIfMissing: false });
+    }
   };
 
   const handleOpenEditor = () => {
@@ -394,6 +424,32 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
         </div>
       )}
 
+      {/* 多同名匹配文件切换条 */}
+      {data && !data.error && data.candidatePaths && data.candidatePaths.length > 1 && (
+        <div className="px-4 py-2 bg-surface-subtle/60 border-b border-border flex items-center gap-1.5 flex-wrap shrink-0 text-[11px]">
+          <span className="text-fg-muted shrink-0">发现 {data.candidatePaths.length} 个同名文件:</span>
+          {data.candidatePaths.map((candPath) => {
+            const relDisplay = formatCandidateDisplayPath(candPath, target?.workspaceRoot);
+            const isActive = data.path === candPath || selectedPathOverride === candPath;
+            return (
+              <button
+                key={candPath}
+                type="button"
+                onClick={() => setSelectedPathOverride(candPath)}
+                className={`px-2 py-0.5 rounded-md font-mono text-[10px] border cursor-pointer transition-colors ${
+                  isActive
+                    ? 'bg-blue-50 text-blue-700 border-blue-300 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/40 font-semibold'
+                    : 'bg-surface text-fg-secondary border-border hover:bg-surface-hover'
+                }`}
+                title={candPath}
+              >
+                {relDisplay}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* 大文件分窗翻阅与行号跳转栏 */}
       {data && !data.error && !data.isBinary && data.isWindowed && (
         <FilePreviewWindowBar
@@ -432,11 +488,11 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
               <div className="flex items-center gap-2 pt-1">
                 <button
                   type="button"
-                  onClick={handleReveal}
+                  onClick={handleRevealParentDir}
                   className="px-3 py-1.5 rounded-lg bg-surface border border-border text-fg text-xs font-medium hover:bg-surface-hover cursor-pointer transition-colors flex items-center gap-1.5"
                 >
                   <FolderOpen className="w-3.5 h-3.5 text-accent" />
-                  <span>定位上级目录</span>
+                  <span>打开工作目录</span>
                 </button>
                 <button
                   type="button"

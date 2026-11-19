@@ -198,6 +198,41 @@ function testSsrMessageFileReferencesAndWindowedPreview() {
     assert.ok(drawerHtml.includes('末尾'));
     assert.ok(drawerHtml.includes('跳转'));
     assert.ok(drawerHtml.includes('>55000<'), 'Must display real line number 55000');
+
+    // 4. FilePreviewDrawer：多同名匹配候选切换栏渲染
+    const multiMatchData: FilePreviewResult = {
+      path: '/Users/xunuosi/Code/Lx/Golang/renbao-lxcore/internal/store/cacheStore.go',
+      displayName: 'cacheStore.go',
+      extension: 'go',
+      sizeBytes: 2048,
+      isBinary: false,
+      content: 'package store',
+      totalLines: 1,
+      isTruncated: false,
+      startLine: 1,
+      endLine: 1,
+      isWindowed: false,
+      hasMoreBefore: false,
+      hasMoreAfter: false,
+      candidatePaths: [
+        '/Users/xunuosi/Code/Lx/Golang/renbao-lxcore/internal/store/cacheStore.go',
+        '/Users/xunuosi/Code/Lx/Golang/renbao-lxcore/pkg/legacy/cacheStore.go',
+      ],
+    };
+    const multiDrawerHtml = renderToStaticMarkup(
+      React.createElement(FilePreviewDrawer, {
+        isOpen: true,
+        onClose: () => {},
+        target: {
+          rawPath: 'cacheStore.go',
+          workspaceRoot: '/Users/xunuosi/Code/Lx/Golang/renbao-lxcore',
+        },
+        initialPreviewData: multiMatchData,
+      })
+    );
+    assert.ok(multiDrawerHtml.includes('发现 2 个同名文件'));
+    assert.ok(multiDrawerHtml.includes('internal/store/cacheStore.go'));
+    assert.ok(multiDrawerHtml.includes('pkg/legacy/cacheStore.go'));
   } finally {
     console.error = origError;
   }

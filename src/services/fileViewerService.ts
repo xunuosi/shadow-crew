@@ -15,6 +15,7 @@ export interface FilePreviewResult {
   hasMoreBefore: boolean;
   hasMoreAfter: boolean;
   imageDataUrl?: string;
+  candidatePaths?: string[];
   error?: string;
 }
 
@@ -395,6 +396,26 @@ export function parseInlineCodeFileReference(rawText: string): ParsedFileTarget 
   }
 
   return empty;
+}
+
+export function formatCandidateDisplayPath(
+  fullPath: string,
+  workspaceRoot?: string
+): string {
+  if (!workspaceRoot) return fullPath;
+  let rootTrim = workspaceRoot.trim();
+  while (rootTrim.endsWith('/') || rootTrim.endsWith('\\')) {
+    rootTrim = rootTrim.slice(0, -1);
+  }
+  if (!rootTrim) return fullPath;
+  const normFull = fullPath.split('\\').join('/');
+  const normRoot = rootTrim.split('\\').join('/');
+  if (!normFull.startsWith(normRoot)) return fullPath;
+  let rest = normFull.slice(normRoot.length);
+  while (rest.startsWith('/')) {
+    rest = rest.slice(1);
+  }
+  return rest || fullPath;
 }
 
 /**
