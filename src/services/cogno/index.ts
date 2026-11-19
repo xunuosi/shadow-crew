@@ -12,4 +12,5 @@ export * from './colmadGovernor';
 export * from './bayesianModuleGovernor';
 export * from './arbitrationConcurrenceGovernor';
 export * from './rulingDraftSynthesizer';
+export * from './rulingModalHelpers';
 

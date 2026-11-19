@@ -149,3 +149,37 @@ body,
 .animate-streamline {
   animation: streamline 1.8s infinite ease-in-out;
 }
+
+/* 5. Native Modal Dialog & Auto-growing Textarea (Arbiter Gavel Ruling) */
+dialog.arbiter-ruling-dialog {
+  margin: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  max-width: 95vw;
+  max-height: 92vh;
+  overflow: visible;
+  color: inherit;
+}
+
+dialog.arbiter-ruling-dialog[open] {
+  display: flex;
+}
+
+dialog.arbiter-ruling-dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog.arbiter-ruling-dialog::backdrop {
+  background: var(--modal-overlay);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.auto-grow-textarea {
+  width: 100%;
+  height: auto;
+  field-sizing: content;
+}
