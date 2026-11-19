@@ -996,7 +996,13 @@ export function useTopicExecutionPipeline({
           agentBadge: 'Workspace Applied',
           timestamp: appliedAt,
           relatedTopicId: targetTopicId,
-          content: `✅ **${execMeta?.podTitle || '决议交付文件'}已物理合入本地工作区**\n\n- **合入摘要**：${res.summary}\n- **归档目录**：\`${res.artifactsDir}\`\n- **变更文件明细**：\n${res.appliedFiles.map((f) => `  • \`${f.filename}\` → \`${f.targetPath}\` (${f.mode})`).join('\n')}`,
+          content: `✅ **${execMeta?.podTitle || '决议交付文件'}已物理合入本地工作区**\n\n- **合入摘要**：${res.summary}\n- **归档目录**：[${res.artifactsDir}](file://${encodeURI(res.artifactsDir)})\n- **变更文件明细**：\n${res.appliedFiles
+            .map((f) =>
+              f.targetPath.startsWith('/')
+                ? `  • [${f.filename}](file://${encodeURI(f.targetPath)}) (${f.mode})`
+                : `  • \`${f.filename}\` → \`${f.targetPath}\` (${f.mode})`
+            )
+            .join('\n')}`,
         };
 
         setMessages((prev) => {

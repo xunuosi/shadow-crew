@@ -25,7 +25,6 @@ import {
   revealFileInFolder,
   openFileInEditor,
   parseFileLink,
-  formatCandidateDisplayPath,
 } from '../services/fileViewerService';
 import { openDirectoryInFileManager } from '../services/artifactsService';
 import { formatBytes } from '../services/dbClient';
@@ -65,7 +64,6 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
   const [viewMode, setViewMode] = useState<'preview' | 'source'>('preview');
   const [jumpLineInput, setJumpLineInput] = useState('');
   const [highlightLine, setHighlightLine] = useState<number | undefined>(undefined);
-  const [selectedPathOverride, setSelectedPathOverride] = useState<string | null>(null);
   const targetLineRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -89,13 +87,6 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
 
   const targetPathKey = parsed?.cleanPath || '';
   const initialStartLine = parsed?.startLine;
-
-  // 新目标路径到达时重置候选路径覆盖
-  useEffect(() => {
-    setSelectedPathOverride(null);
-  }, [targetPathKey, target?.workspaceRoot]);
-
-  const effectiveRequestPath = selectedPathOverride || targetPathKey;
 
   // 加载文件首窗或指定锚点窗口
   useEffect(() => {
@@ -149,13 +140,10 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
       ? { startLine: Math.max(1, initialStartLine - 40), maxLines: PREVIEW_WINDOW_LINES }
       : undefined;
 
-    readFileForPreview(effectiveRequestPath, target?.workspaceRoot, requestOpts)
+    readFileForPreview(targetPathKey, target?.workspaceRoot, requestOpts)
       .then((res) => {
         if (!isMounted) return;
-        setData((prev) => ({
-          ...res,
-          candidatePaths: res.candidatePaths || (selectedPathOverride ? prev?.candidatePaths : undefined),
-        }));
+        setData(res);
         if (!res.isWindowed && MARKDOWN_EXTENSIONS.has(res.extension)) {
           setViewMode('preview');
         } else {
@@ -165,7 +153,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
       .catch((err) => {
         if (!isMounted) return;
         setData({
-          path: effectiveRequestPath,
+          path: targetPathKey,
           displayName: parsed.displayName,
           extension: parsed.cleanPath.split('.').pop()?.toLowerCase() || '',
           sizeBytes: 0,
@@ -188,7 +176,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [initialPreviewData, isOpen, targetPathKey, effectiveRequestPath, selectedPathOverride, initialStartLine, target?.workspaceRoot, target?.previewDataUrl]);
+  }, [initialPreviewData, isOpen, targetPathKey, initialStartLine, target?.workspaceRoot, target?.previewDataUrl]);
 
   // 行号自动滚动定位
   useEffect(() => {
@@ -206,14 +194,11 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
       setWindowLoading(true);
       try {
         const res = await readFileForPreview(
-          data?.path || effectiveRequestPath,
+          data?.path || targetPathKey,
           target?.workspaceRoot,
           options
         );
-        setData((prev) => ({
-          ...res,
-          candidatePaths: res.candidatePaths || prev?.candidatePaths,
-        }));
+        setData(res);
         setViewMode('source');
         setHighlightLine(nextHighlightLine);
         if (!nextHighlightLine && scrollContainerRef.current) {
@@ -223,7 +208,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
         setWindowLoading(false);
       }
     },
-    [data?.path, effectiveRequestPath, parsed, target?.workspaceRoot]
+    [data?.path, targetPathKey, parsed, target?.workspaceRoot]
   );
 
   const handleJumpLineSubmit = (e: React.FormEvent) => {
@@ -252,11 +237,11 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
   };
 
   const handleReveal = () => {
-    revealFileInFolder(data?.path || effectiveRequestPath, target?.workspaceRoot);
+    revealFileInFolder(data?.path || parsed.cleanPath, target?.workspaceRoot);
   };
 
   const handleRevealParentDir = () => {
-    const raw = data?.path || effectiveRequestPath;
+    const raw = data?.path || parsed.cleanPath;
     const slashIdx = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'));
     const parentCandidate = slashIdx > 0 ? raw.slice(0, slashIdx) : '';
     const dirToOpen = parentCandidate || target?.workspaceRoot || '';
@@ -424,32 +409,6 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
         </div>
       )}
 
-      {/* 多同名匹配文件切换条 */}
-      {data && !data.error && data.candidatePaths && data.candidatePaths.length > 1 && (
-        <div className="px-4 py-2 bg-surface-subtle/60 border-b border-border flex items-center gap-1.5 flex-wrap shrink-0 text-[11px]">
-          <span className="text-fg-muted shrink-0">发现 {data.candidatePaths.length} 个同名文件:</span>
-          {data.candidatePaths.map((candPath) => {
-            const relDisplay = formatCandidateDisplayPath(candPath, target?.workspaceRoot);
-            const isActive = data.path === candPath || selectedPathOverride === candPath;
-            return (
-              <button
-                key={candPath}
-                type="button"
-                onClick={() => setSelectedPathOverride(candPath)}
-                className={`px-2 py-0.5 rounded-md font-mono text-[10px] border cursor-pointer transition-colors ${
-                  isActive
-                    ? 'bg-blue-50 text-blue-700 border-blue-300 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/40 font-semibold'
-                    : 'bg-surface text-fg-secondary border-border hover:bg-surface-hover'
-                }`}
-                title={candPath}
-              >
-                {relDisplay}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
       {/* 大文件分窗翻阅与行号跳转栏 */}
       {data && !data.error && !data.isBinary && data.isWindowed && (
         <FilePreviewWindowBar
@@ -485,6 +444,14 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
               <div className="pt-2 border-t border-rose-200 dark:border-rose-500/20 text-[11px] text-fg-muted font-mono break-all">
                 目标路径: {parsed.cleanPath}
               </div>
+              {!parsed.cleanPath.startsWith('/') &&
+                !parsed.cleanPath.startsWith('~') &&
+                !parsed.cleanPath.includes('/') &&
+                !parsed.cleanPath.includes('\\') && (
+                  <p className="text-[11px] font-sans text-rose-700/90 dark:text-rose-300/90 leading-relaxed">
+                    原始引用缺少完整路径（应使用绝对路径或带目录前缀的完整路径），系统不做模糊搜索兜底。
+                  </p>
+                )}
               <div className="flex items-center gap-2 pt-1">
                 <button
                   type="button"

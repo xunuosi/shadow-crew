@@ -33,6 +33,7 @@ interface TopicMessageCardProps {
   onOpenCodexDiff?: (payload: ActiveCodexDiffPayload) => void;
   onApplyTopicPatch?: (topicId: string, customDiffs?: TopicPatchDiffItem[]) => Promise<void> | void;
   overlappingFiles?: string[];
+  workspaceRoot?: string;
 }
 
 export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
@@ -44,6 +45,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
   onOpenCodexDiff,
   onApplyTopicPatch,
   overlappingFiles = [],
+  workspaceRoot,
 }) => {
   const isResolved = topic.status === 'resolved';
   const isInvestigating = topic.status === 'investigating';
@@ -314,7 +316,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      openFilePreview(file);
+                      openFilePreview(file, workspaceRoot);
                     }}
                     className="font-mono text-[10px] px-2 py-0.5 rounded bg-surface border border-border text-fg-secondary hover:text-accent hover:border-accent/40 cursor-pointer transition-colors"
                     title={`点击在本地预览: ${file}`}
@@ -358,7 +360,7 @@ export const TopicMessageCard: React.FC<TopicMessageCardProps> = ({
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      openFilePreview(file);
+                      openFilePreview(file, workspaceRoot);
                     }}
                     className="font-mono text-[10px] px-2 py-0.5 rounded bg-surface border border-border text-fg-secondary hover:text-emerald-700 dark:hover:text-emerald-300 hover:border-emerald-500/40 cursor-pointer transition-colors"
                     title={`点击在本地预览: ${file}`}

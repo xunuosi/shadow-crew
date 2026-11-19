@@ -530,6 +530,7 @@ export default function App() {
                     onToggleSidebar={() => toggleSidebar()}
                     currentWorkspace="shadow-crew"
                     workspaceBinding={activeChannel ? getChannelWorkspaceBinding(activeChannel.id) : null}
+                    resolveTopicWorkspaceRoot={(topicId) => getTopicWorkspaceBinding(topicId)?.cwd}
                   />
 
                   <MessageInput

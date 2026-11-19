@@ -15,7 +15,6 @@ export interface FilePreviewResult {
   hasMoreBefore: boolean;
   hasMoreAfter: boolean;
   imageDataUrl?: string;
-  candidatePaths?: string[];
   error?: string;
 }
 
@@ -44,20 +43,8 @@ const COMMON_FILE_EXTENSIONS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'pdf',
 ]);
 
-// Extensions safe to auto-link even as bare single-segment inline code (without directory slash or :line).
-// Ambiguous suffixes like .log (console.log), .env (process.env), .go, .c, .h require either a slash
-// (`logs/server.log`), explicit `file://`, `./`, or a `:line` suffix (`main.go:42`).
-const UNAMBIGUOUS_BARE_EXTENSIONS = new Set([
-  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs',
-  'json', 'json5', 'yaml', 'yml', 'toml', 'xml', 'csv',
-  'rs', 'py', 'java', 'kt', 'swift', 'cpp', 'hpp',
-  'html', 'css', 'scss', 'less', 'vue', 'svelte',
-  'md', 'markdown', 'mdx', 'txt', 'sh', 'zsh', 'bash',
-  'sql', 'proto', 'diff', 'patch', 'lock',
-  'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'pdf',
-]);
-
-const KNOWN_EXTENSIONLESS_FILES = new Set([
+// Canonical workspace-root files that are unambiguous even without a directory slash
+const KNOWN_ROOT_FILES = new Set([
   'Makefile',
   'Dockerfile',
   'Containerfile',
@@ -65,10 +52,13 @@ const KNOWN_EXTENSIONLESS_FILES = new Set([
   'Procfile',
   'LICENSE',
   'README',
+  'README.md',
   'CHANGELOG',
+  'CHANGELOG.md',
   'AGENTS.md',
   'Cargo.toml',
   'Cargo.lock',
+  'package.json',
   '.gitignore',
   '.gitattributes',
   '.env',
@@ -273,7 +263,7 @@ export function parseFileLink(rawHref: string): ParsedFileTarget {
     cleanPath.startsWith('../') ||
     isWindowsDrivePath(cleanPath) ||
     COMMON_FILE_EXTENSIONS.has(ext) ||
-    KNOWN_EXTENSIONLESS_FILES.has(basename);
+    KNOWN_ROOT_FILES.has(basename);
 
   return {
     raw,
@@ -369,7 +359,7 @@ export function parseInlineCodeFileReference(rawText: string): ParsedFileTarget 
     if (segments.length >= 2) {
       return parsed;
     }
-    if (UNAMBIGUOUS_BARE_EXTENSIONS.has(ext) || KNOWN_EXTENSIONLESS_FILES.has(basename)) {
+    if (KNOWN_ROOT_FILES.has(basename)) {
       return parsed;
     }
     return empty;
@@ -381,41 +371,18 @@ export function parseInlineCodeFileReference(rawText: string): ParsedFileTarget 
     if (segments.some((seg) => seg.length === 0)) {
       return empty;
     }
-    if (COMMON_FILE_EXTENSIONS.has(ext) || KNOWN_EXTENSIONLESS_FILES.has(basename)) {
+    if (COMMON_FILE_EXTENSIONS.has(ext) || KNOWN_ROOT_FILES.has(basename)) {
       return parsed;
     }
     return empty;
   }
 
-  // Bare filename without directory separator
-  if (KNOWN_EXTENSIONLESS_FILES.has(basename) || UNAMBIGUOUS_BARE_EXTENSIONS.has(ext)) {
-    return parsed;
-  }
-  if (parsed.startLine !== undefined && COMMON_FILE_EXTENSIONS.has(ext)) {
+  // Bare filename without directory separator: allow only canonical workspace-root files
+  if (KNOWN_ROOT_FILES.has(basename)) {
     return parsed;
   }
 
   return empty;
-}
-
-export function formatCandidateDisplayPath(
-  fullPath: string,
-  workspaceRoot?: string
-): string {
-  if (!workspaceRoot) return fullPath;
-  let rootTrim = workspaceRoot.trim();
-  while (rootTrim.endsWith('/') || rootTrim.endsWith('\\')) {
-    rootTrim = rootTrim.slice(0, -1);
-  }
-  if (!rootTrim) return fullPath;
-  const normFull = fullPath.split('\\').join('/');
-  const normRoot = rootTrim.split('\\').join('/');
-  if (!normFull.startsWith(normRoot)) return fullPath;
-  let rest = normFull.slice(normRoot.length);
-  while (rest.startsWith('/')) {
-    rest = rest.slice(1);
-  }
-  return rest || fullPath;
 }
 
 /**

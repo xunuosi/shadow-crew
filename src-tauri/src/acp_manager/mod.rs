@@ -2348,28 +2348,27 @@ impl RunningAgent {
                 cwd: target_workspace_dir.to_string_lossy().to_string(),
             },
         );
-        let workspace_notice = if is_dm {
-            let agent_cwd = target_workspace_dir.to_string_lossy().to_string();
+        let workspace_cwd = target_workspace_dir.to_string_lossy().to_string();
+        let artifact_root_str = resolved_workspace.artifact_root.to_string_lossy().to_string();
+        let workspace_base_notice = if is_dm {
             format!(
                 "\n\n[当前 Agent 个人专属独立工作空间环境]:\n- Agent ID: {}\n- Agent 独立工作区根目录 (Working Directory / cwd): {}\n- 专属落地产物目录 (Artifacts): {}/artifacts\n- 专属临时调试目录 (Scratch): {}/scratch\n提示: 您当前处于与用户的 1-on-1 私聊中，沉淀的技术推演文档、方案或代码 Patch 将安全保存至您个人的专属产物目录中，与频道(channels)业务及其他 Agent 物理隔离。",
-                agent_id, agent_cwd, agent_cwd, agent_cwd
+                agent_id, workspace_cwd, workspace_cwd, workspace_cwd
             )
         } else if is_dm_topic {
-            let target_cwd = target_workspace_dir.to_string_lossy().to_string();
             format!(
                 "\n\n[当前私聊议题专属工作空间环境]:\n- Agent ID: {}\n- 私聊议题 ID: {}\n- Workspace Binding: {}\n- 议题工作区根目录 (cwd): {}\n- 落地产物目录 (Artifacts): {}\n提示: 当前私聊 Topic 使用独立 ACP Session 与 cwd，不得混用私聊主会话或其他 Topic 的工作目录。",
                 agent_id,
                 room_id,
                 resolved_workspace.workspace_binding_id,
-                target_cwd,
-                resolved_workspace.artifact_root.display()
+                workspace_cwd,
+                artifact_root_str
             )
         } else {
             let effective_chan_id = channel_id
                 .map(|c| c.trim())
                 .filter(|c| !c.is_empty())
                 .unwrap_or(room_id);
-            let target_cwd = target_workspace_dir.to_string_lossy().to_string();
             let is_topic = scope_type
                 .map(|scope| scope.trim() == "topic")
                 .unwrap_or_else(|| room_id != effective_chan_id && !room_id.starts_with("chan-"));
@@ -2379,20 +2378,28 @@ impl RunningAgent {
                     effective_chan_id,
                     room_id,
                     resolved_workspace.workspace_binding_id,
-                    target_cwd,
-                    resolved_workspace.artifact_root.display()
+                    workspace_cwd,
+                    artifact_root_str
                 )
             } else {
                 format!(
                     "\n\n[当前频道专属工作空间环境]:\n- 频道 ID: {}\n- Workspace Binding: {}\n- 频道独立工作区根目录 (Working Directory / cwd): {}\n- 落地产物目录 (Artifacts): {}",
                     effective_chan_id,
                     resolved_workspace.workspace_binding_id,
-                    target_cwd,
-                    resolved_workspace.artifact_root.display()
+                    workspace_cwd,
+                    artifact_root_str
                 )
             }
         };
-        let workspace_cwd = target_workspace_dir.to_string_lossy().to_string();
+        let citation_artifact_dir = if is_dm {
+            format!("{}/artifacts", workspace_cwd)
+        } else {
+            artifact_root_str.clone()
+        };
+        let workspace_notice = format!(
+            "{}\n- 文件引用规范: 在正文引用任何代码或产物文件时，必须使用携带完整绝对路径的 Markdown 链接 [文件名](file://<绝对路径>) 或 [文件名](file://<绝对路径>#L行号)（工作区根目录: {}，产物目录: {}），严禁仅写裸文件名或省略中间目录。",
+            workspace_base_notice, workspace_cwd, citation_artifact_dir
+        );
         let enriched_sp = match system_prompt {
             Some(sp) if !sp.trim().is_empty() => format!("{}{}", sp, workspace_notice),
             _ => workspace_notice.clone(),

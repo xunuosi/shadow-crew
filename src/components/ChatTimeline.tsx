@@ -69,6 +69,7 @@ interface ChatTimelineProps {
   onToggleSidebar?: () => void;
   currentWorkspace?: string;
   workspaceBinding?: WorkspaceBinding | null;
+  resolveTopicWorkspaceRoot?: (topicId: string) => string | undefined;
 }
 
 export const ChatTimeline: React.FC<ChatTimelineProps> = ({
@@ -95,6 +96,7 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
   onToggleSidebar,
   currentWorkspace,
   workspaceBinding = null,
+  resolveTopicWorkspaceRoot,
 }) => {
   const { openArtifactsWindow } = useArtifactsWindow();
   const { openFilePreview } = useFilePreview();
@@ -813,6 +815,9 @@ export const ChatTimeline: React.FC<ChatTimelineProps> = ({
                   onOpenCodexDiff={onOpenCodexDiff}
                   onApplyTopicPatch={onApplyTopicPatch}
                   overlappingFiles={topicOverlapMap[message.topicData.id] || []}
+                  workspaceRoot={
+                    resolveTopicWorkspaceRoot?.(message.topicData.id) || workspaceBinding?.cwd
+                  }
                 />
               </div>
             );

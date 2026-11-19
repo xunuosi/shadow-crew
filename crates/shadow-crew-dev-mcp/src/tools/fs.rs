@@ -69,23 +69,50 @@ pub fn ensure_path_within_workspace(raw_path: &str) -> Result<PathBuf> {
     Ok(resolved)
 }
 
+/// 将任意输入路径规范化解析为真实绝对路径（用于所有工具回执展示，杜绝裸文件名回传）
+pub fn resolve_display_absolute_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    let candidate = Path::new(trimmed);
+    if let Ok(ws) = std::env::var("SHADOW_CREW_WORKSPACE_ROOT") {
+        if !ws.trim().is_empty() {
+            let ws_root = std::fs::canonicalize(ws.trim())
+                .unwrap_or_else(|_| normalize_lexical_path(Path::new(ws.trim())));
+            let joined = if candidate.is_absolute() {
+                candidate.to_path_buf()
+            } else {
+                ws_root.join(candidate)
+            };
+            return resolve_path_with_existing_ancestor(&joined);
+        }
+    }
+    if candidate.is_absolute() {
+        return resolve_path_with_existing_ancestor(candidate);
+    }
+    let base = std::env::current_dir()
+        .ok()
+        .map(|d| std::fs::canonicalize(&d).unwrap_or(d))
+        .unwrap_or_else(|| PathBuf::from("."));
+    resolve_path_with_existing_ancestor(&base.join(candidate))
+}
+
 /// 读取文件内容，支持行切片
 pub async fn read_file(
     path: &str,
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> Result<String> {
-    let p = Path::new(path);
+    let p = resolve_display_absolute_path(path);
+    let display_path = p.display().to_string();
     if !p.exists() {
-        return Err(anyhow!("文件不存在: {}", path));
+        return Err(anyhow!("文件不存在: {}", display_path));
     }
     if !p.is_file() {
-        return Err(anyhow!("目标路径不是一个常规文件: {}", path));
+        return Err(anyhow!("目标路径不是一个常规文件: {}", display_path));
     }
 
-    let content = fs::read_to_string(p)
+    let content = fs::read_to_string(&p)
         .await
-        .map_err(|e| anyhow!("读取文件失败 [{}]: {}", path, e))?;
+        .map_err(|e| anyhow!("读取文件失败 [{}]: {}", display_path, e))?;
 
     if offset.is_none() && limit.is_none() {
         return Ok(content);
@@ -108,7 +135,7 @@ pub async fn read_file(
 
     Ok(format!(
         "[文件: {}, 总行数: {}, 显示行范围: {}-{}]\n{}",
-        path,
+        display_path,
         total_lines,
         start_line + 1,
         (start_line + max_lines).min(total_lines),
@@ -118,7 +145,8 @@ pub async fn read_file(
 
 /// 写入或全量覆盖文件，自动创建父级目录
 pub async fn write_file(path: &str, content: &str) -> Result<String> {
-    let p = Path::new(path);
+    let p = resolve_display_absolute_path(path);
+    let display_path = p.display().to_string();
     if let Some(parent) = p.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent)
@@ -127,60 +155,60 @@ pub async fn write_file(path: &str, content: &str) -> Result<String> {
         }
     }
 
-    fs::write(p, content.as_bytes())
+    fs::write(&p, content.as_bytes())
         .await
-        .map_err(|e| anyhow!("写入文件失败 [{}]: {}", path, e))?;
+        .map_err(|e| anyhow!("写入文件失败 [{}]: {}", display_path, e))?;
 
     Ok(format!(
         "文件写入成功: {} (大小: {} 字节)",
-        path,
+        display_path,
         content.len()
     ))
 }
 
 /// 对文件内容进行精准子串替换 (str_replace)
 pub async fn str_replace(path: &str, old_str: &str, new_str: &str) -> Result<String> {
-    let p = Path::new(path);
+    let p = resolve_display_absolute_path(path);
+    let display_path = p.display().to_string();
     if !p.exists() {
-        return Err(anyhow!("文件不存在: {}", path));
+        return Err(anyhow!("文件不存在: {}", display_path));
     }
 
-    let content = fs::read_to_string(p)
+    let content = fs::read_to_string(&p)
         .await
-        .map_err(|e| anyhow!("读取文件失败 [{}]: {}", path, e))?;
+        .map_err(|e| anyhow!("读取文件失败 [{}]: {}", display_path, e))?;
 
     let count = content.matches(old_str).count();
     if count == 0 {
         return Err(anyhow!(
             "在文件 [{}] 中未找到匹配的目标字符串 old_str，请先读取文件核对内容",
-            path
+            display_path
         ));
     }
     if count > 1 {
         return Err(anyhow!(
             "在文件 [{}] 中匹配到 {} 处目标字符串 old_str，不满足唯一性要求。请提供包含更多上下文的 old_str 以确保唯一定位",
-            path, count
+            display_path, count
         ));
     }
 
     let replaced = content.replacen(old_str, new_str, 1);
 
-    fs::write(p, replaced.as_bytes())
+    fs::write(&p, replaced.as_bytes())
         .await
-        .map_err(|e| anyhow!("写入替换内容失败 [{}]: {}", path, e))?;
+        .map_err(|e| anyhow!("写入替换内容失败 [{}]: {}", display_path, e))?;
 
     Ok(format!(
         "字符串替换成功 [{}]: 替换了 1 处匹配",
-        path
+        display_path
     ))
 }
 
-/// 列出目录中的文件与文件夹 (支持最大递归深度)
+/// 列出目录中的文件与文件夹 (支持最大递归深度，统一返回完整绝对路径)
 pub async fn list_dir(path: Option<&str>, max_depth: Option<usize>) -> Result<String> {
-    let root = path.unwrap_or(".");
-    let root_path = Path::new(root);
+    let root_path = resolve_display_absolute_path(path.unwrap_or("."));
     if !root_path.exists() {
-        return Err(anyhow!("路径不存在: {}", root));
+        return Err(anyhow!("路径不存在: {}", root_path.display()));
     }
 
     let max_d = max_depth.unwrap_or(2);
@@ -196,7 +224,8 @@ pub async fn list_dir(path: Option<&str>, max_depth: Option<usize>) -> Result<St
         }
         if let Ok(rd) = std::fs::read_dir(dir) {
             for entry in rd.flatten() {
-                let p = entry.path();
+                let p = std::fs::canonicalize(entry.path())
+                    .unwrap_or_else(|_| resolve_path_with_existing_ancestor(&entry.path()));
                 let name = entry.file_name().to_string_lossy().to_string();
                 // 忽略噪音与构建目录
                 if name.starts_with('.') || name == "target" || name == "node_modules" {
@@ -205,10 +234,10 @@ pub async fn list_dir(path: Option<&str>, max_depth: Option<usize>) -> Result<St
                 let is_dir = p.is_dir();
                 let indent = "  ".repeat(current_depth);
                 if is_dir {
-                    out.push(format!("{}[DIR]  {}/", indent, name));
+                    out.push(format!("{}[DIR]  {}/", indent, p.display()));
                     let _ = walk(&p, current_depth + 1, max_depth, out);
                 } else {
-                    out.push(format!("{}[FILE] {}", indent, name));
+                    out.push(format!("{}[FILE] {}", indent, p.display()));
                 }
             }
         }
@@ -217,12 +246,12 @@ pub async fn list_dir(path: Option<&str>, max_depth: Option<usize>) -> Result<St
 
     let mut out = Vec::new();
     out.push(format!("[Directory: {}]", root_path.display()));
-    let _ = walk(root_path, 0, max_d, &mut out);
+    let _ = walk(&root_path, 0, max_d, &mut out);
 
     Ok(out.join("\n"))
 }
 
-/// 在指定目录下按模式快速检索源码 (类似 grep / ripgrep)
+/// 在指定目录下按模式快速检索源码 (类似 grep / ripgrep，返回完整绝对文件路径与行号)
 pub async fn search_code(
     pattern: &str,
     path: Option<&str>,
@@ -232,10 +261,9 @@ pub async fn search_code(
         return Err(anyhow!("搜索模式 pattern 不能为空"));
     }
 
-    let root = path.unwrap_or(".");
-    let root_path = Path::new(root);
+    let root_path = resolve_display_absolute_path(path.unwrap_or("."));
     if !root_path.exists() {
-        return Err(anyhow!("搜索路径不存在: {}", root));
+        return Err(anyhow!("搜索路径不存在: {}", root_path.display()));
     }
 
     let max_res = max_results.unwrap_or(50);
@@ -255,19 +283,24 @@ pub async fn search_code(
                 if matches.len() >= max_res {
                     break;
                 }
-                let p = entry.path();
+                let raw_p = entry.path();
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with('.') || name == "target" || name == "node_modules" {
                     continue;
                 }
+                let p = std::fs::canonicalize(&raw_p)
+                    .unwrap_or_else(|_| resolve_path_with_existing_ancestor(&raw_p));
                 if p.is_dir() {
                     let _ = walk_search(&p, pattern, max_res, matches);
                 } else if p.is_file() {
                     // 读取文件前检查扩展名，避免扫描大型二进制
                     if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
                         let is_text = matches!(
-                            ext,
-                            "rs" | "ts" | "tsx" | "js" | "jsx" | "json" | "md" | "toml" | "yaml" | "yml" | "css" | "html" | "txt" | "sh" | "sql"
+                            ext.to_ascii_lowercase().as_str(),
+                            "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
+                                | "go" | "py" | "java" | "kt" | "swift" | "c" | "cpp" | "cc" | "h" | "hpp"
+                                | "proto" | "vue" | "svelte" | "json" | "md" | "toml" | "yaml" | "yml"
+                                | "css" | "scss" | "html" | "txt" | "sh" | "zsh" | "sql"
                         );
                         if !is_text {
                             continue;
@@ -294,10 +327,14 @@ pub async fn search_code(
         Ok(())
     }
 
-    let _ = walk_search(root_path, pattern, max_res, &mut matches);
+    let _ = walk_search(&root_path, pattern, max_res, &mut matches);
 
     if matches.is_empty() {
-        Ok(format!("未在 [{}] 中搜索到关键词: {}", root, pattern))
+        Ok(format!(
+            "未在 [{}] 中搜索到关键词: {}",
+            root_path.display(),
+            pattern
+        ))
     } else {
         Ok(format!(
             "搜索结果 (共 {} 处匹配):\n{}",
@@ -726,6 +763,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ensure_path_within_workspace_blocks_escape() {
+        let _guard = crate::tools::TEST_ENV_MUTEX.lock().unwrap();
         let ws_root = std::env::temp_dir().join("shadow_crew_ws_boundary_test");
         let _ = fs::create_dir_all(&ws_root).await;
         std::env::set_var("SHADOW_CREW_WORKSPACE_ROOT", &ws_root);
@@ -733,6 +771,60 @@ mod tests {
         assert!(ensure_path_within_workspace("src/main.rs").is_ok());
         assert!(ensure_path_within_workspace("../outside_secret.txt").is_err());
         assert!(ensure_path_within_workspace("/etc/passwd").is_err());
+
+        std::env::remove_var("SHADOW_CREW_WORKSPACE_ROOT");
+        let _ = fs::remove_dir_all(&ws_root).await;
+    }
+
+    #[tokio::test]
+    async fn test_fs_tools_return_canonical_absolute_paths() {
+        let _guard = crate::tools::TEST_ENV_MUTEX.lock().unwrap();
+        let ws_root = std::env::temp_dir().join("shadow_crew_fs_abs_test");
+        let _ = fs::remove_dir_all(&ws_root).await;
+        let nested_dir = ws_root.join("internal").join("store");
+        fs::create_dir_all(&nested_dir).await.unwrap();
+        std::env::set_var("SHADOW_CREW_WORKSPACE_ROOT", &ws_root);
+
+        let canonical_ws = std::fs::canonicalize(&ws_root).unwrap();
+        let rel_target = "internal/store/cacheStore.go";
+        let expected_abs = canonical_ws.join(rel_target).to_string_lossy().to_string();
+
+        // 1. write_file returns canonical absolute path
+        let write_out = write_file(rel_target, "package store\n\nconst Version = 1\n")
+            .await
+            .unwrap();
+        assert!(write_out.contains(&expected_abs), "write_out: {}", write_out);
+
+        // 2. str_replace returns canonical absolute path
+        let replace_out = str_replace(rel_target, "const Version = 1", "const Version = 2")
+            .await
+            .unwrap();
+        assert!(replace_out.contains(&expected_abs), "replace_out: {}", replace_out);
+
+        // 3. read_file (with offset/limit header) includes canonical absolute path
+        let read_out = read_file(rel_target, Some(1), Some(3)).await.unwrap();
+        assert!(read_out.contains(&expected_abs), "read_out: {}", read_out);
+
+        // 4. list_dir emits full canonical absolute paths for dirs and files
+        let list_out = list_dir(None, Some(4)).await.unwrap();
+        assert!(
+            list_out.contains(&canonical_ws.to_string_lossy().to_string()),
+            "list_out header missing abs root: {}",
+            list_out
+        );
+        assert!(
+            list_out.contains(&expected_abs),
+            "list_out missing abs file path: {}",
+            list_out
+        );
+
+        // 5. search_code emits full canonical absolute path in grep line
+        let search_out = search_code("Version = 2", None, Some(10)).await.unwrap();
+        assert!(
+            search_out.contains(&format!("{}:3:", expected_abs)),
+            "search_out missing canonical abs match: {}",
+            search_out
+        );
 
         std::env::remove_var("SHADOW_CREW_WORKSPACE_ROOT");
         let _ = fs::remove_dir_all(&ws_root).await;

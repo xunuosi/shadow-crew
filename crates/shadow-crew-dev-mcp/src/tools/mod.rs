@@ -239,7 +239,7 @@ pub fn get_tools_list() -> Value {
                     "impacted_files": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "本次决议限定改动的受影响文件列表（约束安全爆炸半径）"
+                        "description": "本次决议限定改动的受影响文件列表（必须填写完整绝对路径或自工作区根目录起的完整相对路径，禁止仅填裸文件名）"
                     },
                     "solution": {
                         "type": "string",
@@ -256,7 +256,7 @@ pub fn get_tools_list() -> Value {
                                     "decision_type": { "type": "string", "enum": ["adopt_proposer"] },
                                     "summary": { "type": "string", "description": "采纳方案核心依据" },
                                     "trade_off_points": { "type": "array", "items": { "type": "string" }, "description": "权衡点列表" },
-                                    "impacted_files": { "type": "array", "items": { "type": "string" }, "description": "受影响文件" },
+                                    "impacted_files": { "type": "array", "items": { "type": "string" }, "description": "受影响文件（必须填写完整绝对路径或自工作区根目录起的完整相对路径，禁止仅填裸文件名）" },
                                     "solution": { "type": "string", "description": "落地实施路径" }
                                 },
                                 "required": ["decision_type", "summary", "trade_off_points", "impacted_files"]
@@ -268,7 +268,7 @@ pub fn get_tools_list() -> Value {
                                     "decision_type": { "type": "string", "enum": ["reject_rebuild"] },
                                     "summary": { "type": "string", "description": "驳回重构核心依据" },
                                     "trade_off_points": { "type": "array", "items": { "type": "string" }, "description": "权衡点列表" },
-                                    "impacted_files": { "type": "array", "items": { "type": "string" }, "description": "受影响文件" },
+                                    "impacted_files": { "type": "array", "items": { "type": "string" }, "description": "受影响文件（必须填写完整绝对路径或自工作区根目录起的完整相对路径，禁止仅填裸文件名）" },
                                     "solution": { "type": "string", "description": "重构指引与安全假设" }
                                 },
                                 "required": ["decision_type", "summary", "trade_off_points", "impacted_files"]
@@ -280,7 +280,7 @@ pub fn get_tools_list() -> Value {
                                     "decision_type": { "type": "string", "enum": ["trade_off_matrix"] },
                                     "summary": { "type": "string", "description": "折中定案总览依据" },
                                     "trade_off_points": { "type": "array", "items": { "type": "string" }, "description": "权衡点列表" },
-                                    "impacted_files": { "type": "array", "items": { "type": "string" }, "description": "受影响文件" },
+                                    "impacted_files": { "type": "array", "items": { "type": "string" }, "description": "受影响文件（必须填写完整绝对路径或自工作区根目录起的完整相对路径，禁止仅填裸文件名）" },
                                     "solution": { "type": "string", "description": "分阶段演进实施路径" }
                                 },
                                 "required": ["decision_type", "summary", "trade_off_points", "impacted_files"]
@@ -377,7 +377,7 @@ pub fn get_tools_list() -> Value {
                     "impacted_files": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "提案拟修改或新增的工程文件路径列表"
+                        "description": "提案拟修改或新增的工程文件路径列表（必须填写完整绝对路径或自工作区根目录起的完整相对路径，禁止仅填裸文件名）"
                     },
                     "design_decisions": {
                         "type": "array",
@@ -488,7 +488,7 @@ pub fn get_tools_list() -> Value {
                                 "allowed_files": {
                                     "type": "array",
                                     "items": { "type": "string" },
-                                    "description": "该模块允许触碰的文件或文档白名单（纯业务讨论可传空数组 []）"
+                                    "description": "该模块允许触碰的文件或文档白名单（纯业务讨论可传空数组 []；若填写文件路径，必须填写完整绝对路径或自工作区根目录起的完整相对路径，禁止仅填裸文件名）"
                                 },
                                 "depends_on": {
                                     "type": "array",
@@ -603,7 +603,7 @@ pub fn get_tools_list() -> Value {
                     "impacted_files": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "本次落地修改或新建的文件路径列表 (可选)"
+                        "description": "本次落地修改或新建的文件路径列表（可选；必须填写完整绝对路径或自工作区根目录起的完整相对路径，禁止仅填裸文件名）"
                     }
                 },
                 "required": ["section_title", "pod_title", "status_summary"]
@@ -731,7 +731,7 @@ pub fn get_tools_list() -> Value {
                     "impacted_files": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "答辩修正后拟变更的工程文件路径列表"
+                        "description": "答辩修正后拟变更的工程文件路径列表（必须填写完整绝对路径或自工作区根目录起的完整相对路径，禁止仅填裸文件名）"
                     },
                     "alignment_score": {
                         "type": "number",
@@ -762,7 +762,7 @@ pub fn get_tools_list() -> Value {
                     "allowed_files": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "当前模块允许修改的文件路径白名单 (可选，用于安全爆炸半径约束)"
+                        "description": "当前模块允许修改的文件路径白名单（可选，用于安全爆炸半径约束；必须填写完整绝对路径或自工作区根目录起的完整相对路径，禁止仅填裸文件名）"
                     }
                 },
                 "required": ["patches"]
@@ -844,52 +844,50 @@ pub async fn dispatch_tool_call_with_profile(
             let path = arguments["path"]
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 path"))?;
-            fs::ensure_path_within_workspace(path)?;
+            let resolved = fs::ensure_path_within_workspace(path)?;
             let offset = arguments["offset"].as_u64().map(|v| v as usize);
             let limit = arguments["limit"].as_u64().map(|v| v as usize);
-            fs::read_file(path, offset, limit).await
+            fs::read_file(&resolved.to_string_lossy(), offset, limit).await
         }
         "write_file" => {
             let path = arguments["path"]
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 path"))?;
-            fs::ensure_path_within_workspace(path)?;
+            let resolved = fs::ensure_path_within_workspace(path)?;
             let content = arguments["content"]
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 content"))?;
-            fs::write_file(path, content).await
+            fs::write_file(&resolved.to_string_lossy(), content).await
         }
         "str_replace" => {
             let path = arguments["path"]
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 path"))?;
-            fs::ensure_path_within_workspace(path)?;
+            let resolved = fs::ensure_path_within_workspace(path)?;
             let old_str = arguments["old_str"]
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 old_str"))?;
             let new_str = arguments["new_str"]
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 new_str"))?;
-            fs::str_replace(path, old_str, new_str).await
+            fs::str_replace(&resolved.to_string_lossy(), old_str, new_str).await
         }
         "list_dir" => {
-            let path = arguments["path"].as_str();
-            if let Some(p) = path {
-                fs::ensure_path_within_workspace(p)?;
-            }
+            let raw_path = arguments["path"].as_str().unwrap_or(".");
+            let resolved = fs::ensure_path_within_workspace(raw_path)?;
+            let resolved_str = resolved.to_string_lossy().to_string();
             let max_depth = arguments["max_depth"].as_u64().map(|v| v as usize);
-            fs::list_dir(path, max_depth).await
+            fs::list_dir(Some(resolved_str.as_str()), max_depth).await
         }
         "search_code" => {
             let pattern = arguments["pattern"]
                 .as_str()
                 .ok_or_else(|| anyhow!("缺少必填参数 pattern"))?;
-            let path = arguments["path"].as_str();
-            if let Some(p) = path {
-                fs::ensure_path_within_workspace(p)?;
-            }
+            let raw_path = arguments["path"].as_str().unwrap_or(".");
+            let resolved = fs::ensure_path_within_workspace(raw_path)?;
+            let resolved_str = resolved.to_string_lossy().to_string();
             let max_results = arguments["max_results"].as_u64().map(|v| v as usize);
-            fs::search_code(pattern, path, max_results).await
+            fs::search_code(pattern, Some(resolved_str.as_str()), max_results).await
         }
         "write_channel_artifact" => {
             let filename = arguments["filename"]

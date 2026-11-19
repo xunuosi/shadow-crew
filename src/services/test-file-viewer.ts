@@ -10,6 +10,9 @@ import {
 import { MarkdownRenderer } from '../components/markdown/MarkdownRenderer';
 import { MessageAttachmentList } from '../components/MessageAttachmentList';
 import { FilePreviewDrawer } from '../components/FilePreviewDrawer';
+import { buildAgentPersonaPrompt } from './agentCollaboration';
+import { extractFilePathsFromTextSegment } from './cogno/structuredTextAnalyzer';
+import { INITIAL_AGENTS } from '../data/mockData';
 import type { MessageAttachment } from '../types';
 
 function testFileLinkParsing() {
@@ -90,7 +93,7 @@ function testTransformMarkdownFileUrl() {
 }
 
 function testInlineCodeFileDetection() {
-  // 正例：真实代码、配置、日志及路径引用
+  // 正例：完整绝对路径、file:// URI、~ 路径、带目录前缀相对路径与工作区根配置契约文件
   const pos1 = parseInlineCodeFileReference('src/App.tsx:42');
   assert.equal(pos1.isLocalFile, true);
   assert.equal(pos1.cleanPath, 'src/App.tsx');
@@ -99,10 +102,21 @@ function testInlineCodeFileDetection() {
   assert.equal(parseInlineCodeFileReference('AGENTS.md').isLocalFile, true);
   assert.equal(parseInlineCodeFileReference('~/.shadow-crew/a.md').isLocalFile, true);
   assert.equal(parseInlineCodeFileReference('/Users/dev/big.log:55000').isLocalFile, true);
+  assert.equal(
+    parseInlineCodeFileReference('file:///Users/dev/repo/internal/store/cacheStore.go#L42').isLocalFile,
+    true
+  );
+  assert.equal(parseInlineCodeFileReference('./internal/store/cacheStore.go').isLocalFile, true);
   assert.equal(parseInlineCodeFileReference('logs/server.log').isLocalFile, true);
+  assert.equal(parseInlineCodeFileReference('internal/store/cacheStore.go:18').isLocalFile, true);
   assert.equal(parseInlineCodeFileReference('Cargo.toml').isLocalFile, true);
+  assert.equal(parseInlineCodeFileReference('package.json').isLocalFile, true);
 
-  // 反例：命令、方法调用、标识符属性、斜杠词与斜杠命令绝不能误识别为文件
+  // 反例：无目录前缀的非根裸文件名与代码标识符绝不能误识别为可点击预览路径
+  assert.equal(parseInlineCodeFileReference('cacheStore.go').isLocalFile, false);
+  assert.equal(parseInlineCodeFileReference('cacheStore.go:42').isLocalFile, false);
+  assert.equal(parseInlineCodeFileReference('App.tsx').isLocalFile, false);
+  assert.equal(parseInlineCodeFileReference('config.json').isLocalFile, false);
   assert.equal(parseInlineCodeFileReference('console.log').isLocalFile, false);
   assert.equal(parseInlineCodeFileReference('process.env').isLocalFile, false);
   assert.equal(parseInlineCodeFileReference('light/dark').isLocalFile, false);
@@ -199,27 +213,39 @@ function testSsrMessageFileReferencesAndWindowedPreview() {
     assert.ok(drawerHtml.includes('跳转'));
     assert.ok(drawerHtml.includes('>55000<'), 'Must display real line number 55000');
 
-    // 4. FilePreviewDrawer：多同名匹配候选切换栏渲染
-    const multiMatchData: FilePreviewResult = {
-      path: '/Users/xunuosi/Code/Lx/Golang/renbao-lxcore/internal/store/cacheStore.go',
+    // 4. Markdown 绝对 file:// 链接与行内裸文件名严格区分 + FilePreviewDrawer 裸路径缺失提示
+    const absLinkMd = renderToStaticMarkup(
+      React.createElement(MarkdownRenderer, {
+        content:
+          '请核查 [cacheStore.go](file:///Users/xunuosi/Code/Lx/Golang/renbao-lxcore/internal/store/cacheStore.go#L42)，而非裸引用 `cacheStore.go:42`。',
+        workspaceRoot: '/Users/xunuosi/Code/Lx/Golang/renbao-lxcore',
+      })
+    );
+    assert.ok(absLinkMd.includes('<button'), 'Absolute file:// link must render clickable <button>');
+    assert.ok(absLinkMd.includes('cacheStore.go'), 'Display label cacheStore.go must render');
+    assert.ok(absLinkMd.includes(':42'), 'Line anchor :42 badge must render');
+    assert.ok(
+      absLinkMd.includes('>cacheStore.go:42</code>'),
+      'Bare filename without directory must remain plain inline <code>, not a broken preview button'
+    );
+
+    const missingBareData: FilePreviewResult = {
+      path: '/Users/xunuosi/Code/Lx/Golang/renbao-lxcore/cacheStore.go',
       displayName: 'cacheStore.go',
       extension: 'go',
-      sizeBytes: 2048,
+      sizeBytes: 0,
       isBinary: false,
-      content: 'package store',
-      totalLines: 1,
+      content: '',
+      totalLines: 0,
       isTruncated: false,
-      startLine: 1,
-      endLine: 1,
+      startLine: 0,
+      endLine: 0,
       isWindowed: false,
       hasMoreBefore: false,
       hasMoreAfter: false,
-      candidatePaths: [
-        '/Users/xunuosi/Code/Lx/Golang/renbao-lxcore/internal/store/cacheStore.go',
-        '/Users/xunuosi/Code/Lx/Golang/renbao-lxcore/pkg/legacy/cacheStore.go',
-      ],
+      error: '文件不存在: /Users/xunuosi/Code/Lx/Golang/renbao-lxcore/cacheStore.go',
     };
-    const multiDrawerHtml = renderToStaticMarkup(
+    const bareErrHtml = renderToStaticMarkup(
       React.createElement(FilePreviewDrawer, {
         isOpen: true,
         onClose: () => {},
@@ -227,12 +253,13 @@ function testSsrMessageFileReferencesAndWindowedPreview() {
           rawPath: 'cacheStore.go',
           workspaceRoot: '/Users/xunuosi/Code/Lx/Golang/renbao-lxcore',
         },
-        initialPreviewData: multiMatchData,
+        initialPreviewData: missingBareData,
       })
     );
-    assert.ok(multiDrawerHtml.includes('发现 2 个同名文件'));
-    assert.ok(multiDrawerHtml.includes('internal/store/cacheStore.go'));
-    assert.ok(multiDrawerHtml.includes('pkg/legacy/cacheStore.go'));
+    assert.ok(bareErrHtml.includes('无法打开本地文件'));
+    assert.ok(bareErrHtml.includes('原始引用缺少完整路径'));
+    assert.ok(bareErrHtml.includes('打开工作目录'));
+    assert.ok(!bareErrHtml.includes('个同名文件'), 'Must not render fuzzy candidate switcher');
   } finally {
     console.error = origError;
   }
@@ -244,9 +271,44 @@ function testSsrMessageFileReferencesAndWindowedPreview() {
   );
 }
 
+function testSourcePromptAndPathExtractionPreservation() {
+  const personaPrompt = buildAgentPersonaPrompt(INITIAL_AGENTS[0]);
+  assert.ok(personaPrompt.includes('file:///'), 'Persona prompt must require full file:// absolute links');
+  assert.ok(personaPrompt.includes('严禁'), 'Persona prompt must forbid bare filenames');
+
+  const fromMarkdown = extractFilePathsFromTextSegment(
+    '参考 [cacheStore.go](file:///Users/dev/repo/internal/store/cacheStore.go#L42) 与 `src/App.tsx`'
+  );
+  assert.ok(
+    fromMarkdown.includes('/Users/dev/repo/internal/store/cacheStore.go'),
+    `Expected full POSIX path preserved from file:// link, got: ${JSON.stringify(fromMarkdown)}`
+  );
+  assert.ok(
+    fromMarkdown.includes('src/App.tsx'),
+    `Expected relative path preserved, got: ${JSON.stringify(fromMarkdown)}`
+  );
+
+  const fromRawAbs = extractFilePathsFromTextSegment(
+    '检查 /Users/dev/repo/internal/store/cacheStore.go:42 或在/Users/dev/repo/main.go中以及 /swarm 命令'
+  );
+  assert.ok(
+    fromRawAbs.includes('/Users/dev/repo/internal/store/cacheStore.go'),
+    `Expected raw POSIX path with :line preserved, got: ${JSON.stringify(fromRawAbs)}`
+  );
+  assert.ok(
+    fromRawAbs.includes('/Users/dev/repo/main.go'),
+    `Expected POSIX path inside CJK boundary preserved, got: ${JSON.stringify(fromRawAbs)}`
+  );
+  assert.ok(
+    !fromRawAbs.includes('/swarm'),
+    `Slash command /swarm must remain rejected, got: ${JSON.stringify(fromRawAbs)}`
+  );
+}
+
 console.log('[Test] Starting fileViewerService & clickable reference tests...');
 testFileLinkParsing();
 testTransformMarkdownFileUrl();
 testInlineCodeFileDetection();
 testSsrMessageFileReferencesAndWindowedPreview();
+testSourcePromptAndPathExtractionPreservation();
 console.log('✅ All fileViewerService, clickable reference, and large-file preview tests passed!');

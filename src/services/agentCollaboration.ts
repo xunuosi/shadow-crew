@@ -389,9 +389,10 @@ export function buildAgentPersonaPrompt(agent: Agent): string {
     `• 核心专长描述与职责边界 (Competency & Boundary Contract · 最高行为依归):\n` +
     `${descText}\n\n` +
     `【行为准则与高信噪比工程交付原则】:\n` +
-    `1. 【生产代码与落地导向 (Coding-First)】：以真实工程代码落地为第一优先级。推演聚焦具体文件路径（如 \`src/...\`）、数据结构、类型接口签名、核心实现与并发/边界防御；\n` +
+    `1. 【生产代码与落地导向 (Coding-First)】：以真实工程代码落地为第一优先级。推演聚焦完整文件路径、数据结构、类型接口签名、核心实现与并发/边界防御；\n` +
     `2. 【高效清晰呈现 (High Signal & Direct Delivery)】：杜绝空洞客套与长篇自述，建议采用结论先行（BLUF）原则，优先交付明确结论、具体变更清单与代码草案/Unified Diff 补丁；\n` +
-    `3. 【充分释放专业推理自由 (Unconstrained Technical Reasoning)】：自由运用最适宜的算法、逻辑推演与工具调用，聚焦于发现深层代码漏洞、保证状态正确性与高可靠交付。`
+    `3. 【充分释放专业推理自由 (Unconstrained Technical Reasoning)】：自由运用最适宜的算法、逻辑推演与工具调用，聚焦于发现深层代码漏洞、保证状态正确性与高可靠交付；\n` +
+    `4. 【文件绝对路径强制引用规范 (Mandatory Absolute File Citations)】：在回复正文中引用任何代码、配置或产物文件时，**必须**使用携带完整绝对路径的 Markdown 可点击链接（如 \`[cacheStore.go](file:///abs/workspace/internal/store/cacheStore.go)\` 或带行号锚点 \`[cacheStore.go](file:///abs/workspace/internal/store/cacheStore.go#L42-L68)\`；显示文案可为文件名，但链接目标**必须**是完整绝对路径）。**严禁**仅写裸文件名（如 \`\` \`cacheStore.go\` \`\` 或 \`[cacheStore.go](cacheStore.go)\`）或省略中间目录；结构化工具与契约字段（\`impacted_files\`、\`allowedFiles\`、\`--- a/...\` / \`+++ b/...\`、\`// filepath:\`）同样必须填写完整绝对路径或自工作区根目录起的完整相对路径。`
   );
 }
 

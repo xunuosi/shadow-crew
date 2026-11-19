@@ -138,25 +138,52 @@ function isNumericLiteral(token: string): boolean {
   return seenDigit;
 }
 
+function isAsciiLetter(ch: string): boolean {
+  const code = ch.charCodeAt(0);
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
 function isCjkChar(ch: string): boolean {
   const code = ch.charCodeAt(0);
   return code >= 0x4e00 && code <= 0x9fff;
 }
 
 export function normalizeRepoPath(rawPath: string): string {
-  let clean = (rawPath || '').trim().replace(/\\/g, '/');
+  let clean = (rawPath || '').trim().split('\\').join('/');
+  if (clean.toLowerCase().startsWith('file://')) {
+    clean = clean.slice(7);
+    try {
+      clean = decodeURIComponent(clean);
+    } catch {
+      // Malformed percent encoding fallback
+    }
+    clean = clean.split('\\').join('/');
+    if (
+      clean.length >= 4 &&
+      clean[0] === '/' &&
+      isAsciiLetter(clean[1]) &&
+      clean[2] === ':' &&
+      clean[3] === '/'
+    ) {
+      clean = clean.slice(1);
+    }
+  }
+  const hashIdx = clean.indexOf('#');
+  if (hashIdx >= 0) {
+    clean = clean.slice(0, hashIdx);
+  }
   if (clean.startsWith('./')) clean = clean.slice(2);
   if (clean.startsWith('a/') || clean.startsWith('b/')) clean = clean.slice(2);
   while (clean.endsWith(':') || clean.endsWith('：')) {
     clean = clean.slice(0, -1);
   }
-  // Strip optional line suffix like foo.ts:42
-  const lastColon = clean.lastIndexOf(':');
-  if (lastColon > 0) {
+  // Strip optional line/column suffixes like foo.ts:42 or foo.ts:42:5 (preserving Windows C: at index 1)
+  for (let pass = 0; pass < 2; pass++) {
+    const lastColon = clean.lastIndexOf(':');
+    if (lastColon <= 1) break;
     const tail = clean.slice(lastColon + 1);
-    if (isNumericLiteral(tail)) {
-      clean = clean.slice(0, lastColon);
-    }
+    if (!isNumericLiteral(tail)) break;
+    clean = clean.slice(0, lastColon);
   }
   return clean.trim();
 }
@@ -173,28 +200,43 @@ export function isPathOwnedByAllowedList(targetPath: string, allowedFiles: strin
 }
 
 function isLikelyFilePathToken(rawToken: string): string | null {
-  const token = normalizeRepoPath(rawToken);
-  if (token.length < 3) return null;
+  const trimmed = (rawToken || '').trim();
+  const lower = trimmed.toLowerCase();
   if (
-    token.startsWith('http://') ||
-    token.startsWith('https://') ||
-    token.startsWith('ws://') ||
-    token.startsWith('wss://') ||
-    token.startsWith('file://')
+    lower.startsWith('http://') ||
+    lower.startsWith('https://') ||
+    lower.startsWith('ws://') ||
+    lower.startsWith('wss://')
   ) {
     return null;
   }
+
+  const token = normalizeRepoPath(trimmed);
+  if (token.length < 3) return null;
   if (token.includes('//')) return null;
 
   const first = token[0];
-  if (!isAsciiAlphaNum(first) && first !== '.' && first !== '_') {
+  if (!isAsciiAlphaNum(first) && first !== '.' && first !== '_' && first !== '/') {
     return null;
   }
 
-  // Only allow ASCII path characters
+  // Only allow ASCII path characters (plus Windows drive colon at index 1 in "C:/...")
   for (let i = 0; i < token.length; i++) {
     const ch = token[i];
-    if (!isAsciiAlphaNum(ch) && ch !== '/' && ch !== '.' && ch !== '_' && ch !== '-') {
+    const isDriveColon =
+      i === 1 &&
+      ch === ':' &&
+      token.length >= 3 &&
+      isAsciiLetter(token[0]) &&
+      token[2] === '/';
+    if (
+      !isAsciiAlphaNum(ch) &&
+      ch !== '/' &&
+      ch !== '.' &&
+      ch !== '_' &&
+      ch !== '-' &&
+      !isDriveColon
+    ) {
       return null;
     }
   }
@@ -224,9 +266,15 @@ export function extractFilePathsFromTextSegment(segment: string): string[] {
 
   const flush = () => {
     if (!buf) return;
-    // Also handle mixed Chinese-ASCII boundaries such as "在src/a.ts中" or "file.ts的逻辑"
+    // Also handle mixed Chinese-ASCII boundaries such as "在src/a.ts中", "在/Users/a.go中", or "file.ts的逻辑"
     let start = 0;
-    while (start < buf.length && !isAsciiAlphaNum(buf[start]) && buf[start] !== '.' && buf[start] !== '_') {
+    while (
+      start < buf.length &&
+      !isAsciiAlphaNum(buf[start]) &&
+      buf[start] !== '.' &&
+      buf[start] !== '_' &&
+      buf[start] !== '/'
+    ) {
       start++;
     }
     let end = buf.length;

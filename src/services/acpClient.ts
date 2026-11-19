@@ -1985,6 +1985,10 @@ export async function sendPromptToAcpAgent(
       };
     }
     const targetUrl = agent.remoteUrl || agent.acpCommandOrUrl;
+    const remoteWorkspaceCwd = options.workspaceCwd?.trim();
+    const remoteSystemPrompt = remoteWorkspaceCwd
+      ? `${resolvedSystemPrompt}\n\n[远程当前工作空间环境]:\n- 工作区根目录 (cwd): ${remoteWorkspaceCwd}\n- 文件引用规范: 在正文引用任何代码或产物文件时，必须使用携带完整绝对路径的 Markdown 链接 [文件名](file://<绝对路径>) 或 [文件名](file://<绝对路径>#L行号)（工作区根目录: ${remoteWorkspaceCwd}），严禁仅写裸文件名或省略中间目录。`
+      : resolvedSystemPrompt;
     console.log(`[ACP Client] Dispatching prompt to Remote ACP: ${targetUrl} (${agent.name})`);
     const remoteRes = await sendPromptToRemoteAcpWebSocket(
       targetUrl,
@@ -1992,7 +1996,7 @@ export async function sendPromptToAcpAgent(
       roomId,
       agent.authToken,
       agent.readOnlyGuard ?? true,
-      resolvedSystemPrompt,
+      remoteSystemPrompt,
       options.workspaceBindingId,
       options.workspaceCwd,
       options.scopeType,
